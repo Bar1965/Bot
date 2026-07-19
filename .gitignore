@@ -1,0 +1,9 @@
+node_modules/
+session/
+.env
+.env.local
+*.db
+*.db-journal
+backups/
+public/uploads/qris.png
+public/receipts/
