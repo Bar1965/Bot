@@ -1817,6 +1817,7 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
 
 
   <!-- ==================== JAVASCRIPT ==================== -->
+  <script src="/socket.io/socket.io.js"></script>
   <script>
     // --- AUTH CHECK ---
     const token = localStorage.getItem('token');
@@ -3027,8 +3028,8 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
       });
 
       socket.on('connect_error', (err) => {
-        console.error('[WS] Gagal terhubung:', err.message);
-        if (err.message.includes('Authentication error')) {
+        console.error('[WS] Gagal terhubung:', err ? err.message : 'Unknown error');
+        if (err && err.message && err.message.includes('Authentication error')) {
           handleLogout();
         }
       });
@@ -3350,7 +3351,6 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
     }
 
     async function markChatAsRead(jid) {
-      await apiRequest(`/api/read`, { method: 'POST' }); // API dummy fallback if endpoint not fully initialized yet
       await apiRequest(`/api/chats/${jid}/read`, { method: 'POST' });
     }
 
@@ -3499,6 +3499,5 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
       } catch (e) {}
     }
   </script>
-  <script src="/socket.io/socket.io.js"></script>
 </body>
 </html>
