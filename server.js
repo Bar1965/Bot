@@ -19,12 +19,18 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Sesi / Status Bot Global yang dishare dari index.js
+// Sesi / Status Bot Global yang dishare dari index.js & bot.js
 export const botState = {
   status: 'OFFLINE', // OFFLINE, CONNECTING, ONLINE
   lastReconnect: null,
   whatsappConnected: false,
-  sock: null // Instansi soket Baileys
+  sock: null, // Instansi soket Baileys
+  reconnectCount: 0,
+  lastDisconnectReason: null,
+  lastCredUpdate: null,
+  lastSentTimestamp: null,
+  pendingQueueCount: 0,
+  signalKeysOk: true
 };
 
 // Pastikan direktori upload ada
@@ -160,6 +166,27 @@ app.get('/api/bot-status', authenticateJWT, (req, res) => {
       cpuUsage: `${cpuUsage}%`,
       uptime: `${(os.uptime() / 3600).toFixed(1)} jam`,
       platform: `${os.platform()} (${os.arch()})`
+    }
+  });
+});
+
+// Endpoint Kesehatan & Integritas Sesi Bot (Phase 6 Implementation)
+app.get('/api/bot/health', authenticateJWT, (req, res) => {
+  const sessionFolder = './session';
+  const hasSession = fs.existsSync(sessionFolder) && fs.readdirSync(sessionFolder).length > 0;
+
+  res.json({
+    success: true,
+    bot: {
+      status: botState.status,
+      socket: botState.whatsappConnected ? 'OPEN' : (botState.status === 'CONNECTING' ? 'CONNECTING' : 'CLOSED'),
+      session: hasSession ? 'VALID' : 'MISSING',
+      lastCredUpdate: botState.lastCredUpdate ? new Date(botState.lastCredUpdate).toISOString() : null,
+      pendingQueue: botState.pendingQueueCount || 0,
+      reconnectCount: botState.reconnectCount || 0,
+      lastDisconnectReason: botState.lastDisconnectReason || null,
+      lastSent: botState.lastSentTimestamp ? new Date(botState.lastSentTimestamp).toISOString() : null,
+      signalKeys: botState.signalKeysOk ? 'OK' : 'ERROR'
     }
   });
 });

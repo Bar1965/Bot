@@ -1531,9 +1531,22 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
 
       <!-- ==================== 7. TAB BOT STATUS ==================== -->
       <div id="tab-botStatus" class="tab-content space-y">
-        <div class="layout-1-2">
+        <div class="layout-2col">
           <div class="glass-card" style="padding: 24px;">
-            <h3 class="section-title">Status Sistem</h3>
+            <h3 class="section-title">🩺 Bot Health & Signal Diagnostics</h3>
+            <div class="space-y-sm" style="font-size:0.8125rem;">
+              <div class="flex-between"><span style="color:var(--text-muted);">Soket Baileys:</span><span class="font-bold" id="botSocketState">OPEN</span></div>
+              <div class="flex-between"><span style="color:var(--text-muted);">Integritas Sesi:</span><span class="font-bold" id="botSessionState">VALID</span></div>
+              <div class="flex-between"><span style="color:var(--text-muted);">Kunci Signal (E2EE):</span><span class="font-bold" id="botSignalKeys">OK</span></div>
+              <div class="flex-between"><span style="color:var(--text-muted);">Antrean Pesan (Queue):</span><span class="font-bold" id="botPendingQueue">0 pesan</span></div>
+              <div class="flex-between"><span style="color:var(--text-muted);">Jumlah Reconnect:</span><span class="font-bold" id="botReconnectCount">0x</span></div>
+              <div class="flex-between"><span style="color:var(--text-muted);">Terakhir Disconnect:</span><span class="font-bold" id="botLastDisconnectReason">-</span></div>
+              <div class="flex-between"><span style="color:var(--text-muted);">Update Kredensial:</span><span class="font-bold" id="botLastCredUpdate">-</span></div>
+            </div>
+          </div>
+
+          <div class="glass-card" style="padding: 24px;">
+            <h3 class="section-title">Status Sistem Server</h3>
             <div class="space-y-sm" style="font-size:0.8125rem;">
               <div class="flex-between"><span style="color:var(--text-muted);">Penggunaan CPU:</span><span class="font-bold" id="sysCpu">0%</span></div>
               <div class="flex-between"><span style="color:var(--text-muted);">Penggunaan Memori:</span><span class="font-bold" id="sysMemory">0%</span></div>
@@ -1541,21 +1554,21 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
               <div class="flex-between"><span style="color:var(--text-muted);">OS Platform:</span><span class="font-bold" id="sysPlatform">Windows</span></div>
             </div>
           </div>
+        </div>
 
-          <div class="glass-card" style="padding: 24px; display: flex; flex-direction: column;">
-            <div class="flex-between" style="border-bottom:1px solid var(--border-divider);padding-bottom:10px;margin-bottom:12px;">
-              <h3 style="font-weight:700;font-size:1rem;color:var(--text-primary);">Log Aktivitas Bot</h3>
-              <select id="logTypeFilter" onchange="loadLogs()" class="form-select" style="width:auto;padding:4px 10px;font-size:0.6875rem;">
-                <option value="ALL">Semua Log</option>
-                <option value="SYSTEM">⚙️ System</option>
-                <option value="ORDER">🛒 Order</option>
-                <option value="PAYMENT">💸 Payment</option>
-                <option value="BROADCAST">📢 Broadcast</option>
-                <option value="ERROR">❌ Error</option>
-              </select>
-            </div>
-            <div class="log-terminal" id="logTerminal"></div>
+        <div class="glass-card" style="padding: 24px; display: flex; flex-direction: column;">
+          <div class="flex-between" style="border-bottom:1px solid var(--border-divider);padding-bottom:10px;margin-bottom:12px;">
+            <h3 style="font-weight:700;font-size:1rem;color:var(--text-primary);">Log Aktivitas Bot</h3>
+            <select id="logTypeFilter" onchange="loadLogs()" class="form-select" style="width:auto;padding:4px 10px;font-size:0.6875rem;">
+              <option value="ALL">Semua Log</option>
+              <option value="SYSTEM">⚙️ System</option>
+              <option value="ORDER">🛒 Order</option>
+              <option value="PAYMENT">💸 Payment</option>
+              <option value="BROADCAST">📢 Broadcast</option>
+              <option value="ERROR">❌ Error</option>
+            </select>
           </div>
+          <div class="log-terminal" id="logTerminal"></div>
         </div>
       </div>
 
@@ -2109,6 +2122,41 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
           document.getElementById('sysMemory').textContent = sys.memoryUsage;
           document.getElementById('sysUptime').textContent = sys.uptime;
           document.getElementById('sysPlatform').textContent = sys.platform;
+
+          // Load Bot Health API (Phase 9 Implementation)
+          const healthData = await apiRequest('/api/bot/health');
+          if (healthData && healthData.success) {
+            const h = healthData.bot;
+            const sockEl = document.getElementById('botSocketState');
+            if (sockEl) {
+              sockEl.textContent = h.socket;
+              sockEl.style.color = h.socket === 'OPEN' ? 'var(--accent-light)' : (h.socket === 'CONNECTING' ? 'var(--color-amber)' : 'var(--color-rose)');
+            }
+            
+            const sessEl = document.getElementById('botSessionState');
+            if (sessEl) {
+              sessEl.textContent = h.session;
+              sessEl.style.color = h.session === 'VALID' ? 'var(--accent-light)' : 'var(--color-rose)';
+            }
+            
+            const sigEl = document.getElementById('botSignalKeys');
+            if (sigEl) {
+              sigEl.textContent = h.signalKeys;
+              sigEl.style.color = h.signalKeys === 'OK' ? 'var(--accent-light)' : 'var(--color-rose)';
+            }
+            
+            const qEl = document.getElementById('botPendingQueue');
+            if (qEl) qEl.textContent = `${h.pendingQueue} pesan`;
+
+            const recEl = document.getElementById('botReconnectCount');
+            if (recEl) recEl.textContent = `${h.reconnectCount}x`;
+
+            const discEl = document.getElementById('botLastDisconnectReason');
+            if (discEl) discEl.textContent = h.lastDisconnectReason ? `Code: ${h.lastDisconnectReason}` : '-';
+
+            const credEl = document.getElementById('botLastCredUpdate');
+            if (credEl) credEl.textContent = h.lastCredUpdate ? new Date(h.lastCredUpdate).toLocaleTimeString('id-ID') : '-';
+          }
         }
       }
     }

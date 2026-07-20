@@ -330,6 +330,80 @@ async function sendQris(jid, captionText) {
   }
 }
 
+// --- ANTREAN PESAN KELUARAN & KELOLA LIFECYCLE SOCKET (Baileys Fix v2 - Phase 3 & Phase 4) ---
+const outgoingMessageQueue = [];
+let isQueueProcessing = false;
+
+// Fungsi terpusat aman untuk mengirim pesan WA (Connection Guard & Retries & Queueing)
+export async function safeSendMessage(jid, content, options = {}) {
+  botState.lastSentTimestamp = Date.now();
+  
+  return new Promise((resolve, reject) => {
+    const queueItem = {
+      jid,
+      content,
+      options,
+      retries: 0,
+      maxRetries: 3,
+      resolve,
+      reject,
+      enqueuedAt: Date.now()
+    };
+    
+    outgoingMessageQueue.push(queueItem);
+    botState.pendingQueueCount = outgoingMessageQueue.length;
+    
+    processOutgoingQueue();
+  });
+}
+
+export async function processOutgoingQueue() {
+  if (isQueueProcessing) return;
+  isQueueProcessing = true;
+
+  while (outgoingMessageQueue.length > 0) {
+    botState.pendingQueueCount = outgoingMessageQueue.length;
+
+    // Jika koneksi socket belum OPEN, tahan queue dan tunggu reconnect
+    if (!sock || !botState.whatsappConnected) {
+      console.log(`[QUEUE] Socket offline. Menunda pengiriman antrean (${outgoingMessageQueue.length} pesan terpending).`);
+      break;
+    }
+
+    const item = outgoingMessageQueue[0];
+    const logPrefix = `[MSG_SEND][ID: ${item.enqueuedAt}] JID: ${item.jid}`;
+
+    console.log(`${logPrefix} SEND START (Retry: ${item.retries}/${item.maxRetries})`);
+
+    try {
+      const sendFn = sock.rawSendMessage ? sock.rawSendMessage : sock.sendMessage.bind(sock);
+      const result = await sendFn(item.jid, item.content, item.options);
+      console.log(`${logPrefix} SUCCESS (MessageID: ${result?.key?.id || 'N/A'})`);
+      
+      outgoingMessageQueue.shift();
+      botState.pendingQueueCount = outgoingMessageQueue.length;
+      item.resolve(result);
+    } catch (err) {
+      console.error(`${logPrefix} SEND FAILED (Reason: ${err.message})`);
+      item.retries += 1;
+
+      if (item.retries >= item.maxRetries) {
+        console.error(`${logPrefix} Gagal total setelah ${item.maxRetries}x percobaan.`);
+        outgoingMessageQueue.shift();
+        botState.pendingQueueCount = outgoingMessageQueue.length;
+        item.reject(err);
+      } else {
+        // Retry delay backoff: 1s, 3s, 5s
+        const backoffMs = item.retries === 1 ? 1000 : (item.retries === 2 ? 3000 : 5000);
+        console.log(`${logPrefix} Mencoba ulang dalam ${backoffMs}ms...`);
+        await new Promise(r => setTimeout(r, backoffMs));
+      }
+    }
+  }
+
+  isQueueProcessing = false;
+}
+
 // Inisialisasi koneksi WhatsApp (Diekspor untuk index.js)
 export async function startBot(onSocketReady) {
   // Pastikan DB terinisialisasi
@@ -351,31 +425,50 @@ export async function startBot(onSocketReady) {
     console.warn("Gagal mengambil versi WA Web terbaru, menggunakan versi fallback:", waVersion.join('.'));
   }
 
-  // Bersihkan socket lama jika ada untuk mencegah kebocoran sesi
+  // Single Socket Policy: Bersihkan socket lama secara menyeluruh sebelum reconnect (Phase 3)
   if (sock) {
+    console.log("[SOCKET_LIFECYCLE] Membersihkan instansi socket lama secara penuh...");
     try {
       sock.ev.removeAllListeners();
-      sock.end();
+      if (sock.ws) {
+        try { sock.ws.close(); } catch (e) {}
+      }
+      try { sock.end(new Error("Reconnecting single socket policy...")); } catch(e) {}
     } catch (e) {
-      // Abaikan error
+      console.warn("[SOCKET_LIFECYCLE] Cleanup socket lama:", e.message);
     }
+    sock = null;
   }
 
   sock = makeWASocket({
     auth: state,
     version: waVersion,
     logger: P({ level: 'silent' }),
-    browser: ['Windows', 'Chrome', '110.0.5481.177']
+    browser: ['Windows', 'Chrome', '110.0.5481.177'],
+    markOnlineOnConnect: true,
+    syncFullHistory: false
   });
 
-  // Hubungkan event updates
+  // Alias sendMessage ke safeSendMessage untuk Connection Guard & Queueing & Retries
+  const originalSendMessage = sock.sendMessage.bind(sock);
+  sock.rawSendMessage = originalSendMessage;
+  sock.sendMessage = async (jid, content, options) => {
+    return await safeSendMessage(jid, content, options);
+  };
+
+  // Hubungkan event updates (Phase 1 & Phase 3)
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
+
+    if (connection === 'connecting') {
+      console.log('[SOCKET_STATE] Connecting to WhatsApp servers...');
+      botState.status = 'CONNECTING';
+    }
 
     if (qr) {
       botState.status = 'CONNECTING';
       botState.whatsappConnected = false;
-      console.log('Silakan scan QR Code di bawah untuk menghubungkan bot:');
+      console.log('[SOCKET_STATE] QR Code generated. Scan required.');
       qrcode.generate(qr, { small: true });
     }
 
@@ -383,27 +476,30 @@ export async function startBot(onSocketReady) {
       botState.status = 'OFFLINE';
       botState.whatsappConnected = false;
       botState.sock = null;
+      botState.reconnectCount = (botState.reconnectCount || 0) + 1;
 
       const statusCode = lastDisconnect?.error instanceof Boom 
         ? lastDisconnect.error.output?.statusCode 
         : null;
+
+      botState.lastDisconnectReason = statusCode;
         
       const shouldReconnect = 
         statusCode !== DisconnectReason.loggedOut && 
         statusCode !== DisconnectReason.connectionReplaced;
       
-      console.log(`Koneksi terputus. Alasan: ${statusCode}. Reconnect: ${shouldReconnect}`);
+      console.log(`[SOCKET_STATE] Connection CLOSED. StatusCode: ${statusCode}, ShouldReconnect: ${shouldReconnect}`);
       
       if (shouldReconnect) {
-        await logToSystem('SYSTEM', `Koneksi WhatsApp terputus (Status: ${statusCode}). Mencoba menghubungkan kembali dalam 5 detik...`);
+        await logToSystem('SYSTEM', `[SOCKET] Terputus (${statusCode}). Reconnect #${botState.reconnectCount} dalam 5 detik...`);
         setTimeout(() => startBot(onSocketReady), 5000);
       } else {
         if (statusCode === DisconnectReason.connectionReplaced) {
-          console.warn("⚠️ Koneksi ditolak (405 Connection Replaced). Kemungkinan bot dijalankan ganda atau sesi aktif di tempat lain.");
-          await logToSystem('SYSTEM', '⚠️ Koneksi ditolak (405 Connection Replaced). Pastikan tidak ada instance bot lain yang berjalan.');
+          console.warn("⚠️ [SOCKET] Connection Replaced (405). Sesi dipasang di instance lain.");
+          await logToSystem('SYSTEM', '⚠️ Connection Replaced (405). Pastikan hanya 1 bot running.');
         } else {
-          console.warn("⚠️ Sesi terputus permanen (logged out) atau tidak valid. Silakan scan ulang.");
-          await logToSystem('SYSTEM', '⚠️ Sesi WhatsApp terputus permanen (Logged Out). Harap lakukan reset sesi melalui Web Dashboard.');
+          console.warn("⚠️ [SOCKET] Logged Out (401). Sesi terputus permanen.");
+          await logToSystem('SYSTEM', '⚠️ Sesi WA terputus permanen. Scan QR ulang melalui Web Dashboard.');
         }
       }
     } else if (connection === 'open') {
@@ -412,17 +508,30 @@ export async function startBot(onSocketReady) {
       botState.sock = sock;
       botState.lastReconnect = Date.now();
 
-      console.log('=== WhatsApp Sales Bot Berhasil Online ===');
-      await logToSystem('SYSTEM', '🟢 Bot WhatsApp Sales sekarang ONLINE dan siap memproses order!');
+      console.log('[SOCKET_STATE] Connection OPEN. Session & Signal Keys synchronized.');
+      await logToSystem('SYSTEM', '🟢 Bot WhatsApp Sales ONLINE & Signal Session Synchronized!');
       
-      // Beritahu index.js bahwa soket siap digunakan oleh server Express
+      // Flush antrean pesan jika ada pesan terpending selama offline (Phase 4)
+      processOutgoingQueue();
+
       if (onSocketReady) {
         onSocketReady(sock);
       }
     }
   });
 
-  sock.ev.on('creds.update', saveCreds);
+  // Credential Update Logging (Phase 1 & Phase 2)
+  sock.ev.on('creds.update', async () => {
+    try {
+      await saveCreds();
+      botState.lastCredUpdate = Date.now();
+      botState.signalKeysOk = true;
+      console.log(`[AUTH] Credentials & Signal Keys saved to ./session (Timestamp: ${new Date().toLocaleTimeString('id-ID')})`);
+    } catch (e) {
+      console.error("[AUTH] Gagal menyimpan credentials:", e.message);
+      botState.signalKeysOk = false;
+    }
+  });
 
   // Monitor status online/mengetik dari customer
   sock.ev.on('presence.update', async (update) => {
