@@ -25,6 +25,9 @@ export const config = {
     // JID Grup WhatsApp untuk Log Monitoring (Opsional)
     logGroupId: "",
 
+    // JID Grup WhatsApp Utama Pembeli (tempat customer ketik list/buy/checkout)
+    buyerGroupId: "",
+
     // Batas stok minimal untuk status produk "Hampir Habis" (🟡 Low)
     lowStockLimit: 3,
 

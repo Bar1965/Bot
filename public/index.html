@@ -1570,6 +1570,10 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
                 <input type="text" id="setTransactionGroupId" placeholder="1203630xxxx@g.us" class="form-input">
               </div>
               <div>
+                <label class="form-label">ID Grup Utama Pembeli (untuk list/buy/checkout)</label>
+                <input type="text" id="setBuyerGroupId" placeholder="1203630zzzz@g.us" class="form-input">
+              </div>
+              <div>
                 <label class="form-label">ID Grup Log WhatsApp (Opsional)</label>
                 <input type="text" id="setLogGroupId" placeholder="1203630yyyy@g.us" class="form-input">
               </div>
@@ -2383,6 +2387,7 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
         document.getElementById('setAdminNumbers').value = s.adminNumbers || '';
         document.getElementById('setOwnerNumber').value = s.ownerNumber || '';
         document.getElementById('setTransactionGroupId').value = s.transactionGroupId || '';
+        document.getElementById('setBuyerGroupId').value = s.buyerGroupId || '';
         document.getElementById('setLogGroupId').value = s.logGroupId || '';
         document.getElementById('setMidtransServerKey').value = s.midtransServerKey || '';
         document.getElementById('setMidtransClientKey').value = s.midtransClientKey || '';
@@ -2400,6 +2405,7 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
         adminNumbers: document.getElementById('setAdminNumbers').value,
         ownerNumber: document.getElementById('setOwnerNumber').value,
         transactionGroupId: document.getElementById('setTransactionGroupId').value,
+        buyerGroupId: document.getElementById('setBuyerGroupId').value,
         logGroupId: document.getElementById('setLogGroupId').value,
         midtransServerKey: document.getElementById('setMidtransServerKey').value,
         midtransClientKey: document.getElementById('setMidtransClientKey').value,
@@ -2923,11 +2929,19 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
       if (!token) return;
 
       socket = io({
-        auth: { token }
+        auth: { token },
+        reconnection: true,
+        reconnectionAttempts: Infinity,
+        reconnectionDelay: 1000,
+        reconnectionDelayMax: 10000,
+        timeout: 20000
       });
 
       socket.on('connect', () => {
         console.log('[WS] Terhubung ke server WebSocket');
+        showToast('💬 Live Chat terhubung!', 'success');
+        // Reload daftar chat saat reconnect berhasil
+        if (activeTab === 'chats') loadChatsList();
       });
 
       socket.on('incoming_message', (msg) => {
@@ -3027,9 +3041,18 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
         loadChatsList();
       });
 
+      socket.on('disconnect', (reason) => {
+        console.warn('[WS] Terputus:', reason);
+        if (reason !== 'io server disconnect') {
+          showToast('⚠️ Live Chat terputus. Mencoba menyambung ulang...', 'warning');
+        }
+      });
+
       socket.on('connect_error', (err) => {
         console.error('[WS] Gagal terhubung:', err ? err.message : 'Unknown error');
+        // Hanya logout jika token expired/invalid, BUKAN karena jaringan terputus
         if (err && err.message && err.message.includes('Authentication error')) {
+          showToast('🔒 Sesi expired. Silakan login ulang.', 'error');
           handleLogout();
         }
       });

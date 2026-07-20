@@ -255,7 +255,7 @@ export async function startBot(onSocketReady) {
 
         if (isFromMe) continue;
 
-        const mainBuyerGroupJid = botSettings.logGroupId || "";
+        const mainBuyerGroupJid = botSettings.buyerGroupId || "";
 
         const msgText = (
           m.message.conversation || 
@@ -264,16 +264,34 @@ export async function startBot(onSocketReady) {
           ""
         ).trim();
 
-        // Ambil daftar admin dinamis dari pengaturan database, bersihkan format input (lidded JID support)
-        const admins = (botSettings.adminNumbers || "").split(',')
-          .map(n => {
-            let clean = n.trim().replace('+', '');
-            if (clean && !clean.includes('@')) {
-              clean = clean + '@s.whatsapp.net';
-            }
-            return clean;
+        // Deteksi admin menggunakan 2 metode:
+        // 1. Di GRUP: gunakan groupMetadata (anti-LID) — cek apakah pengirim adalah admin/superadmin grup
+        // 2. Di DM / Fallback: cocokkan angka nomor dari database (fuzzy match tanpa suffix @s.whatsapp.net/@lid)
+        let isAdmin = false;
+        
+        if (isGroup) {
+          try {
+            const groupMeta = await sock.groupMetadata(jid);
+            isAdmin = groupMeta.participants.some(
+              p => (p.id === sender || p.id === senderNormalized) && 
+                   (p.admin === 'admin' || p.admin === 'superadmin')
+            );
+          } catch (e) {
+            console.error(`[ADMIN_CHECK] Gagal mengambil metadata grup ${jid}:`, e.message);
+          }
+        }
+        
+        // Fallback / DM: cocokkan angka nomor telepon dari database settings
+        if (!isAdmin) {
+          const adminEntries = (botSettings.adminNumbers || "").split(',').map(n => n.trim());
+          // Ekstrak angka saja dari setiap entry admin dan dari senderNormalized
+          const extractDigits = (s) => s.replace(/[^0-9]/g, '');
+          const senderDigits = extractDigits(senderNormalized);
+          isAdmin = adminEntries.some(entry => {
+            const adminDigits = extractDigits(entry);
+            return adminDigits.length > 6 && senderDigits.includes(adminDigits);
           });
-        const isAdmin = admins.includes(senderNormalized);
+        }
 
         console.log(`[DEBUG_MSG] Grup: ${isGroup} (${jid}), Pengirim: ${senderNormalized}, Text: "${msgText}", Admin: ${isAdmin}`);
 
@@ -834,13 +852,63 @@ async function handleGroupMessage(jid, senderNumber, messageObj, text, isAdmin) 
         return;
       }
 
-      await sock.sendMessage(jid, { text: `✅ Order ID *${orderId}* berhasil diubah ke status *PAID*. Pelanggan telah dinotifikasi.` });
+      await sock.sendMessage(jid, { text: `✅ Order ID *${orderId}* berhasil diubah ke status *PAID*. Memproses pengiriman otomatis...` });
       
+      // Notifikasi awal ke customer
       const notifCustomer = `🔔 *INFO PESANAN (Order: ${orderId})*
       
-Pembayaran Anda telah *DITERIMA* dan diverifikasi. Pesanan sedang dalam proses pengerjaan oleh admin kami. Harap menunggu hingga produk dikirimkan. Terima kasih!`;
+Pembayaran Anda telah *DITERIMA* dan diverifikasi oleh admin kami. Terima kasih!`;
       await sock.sendMessage(res.customerNomor, { text: notifCustomer });
       await logToSystem('PAYMENT', `💸 Order ID *${orderId}* dikonfirmasi PAID oleh admin (wa.me/${senderNumber.split('@')[0]})`);
+
+      // AUTO-DELIVERY: Kirim kredensial digital secara otomatis
+      try {
+        const deliveredData = await db.claimAndDeliverItems(orderId);
+        const deliveredKeys = Object.keys(deliveredData);
+
+        if (deliveredKeys.length > 0) {
+          let credMsg = `━━━━━━━━━━━━━━━━━━
+📦 *PENGIRIMAN PRODUK DIGITAL*
+━━━━━━━━━━━━━━━━━━
+Order ID: *${orderId}*
+
+Berikut adalah detail akun/voucher Anda:\n\n`;
+
+          for (const [kode, info] of Object.entries(deliveredData)) {
+            credMsg += `🔑 *${info.produk_nama}* (\`${kode}\`):\n`;
+            if (info.credentials.length > 0) {
+              info.credentials.forEach((cred, i) => {
+                credMsg += `   ${i + 1}. ${cred}\n`;
+              });
+            } else {
+              credMsg += `   ⚠️ Stok kredensial habis, admin akan mengirimkan secara manual.\n`;
+            }
+            credMsg += `\n`;
+          }
+
+          credMsg += `━━━━━━━━━━━━━━━━━━
+⚠️ _Harap simpan data ini dengan baik. Jika ada masalah, silakan hubungi admin._
+━━━━━━━━━━━━━━━━━━`;
+          await sock.sendMessage(res.customerNomor, { text: credMsg });
+
+          // Otomatis tandai COMPLETED jika semua item berhasil dikirim
+          const allDelivered = deliveredKeys.every(k => deliveredData[k].credentials.length > 0);
+          if (allDelivered) {
+            await db.updateOrderStatus(orderId, 'COMPLETED');
+            await sock.sendMessage(res.customerNomor, { text: `✅ Pesanan *${orderId}* telah *SELESAI*. Terima kasih telah berbelanja! 🙏` });
+            await sock.sendMessage(jid, { text: `✅ Order *${orderId}* otomatis ditandai *COMPLETED* — semua kredensial digital berhasil dikirim ke pelanggan.` });
+            await logToSystem('ORDER', `✅ Order *${orderId}* auto-completed setelah pengiriman kredensial digital.`);
+          } else {
+            await sock.sendMessage(jid, { text: `⚠️ Order *${orderId}*: Sebagian kredensial digital berhasil dikirim, tetapi ada item yang stok kredensialnya habis. Silakan kirim secara manual.` });
+          }
+        } else {
+          // Tidak ada item AUTO, semua MANUAL — beri tahu admin
+          await sock.sendMessage(jid, { text: `ℹ️ Order *${orderId}* tidak memiliki item bertipe AUTO. Silakan kirimkan produk secara manual ke pelanggan, lalu ketik \`/done ${orderId}\` setelah selesai.` });
+        }
+      } catch (deliveryErr) {
+        console.error(`[AUTO_DELIVERY] Gagal mengirim kredensial untuk ${orderId}:`, deliveryErr.message);
+        await sock.sendMessage(jid, { text: `⚠️ Terjadi error saat auto-delivery untuk Order *${orderId}*: ${deliveryErr.message}. Silakan kirim kredensial secara manual.` });
+      }
       return;
     }
 
