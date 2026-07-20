@@ -569,16 +569,14 @@ export async function startBot(onSocketReady) {
           }
         } else {
           // Menangani Pesan Grup (Grup Transaksi / Log / Grup Utama Pembeli)
-          if (jid === mainBuyerGroupJid) {
-            // /getjid tetap bisa digunakan di grup pembeli untuk menemukan JID
-            if (msgText.startsWith('/getjid')) {
-              await handleGroupMessage(jid, senderNormalized, m, msgText, isAdmin);
-            } else {
-              // Jika pesan datang dari grup utama pembeli, proses perintah pelanggan
-              await handleCustomerMessage(jid, senderNormalized, m, msgText, true);
-            }
-          } else {
+          const isBuyerGroup = !mainBuyerGroupJid || jid === mainBuyerGroupJid;
+
+          if (msgText.startsWith('/')) {
+            // Perintah bertanda '/' (seperti /getjid, /kick, /paid, /stock, /add, /group)
             await handleGroupMessage(jid, senderNormalized, m, msgText, isAdmin);
+          } else if (isBuyerGroup) {
+            // Perintah pelanggan (list, menu, buy, checkout, dll) di grup pembeli (atau fallback jika belum di-set)
+            await handleCustomerMessage(jid, senderNormalized, m, msgText, true);
           }
         }
       }
