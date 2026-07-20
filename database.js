@@ -233,6 +233,41 @@ export async function initDb() {
     }
     console.log("Produk contoh berhasil dimasukkan.");
   }
+
+  // 10. Tabel Conversations (Live Chat State)
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS conversations (
+      customer_jid TEXT PRIMARY KEY,
+      conversation_state TEXT DEFAULT 'BOT', -- 'BOT', 'ADMIN', 'CLOSED', 'ARCHIVED'
+      assigned_admin_id TEXT,
+      last_read_message_id TEXT,
+      last_read_at INTEGER DEFAULT 0, -- Timestamp pesan terakhir dibaca admin
+      last_message_text TEXT,
+      last_activity INTEGER DEFAULT 0, -- Status aktivitas terakhir untuk sorting
+      internal_notes TEXT,
+      labels TEXT DEFAULT '', -- CSV labels: e.g. "VIP,Priority"
+      is_pinned INTEGER DEFAULT 0,
+      draft_text TEXT,
+      FOREIGN KEY(customer_jid) REFERENCES customers(nomor)
+    )
+  `);
+
+  // 11. Tabel Messages (Chat History)
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS messages (
+      id TEXT PRIMARY KEY,
+      customer_jid TEXT NOT NULL,
+      sender TEXT NOT NULL, -- 'customer' atau 'admin'
+      message_type TEXT NOT NULL, -- 'text', 'image', 'file', 'audio', 'video'
+      message TEXT,
+      media_path TEXT,
+      quoted_id TEXT,
+      timestamp INTEGER NOT NULL,
+      status TEXT DEFAULT 'sent' -- 'sent', 'delivered', 'read'
+    )
+  `);
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_messages_customer ON messages(customer_jid)");
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp)");
 }
 
 // --- FUNGSI USERS / AKUN ---
@@ -898,4 +933,144 @@ function generateOrderId() {
                   date.getDate().toString().padStart(2, '0');
   const rand = Math.floor(1000 + Math.random() * 9000);
   return `ORD-${dateStr}-${rand}`;
+}
+
+// --- LOGIKA CHAT / PERCAKAPAN (LIVE CHAT) ---
+
+export async function getOrCreateConversation(customerJid) {
+  let customer = await getQuery("SELECT * FROM customers WHERE nomor = ?", [customerJid]);
+  if (!customer) {
+    const customerName = "Pelanggan";
+    await runQuery("INSERT INTO customers (nomor, nama) VALUES (?, ?)", [customerJid, customerName]);
+  }
+  
+  let conv = await getQuery("SELECT * FROM conversations WHERE customer_jid = ?", [customerJid]);
+  if (!conv) {
+    await runQuery(`
+      INSERT INTO conversations (customer_jid, conversation_state, last_activity) 
+      VALUES (?, 'BOT', ?)
+    `, [customerJid, Date.now()]);
+    conv = await getQuery("SELECT * FROM conversations WHERE customer_jid = ?", [customerJid]);
+  }
+  return conv;
+}
+
+export async function getConversationsList() {
+  const sql = `
+    SELECT 
+      c.nomor as customer_jid,
+      c.nama as customer_nama,
+      cv.conversation_state,
+      cv.assigned_admin_id,
+      cv.last_read_message_id,
+      cv.last_read_at,
+      cv.last_message_text,
+      cv.last_activity,
+      cv.internal_notes,
+      cv.labels,
+      cv.is_pinned,
+      cv.draft_text,
+      (
+        SELECT COUNT(*) FROM messages m 
+        WHERE m.customer_jid = c.nomor 
+          AND m.sender = 'customer' 
+          AND m.timestamp > cv.last_read_at
+      ) as unread_count
+    FROM customers c
+    JOIN conversations cv ON c.nomor = cv.customer_jid
+    ORDER BY cv.is_pinned DESC, cv.last_activity DESC
+  `;
+  return await allQuery(sql);
+}
+
+export async function getConversationMessages(customerJid, limit = 100) {
+  const sql = `
+    SELECT * FROM messages 
+    WHERE customer_jid = ? 
+    ORDER BY timestamp ASC 
+    LIMIT ?
+  `;
+  return await allQuery(sql, [customerJid, limit]);
+}
+
+export async function saveChatMessage({ id, customerJid, sender, messageType, message, mediaPath, quotedId, timestamp, status = 'sent' }) {
+  await getOrCreateConversation(customerJid);
+
+  await runQuery(`
+    INSERT OR REPLACE INTO messages (id, customer_jid, sender, message_type, message, media_path, quoted_id, timestamp, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `, [id, customerJid, sender, messageType, message, mediaPath, quotedId, timestamp, status]);
+
+  let lastMsgText = message;
+  if (messageType === 'image') lastMsgText = '📷 Gambar';
+  else if (messageType === 'video') lastMsgText = '🎥 Video';
+  else if (messageType === 'audio') lastMsgText = '🎙️ Pesan Suara';
+  else if (messageType === 'file') lastMsgText = '📄 Dokumen';
+
+  await runQuery(`
+    UPDATE conversations 
+    SET last_message_text = ?, last_activity = ?
+    WHERE customer_jid = ?
+  `, [lastMsgText, timestamp, customerJid]);
+
+  if (sender !== 'customer') {
+    await runQuery(`
+      UPDATE conversations 
+      SET last_read_at = ?
+      WHERE customer_jid = ?
+    `, [timestamp, customerJid]);
+  }
+}
+
+export async function updateConversationState(customerJid, state, adminId = null) {
+  await getOrCreateConversation(customerJid);
+  await runQuery(`
+    UPDATE conversations 
+    SET conversation_state = ?, assigned_admin_id = ?
+    WHERE customer_jid = ?
+  `, [state, adminId, customerJid]);
+}
+
+export async function updateConversationNotes(customerJid, notes) {
+  await getOrCreateConversation(customerJid);
+  await runQuery(`
+    UPDATE conversations 
+    SET internal_notes = ?
+    WHERE customer_jid = ?
+  `, [notes, customerJid]);
+}
+
+export async function updateConversationLabels(customerJid, labels) {
+  await getOrCreateConversation(customerJid);
+  await runQuery(`
+    UPDATE conversations 
+    SET labels = ?
+    WHERE customer_jid = ?
+  `, [labels, customerJid]);
+}
+
+export async function updateConversationPin(customerJid, isPinned) {
+  await getOrCreateConversation(customerJid);
+  await runQuery(`
+    UPDATE conversations 
+    SET is_pinned = ?
+    WHERE customer_jid = ?
+  `, [isPinned ? 1 : 0, customerJid]);
+}
+
+export async function updateConversationReadStatus(customerJid, timestamp = Date.now()) {
+  await getOrCreateConversation(customerJid);
+  await runQuery(`
+    UPDATE conversations 
+    SET last_read_at = ?
+    WHERE customer_jid = ?
+  `, [timestamp, customerJid]);
+}
+
+export async function updateMessageStatus(messageId, status) {
+  await runQuery(`
+    UPDATE messages 
+    SET status = ?
+    WHERE id = ?
+  `, [status, messageId]);
 }

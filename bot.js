@@ -197,6 +197,49 @@ export async function startBot(onSocketReady) {
 
   sock.ev.on('creds.update', saveCreds);
 
+  // Monitor status online/mengetik dari customer
+  sock.ev.on('presence.update', async (update) => {
+    const { id, presences } = update;
+    if (presences) {
+      const keys = Object.keys(presences);
+      if (keys.length > 0) {
+        const presenceData = presences[keys[0]];
+        const presenceStatus = presenceData?.lastKnownPresence;
+        import('./websocket.js').then((ws) => {
+          ws.broadcastToAdmins('customer_presence_updated', {
+            customerJid: id,
+            status: presenceStatus === 'available' ? 'online' : (presenceStatus === 'composing' ? 'typing' : 'offline'),
+            lastSeen: Date.now()
+          });
+        }).catch(err => {});
+      }
+    }
+  });
+
+  // Monitor centang/status pesan terkirim (delivered/read)
+  sock.ev.on('messages.update', async (updates) => {
+    for (const u of updates) {
+      if (u.update.status) {
+        const statusMap = {
+          2: 'delivered',
+          3: 'read',
+          4: 'read'
+        };
+        const newStatus = statusMap[u.update.status];
+        if (newStatus) {
+          await db.updateMessageStatus(u.key.id, newStatus);
+          import('./websocket.js').then((ws) => {
+            ws.broadcastToAdmins('message_status_updated', {
+              realId: u.key.id,
+              customerJid: jidNormalizedUser(u.key.remoteJid),
+              status: newStatus
+            });
+          }).catch(err => {});
+        }
+      }
+    }
+  });
+
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     try {
       if (type !== 'notify') return;
@@ -232,17 +275,63 @@ export async function startBot(onSocketReady) {
 
         console.log(`[DEBUG_MSG] Grup: ${isGroup} (${jid}), Pengirim: ${senderNormalized}, Text: "${msgText}", Admin: ${isAdmin}`);
 
-        const mainBuyerGroupJid = botSettings.logGroupId || ""; // logGroupId terkonfigurasi sebagai grup utama pembeli
+        // Ambil status percakapan (Take Over check)
+        const conv = await db.getOrCreateConversation(senderNormalized);
+        const isTakenOver = conv.conversation_state === 'ADMIN';
 
         if (!isGroup) {
+          // Download media jika ada
+          let mediaPath = '';
+          if (m.message.imageMessage || m.message.videoMessage || m.message.documentMessage || m.message.audioMessage) {
+            try {
+              const buffer = await downloadMediaMessage(m, 'buffer', {});
+              const mimeType = m.message.imageMessage?.mimetype || m.message.videoMessage?.mimetype || m.message.documentMessage?.mimetype || m.message.audioMessage?.mimetype || '';
+              const ext = mimeType.split('/').pop().split(';')[0];
+              const filename = `chat_recv_${Date.now()}_${Math.floor(1000 + Math.random()*9000)}.${ext === 'vnd.android.package-archive' ? 'apk' : ext}`;
+              mediaPath = `./public/uploads/chat_media/${filename}`;
+              fs.writeFileSync(mediaPath, buffer);
+            } catch (err) {
+              console.error("Gagal mendownload media pesan masuk:", err.message);
+            }
+          }
+
+          const messageType = m.message.imageMessage ? 'image' : 
+                              (m.message.videoMessage ? 'video' : 
+                              (m.message.audioMessage ? 'audio' : 
+                              (m.message.documentMessage ? 'file' : 'text')));
+
+          const messageContent = m.message.conversation || 
+                                 m.message.extendedTextMessage?.text || 
+                                 m.message.imageMessage?.caption || 
+                                 m.message.videoMessage?.caption || 
+                                 m.message.documentMessage?.caption || 
+                                 '';
+
+          import('./chatManager.js').then(async (chat) => {
+            await chat.saveIncomingMessage({
+              id: m.key.id,
+              customerJid: senderNormalized,
+              messageType,
+              message: messageContent,
+              mediaPath,
+              quotedId: m.message.extendedTextMessage?.contextInfo?.stanzaId || '',
+              timestamp: (m.messageTimestamp * 1000) || Date.now()
+            });
+          }).catch(err => console.error("Gagal menyimpan pesan masuk ke DB:", err));
+
           // Jika pesan dimulai dengan '/' dan pengirim adalah Admin, proses sebagai perintah admin/owner (buka /getjid untuk semua)
           if (msgText.startsWith('/getjid')) {
             await handleGroupMessage(jid, senderNormalized, m, msgText, isAdmin);
           } else if (msgText.startsWith('/') && isAdmin) {
             await handleGroupMessage(jid, senderNormalized, m, msgText, isAdmin);
           } else {
-            // Menangani Pesan DM Pelanggan
-            await handleCustomerMessage(jid, senderNormalized, m, msgText, false);
+            // Jika chat sedang diambil alih admin (Take Over), bot diam
+            if (isTakenOver) {
+              console.log(`[BOT] Percakapan dengan ${senderNormalized} sedang diambil alih admin. Auto-reply dinonaktifkan.`);
+            } else {
+              // Menangani Pesan DM Pelanggan
+              await handleCustomerMessage(jid, senderNormalized, m, msgText, false);
+            }
           }
         } else {
           // Menangani Pesan Grup (Grup Transaksi / Log / Grup Utama Pembeli)
@@ -923,6 +1012,17 @@ Mohon maaf, pesanan Anda dengan Order ID *${orderId}* telah *DIBATALKAN* oleh ad
       // Picu notifikasi jika stok baru > 0
       await checkAndNotifySubscribers(code, stok);
       return;
+    }
+  }
+}
+
+// Fungsi eksternal untuk memicu status online/mengetik di WhatsApp
+export async function triggerPresenceUpdate(jid, presence) {
+  if (botState.whatsappConnected && sock) {
+    try {
+      await sock.sendPresenceUpdate(presence, jid);
+    } catch (err) {
+      console.error(`[BOT] Gagal mengirim presence update ke ${jid}:`, err.message);
     }
   }
 }

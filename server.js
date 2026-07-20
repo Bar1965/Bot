@@ -6,11 +6,14 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import crypto from 'crypto';
+import { createServer } from 'http';
 
 import { config } from './config.js';
 import * as db from './database.js';
 import { reloadBotSettings, checkAndNotifySubscribers, startBot } from './bot.js';
 import { backupDatabase } from './scheduler.js';
+import { initWebSocket, broadcastToAdmins } from './websocket.js';
+import * as chatManager from './chatManager.js';
 
 const app = express();
 app.use(express.json());
@@ -593,6 +596,244 @@ app.post('/api/settings/session/reset', authenticateJWT, authorizeRoles('Owner')
   }
 });
 
+// --- METODE INTEGRASI LIVE CHAT & MEDIA UPLOADS ---
+
+// Folder upload media obrolan
+ensureDirExists('./public/uploads/chat_media');
+const chatMediaStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, './public/uploads/chat_media');
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    const hash = crypto.randomBytes(8).toString('hex');
+    cb(null, `chat_${Date.now()}_${hash}${ext}`);
+  }
+});
+
+const ALLOWED_MIMES_EXTS = {
+  'image/jpeg': ['jpg', 'jpeg'],
+  'image/png': ['png'],
+  'image/gif': ['gif'],
+  'application/pdf': ['pdf'],
+  'application/zip': ['zip'],
+  'application/x-zip-compressed': ['zip'],
+  'application/vnd.android.package-archive': ['apk'],
+  'video/mp4': ['mp4'],
+  'audio/mpeg': ['mp3'],
+  'audio/mp3': ['mp3'],
+  'audio/wav': ['wav'],
+  'audio/x-wav': ['wav'],
+  'audio/ogg': ['ogg'],
+  'audio/m4a': ['m4a'],
+  'audio/x-m4a': ['m4a']
+};
+
+const uploadChatMedia = multer({
+  storage: chatMediaStorage,
+  limits: {
+    fileSize: 100 * 1024 * 1024 // 100MB Max Global limit
+  },
+  fileFilter: (req, file, cb) => {
+    const fileMime = file.mimetype;
+    const fileExt = path.extname(file.originalname).toLowerCase().replace('.', '');
+    const allowedExts = ALLOWED_MIMES_EXTS[fileMime];
+    
+    if (!allowedExts || !allowedExts.includes(fileExt)) {
+      return cb(new Error(`Tipe berkas tidak diizinkan: Ekstensi .${fileExt} dengan MIME ${fileMime} tidak cocok.`));
+    }
+    cb(null, true);
+  }
+});
+
+// Rute untuk mengunggah media chat (MIME + Extension + Size check)
+app.post('/api/chats/media', authenticateJWT, (req, res) => {
+  uploadChatMedia.single('file')(req, res, (err) => {
+    if (err) {
+      return res.status(400).json({ success: false, message: err.message });
+    }
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: "Tidak ada berkas yang diunggah." });
+    }
+
+    const filepath = req.file.path.replace(/\\/g, '/');
+    const ext = path.extname(req.file.originalname).toLowerCase().replace('.', '');
+    const size = req.file.size;
+
+    // Batasan ukuran spesifik per tipe file
+    let maxSize = 5 * 1024 * 1024; // Default 5MB
+    if (['png', 'jpg', 'jpeg', 'gif'].includes(ext)) maxSize = 10 * 1024 * 1024; // 10MB
+    else if (ext === 'pdf') maxSize = 20 * 1024 * 1024; // 20MB
+    else if (['zip', 'apk'].includes(ext)) maxSize = 100 * 1024 * 1024; // 100MB
+    else if (ext === 'mp4') maxSize = 50 * 1024 * 1024; // 50MB
+    else if (['mp3', 'wav', 'ogg', 'm4a'].includes(ext)) maxSize = 20 * 1024 * 1024; // 20MB
+
+    if (size > maxSize) {
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (e) {}
+      return res.status(400).json({ 
+        success: false, 
+        message: `Berkas terlalu besar. Batas ukuran untuk file .${ext} adalah ${(maxSize / (1024 * 1024))}MB.` 
+      });
+    }
+
+    const relativeUrl = `/uploads/chat_media/${req.file.filename}`;
+    res.json({ success: true, url: relativeUrl, path: filepath });
+  });
+});
+
+// Endpoint mengambil daftar chat
+app.get('/api/chats', authenticateJWT, async (req, res) => {
+  try {
+    const list = await db.getConversationsList();
+    res.json({ success: true, data: list });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Endpoint mengambil riwayat pesan per customer
+app.get('/api/chats/:nomor/messages', authenticateJWT, async (req, res) => {
+  try {
+    const { nomor } = req.params;
+    const messages = await db.getConversationMessages(nomor);
+    res.json({ success: true, data: messages });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Endpoint mengirim pesan dari dashboard
+app.post('/api/chats/:nomor/send', authenticateJWT, async (req, res) => {
+  try {
+    const { nomor } = req.params;
+    const { messageType, message, mediaPath, quotedId } = req.body;
+
+    if (!messageType) {
+      return res.status(400).json({ success: false, message: "messageType wajib diisi." });
+    }
+
+    const result = await chatManager.enqueueOutgoingMessage({
+      customerJid: nomor,
+      messageType,
+      message,
+      mediaPath,
+      quotedId,
+      adminUsername: req.user.username
+    });
+
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Endpoint mengubah status Take Over percakapan
+app.post('/api/chats/:nomor/takeover', authenticateJWT, async (req, res) => {
+  try {
+    const { nomor } = req.params;
+    const { state } = req.body; // 'BOT', 'ADMIN', 'CLOSED', 'ARCHIVED'
+
+    if (!['BOT', 'ADMIN', 'CLOSED', 'ARCHIVED'].includes(state)) {
+      return res.status(400).json({ success: false, message: "State tidak valid." });
+    }
+
+    await db.updateConversationState(nomor, state, state === 'BOT' ? null : req.user.username);
+    await db.addLog('SYSTEM', `Admin ${req.user.username} mengubah status chat ${nomor} menjadi ${state}`);
+
+    // Siarkan pembaruan ke Socket.IO
+    broadcastToAdmins('conversation_state_changed', {
+      customer_jid: nomor,
+      conversation_state: state,
+      assigned_admin_id: state === 'BOT' ? null : req.user.username
+    });
+
+    res.json({ success: true, message: `Status percakapan diubah ke ${state}.` });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Endpoint menandai chat telah dibaca oleh admin (reset unread)
+app.post('/api/chats/:nomor/read', authenticateJWT, async (req, res) => {
+  try {
+    const { nomor } = req.params;
+    await db.updateConversationReadStatus(nomor);
+    
+    // Siarkan pembaruan unread ke Socket.IO
+    broadcastToAdmins('conversation_read', {
+      customer_jid: nomor
+    });
+
+    res.json({ success: true, message: "Status unread berhasil di-reset." });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Endpoint mengubah internal notes customer
+app.post('/api/chats/:nomor/notes', authenticateJWT, async (req, res) => {
+  try {
+    const { nomor } = req.params;
+    const { notes } = req.body;
+    
+    await db.updateConversationNotes(nomor, notes);
+    await db.addLog('CHAT', `Admin ${req.user.username} memperbarui internal note untuk ${nomor}`);
+
+    // Siarkan ke Socket.IO
+    broadcastToAdmins('conversation_notes_updated', {
+      customer_jid: nomor,
+      internal_notes: notes
+    });
+
+    res.json({ success: true, message: "Catatan internal berhasil diperbarui." });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Endpoint mengubah labels customer
+app.post('/api/chats/:nomor/labels', authenticateJWT, async (req, res) => {
+  try {
+    const { nomor } = req.params;
+    const { labels } = req.body; // e.g. "VIP,Priority"
+    
+    await db.updateConversationLabels(nomor, labels);
+    await db.addLog('CHAT', `Admin ${req.user.username} mengubah label customer ${nomor} menjadi: ${labels}`);
+
+    // Siarkan ke Socket.IO
+    broadcastToAdmins('conversation_labels_updated', {
+      customer_jid: nomor,
+      labels
+    });
+
+    res.json({ success: true, message: "Label customer berhasil diperbarui." });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Endpoint mengubah pin chat status
+app.post('/api/chats/:nomor/pin', authenticateJWT, async (req, res) => {
+  try {
+    const { nomor } = req.params;
+    const { isPinned } = req.body;
+
+    await db.updateConversationPin(nomor, isPinned);
+
+    // Siarkan ke Socket.IO
+    broadcastToAdmins('conversation_pin_updated', {
+      customer_jid: nomor,
+      is_pinned: isPinned ? 1 : 0
+    });
+
+    res.json({ success: true, message: `Status pin chat diubah.` });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // --- METODE INTEGRASI MIDTRANS & WEBHOOK ---
 
 // Fungsi Helper untuk membuat transaksi Midtrans Snap
@@ -775,10 +1016,18 @@ Silakan lakukan pemesanan ulang (ketik *menu*) jika Anda masih berminat membeli 
   }
 });
 
+// Server global instance
+let serverInstance = null;
+
 // Inisialisasi start server
 export function startServer() {
   const port = config.port;
-  app.listen(port, () => {
+  serverInstance = createServer(app);
+  
+  // Bind Socket.IO ke server
+  initWebSocket(serverInstance);
+
+  serverInstance.listen(port, () => {
     console.log(`=== Dashboard Admin Web Berjalan di http://localhost:${port} ===`);
   }).on('error', (err) => {
     console.error(`Gagal menjalankan server di port ${port}:`, err.message);
