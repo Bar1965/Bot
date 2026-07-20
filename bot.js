@@ -48,6 +48,8 @@ export function formatPhoneNumber(jid) {
 
 // Rate Limiter Storage: Map<senderJid, number[]>
 const userMessageTimestamps = new Map();
+// Storage penghitung pesan tidak dikenal per pelanggan: Map<senderNumber, number>
+const unknownMessageCounter = new Map();
 
 function extractTargetJid(m, args) {
   if (!m) return null;
@@ -638,6 +640,17 @@ async function handleCustomerMessage(jid, senderNumber, messageObj, text, isFrom
   const customerName = messageObj.pushName || "Pelanggan";
   await db.getOrCreateCustomer(senderNumber, customerName);
 
+  // Jika pesan dikenali sebagai perintah utama, reset penghitung pesan tidak dikenal
+  if (textLower === 'help' || textLower === 'menu' || textLower === 'bantuan' || 
+      textLower === 'list' || textLower === 'produk' || 
+      textLower === 'cart' || textLower === 'keranjang' || 
+      textLower === 'checkout' || textLower === 'bayar' || 
+      textLower === 'cancel' || textLower === 'batal' || 
+      textLower === 'status' || /^notify\s+/i.test(textLower) || 
+      /^(beli|buy)\s+/i.test(textLower) || messageObj.message?.imageMessage) {
+    unknownMessageCounter.set(senderNumber, 0);
+  }
+
   // Periksa apakah perintah butuh privasi (transaksi personal)
   const isPrivateCommand = 
     /^(beli|buy)\s+/i.test(textLower) ||
@@ -1043,9 +1056,14 @@ ${orderDetails.items.map(item => `- ${item.produk_nama} (\`${item.produk_kode}\`
     }
   }
 
-  // Jika pesan tidak dikenali dan bukan command (hanya balas di DM agar tidak spam grup)
+  // Jika pesan tidak dikenali dan bukan command (hanya balas di DM agar tidak spam grup, max 1x per 5 pesan)
   if (!isFromGroup && !textLower.startsWith('/') && !buyRegex.test(text) && !notifyRegex.test(text)) {
-    await sock.sendMessage(jid, { text: "Saya tidak memahami perintah tersebut. Silakan ketik *menu* atau *help* untuk petunjuk penggunaan." });
+    const count = (unknownMessageCounter.get(senderNumber) || 0) + 1;
+    unknownMessageCounter.set(senderNumber, count);
+
+    if (count % 5 === 1) {
+      await sock.sendMessage(jid, { text: "Saya tidak memahami perintah tersebut. Silakan ketik *menu* atau *help* untuk petunjuk penggunaan." });
+    }
   }
 }
 
