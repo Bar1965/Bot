@@ -50,10 +50,18 @@ export function formatPhoneNumber(jid) {
 const userMessageTimestamps = new Map();
 
 function extractTargetJid(m, args) {
-  const mentions = m.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
+  if (!m) return null;
+  // 1. Tag / Mention dalam pesan
+  const mentions = m.message?.extendedTextMessage?.contextInfo?.mentionedJid || 
+                   m.message?.conversation?.contextInfo?.mentionedJid || [];
   if (mentions.length > 0) return mentions[0];
-  
-  if (args[1]) {
+
+  // 2. Quoted / Reply pesan seseorang
+  const participant = m.message?.extendedTextMessage?.contextInfo?.participant;
+  if (participant) return participant;
+
+  // 3. Ketik nomor langsung di argumen 1 (misal /kick 6281234567890)
+  if (args && args[1]) {
     let raw = args[1].replace(/[^0-9]/g, '');
     if (raw) return raw.endsWith('@s.whatsapp.net') ? raw : `${raw}@s.whatsapp.net`;
   }
@@ -973,6 +981,9 @@ ${orderDetails.items.map(item => `- ${item.produk_nama} (\`${item.produk_kode}\`
 // LOGIKA PESAN GRUP (ADMIN GROUP / GET JID)
 // ==========================================
 async function handleGroupMessage(jid, senderNumber, messageObj, text, isAdmin) {
+  const isGroup = jid.endsWith('@g.us');
+  const m = messageObj;
+
   if (text.startsWith('/getjid')) {
     await sock.sendMessage(jid, { 
       text: `ID Chat/Grup ini adalah:\n\`${jid}\`\n\nID Anda adalah:\n\`${senderNumber}\`\n\nSilakan salin ID di atas dan masukkan ke pengaturan Web Dashboard jika ini adalah Grup Transaksi atau Grup Log.` 
@@ -981,7 +992,10 @@ async function handleGroupMessage(jid, senderNumber, messageObj, text, isAdmin) 
   }
 
   if (text.startsWith('/')) {
-    if (!isAdmin) return;
+    if (!isAdmin) {
+      await sock.sendMessage(jid, { text: "❌ Perintah ini hanya dapat dijalankan oleh Admin Toko atau Admin Grup." });
+      return;
+    }
 
     const isOwner = senderNumber === botSettings.ownerNumber;
     const args = text.split(' ');
@@ -1066,7 +1080,9 @@ async function handleGroupMessage(jid, senderNumber, messageObj, text, isAdmin) 
         await sock.sendMessage(jid, { text: `✅ Berhasil! Pengguna @${targetJid.split('@')[0]} telah ${actNameMap[cmd]}.`, mentions: [targetJid] });
         await db.addLog("MODERATION", `Admin (${senderNormalized}) menjalankan ${cmd} pada ${targetJid} di grup ${jid}`);
       } catch (err) {
-        await sock.sendMessage(jid, { text: `❌ Gagal menjalankan ${cmd}: ${err.message}. Pastikan bot adalah Admin di grup ini.` });
+        await sock.sendMessage(jid, { 
+          text: `❌ Gagal menjalankan ${cmd}: ${err.message}.\n\n💡 *PENTING:* Pastikan **nomor WhatsApp Bot sudah dijadikan ADMIN GRUP** di WhatsApp agar fitur moderasi (${cmd}, /add, /promote, /demote) dapat mengeksekusi tindakan.` 
+        });
       }
       return;
     }
