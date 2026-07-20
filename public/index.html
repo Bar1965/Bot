@@ -1612,8 +1612,76 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
                 <label class="form-label">Instruksi Pembayaran Manual (Fallback)</label>
                 <textarea id="setPaymentInstructions" rows="4" required class="form-textarea"></textarea>
               </div>
-              <div class="col-span-2" style="text-align: right;">
-                <button type="submit" class="btn-accent" style="padding: 12px 24px;">Simpan Konfigurasi</button>
+
+              <!-- Moderasi Grup & Anti-Spam (v2) -->
+              <div class="col-span-2" style="border-top: 1px solid var(--border-divider); padding-top: 16px; margin-top: 8px;">
+                <h4 style="font-weight: 700; color: var(--color-amber); font-size: 0.95rem; margin-bottom: 12px;">🛡️ Moderasi Grup & Protection Engine (v2)</h4>
+              </div>
+
+              <div>
+                <label class="form-label">Fitur Anti-Spam</label>
+                <select id="setAntiSpamEnabled" class="form-select">
+                  <option value="true">🟢 Aktif (Anti-Spam ON)</option>
+                  <option value="false">🔴 Non-Aktif (Anti-Spam OFF)</option>
+                </select>
+              </div>
+
+              <div>
+                <label class="form-label">Fitur Anti-Link Terlarang</label>
+                <select id="setAntiLinkEnabled" class="form-select">
+                  <option value="true">🟢 Aktif (Anti-Link ON)</option>
+                  <option value="false">🔴 Non-Aktif (Anti-Link OFF)</option>
+                </select>
+              </div>
+
+              <div>
+                <label class="form-label">Batas Peringatan Sebelum Kick</label>
+                <input type="number" id="setKickAfterWarnings" placeholder="3" class="form-input">
+              </div>
+
+              <div>
+                <label class="form-label">Threshold Spam (Pesan per 5 Detik)</label>
+                <input type="number" id="setSpamThreshold" placeholder="5" class="form-input">
+              </div>
+
+              <div class="col-span-2">
+                <label class="form-label">Domain Link Terlarang (Blacklist, Pemisah Koma)</label>
+                <input type="text" id="setBlockedDomains" placeholder="chat.whatsapp.com,bit.ly,tinyurl,t.me,discord.gg" class="form-input">
+              </div>
+
+              <div class="col-span-2">
+                <label class="form-label">Domain Link Diizinkan (Whitelist, Pemisah Koma)</label>
+                <input type="text" id="setAllowedDomains" placeholder="tokopedia.com,shopee.co.id,bukalapak.com" class="form-input">
+              </div>
+
+              <div>
+                <label class="form-label">Fitur Pesan Sambutan (Welcome)</label>
+                <select id="setWelcomeEnabled" class="form-select">
+                  <option value="true">🟢 Aktif (Auto-Welcome ON)</option>
+                  <option value="false">🔴 Non-Aktif (Auto-Welcome OFF)</option>
+                </select>
+              </div>
+
+              <div>
+                <label class="form-label">Fitur Pesan Perpisahan (Goodbye)</label>
+                <select id="setGoodbyeEnabled" class="form-select">
+                  <option value="true">🟢 Aktif (Auto-Goodbye ON)</option>
+                  <option value="false">🔴 Non-Aktif (Auto-Goodbye OFF)</option>
+                </select>
+              </div>
+
+              <div class="col-span-2">
+                <label class="form-label">Pesan Sambutan Anggota Baru (Welcome Message)</label>
+                <textarea id="setWelcomeMessage" rows="2" class="form-textarea" placeholder="👋 Selamat datang di grup! Ketik list untuk melihat produk kami."></textarea>
+              </div>
+
+              <div class="col-span-2">
+                <label class="form-label">Pesan Perpisahan Anggota Keluar (Goodbye Message)</label>
+                <textarea id="setGoodbyeMessage" rows="2" class="form-textarea" placeholder="👋 Sampai jumpa!"></textarea>
+              </div>
+
+              <div class="col-span-2" style="text-align: right; padding-top: 12px;">
+                <button type="submit" class="btn-accent" style="padding: 12px 24px;">Simpan Seluruh Konfigurasi v2</button>
               </div>
             </form>
           </div>
@@ -2032,6 +2100,30 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
     }
 
     // --- SWITCH TAB ---
+    function formatPhoneNumber(jid) {
+      if (!jid) return '-';
+      const clean = jid.trim();
+      
+      if (clean.endsWith('@lid') || clean.includes('@lid')) {
+        const rawId = clean.split('@')[0];
+        return `🆔 LID: ${rawId}`;
+      }
+      
+      const rawNumber = clean.split('@')[0].replace(/[^0-9]/g, '');
+      if (rawNumber.startsWith('62')) {
+        const rest = rawNumber.slice(2);
+        if (rest.length >= 8) {
+          const part1 = rest.slice(0, 3);
+          const part2 = rest.slice(3, 7);
+          const part3 = rest.slice(7);
+          return `+62 ${part1}-${part2}${part3 ? '-' + part3 : ''}`;
+        }
+        return `+${rawNumber}`;
+      }
+      
+      return `+${rawNumber}`;
+    }
+
     function switchTab(tabId) {
       activeTab = tabId;
       const titles = {
@@ -2272,8 +2364,9 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
             ${voucherBtn}
             ${role === 'CS' ? '' : `
               <div style="display:flex;gap:8px;">
+                <button onclick="handleTriggerRestockBroadcast('${p.kode}')" class="btn-ghost" style="flex:1;font-size:0.6875rem;color:var(--color-amber);border-color:rgba(245,158,11,0.2);background:rgba(245,158,11,0.05);" title="Kirim Notifikasi Restok ke Subscriber">📢 Restok</button>
                 <button onclick="openProductModal('${p.kode}')" class="btn-ghost" style="flex:1;font-size:0.6875rem;">✏️ Edit</button>
-                <button onclick="handleDeleteProduct('${p.kode}')" class="btn-danger" style="padding:8px;">🗑️</button>
+                <button onclick="handleDeleteProduct('${p.kode}')" class="btn-danger" style="padding:8px;" title="Hapus Produk">🗑️</button>
               </div>
             `}
           </div>
@@ -2322,7 +2415,7 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
         const tr = document.createElement('tr');
         tr.innerHTML = `
           <td style="font-weight:600;color:var(--text-secondary);">${c.nama}</td>
-          <td style="font-family:monospace;font-size:0.6875rem;color:var(--text-muted);">${c.nomor.split('@')[0]}</td>
+          <td style="font-family:monospace;font-size:0.6875rem;color:var(--text-muted);">${formatPhoneNumber(c.nomor)}</td>
           <td style="text-align:center;font-weight:700;color:var(--accent-light);">Rp${c.total_spend.toLocaleString('id-ID')}</td>
           <td style="text-align:right;font-weight:600;color:var(--text-muted);">${c.total_orders} order</td>
           <td style="text-align:center;"><span class="status-badge ${getTierBadge(c.tier)}">${c.tier}</span></td>
@@ -2438,6 +2531,19 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
         document.getElementById('setMidtransClientKey').value = s.midtransClientKey || '';
         document.getElementById('setMidtransSandboxMode').value = s.midtransSandboxMode || 'true';
         document.getElementById('setPaymentInstructions').value = s.paymentInstructions || '';
+
+        // Moderasi Grup & Protection Engine (v2)
+        document.getElementById('setAntiSpamEnabled').value = s.antiSpamEnabled || 'true';
+        document.getElementById('setAntiLinkEnabled').value = s.antiLinkEnabled || 'true';
+        document.getElementById('setKickAfterWarnings').value = s.kickAfterWarnings || 3;
+        document.getElementById('setSpamThreshold').value = s.spamThreshold || 5;
+        document.getElementById('setBlockedDomains').value = s.blockedDomains || 'chat.whatsapp.com,bit.ly,tinyurl,t.me,discord.gg';
+        document.getElementById('setAllowedDomains').value = s.allowedDomains || 'tokopedia.com,shopee.co.id,bukalapak.com';
+        document.getElementById('setWelcomeEnabled').value = s.welcomeEnabled || 'true';
+        document.getElementById('setGoodbyeEnabled').value = s.goodbyeEnabled || 'true';
+        document.getElementById('setWelcomeMessage').value = s.welcomeMessage || '👋 Selamat datang di grup! Ketik list untuk melihat produk kami.';
+        document.getElementById('setGoodbyeMessage').value = s.goodbyeMessage || '👋 Sampai jumpa!';
+
         document.getElementById('qrisImagePreview').src = `/uploads/qris.png?t=${Date.now()}`;
       }
     }
@@ -2455,7 +2561,19 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
         midtransServerKey: document.getElementById('setMidtransServerKey').value,
         midtransClientKey: document.getElementById('setMidtransClientKey').value,
         midtransSandboxMode: document.getElementById('setMidtransSandboxMode').value,
-        paymentInstructions: document.getElementById('setPaymentInstructions').value
+        paymentInstructions: document.getElementById('setPaymentInstructions').value,
+
+        // Moderasi Grup & Protection Engine (v2)
+        antiSpamEnabled: document.getElementById('setAntiSpamEnabled').value,
+        antiLinkEnabled: document.getElementById('setAntiLinkEnabled').value,
+        kickAfterWarnings: parseInt(document.getElementById('setKickAfterWarnings').value),
+        spamThreshold: parseInt(document.getElementById('setSpamThreshold').value),
+        blockedDomains: document.getElementById('setBlockedDomains').value,
+        allowedDomains: document.getElementById('setAllowedDomains').value,
+        welcomeEnabled: document.getElementById('setWelcomeEnabled').value,
+        goodbyeEnabled: document.getElementById('setGoodbyeEnabled').value,
+        welcomeMessage: document.getElementById('setWelcomeMessage').value,
+        goodbyeMessage: document.getElementById('setGoodbyeMessage').value
       };
 
       const data = await apiRequest('/api/settings', {
@@ -2465,10 +2583,25 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
       });
 
       if (data && data.success) {
-        showToast('Konfigurasi toko berhasil diperbarui!', 'success');
+        showToast('Konfigurasi toko & moderasi v2 berhasil diperbarui!', 'success');
         document.getElementById('sidebarStoreName').textContent = body.storeName;
       } else {
         showToast('Gagal menyimpan konfigurasi.', 'error');
+      }
+    }
+
+    async function handleTriggerRestockBroadcast(kode) {
+      if (!confirm(`Apakah Anda yakin ingin menyiarkan notifikasi restok untuk produk '${kode}' ke seluruh pelanggan yang berlangganan?`)) return;
+
+      showToast(`Memulai siaran restok ${kode}...`, 'info');
+      const data = await apiRequest(`/api/products/${kode}/restock-broadcast`, {
+        method: 'POST'
+      });
+
+      if (data && data.success) {
+        showToast(data.message, 'success');
+      } else {
+        showToast(data ? data.message : 'Gagal mengirim siaran restok.', 'error');
       }
     }
 
@@ -2782,7 +2915,7 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
       const c = data.customer;
 
       document.getElementById('mcName').textContent = c.nama;
-      document.getElementById('mcPhone').textContent = `+${c.nomor.split('@')[0]}`;
+      document.getElementById('mcPhone').textContent = formatPhoneNumber(c.nomor);
       document.getElementById('mcTotalSpend').textContent = `Rp${c.total_spend.toLocaleString('id-ID')}`;
 
       const tierBadge = document.getElementById('mcTier');
@@ -3270,7 +3403,7 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
         document.getElementById('chatStateSelect').value = conv.conversation_state;
         
         document.getElementById('detailCustName').textContent = conv.customer_nama || 'Pelanggan';
-        document.getElementById('detailCustJid').textContent = jid;
+        document.getElementById('detailCustJid').textContent = formatPhoneNumber(jid);
         document.getElementById('detailCustNotes').value = conv.internal_notes || '';
         document.getElementById('pinChatBtn').textContent = conv.is_pinned ? '📌 Unpin' : '📌 Pin';
 

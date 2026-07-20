@@ -47,6 +47,19 @@ export const config = {
 - Bank BCA: 1234567890 a/n Akbar Shop
 - Bank Mandiri: 0987654321 a/n Akbar Shop
 
-Setelah transfer, harap kirim BUKTI TRANSFER (berupa gambar/screenshot) langsung ke chat ini.`
+Setelah transfer, harap kirim BUKTI TRANSFER (berupa gambar/screenshot) langsung ke chat ini.`,
+
+    // Pengaturan Moderasi Grup & Anti-Spam (WhatsApp Bot v2)
+    antiSpamEnabled: "true",
+    spamThreshold: 5,
+    spamWindow: 5000,
+    antiLinkEnabled: "true",
+    blockedDomains: "chat.whatsapp.com,bit.ly,tinyurl,t.me,discord.gg",
+    allowedDomains: "tokopedia.com,shopee.co.id,bukalapak.com",
+    kickAfterWarnings: 3,
+    welcomeEnabled: "true",
+    welcomeMessage: "👋 Selamat datang di grup! Ketik *list* atau *menu* untuk melihat produk toko kami.",
+    goodbyeEnabled: "true",
+    goodbyeMessage: "👋 Sampai jumpa!"
   }
 };

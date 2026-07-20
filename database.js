@@ -188,12 +188,45 @@ export async function initDb() {
     )
   `);
 
-  // Masukkan pengaturan default ke tabel settings jika kosong
-  const settingsCount = await getQuery("SELECT COUNT(*) as count FROM settings");
-  if (settingsCount.count === 0) {
-    console.log("Mengisi pengaturan default ke database...");
-    const defaultSettings = config.defaults;
-    for (const [key, val] of Object.entries(defaultSettings)) {
+  // 10. Tabel Peringatan Pelanggan (Anti-Spam & Moderasi)
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS customer_warnings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      jid TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // 11. Tabel Riwayat Broadcast Restok
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS broadcast_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_code TEXT NOT NULL,
+      total_subscribers INTEGER DEFAULT 0,
+      success_count INTEGER DEFAULT 0,
+      failed_count INTEGER DEFAULT 0,
+      started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      finished_at DATETIME
+    )
+  `);
+
+  // 12. Tabel Pengaturan Moderasi Per-Grup
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS group_settings (
+      jid TEXT PRIMARY KEY,
+      welcome_enabled INTEGER DEFAULT 1,
+      welcome_msg TEXT,
+      goodbye_enabled INTEGER DEFAULT 1,
+      goodbye_msg TEXT
+    )
+  `);
+
+  // Masukkan pengaturan default ke tabel settings jika belum ada
+  const defaultSettings = config.defaults;
+  for (const [key, val] of Object.entries(defaultSettings)) {
+    const existing = await getQuery("SELECT value FROM settings WHERE key = ?", [key]);
+    if (!existing) {
       await runQuery("INSERT INTO settings (key, value) VALUES (?, ?)", [key, val.toString()]);
     }
   }
@@ -1124,4 +1157,74 @@ export async function updateMessageStatus(messageId, status) {
     SET status = ?
     WHERE id = ?
   `, [status, messageId]);
+}
+
+// --- FUNGSI PERINGATAN MODERASI (CUSTOMER WARNINGS) ---
+
+export async function addCustomerWarning(jid, reason) {
+  await runQuery(
+    "INSERT INTO customer_warnings (jid, reason) VALUES (?, ?)",
+    [jid, reason]
+  );
+  const countObj = await getQuery("SELECT COUNT(*) as count FROM customer_warnings WHERE jid = ?", [jid]);
+  const total = countObj ? countObj.count : 1;
+  await addLog("MODERATION", `Peringatan (${total}x) diberikan kepada ${jid}: ${reason}`);
+  return total;
+}
+
+export async function getCustomerWarningsCount(jid) {
+  const row = await getQuery("SELECT COUNT(*) as count FROM customer_warnings WHERE jid = ?", [jid]);
+  return row ? row.count : 0;
+}
+
+export async function clearCustomerWarnings(jid) {
+  await runQuery("DELETE FROM customer_warnings WHERE jid = ?", [jid]);
+  await addLog("MODERATION", `Peringatan untuk ${jid} berhasil dibersihkan.`);
+}
+
+// --- FUNGSI RIWAYAT BROADCAST RESTOK ---
+
+export async function createBroadcastHistory(productCode, totalSubscribers) {
+  const res = await runQuery(
+    "INSERT INTO broadcast_history (product_code, total_subscribers, success_count, failed_count, started_at) VALUES (?, ?, 0, 0, CURRENT_TIMESTAMP)",
+    [productCode, totalSubscribers]
+  );
+  return res.lastID;
+}
+
+export async function updateBroadcastHistory(id, successCount, failedCount) {
+  await runQuery(
+    "UPDATE broadcast_history SET success_count = ?, failed_count = ?, finished_at = CURRENT_TIMESTAMP WHERE id = ?",
+    [successCount, failedCount, id]
+  );
+}
+
+export async function getBroadcastHistoryList() {
+  return await allQuery("SELECT * FROM broadcast_history ORDER BY started_at DESC LIMIT 50");
+}
+
+// --- FUNGSI PENGATURAN MODERASI PER-GRUP ---
+
+export async function getGroupSettings(jid) {
+  const row = await getQuery("SELECT * FROM group_settings WHERE jid = ?", [jid]);
+  if (!row) {
+    const defaults = config.defaults;
+    return {
+      jid,
+      welcome_enabled: defaults.welcomeEnabled === "true" ? 1 : 0,
+      welcome_msg: defaults.welcomeMessage,
+      goodbye_enabled: defaults.goodbyeEnabled === "true" ? 1 : 0,
+      goodbye_msg: defaults.goodbyeMessage
+    };
+  }
+  return row;
+}
+
+export async function updateGroupSettings(jid, settingsObj) {
+  const { welcome_enabled, welcome_msg, goodbye_enabled, goodbye_msg } = settingsObj;
+  await runQuery(
+    "INSERT OR REPLACE INTO group_settings (jid, welcome_enabled, welcome_msg, goodbye_enabled, goodbye_msg) VALUES (?, ?, ?, ?, ?)",
+    [jid, welcome_enabled ? 1 : 0, welcome_msg, goodbye_enabled ? 1 : 0, goodbye_msg]
+  );
+  await addLog("SYSTEM", `Pengaturan grup ${jid} diperbarui dari Web Dashboard.`);
 }

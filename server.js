@@ -223,6 +223,28 @@ app.post('/api/products', authenticateJWT, authorizeRoles('Owner', 'Admin'), upl
   }
 });
 
+// Owner dan Admin bisa memicu broadcast restok produk
+app.post('/api/products/:kode/restock-broadcast', authenticateJWT, authorizeRoles('Owner', 'Admin'), async (req, res) => {
+  try {
+    const { kode } = req.params;
+    const { triggerRestockBroadcast } = await import('./bot.js');
+    const result = await triggerRestockBroadcast(kode);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Owner dan Admin bisa melihat riwayat broadcast restok
+app.get('/api/broadcast/history', authenticateJWT, authorizeRoles('Owner', 'Admin'), async (req, res) => {
+  try {
+    const history = await db.getBroadcastHistoryList();
+    res.json({ success: true, history });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // Owner dan Admin bisa menghapus produk
 app.delete('/api/products/:kode', authenticateJWT, authorizeRoles('Owner', 'Admin'), async (req, res) => {
   try {
