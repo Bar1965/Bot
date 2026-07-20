@@ -258,18 +258,22 @@ export async function reloadBotSettings() {
   }
 }
 
-// Fungsi Helper untuk mengirim log sistem (DB & Log Group WhatsApp)
+// Fungsi Helper untuk mengirim log sistem (DB & Log Group WhatsApp jika terpisah)
 async function logToSystem(type, text) {
   console.log(`[${type}] ${text}`);
-  // Catat ke tabel log SQLite
+  // Catat ke tabel log SQLite (bisa dilihat via Web Dashboard -> Tab Bot Status -> Log Aktivitas Bot)
   await db.addLog(type, text);
 
-  // Jika WA terkoneksi dan ada Log Group terdaftar
+  // Kirim ke WhatsApp Log Group HANYA jika logGroupId diisi & merupakan grup terpisah dari grup transaksi/pembeli
   if (sock && botState.whatsappConnected && botSettings.logGroupId) {
-    try {
-      await sock.sendMessage(botSettings.logGroupId, { text: `📢 *LOG [${type}]:*\n${text}` });
-    } catch (err) {
-      console.error('Gagal mengirim log ke WhatsApp Log Group:', err.message);
+    const isDedicatedLogGroup = botSettings.logGroupId !== botSettings.transactionGroupId && 
+                                botSettings.logGroupId !== botSettings.buyerGroupId;
+    if (isDedicatedLogGroup) {
+      try {
+        await sock.sendMessage(botSettings.logGroupId, { text: `📢 *LOG [${type}]:*\n${text}` });
+      } catch (err) {
+        console.error('Gagal mengirim log ke WhatsApp Log Group:', err.message);
+      }
     }
   }
 }
