@@ -210,6 +210,42 @@ Ketik \`buy ${product.kode}\` atau langsung checkout untuk memesan sebelum kehab
   }
 }
 
+// Helper mengecek apakah pelanggan sudah bergabung ke grup resmi toko sebelum beli
+async function checkIsUserInGroup(senderNumber) {
+  const isRequire = (botSettings.requireGroupJoin || "true") === "true";
+  if (!isRequire) return { isMember: true };
+
+  const targetGroupId = botSettings.buyerGroupId || botSettings.transactionGroupId || botSettings.logGroupId || "";
+  
+  if (!targetGroupId) {
+    return { isMember: true };
+  }
+
+  try {
+    const groupMeta = await sock.groupMetadata(targetGroupId);
+    const extractDigits = (s) => (s || '').replace(/[^0-9]/g, '');
+    const senderDigits = extractDigits(senderNumber);
+
+    const isMember = groupMeta.participants.some(p => {
+      const pDigits = extractDigits(p.id);
+      return pDigits.length > 6 && senderDigits.includes(pDigits);
+    });
+
+    let inviteLink = botSettings.groupInviteLink || "";
+    if (!inviteLink) {
+      try {
+        const code = await sock.groupInviteCode(targetGroupId);
+        inviteLink = `https://chat.whatsapp.com/${code}`;
+      } catch (e) {}
+    }
+
+    return { isMember, inviteLink, groupName: groupMeta.subject || "Grup Resmi Toko" };
+  } catch (err) {
+    console.error(`[CHECK_GROUP_MEMBER] Gagal cek anggota grup ${targetGroupId}:`, err.message);
+    return { isMember: true };
+  }
+}
+
 // Fungsi untuk memuat ulang pengaturan bot dari SQLite
 export async function reloadBotSettings() {
   try {
@@ -692,6 +728,24 @@ _(Contoh: beli NET01 1)_`;
   // 3. BELI [KODE] [JUMLAH]
   const buyRegex = /^(beli|buy)\s+(\w+)(?:\s+(\d+))?$/i;
   if (buyRegex.test(text)) {
+    // Validasi Wajib Join Grup sebelum beli
+    const groupCheck = await checkIsUserInGroup(senderNumber);
+    if (!groupCheck.isMember) {
+      const joinMsg = `⚠️ *PERSYARATAN PEMBELIAN: WAJIB JOIN GRUP*
+      
+Halo Kak! Untuk dapat memesan & membeli produk di toko kami, Anda diwajibkan untuk bergabung terlebih dahulu ke **Grup Pembeli Toko** kami.
+
+📢 *Grup:* ${groupCheck.groupName}
+🔗 *Link Undangan Grup:*
+${groupCheck.inviteLink || "Silakan minta link undangan grup ke Admin Toko."}
+
+_Silakan klik link di atas untuk bergabung, kemudian ulangi perintah \`${text}\` kembali. Terima kasih!_ 🙏`;
+
+      await sock.sendMessage(responseJid, { text: joinMsg });
+      await sendRedirectNotice();
+      return;
+    }
+
     const match = text.match(buyRegex);
     const code = match[2].toUpperCase();
     const qty = match[3] ? parseInt(match[3]) : 1;
@@ -755,6 +809,24 @@ Ketik *checkout* untuk melanjutkan ke pembayaran, atau *batal* untuk mengosongka
 
   // 5. CHECKOUT / BAYAR
   if (textLower === 'checkout' || textLower === 'bayar') {
+    // Validasi Wajib Join Grup sebelum checkout
+    const groupCheck = await checkIsUserInGroup(senderNumber);
+    if (!groupCheck.isMember) {
+      const joinMsg = `⚠️ *PERSYARATAN PEMBELIAN: WAJIB JOIN GRUP*
+      
+Halo Kak! Untuk melanjutkan pembayaran & checkout pesanan Anda, Anda diwajibkan untuk bergabung terlebih dahulu ke **Grup Pembeli Toko** kami.
+
+📢 *Grup:* ${groupCheck.groupName}
+🔗 *Link Undangan Grup:*
+${groupCheck.inviteLink || "Silakan minta link undangan grup ke Admin Toko."}
+
+_Silakan klik link di atas untuk bergabung, kemudian ulangi perintah \`checkout\` kembali. Terima kasih!_ 🙏`;
+
+      await sock.sendMessage(responseJid, { text: joinMsg });
+      await sendRedirectNotice();
+      return;
+    }
+
     const res = await db.checkoutCart(senderNumber);
     if (!res.success) {
       await sock.sendMessage(responseJid, { text: `❌ ${res.message}` });

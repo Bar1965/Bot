@@ -60,6 +60,10 @@ Setelah transfer, harap kirim BUKTI TRANSFER (berupa gambar/screenshot) langsung
     welcomeEnabled: "true",
     welcomeMessage: "👋 Selamat datang di grup! Ketik *list* atau *menu* untuk melihat produk toko kami.",
     goodbyeEnabled: "true",
-    goodbyeMessage: "👋 Sampai jumpa!"
+    goodbyeMessage: "👋 Sampai jumpa!",
+
+    // Persyaratan Wajib Join Grup Sebelum Beli
+    requireGroupJoin: "true",
+    groupInviteLink: ""
   }
 };

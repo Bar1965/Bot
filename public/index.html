@@ -1680,6 +1680,20 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
                 <textarea id="setGoodbyeMessage" rows="2" class="form-textarea" placeholder="👋 Sampai jumpa!"></textarea>
               </div>
 
+              <!-- Validasi Wajib Join Grup Sebelum Beli -->
+              <div>
+                <label class="form-label">Wajib Join Grup Sebelum Beli</label>
+                <select id="setRequireGroupJoin" class="form-select">
+                  <option value="true">🟢 Ya (Wajib Join Grup)</option>
+                  <option value="false">🔴 Tidak (Bisa Beli Langsung)</option>
+                </select>
+              </div>
+
+              <div>
+                <label class="form-label">Link Undangan Grup Pembeli (Opsional)</label>
+                <input type="text" id="setGroupInviteLink" placeholder="https://chat.whatsapp.com/xxx (Kosongkan jika auto)" class="form-input">
+              </div>
+
               <div class="col-span-2" style="text-align: right; padding-top: 12px;">
                 <button type="submit" class="btn-accent" style="padding: 12px 24px;">Simpan Seluruh Konfigurasi v2</button>
               </div>
@@ -2544,6 +2558,10 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
         document.getElementById('setWelcomeMessage').value = s.welcomeMessage || '👋 Selamat datang di grup! Ketik list untuk melihat produk kami.';
         document.getElementById('setGoodbyeMessage').value = s.goodbyeMessage || '👋 Sampai jumpa!';
 
+        // Validasi Wajib Join Grup
+        document.getElementById('setRequireGroupJoin').value = s.requireGroupJoin || 'true';
+        document.getElementById('setGroupInviteLink').value = s.groupInviteLink || '';
+
         document.getElementById('qrisImagePreview').src = `/uploads/qris.png?t=${Date.now()}`;
       }
     }
@@ -2573,7 +2591,11 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
         welcomeEnabled: document.getElementById('setWelcomeEnabled').value,
         goodbyeEnabled: document.getElementById('setGoodbyeEnabled').value,
         welcomeMessage: document.getElementById('setWelcomeMessage').value,
-        goodbyeMessage: document.getElementById('setGoodbyeMessage').value
+        goodbyeMessage: document.getElementById('setGoodbyeMessage').value,
+
+        // Validasi Wajib Join Grup
+        requireGroupJoin: document.getElementById('setRequireGroupJoin').value,
+        groupInviteLink: document.getElementById('setGroupInviteLink').value
       };
 
       const data = await apiRequest('/api/settings', {
