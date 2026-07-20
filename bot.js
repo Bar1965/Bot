@@ -255,6 +255,8 @@ export async function startBot(onSocketReady) {
 
         if (isFromMe) continue;
 
+        const mainBuyerGroupJid = botSettings.logGroupId || "";
+
         const msgText = (
           m.message.conversation || 
           m.message.extendedTextMessage?.text || 
