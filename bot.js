@@ -983,6 +983,7 @@ ${orderDetails.items.map(item => `- ${item.produk_nama} (\`${item.produk_kode}\`
 async function handleGroupMessage(jid, senderNumber, messageObj, text, isAdmin) {
   const isGroup = jid.endsWith('@g.us');
   const m = messageObj;
+  const senderNormalized = senderNumber;
 
   if (text.startsWith('/getjid')) {
     await sock.sendMessage(jid, { 
