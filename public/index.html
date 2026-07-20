@@ -1703,6 +1703,7 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
       <h3 id="productModalTitle" class="modal-title">Tambah Produk Baru</h3>
       <form id="productForm" class="space-y-sm" onsubmit="handleProductSubmit(event)">
         <input type="hidden" id="prodExistingImage">
+        <input type="hidden" id="prodOldKode">
         <div class="grid-2">
           <div>
             <label class="form-label">Kode Produk (Huruf/Angka)</label>
@@ -1719,8 +1720,9 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
             <input type="number" id="prodHarga" required placeholder="45000" class="form-input">
           </div>
           <div>
-            <label class="form-label">Stok Awal</label>
+            <label class="form-label">Stok Produk</label>
             <input type="number" id="prodStok" required placeholder="10" class="form-input">
+            <span id="prodStokHint" style="font-size:0.65rem;color:var(--text-muted);display:block;margin-top:2px;"></span>
           </div>
           <div>
             <label class="form-label">Tipe Pengiriman</label>
@@ -2545,10 +2547,12 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
       const form = document.getElementById('productForm');
       form.reset();
 
+      document.getElementById('prodKode').disabled = false;
+
       if (kode) {
         document.getElementById('productModalTitle').textContent = 'Edit Informasi Produk';
         document.getElementById('prodKode').value = kode;
-        document.getElementById('prodKode').disabled = true;
+        document.getElementById('prodOldKode').value = kode;
 
         const product = globalProducts.find(p => p.kode === kode);
         if (product) {
@@ -2561,7 +2565,7 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
         }
       } else {
         document.getElementById('productModalTitle').textContent = 'Tambah Produk Baru';
-        document.getElementById('prodKode').disabled = false;
+        document.getElementById('prodOldKode').value = '';
         document.getElementById('prodExistingImage').value = '';
         document.getElementById('prodDeliveryType').value = 'MANUAL';
       }
@@ -2576,6 +2580,7 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
       e.preventDefault();
       const formData = new FormData();
       formData.append('kode', document.getElementById('prodKode').value);
+      formData.append('old_kode', document.getElementById('prodOldKode').value);
       formData.append('nama', document.getElementById('prodNama').value);
       formData.append('harga', document.getElementById('prodHarga').value);
       formData.append('stok', document.getElementById('prodStok').value);
@@ -2918,8 +2923,16 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
     function toggleStokInput() {
       const type = document.getElementById('prodDeliveryType').value;
       const stokInput = document.getElementById('prodStok');
-      if (type === 'AUTO') { stokInput.disabled = true; stokInput.value = 0; stokInput.placeholder = "Dihitung otomatis"; }
-      else { stokInput.disabled = false; stokInput.placeholder = "Contoh: 10"; }
+      const hint = document.getElementById('prodStokHint');
+      if (type === 'AUTO') { 
+        stokInput.disabled = true; 
+        stokInput.placeholder = "Auto dari voucher"; 
+        if (hint) hint.textContent = "ℹ️ Tipe AUTO: Stok dihitung otomatis dari voucher yang diimpor.";
+      } else { 
+        stokInput.disabled = false; 
+        stokInput.placeholder = "Contoh: 10"; 
+        if (hint) hint.textContent = "ℹ️ Tipe MANUAL: Masukkan angka stok (bisa diisi 0 jika habis).";
+      }
     }
 
     let currentVoucherProductCode = '';

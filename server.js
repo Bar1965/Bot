@@ -205,8 +205,8 @@ app.get('/api/products', authenticateJWT, async (req, res) => {
 // Owner dan Admin bisa menulis/edit produk
 app.post('/api/products', authenticateJWT, authorizeRoles('Owner', 'Admin'), uploadProduct.single('gambar'), async (req, res) => {
   try {
-    const { kode, nama, harga, stok, deskripsi, delivery_type } = req.body;
-    if (!kode || !nama || !harga || !stok) {
+    const { kode, nama, harga, stok, deskripsi, delivery_type, old_kode } = req.body;
+    if (!kode || !nama || harga === undefined || harga === '' || stok === undefined || stok === '') {
       return res.status(400).json({ success: false, message: "Kolom kode, nama, harga, dan stok wajib diisi." });
     }
 
@@ -215,7 +215,7 @@ app.post('/api/products', authenticateJWT, authorizeRoles('Owner', 'Admin'), upl
       gambarUrl = `/uploads/products/${req.file.filename}`;
     }
 
-    await db.addProduct(kode, nama, parseInt(harga), parseInt(stok), deskripsi, gambarUrl, delivery_type || 'MANUAL');
+    await db.addProduct(kode, nama, parseInt(harga), parseInt(stok), deskripsi, gambarUrl, delivery_type || 'MANUAL', old_kode || '');
     await checkAndNotifySubscribers(kode, parseInt(stok));
     res.json({ success: true, message: "Produk berhasil disimpan." });
   } catch (err) {

@@ -389,16 +389,27 @@ export async function getProductByKode(kode) {
   return await getQuery("SELECT * FROM products WHERE kode = ?", [kode.toUpperCase()]);
 }
 
-export async function addProduct(kode, nama, harga, stok, deskripsi, gambar = "", delivery_type = "MANUAL") {
+export async function addProduct(kode, nama, harga, stok, deskripsi, gambar = "", delivery_type = "MANUAL", oldKode = "") {
   let finalStok = stok;
-  if (delivery_type === 'AUTO') {
-    finalStok = await getAvailableItemsCount(kode);
+  const newKodeUpper = kode.toUpperCase();
+
+  // Jika kode produk diubah (oldKode diset dan berbeda dengan kode baru)
+  if (oldKode && oldKode.toUpperCase() !== newKodeUpper) {
+    const oldUpper = oldKode.toUpperCase();
+    await runQuery("UPDATE product_items SET produk_kode = ? WHERE produk_kode = ?", [newKodeUpper, oldUpper]);
+    await runQuery("UPDATE order_items SET produk_kode = ? WHERE produk_kode = ?", [newKodeUpper, oldUpper]);
+    await runQuery("UPDATE products SET kode = ? WHERE kode = ?", [newKodeUpper, oldUpper]);
   }
+
+  if (delivery_type === 'AUTO') {
+    finalStok = await getAvailableItemsCount(newKodeUpper);
+  }
+
   const res = await runQuery(
     "INSERT OR REPLACE INTO products (kode, nama, harga, stok, deskripsi, gambar, delivery_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    [kode.toUpperCase(), nama, harga, finalStok, deskripsi, gambar, delivery_type]
+    [newKodeUpper, nama, harga, finalStok, deskripsi, gambar, delivery_type]
   );
-  await addLog("SYSTEM", `Produk diperbarui/ditambahkan: ${kode.toUpperCase()} - ${nama} (Stok: ${finalStok}, Tipe: ${delivery_type})`);
+  await addLog("SYSTEM", `Produk diperbarui/ditambahkan: ${newKodeUpper} - ${nama} (Stok: ${finalStok}, Tipe: ${delivery_type})`);
   return res;
 }
 
