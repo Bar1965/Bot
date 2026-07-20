@@ -723,14 +723,13 @@ export async function startBot(onSocketReady) {
             }
           }
         } else {
-          // Menangani Pesan Grup (Grup Transaksi / Log / Grup Utama Pembeli)
-          const isBuyerGroup = !mainBuyerGroupJid || jid === mainBuyerGroupJid;
-
+          // Menangani Pesan Grup di SEMUA Grup tempat Bot bergabung
           if (msgText.startsWith('/')) {
-            // Perintah bertanda '/' (seperti /getjid, /kick, /paid, /stock, /add, /group)
+            // Perintah bertanda '/' (seperti /getjid, /kick, /paid, /done, /cancel, /add, /group, /restock)
             await handleGroupMessage(jid, senderNormalized, m, msgText, isAdmin);
-          } else if (isBuyerGroup) {
-            // Perintah pelanggan (list, menu, buy, checkout, dll) di grup pembeli (atau fallback jika belum di-set)
+          } else {
+            // Perintah pelanggan (list, menu, buy, checkout, status, dll) di grup manapun.
+            // (handleCustomerMessage hanya merespon perintah resmi & diam pada chat biasa)
             await handleCustomerMessage(jid, senderNormalized, m, msgText, true);
           }
         }
