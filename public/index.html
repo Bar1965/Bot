@@ -1282,15 +1282,20 @@
       <div id="tab-orders" class="tab-content space-y">
         <div class="flex-between">
           <input type="text" id="orderSearch" oninput="filterOrders()" placeholder="Cari Order ID, Nama, atau Nomor WA..." class="form-input" style="max-width: 320px;">
-          <select id="orderStatusFilter" onchange="filterOrders()" class="form-select" style="max-width: 220px;">
-            <option value="ALL">Semua Status</option>
-            <option value="CART">🛒 Cart</option>
-            <option value="WAITING_PAYMENT">🟡 Waiting Payment</option>
-            <option value="WAITING_CONFIRMATION">🟠 Waiting Confirmation</option>
-            <option value="PAID">🟢 Paid</option>
-            <option value="COMPLETED">🔵 Completed</option>
-            <option value="CANCELLED">🔴 Cancelled</option>
-          </select>
+          <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+            <select id="orderStatusFilter" onchange="filterOrders()" class="form-select" style="max-width: 220px;">
+              <option value="ALL">Semua Status</option>
+              <option value="CART">🛒 Cart</option>
+              <option value="WAITING_PAYMENT">🟡 Waiting Payment</option>
+              <option value="WAITING_CONFIRMATION">🟠 Waiting Confirmation</option>
+              <option value="PAID">🟢 Paid</option>
+              <option value="COMPLETED">🔵 Completed</option>
+              <option value="CANCELLED">🔴 Cancelled</option>
+            </select>
+            <button onclick="openClearHistoryModal()" class="btn-ghost" style="color: var(--color-rose); border-color: rgba(244, 63, 94, 0.3); padding: 8px 14px; font-size: 0.75rem;">
+              🧹 Bersihkan Riwayat
+            </button>
+          </div>
         </div>
 
         <div class="glass-card" style="overflow: hidden;">
@@ -1788,6 +1793,7 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
               <button id="btnApproveOrder" onclick="processOrderAction('approve')" class="btn-accent" style="flex:1;padding:10px;font-size:0.75rem;">✓ Terima Pembayaran</button>
               <button id="btnCompleteOrder" onclick="processOrderAction('complete')" class="btn-ghost" style="flex:1;padding:10px;font-size:0.75rem;background:rgba(99,102,241,0.1);border-color:rgba(99,102,241,0.15);color:var(--color-indigo);">📦 Selesai & Kirim</button>
               <button id="btnRejectOrder" onclick="processOrderAction('reject')" class="btn-danger" style="width:100%;padding:10px;font-size:0.75rem;">❌ Batalkan / Tolak Order</button>
+              <button id="btnDeleteOrder" onclick="deleteCurrentOrderInModal()" class="btn-danger" style="width:100%;padding:10px;font-size:0.75rem;background:rgba(244,63,94,0.15);border:1px solid rgba(244,63,94,0.3);color:var(--color-rose);margin-top:4px;">🗑️ Hapus Permanent Order Ini</button>
             </div>
           </div>
         </div>
@@ -1798,6 +1804,31 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
           </div>
           <span style="font-size:0.6875rem;color:var(--text-muted);margin-top:8px;">Klik gambar di atas untuk memperbesar.</span>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== MODAL: CLEAR HISTORY ==================== -->
+  <div id="clearHistoryModal" class="modal-overlay">
+    <div class="modal-panel" style="max-width:520px;">
+      <button onclick="closeClearHistoryModal()" class="modal-close">✕</button>
+      <h3 class="modal-title">🧹 Bersihkan Riwayat Transaksi</h3>
+      <p style="font-size:0.8125rem;color:var(--text-muted);margin-bottom:16px;">
+        Pilih opsi pembersihan riwayat transaksi/order dummy dari database:
+      </p>
+      <div class="space-y-sm">
+        <button onclick="executeClearHistory('CANCELLED_CART')" class="btn-ghost" style="width:100%;text-align:left;padding:12px;background:rgba(245,158,11,0.08);border-color:rgba(245,158,11,0.2);color:var(--color-amber);">
+          <strong style="font-size:0.875rem;">🗑️ Hapus Order Batal & Draf Dummy</strong><br>
+          <span style="font-size:0.75rem;opacity:0.8;">Menghapus semua order dengan status CANCELLED, CART, dan WAITING_PAYMENT.</span>
+        </button>
+        <button onclick="executeClearHistory('COMPLETED')" class="btn-ghost" style="width:100%;text-align:left;padding:12px;background:rgba(59,130,246,0.08);border-color:rgba(59,130,246,0.2);color:var(--color-accent);">
+          <strong style="font-size:0.875rem;">🗑️ Hapus Order Selesai (COMPLETED)</strong><br>
+          <span style="font-size:0.75rem;opacity:0.8;">Menghapus seluruh riwayat transaksi lama yang sudah berstatus COMPLETED.</span>
+        </button>
+        <button onclick="executeClearHistory('ALL')" class="btn-danger" style="width:100%;text-align:left;padding:12px;background:rgba(244,63,94,0.15);border-color:rgba(244,63,94,0.3);color:var(--color-rose);">
+          <strong style="font-size:0.875rem;">⚠️ HAPUS SELURUH RIWAYAT TRANSAKSI (SEMUA)</strong><br>
+          <span style="font-size:0.75rem;opacity:0.8;">Kosongkan seluruh data tabel riwayat order di database secara permanen.</span>
+        </button>
       </div>
     </div>
   </div>
@@ -2152,6 +2183,7 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
           <td style="text-align:center; white-space:nowrap;">
             <button onclick="openOrderModal('${order.order_id}')" class="btn-ghost" style="font-size:0.6875rem;">Detail / Aksi</button>
             <button onclick="openCustomerChatFromOrder('${order.customer_nomor}')" class="btn-ghost" style="font-size:0.6875rem; margin-left: 4px;">💬 Chat</button>
+            <button onclick="deleteSingleOrder('${order.order_id}')" class="btn-ghost" title="Hapus Order" style="font-size:0.6875rem; margin-left: 4px; color: var(--color-rose);">🗑️ Hapus</button>
           </td>
         `;
         tbody.appendChild(tr);
@@ -2673,6 +2705,67 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
         loadOrdersData();
       } else {
         showToast(data ? data.message : 'Tindakan gagal diproses.', 'error');
+      }
+    }
+
+    async function deleteSingleOrder(orderId) {
+      if (!confirm(`Apakah Anda yakin ingin menghapus Order ID '${orderId}' secara permanen dari database?`)) return;
+
+      const data = await apiRequest(`/api/orders/${orderId}`, {
+        method: 'DELETE'
+      });
+
+      if (data && data.success) {
+        showToast(`Order ${orderId} berhasil dihapus.`, 'success');
+        if (currentSelectedOrderId === orderId) {
+          closeOrderModal();
+        }
+        loadOrdersData();
+        if (typeof activeChatJid !== 'undefined' && activeChatJid) {
+          loadCustomerOrderHistory(activeChatJid);
+        }
+      } else {
+        showToast(data ? data.message : 'Gagal menghapus order.', 'error');
+      }
+    }
+
+    async function deleteCurrentOrderInModal() {
+      if (!currentSelectedOrderId) return;
+      await deleteSingleOrder(currentSelectedOrderId);
+    }
+
+    function openClearHistoryModal() {
+      document.getElementById('clearHistoryModal').classList.add('visible');
+    }
+
+    function closeClearHistoryModal() {
+      document.getElementById('clearHistoryModal').classList.remove('visible');
+    }
+
+    async function executeClearHistory(filter) {
+      const labels = {
+        'CANCELLED_CART': 'semua Order Batal (CANCELLED), Cart, dan Menunggu Pembayaran',
+        'COMPLETED': 'semua Order Selesai (COMPLETED)',
+        'ALL': 'SELURUH RIWAYAT TRANSAKSI'
+      };
+
+      if (!confirm(`PERINGATAN KETAT: Apakah Anda yakin ingin menghapus ${labels[filter] || 'riwayat transaksi'} dari database? Tindakan ini tidak dapat dibatalkan!`)) return;
+
+      const data = await apiRequest('/api/orders/clear', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filter })
+      });
+
+      if (data && data.success) {
+        showToast(data.message, 'success');
+        closeClearHistoryModal();
+        loadOrdersData();
+        if (typeof activeChatJid !== 'undefined' && activeChatJid) {
+          loadCustomerOrderHistory(activeChatJid);
+        }
+      } else {
+        showToast(data ? data.message : 'Gagal membersihkan riwayat.', 'error');
       }
     }
 
@@ -3480,9 +3573,12 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
         else if (o.status === 'WAITING_PAYMENT') color = 'var(--color-orange)';
 
         card.innerHTML = `
-          <div style="display:flex;justify-content:space-between;font-weight:600;">
-            <span>${o.order_id}</span>
-            <span style="color:${color}; font-size:0.65rem;">${o.status}</span>
+          <div style="display:flex;justify-content:space-between;align-items:center;font-weight:600;">
+            <span onclick="openOrderModal('${o.order_id}')" style="cursor:pointer;text-decoration:underline;" title="Lihat Detail">${o.order_id}</span>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <span style="color:${color}; font-size:0.65rem;">${o.status}</span>
+              <button onclick="deleteSingleOrder('${o.order_id}')" class="btn-ghost" title="Hapus Order Ini" style="padding:2px 4px;font-size:0.7rem;color:var(--color-rose);">🗑️</button>
+            </div>
           </div>
           <div style="font-size:0.7rem;color:var(--text-muted);margin-top:2px;">
             Total: Rp${o.total.toLocaleString('id-ID')}

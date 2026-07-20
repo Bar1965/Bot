@@ -833,6 +833,46 @@ export async function updateOrderStatus(orderId, status) {
   return { success: true, customerNomor: order.customer_nomor };
 }
 
+// Menghapus 1 order dan rincian belanjaannya dari database
+export async function deleteOrder(orderId) {
+  const order = await getQuery("SELECT * FROM orders WHERE order_id = ?", [orderId]);
+  if (!order) return { success: false, message: "Order ID tidak ditemukan." };
+
+  await runQuery("DELETE FROM order_items WHERE order_id = ?", [orderId]);
+  await runQuery("DELETE FROM orders WHERE order_id = ?", [orderId]);
+  await addLog("ORDER", `Order ID ${orderId} berhasil dihapus dari database.`);
+  return { success: true, message: `Order ${orderId} berhasil dihapus.` };
+}
+
+// Membersihkan riwayat order secara massal (berdasarkan filter: CANCELLED_CART, COMPLETED, atau ALL)
+export async function clearOrders(filter = 'ALL') {
+  let queryOrders = "";
+  let params = [];
+
+  if (filter === 'CANCELLED_CART') {
+    queryOrders = "SELECT order_id FROM orders WHERE status IN ('CANCELLED', 'CART', 'WAITING_PAYMENT')";
+  } else if (filter === 'COMPLETED') {
+    queryOrders = "SELECT order_id FROM orders WHERE status = 'COMPLETED'";
+  } else {
+    queryOrders = "SELECT order_id FROM orders";
+  }
+
+  const targetOrders = await allQuery(queryOrders, params);
+  const ids = targetOrders.map(o => o.order_id);
+
+  if (ids.length === 0) {
+    return { success: true, count: 0, message: "Tidak ada transaksi yang memenuhi kriteria pembersihan." };
+  }
+
+  for (const id of ids) {
+    await runQuery("DELETE FROM order_items WHERE order_id = ?", [id]);
+    await runQuery("DELETE FROM orders WHERE order_id = ?", [id]);
+  }
+
+  await addLog("ORDER", `Pembersihan riwayat order (${filter}): ${ids.length} transaksi dihapus.`);
+  return { success: true, count: ids.length, message: `Berhasil menghapus ${ids.length} transaksi.` };
+}
+
 // --- AUTOMATION SCHEDULER QUERIES ---
 
 // Mengambil order yang menunggu pembayaran selama lebih dari 30 menit (belum diingatkan)

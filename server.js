@@ -351,6 +351,31 @@ Mohon maaf, pesanan Anda dengan Order ID *${orderId}* telah *DIBATALKAN* oleh ad
   }
 });
 
+// Endpoint menghapus 1 order (Admin & Owner)
+app.delete('/api/orders/:orderId', authenticateJWT, authorizeRoles('Owner', 'Admin'), async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const result = await db.deleteOrder(orderId);
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Endpoint pembersihan riwayat order massal (Admin & Owner)
+app.post('/api/orders/clear', authenticateJWT, authorizeRoles('Owner', 'Admin'), async (req, res) => {
+  try {
+    const { filter } = req.body;
+    const result = await db.clearOrders(filter || 'ALL');
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // --- API MANAJEMEN CUSTOMERS ---
 
 // Owner dan Admin bisa melihat daftar customer
