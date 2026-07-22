@@ -1374,6 +1374,30 @@ async function handleGroupMessage(jid, senderNumber, messageObj, text, isAdmin) 
     // ==========================================
     // PERINTAH ADMIN & TRANSAKSI
     // ==========================================
+    if (cmd === '/takeover') {
+      const targetNumber = args[1];
+      if (!targetNumber) {
+        await sock.sendMessage(jid, { text: "⚠️ Format salah. Gunakan: `/takeover [NOMOR]`\nContoh: `/takeover 6281234567890`" });
+        return;
+      }
+      const targetJid = targetNumber.includes('@') ? targetNumber : `${targetNumber}@s.whatsapp.net`;
+      await db.updateConversationState(targetJid, 'ADMIN');
+      await sock.sendMessage(jid, { text: `✅ Chat dengan ${targetNumber} telah diambil alih. Bot tidak akan membalas otomatis pesannya.` });
+      return;
+    }
+
+    if (cmd === '/release') {
+      const targetNumber = args[1];
+      if (!targetNumber) {
+        await sock.sendMessage(jid, { text: "⚠️ Format salah. Gunakan: `/release [NOMOR]`\nContoh: `/release 6281234567890`" });
+        return;
+      }
+      const targetJid = targetNumber.includes('@') ? targetNumber : `${targetNumber}@s.whatsapp.net`;
+      await db.updateConversationState(targetJid, 'BOT');
+      await sock.sendMessage(jid, { text: `✅ Chat dengan ${targetNumber} telah dikembalikan ke Bot. Bot akan membalas otomatis kembali.` });
+      return;
+    }
+
     if (cmd === '/paid') {
       const orderId = args[1]?.toUpperCase();
       if (!orderId) {
