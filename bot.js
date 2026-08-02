@@ -10,28 +10,38 @@ import P from 'pino';
 import qrcode from 'qrcode-terminal';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
+import { exec } from 'child_process';
 
 import { config } from './config.js';
 import * as db from './database.js';
 import { botState, createMidtransTransaction } from './server.js';
+import * as mediaHandler from './mediaHandler.js';
+import * as ent from './entertainmentHandler.js';
+import { backupDatabase } from './scheduler.js';
+import { loadPlugins, executePlugin } from './pluginLoader.js';
+import * as prodSeller from './prodsellerHandler.js';
+
 
 // Setup Logger
 const logger = P({ level: 'info' });
 
 let sock = null;
 let botSettings = {};
+const userPushNamesMap = new Map();
 
-// Helper universal memformat tampilan JID/nomor WA (+62 vs 🆔 LID:)
+// Helper universal memformat tampilan JID/nomor WA (+62 vs Nama)
 export function formatPhoneNumber(jid) {
   if (!jid) return '-';
   const clean = jid.trim();
-  
-  if (clean.endsWith('@lid') || clean.includes('@lid')) {
-    const rawId = clean.split('@')[0];
-    return `🆔 LID: ${rawId}`;
+
+  // Check if pushName cached in memory
+  if (userPushNamesMap.has(clean)) {
+    return userPushNamesMap.get(clean);
   }
+
+  const rawNumber = clean.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
   
-  const rawNumber = clean.split('@')[0].replace(/[^0-9]/g, '');
   if (rawNumber.startsWith('62')) {
     const rest = rawNumber.slice(2);
     if (rest.length >= 8) {
@@ -43,7 +53,28 @@ export function formatPhoneNumber(jid) {
     return `+${rawNumber}`;
   }
   
-  return `+${rawNumber}`;
+  if (rawNumber.length > 0 && rawNumber.length <= 13) {
+    return `+${rawNumber}`;
+  }
+  
+  return 'Member WhatsApp';
+}
+
+// Helper untuk mengirim broadcast tag-all ke grup
+export async function broadcastTagAll(sock, groupId, messageText) {
+  if (!sock || !groupId) return false;
+  try {
+    const groupMeta = await sock.groupMetadata(groupId);
+    const participants = groupMeta.participants.map(p => p.id);
+    await sock.sendMessage(groupId, {
+      text: messageText,
+      mentions: participants
+    });
+    return true;
+  } catch (err) {
+    console.error(`[BROADCAST ERROR] Gagal mengirim tag-all ke grup ${groupId}:`, err.message);
+    return false;
+  }
 }
 
 // Rate Limiter Storage: Map<senderJid, number[]>
@@ -70,7 +101,7 @@ function extractTargetJid(m, args) {
   return null;
 }
 
-async function handleAntiSpamAndAntiLink(m, jid, senderNormalized, isGroup, msgText) {
+async function handleAntiSpamAndAntiLink(m, jid, senderNormalized, isGroup, msgText, isAdmin) {
   if (!isGroup) return false;
 
   const antiSpamOn = (botSettings.antiSpamEnabled || "true") === "true";
@@ -81,8 +112,8 @@ async function handleAntiSpamAndAntiLink(m, jid, senderNormalized, isGroup, msgT
   const blockedDomains = (botSettings.blockedDomains || "chat.whatsapp.com,bit.ly,tinyurl,t.me,discord.gg").split(',').map(d => d.trim().toLowerCase());
   const allowedDomains = (botSettings.allowedDomains || "tokopedia.com,shopee.co.id,bukalapak.com").split(',').map(d => d.trim().toLowerCase());
 
-  // 1. Anti-Link Scan
-  if (antiLinkOn && msgText) {
+  // 1. Anti-Link Scan (Admin kebal anti-link)
+  if (antiLinkOn && msgText && !isAdmin) {
     const urlRegex = /(https?:\/\/[^\s]+|chat\.whatsapp\.com\/[^\s]+|t\.me\/[^\s]+|discord\.gg\/[^\s]+)/gi;
     const matches = msgText.match(urlRegex);
 
@@ -122,7 +153,7 @@ async function handleAntiSpamAndAntiLink(m, jid, senderNormalized, isGroup, msgT
     }
   }
 
-  // 2. Anti-Spam Rate Limiter
+  // 2. Anti-Spam Rate Limiter (Admin tetap dapat peringatan, tapi tidak di-kick)
   if (antiSpamOn) {
     const now = Date.now();
     let timestamps = userMessageTimestamps.get(senderNormalized) || [];
@@ -135,11 +166,15 @@ async function handleAntiSpamAndAntiLink(m, jid, senderNormalized, isGroup, msgT
       const warnings = await db.addCustomerWarning(senderNormalized, `Spamming ${timestamps.length} pesan dalam ${spamWindowMs / 1000} detik.`);
 
       if (warnings >= kickAfter) {
-        await sock.sendMessage(jid, { text: `🚨 @${senderNormalized.split('@')[0]} telah di-KICK dari grup karena melakukan SPAM berturut-turut (${warnings}x peringatan).`, mentions: [senderNormalized] });
-        try {
-          await sock.groupParticipantsUpdate(jid, [senderNormalized], "remove");
-        } catch (e) {
-          console.error(`[ANTI_SPAM] Gagal kick ${senderNormalized}:`, e.message);
+        if (isAdmin) {
+          await sock.sendMessage(jid, { text: `⚠️ *PERINGATAN SPAM ADMIN*\n@${senderNormalized.split('@')[0]}, harap jangan melakukan spam pesan di grup! (Admin tidak di-kick)`, mentions: [senderNormalized] });
+        } else {
+          await sock.sendMessage(jid, { text: `🚨 @${senderNormalized.split('@')[0]} telah di-KICK dari grup karena melakukan SPAM berturut-turut (${warnings}x peringatan).`, mentions: [senderNormalized] });
+          try {
+            await sock.groupParticipantsUpdate(jid, [senderNormalized], "remove");
+          } catch (e) {
+            console.error(`[ANTI_SPAM] Gagal kick ${senderNormalized}:`, e.message);
+          }
         }
       } else {
         await sock.sendMessage(jid, { text: `⚠️ *PERINGATAN SPAM (${warnings}/${kickAfter})*\n@${senderNormalized.split('@')[0]}, harap tenang dan jangan melakukan spam pesan!`, mentions: [senderNormalized] });
@@ -157,34 +192,31 @@ export async function triggerRestockBroadcast(productCode) {
     const product = await db.getProductByKode(productCode);
     if (!product) return { success: false, message: "Produk tidak ditemukan." };
 
+    // 1. Ambil pelanggan yang daftar pengingat stok perorang (notify [KODE])
     const subscribers = await db.getSubscribers(productCode);
     const subscriberJids = Array.from(new Set(subscribers.map(s => s.customer_nomor)));
 
     const historyId = await db.createBroadcastHistory(productCode, subscriberJids.length);
 
-    if (subscriberJids.length === 0) {
-      await db.updateBroadcastHistory(historyId, 0, 0);
-      return { success: true, count: 0, message: "Tidak ada pelanggan yang berlangganan notifikasi produk ini." };
-    }
-
-    console.log(`[RESTOCK_QUEUE] Memulai pengiriman siaran restok ${productCode} ke ${subscriberJids.length} pelanggan...`);
-    await db.addLog("BROADCAST", `Memulai siaran restok ${productCode} ke ${subscriberJids.length} pelanggan.`);
+    console.log(`[RESTOCK_QUEUE] Memulai pengiriman siaran restok ${productCode}... (${subscriberJids.length} peminta notifikasi perorang)`);
+    await db.addLog("BROADCAST", `Memulai siaran restok ${productCode} ke ${subscriberJids.length} peminta notifikasi perorang & grup.`);
 
     (async () => {
       let success = 0;
       let failed = 0;
       const delayMs = parseInt(botSettings.broadcastDelay) || 3000;
 
+      // Kirim DM HANYA ke peminta notifikasi perorang (notify [KODE])
       for (const jid of subscriberJids) {
         try {
-          const msg = `🔔 *KABAR GEMBIRA! PRODUK READY RESTOK!* 📦
-          
-Produk favorit Anda: *${product.nama}* (\`${product.kode}\`) kini sudah *READY KEMBALI* dengan stok: *${product.stok} pcs*!
-
-💰 Harga: *Rp${product.harga.toLocaleString('id-ID')}*
-📝 ${product.deskripsi || ''}
-
-Ketik \`buy ${product.kode}\` atau langsung checkout untuk memesan sebelum kehabisan! 🛒`;
+          const msg = `🔔 *PENGINGAT STOK PRODUK!* 📦\n\n` +
+            `Halo Kak! Produk *${product.nama}* (\`${product.kode}\`) yang pernah Anda minta ingatkan saat ini *SUDAH READY / RESTOK*!\n\n` +
+            `• Stok Tersedia: *${product.stok} pcs*\n` +
+            `• Harga: *Rp${product.harga.toLocaleString('id-ID')}*\n` +
+            (product.deskripsi ? `• Deskripsi: ${product.deskripsi}\n\n` : `\n`) +
+            `Silakan ketik:\n` +
+            `*beli ${product.kode} 1*\n` +
+            `di chat ini untuk memesan sekarang sebelum kehabisan! Terima kasih. 🙏`;
 
           if (sock && botState.whatsappConnected) {
             await sock.sendMessage(jid, { text: msg });
@@ -201,11 +233,46 @@ Ketik \`buy ${product.kode}\` atau langsung checkout untuk memesan sebelum kehab
         await new Promise(r => setTimeout(r, delayMs + jitter));
       }
 
+      // Bersihkan antrean berlangganan untuk produk ini
+      await db.getAndClearSubscribers(productCode);
       await db.updateBroadcastHistory(historyId, success, failed);
-      await db.addLog("BROADCAST", `🏁 Siaran restok ${productCode} selesai: ${success} terkirim, ${failed} gagal.`);
+      await db.addLog("BROADCAST", `🏁 Siaran restok perorang ${productCode} selesai: ${success} terkirim, ${failed} gagal.`);
+
+      // 2. Siarkan Pengumuman Restok ke GRUP WHATSAPP
+      if (sock && botState.whatsappConnected) {
+        const groupMsg = `📢 *PENGUMUMAN RESTOK PRODUK DI GRUP* 📦\n\n` +
+          `Kabar gembira! Produk *${product.nama}* (\`${product.kode}\`) telah di-restok!\n\n` +
+          `• Stok Tersedia: *${product.stok} pcs*\n` +
+          `• Harga: *Rp${product.harga.toLocaleString('id-ID')}*\n` +
+          (product.deskripsi ? `• Deskripsi: ${product.deskripsi}\n\n` : `\n`) +
+          `Silakan chat Bot & ketik *beli ${product.kode} 1* untuk memesan sekarang! 🛒`;
+
+        const targetGroupId = botSettings.buyerGroupId || botSettings.transactionGroupId;
+        if (targetGroupId) {
+          try {
+            await sock.sendMessage(targetGroupId, { text: groupMsg });
+            console.log(`[RESTOCK_BROADCAST] Pengumuman restok terkirim ke grup ${targetGroupId}`);
+          } catch (err) {
+            console.error(`[RESTOCK_BROADCAST] Gagal kirim ke grup ${targetGroupId}:`, err.message);
+          }
+        } else {
+          try {
+            const groups = await sock.groupFetchAllParticipating();
+            for (const gId of Object.keys(groups)) {
+              await sock.sendMessage(gId, { text: groupMsg });
+            }
+          } catch (err) {
+            console.error(`[RESTOCK_BROADCAST] Gagal kirim ke grup:`, err.message);
+          }
+        }
+      }
     })();
 
-    return { success: true, count: subscriberJids.length, message: `Siaran restok untuk ${productCode} telah dimasukkan ke antrean (${subscriberJids.length} pelanggan).` };
+    return { 
+      success: true, 
+      count: subscriberJids.length, 
+      message: `Siaran restok ${productCode} berhasil diproses untuk ${subscriberJids.length} peminta perorang & disiarkan di grup.` 
+    };
   } catch (err) {
     console.error(`[RESTOCK_BROADCAST] Error:`, err.message);
     return { success: false, message: err.message };
@@ -414,6 +481,8 @@ export async function startBot(onSocketReady) {
   await db.initDb();
   // Muat pengaturan toko awal dari DB
   await reloadBotSettings();
+  // Muat plugin modular
+  await loadPlugins();
 
   // Folder sesi WA
   const sessionFolder = './session';
@@ -452,6 +521,21 @@ export async function startBot(onSocketReady) {
     markOnlineOnConnect: true,
     syncFullHistory: false
   });
+
+  // Dukungan Pairing Code jika dikonfigurasi via ENV
+  if (!sock.authState.creds.registered && process.env.PAIRING_NUMBER) {
+    const pairingNum = process.env.PAIRING_NUMBER.replace(/[^0-9]/g, '');
+    setTimeout(async () => {
+      try {
+        const code = await sock.requestPairingCode(pairingNum);
+        console.log(`\n=========================================`);
+        console.log(`🔑 WA PAIRING CODE: ${code}`);
+        console.log(`=========================================\n`);
+      } catch (err) {
+        console.error("Gagal meminta Pairing Code:", err.message);
+      }
+    }, 4000);
+  }
 
   // Alias sendMessage ke safeSendMessage untuk Connection Guard & Queueing & Retries
   const originalSendMessage = sock.sendMessage.bind(sock);
@@ -607,6 +691,756 @@ export async function startBot(onSocketReady) {
     }
   });
 
+  // ==========================================
+  // FITUR MEDIA UTILITY (DOWNLOADER & CONVERTER)
+  // ==========================================
+  async function handleMediaCommands(jid, senderNumber, m, msgText) {
+    const textTrim = msgText.trim();
+    if (!textTrim) return false;
+    const args = textTrim.split(/\s+/);
+    const rawCmd = args[0].toLowerCase();
+    const cleanCmd = rawCmd.replace(/^[./#]/, '');
+
+    const isGroup = jid.endsWith('@g.us');
+    if (isGroup) {
+      const gSettings = await db.getGroupSettings(jid);
+      if (gSettings.bot_mode === 'sales') {
+        const allowedInSalesGroup = ['owner', 'kontakowner', 'invoice', 'struk', 'tagall', 'hidetag', 'everyone'];
+        if (!allowedInSalesGroup.includes(cleanCmd)) {
+          return false;
+        }
+      }
+    }
+
+    const react = async (emoji) => {
+      try {
+        await sock.sendMessage(jid, { react: { text: emoji, key: m.key } });
+      } catch (e) {}
+    };
+    
+    // 1. TikTok Downloader
+    if (['tt', 'tiktok'].includes(cleanCmd)) {
+      const url = args[1] || (msgText.match(/https?:\/\/[^\s]+/i)?.[0]);
+      if (!url || !url.includes('tiktok.com')) {
+        await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Harap sertakan link TikTok yang valid.\n\n_Contoh:_ `.tt https://vt.tiktok.com/xxxx`" });
+        return true;
+      }
+      await react('⏳');
+      const res = await mediaHandler.downloadTikTok(url);
+      if (res.success && res.videoUrl) {
+        await sock.sendMessage(jid, { 
+          video: { url: res.videoUrl }, 
+          caption: `📹 *${res.title}*\n👤 Creator: *${res.author}*\n\n✅ *Berhasil diunduh via Akbar Store Bot*` 
+        });
+        await react('✅');
+      } else {
+        await react('❌');
+        await sock.sendMessage(jid, { text: `❌ ${res.message || 'Gagal mengambil video TikTok.'}` });
+      }
+      return true;
+    }
+
+    // 2. Instagram Downloader
+    if (['ig', 'instagram'].includes(cleanCmd)) {
+      const url = args[1] || (msgText.match(/https?:\/\/[^\s]+/i)?.[0]);
+      if (!url || !url.includes('instagram.com')) {
+        await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Harap sertakan link Instagram Reels/Post yang valid.\n\n_Contoh:_ `.ig https://www.instagram.com/reel/xxxx`" });
+        return true;
+      }
+      await react('⏳');
+      const res = await mediaHandler.downloadInstagram(url);
+      if (res.success && res.videoUrl) {
+        await sock.sendMessage(jid, { 
+          video: { url: res.videoUrl }, 
+          caption: `📸 *Instagram Video*\n\n✅ *Berhasil diunduh via Akbar Store Bot*` 
+        });
+        await react('✅');
+      } else {
+        await react('❌');
+        await sock.sendMessage(jid, { text: `❌ ${res.message || 'Gagal mengunduh media Instagram.'}` });
+      }
+      return true;
+    }
+
+    // 3. YouTube / Shorts Downloader
+    if (['yt', 'youtube'].includes(cleanCmd)) {
+      const url = args[1] || (msgText.match(/https?:\/\/[^\s]+/i)?.[0]);
+      if (!url || (!url.includes('youtube.com') && !url.includes('youtu.be'))) {
+        await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Harap sertakan link YouTube/Shorts yang valid.\n\n_Contoh:_ `.yt https://youtube.com/shorts/xxxx`" });
+        return true;
+      }
+      await react('⏳');
+      const res = await mediaHandler.downloadYouTube(url);
+      if (res.success && res.videoUrl) {
+        await sock.sendMessage(jid, { 
+          video: { url: res.videoUrl }, 
+          caption: `🎬 *${res.title}*\n\n✅ *Berhasil diunduh via Akbar Store Bot*` 
+        });
+        await react('✅');
+      } else {
+        await react('❌');
+        await sock.sendMessage(jid, { text: `❌ ${res.message || 'Gagal mengunduh video YouTube.'}` });
+      }
+      return true;
+    }
+
+    // 4. Facebook Downloader
+    if (['fb', 'facebook'].includes(cleanCmd)) {
+      const url = args[1] || (msgText.match(/https?:\/\/[^\s]+/i)?.[0]);
+      if (!url || (!url.includes('facebook.com') && !url.includes('fb.watch') && !url.includes('fb.com'))) {
+        await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Harap sertakan link Facebook Video/Reels yang valid.\n\n_Contoh:_ `.fb https://fb.watch/xxxx`" });
+        return true;
+      }
+      await react('⏳');
+      const res = await mediaHandler.downloadFacebook(url);
+      if (res.success && res.videoUrl) {
+        await sock.sendMessage(jid, { 
+          video: { url: res.videoUrl }, 
+          caption: `📘 *Facebook Video*\n\n✅ *Berhasil diunduh via Akbar Store Bot*` 
+        });
+        await react('✅');
+      } else {
+        await react('❌');
+        await sock.sendMessage(jid, { text: `❌ ${res.message || 'Gagal mengunduh video Facebook.'}` });
+      }
+      return true;
+    }
+
+    // 5. Stiker / GIF Converter (.stiker, .sticker, .s, .gif, .sgif)
+    if (['stiker', 'sticker', 's', 'gif', 'sgif'].includes(cleanCmd)) {
+      const hasImage = m.message?.imageMessage || m.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage;
+      const hasVideo = m.message?.videoMessage || m.message?.extendedTextMessage?.contextInfo?.quotedMessage?.videoMessage;
+      
+      if (!hasImage && !hasVideo) {
+        await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Harap kirim foto/video dengan caption `.stiker` atau balas (reply) pesan foto/video dengan `.stiker`!" });
+        return true;
+      }
+
+      try {
+        await react('⏳');
+        let targetMessage = m;
+        if (m.message?.extendedTextMessage?.contextInfo?.quotedMessage) {
+          targetMessage = {
+            key: {
+              remoteJid: jid,
+              id: m.message.extendedTextMessage.contextInfo.stanzaId,
+              participant: m.message.extendedTextMessage.contextInfo.participant
+            },
+            message: m.message.extendedTextMessage.contextInfo.quotedMessage
+          };
+        }
+
+        const isVideo = !!hasVideo;
+        const buffer = await downloadMediaMessage(targetMessage, 'buffer', {});
+        const stickerRes = await mediaHandler.createSticker(buffer, 'Akbar Store', 'WhatsApp Bot', isVideo);
+        
+        if (stickerRes.success && stickerRes.buffer) {
+          await sock.sendMessage(jid, { sticker: stickerRes.buffer });
+          await react('✅');
+        } else {
+          await react('❌');
+          await sock.sendMessage(jid, { text: `❌ Gagal membuat stiker: ${stickerRes.message}` });
+        }
+      } catch (err) {
+        await react('❌');
+        console.error("[STICKER_ERR]", err.message);
+        await sock.sendMessage(jid, { text: `❌ Gagal membuat stiker. Pastikan file media tidak rusak.` });
+      }
+      return true;
+    }
+
+    // 5. Sticker to Image (.toimg, /toimg)
+    if (['toimg', 'unstick', 'toimage'].includes(cleanCmd)) {
+      const quotedSticker = m.message?.extendedTextMessage?.contextInfo?.quotedMessage?.stickerMessage;
+      if (!quotedSticker) {
+        await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Harap balas (reply) stiker WhatsApp yang ingin diubah menjadi gambar dengan perintah `.toimg`!" });
+        return true;
+      }
+
+      try {
+        await react('⏳');
+        const targetMessage = {
+          key: {
+            remoteJid: jid,
+            id: m.message.extendedTextMessage.contextInfo.stanzaId
+          },
+          message: m.message.extendedTextMessage.contextInfo.quotedMessage
+        };
+
+        const stickerBuffer = await downloadMediaMessage(targetMessage, 'buffer', {});
+        const imageRes = await mediaHandler.stickerToImage(stickerBuffer);
+
+        if (imageRes.success && imageRes.buffer) {
+          await sock.sendMessage(jid, { image: imageRes.buffer, caption: "✅ *Berhasil diubah dari Stiker ke Gambar (JPG)*" });
+          await react('✅');
+        } else {
+          await react('❌');
+          await sock.sendMessage(jid, { text: `❌ Gagal mengonversi stiker: ${imageRes.message}` });
+        }
+      } catch (err) {
+        await react('❌');
+        console.error("[TOIMG_ERR]", err.message);
+        await sock.sendMessage(jid, { text: `❌ Gagal mengonversi stiker ke gambar.` });
+      }
+      return true;
+    }
+
+    // 6. Sticker to Video (.tovid, .tovideo, .togif)
+    if (['tovid', 'tovideo', 'togif'].includes(cleanCmd)) {
+      const quotedSticker = m.message?.extendedTextMessage?.contextInfo?.quotedMessage?.stickerMessage;
+      if (!quotedSticker) {
+        await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Harap balas (reply) stiker WhatsApp yang ingin diubah menjadi video MP4 dengan perintah `.tovid`!" });
+        return true;
+      }
+
+      try {
+        await react('⏳');
+        const targetMessage = {
+          key: {
+            remoteJid: jid,
+            id: m.message.extendedTextMessage.contextInfo.stanzaId
+          },
+          message: m.message.extendedTextMessage.contextInfo.quotedMessage
+        };
+
+        const stickerBuffer = await downloadMediaMessage(targetMessage, 'buffer', {});
+        const videoRes = await mediaHandler.stickerToVideo(stickerBuffer);
+
+        if (videoRes.success && videoRes.buffer) {
+          await sock.sendMessage(jid, { video: videoRes.buffer, caption: "✅ *Berhasil diubah dari Stiker ke Video (MP4)*" });
+          await react('✅');
+        } else {
+          await react('❌');
+          await sock.sendMessage(jid, { text: `❌ Gagal mengonversi stiker ke video: ${videoRes.message}` });
+        }
+      } catch (err) {
+        await react('❌');
+        console.error("[TOVID_ERR]", err.message);
+        await sock.sendMessage(jid, { text: `❌ Gagal mengonversi stiker ke video.` });
+      }
+      return true;
+    }
+
+    // 7. Quote Sticker Generator (.qc, .quote, /qc)
+    if (['qc', 'quote'].includes(cleanCmd)) {
+      const isQuoted = !!m.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+      let textToQuote = '';
+      let senderName = '';
+
+      if (isQuoted) {
+        const contextInfo = m.message.extendedTextMessage.contextInfo;
+        const quotedMsg = contextInfo.quotedMessage;
+        textToQuote = quotedMsg.conversation || 
+                      quotedMsg.extendedTextMessage?.text || 
+                      quotedMsg.imageMessage?.caption || 
+                      quotedMsg.videoMessage?.caption || 
+                      args.slice(1).join(' ');
+
+        const quotedParticipant = contextInfo.participant || contextInfo.remoteJid;
+        const normalizedParticipant = jidNormalizedUser(quotedParticipant);
+
+        if (userPushNamesMap.has(normalizedParticipant)) {
+          senderName = userPushNamesMap.get(normalizedParticipant);
+        } else {
+          try {
+            const customerObj = await db.getCustomer(normalizedParticipant);
+            if (customerObj && customerObj.name && customerObj.name !== 'Pelanggan') {
+              senderName = customerObj.name;
+            } else {
+              senderName = formatPhoneNumber(normalizedParticipant);
+            }
+          } catch (e) {
+            senderName = formatPhoneNumber(normalizedParticipant);
+          }
+        }
+      } else {
+        textToQuote = args.slice(1).join(' ');
+        senderName = m.pushName || 'Pelanggan';
+      }
+
+      if (!textToQuote) {
+        await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Ketik `.qc [TEKS]` atau balas (reply) pesan orang lain dengan `.qc`!\n\n_Contoh:_ `.qc halo ini quote stiker`" });
+        return true;
+      }
+
+      try {
+        await react('⏳');
+        const qcRes = await mediaHandler.generateQuoteSticker(senderName, textToQuote);
+        if (qcRes.success && qcRes.buffer) {
+          await sock.sendMessage(jid, { sticker: qcRes.buffer });
+          await react('✅');
+        } else {
+          await react('❌');
+          await sock.sendMessage(jid, { text: `❌ Gagal membuat quote sticker.` });
+        }
+      } catch (err) {
+        await react('❌');
+        console.error("[QC_ERR]", err.message);
+        await sock.sendMessage(jid, { text: `❌ Gagal membuat Stiker Quote.` });
+      }
+      return true;
+    }
+
+    // 8. Meme Generator (.meme, /meme)
+    if (['meme'].includes(cleanCmd)) {
+      const hasImage = m.message?.imageMessage || m.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage;
+      if (!hasImage) {
+        await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Kirim foto dengan caption `.meme TEKS ATAS | TEKS BAWAH` atau balas foto orang lain dengan `.meme TEKS ATAS | TEKS BAWAH`!" });
+        return true;
+      }
+
+      const textParam = args.slice(1).join(' ');
+      const parts = textParam.split('|');
+      const topText = parts[0]?.trim() || '';
+      const bottomText = parts[1]?.trim() || '';
+
+      try {
+        await react('⏳');
+        let targetMessage = m;
+        if (m.message?.extendedTextMessage?.contextInfo?.quotedMessage) {
+          targetMessage = {
+            key: {
+              remoteJid: jid,
+              id: m.message.extendedTextMessage.contextInfo.stanzaId,
+              participant: m.message.extendedTextMessage.contextInfo.participant
+            },
+            message: m.message.extendedTextMessage.contextInfo.quotedMessage
+          };
+        }
+
+        const imageBuffer = await downloadMediaMessage(targetMessage, 'buffer', {});
+        const memeRes = await mediaHandler.generateMeme(imageBuffer, topText, bottomText);
+
+        if (memeRes.success && memeRes.buffer) {
+          await sock.sendMessage(jid, { image: memeRes.buffer, caption: "🎨 *Meme Generator by Akbar Store Bot*" });
+          await react('✅');
+        } else {
+          await react('❌');
+          await sock.sendMessage(jid, { text: `❌ Gagal membuat meme.` });
+        }
+      } catch (err) {
+        await react('❌');
+        console.error("[MEME_ERR]", err.message);
+        await sock.sendMessage(jid, { text: `❌ Gagal membuat meme.` });
+      }
+      return true;
+    }
+
+    // 9. Website Screenshot (.ssweb, /ssweb)
+    if (['ssweb', 'ss'].includes(cleanCmd)) {
+      const url = args[1];
+      if (!url) {
+        await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Harap sertakan URL website.\n\n_Contoh:_ `.ssweb google.com`" });
+        return true;
+      }
+
+      try {
+        await react('⏳');
+        const ssRes = await mediaHandler.screenshotWeb(url);
+        if (ssRes.success && ssRes.buffer) {
+          await sock.sendMessage(jid, { image: ssRes.buffer, caption: `📸 *Screenshot Website:* ${url}` });
+          await react('✅');
+        } else {
+          await react('❌');
+          await sock.sendMessage(jid, { text: `❌ ${ssRes.message || 'Gagal mengambil screenshot.'}` });
+        }
+      } catch (err) {
+        await react('❌');
+        console.error("[SSWEB_ERR]", err.message);
+        await sock.sendMessage(jid, { text: `❌ Gagal mengambil screenshot website.` });
+      }
+      return true;
+    }
+
+    // 10. Cek Khodam Lucu (.khodam)
+    if (['khodam'].includes(cleanCmd)) {
+      const name = args.slice(1).join(' ') || m.pushName || 'Pelanggan';
+      await react('🔮');
+      const khodamRes = ent.getKhodam(name);
+      const msg = `🔮 *CEK KHODAM PENDAMPING* 🔮
+
+👤 *Nama:* ${khodamRes.user}
+👻 *Khodam:* *${khodamRes.khodam}*
+
+📜 *Penjelasan:*
+_${khodamRes.desc}_`;
+      await sock.sendMessage(jid, { text: msg });
+      return true;
+    }
+
+    // 11. Truth or Dare (.tod, .truth, .dare)
+    if (['tod', 'truth', 'dare'].includes(cleanCmd)) {
+      await react('🎯');
+      const todRes = ent.getTruthOrDare(cleanCmd);
+      await sock.sendMessage(jid, { text: todRes });
+      return true;
+    }
+
+    // 12. Text-to-Speech Voice Note (.tts)
+    if (['tts'].includes(cleanCmd)) {
+      const ttsText = args.slice(1).join(' ');
+      if (!ttsText) {
+        await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Ketik `.tts [TEKS]`!\n\n_Contoh:_ `.tts halo selamat datang di toko kami`" });
+        return true;
+      }
+
+      try {
+        await react('⏳');
+        const ttsRes = await ent.generateTTS(ttsText, 'id');
+        if (ttsRes.success && ttsRes.buffer) {
+          await sock.sendMessage(jid, { audio: ttsRes.buffer, ptt: true, mimetype: 'audio/mp4' });
+          await react('✅');
+        } else {
+          await react('❌');
+          await sock.sendMessage(jid, { text: `❌ ${ttsRes.message}` });
+        }
+      } catch (err) {
+        await react('❌');
+        console.error("[TTS_ERR]", err.message);
+        await sock.sendMessage(jid, { text: `❌ Gagal membuat suara TTS.` });
+      }
+      return true;
+    }
+
+    // 13. AI Image Generator (.draw, .aiimg)
+    if (['draw', 'aiimg'].includes(cleanCmd)) {
+      const prompt = args.slice(1).join(' ');
+      if (!prompt) {
+        await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Ketik `.draw [DESKRIPSI GAMBAR]`!\n\n_Contoh:_ `.draw kucing memakai kacamata hitam di pantai`" });
+        return true;
+      }
+
+      try {
+        await react('⏳');
+        const aiRes = await ent.generateAIImage(prompt);
+        if (aiRes.success && aiRes.buffer) {
+          await sock.sendMessage(jid, { image: aiRes.buffer, caption: `🎨 *AI Image Generator:* "${prompt}"` });
+          await react('✅');
+        } else {
+          await react('❌');
+          await sock.sendMessage(jid, { text: `❌ ${aiRes.message}` });
+        }
+      } catch (err) {
+        await react('❌');
+        console.error("[AI_DRAW_ERR]", err.message);
+        await sock.sendMessage(jid, { text: `❌ Gagal memproses gambar AI.` });
+      }
+      return true;
+    }
+
+    // 14. Shortlink (.shortlink, .short)
+    if (['shortlink', 'short'].includes(cleanCmd)) {
+      const targetUrl = args[1];
+      if (!targetUrl) {
+        await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Ketik `.shortlink [URL]`!\n\n_Contoh:_ `.shortlink https://google.com`" });
+        return true;
+      }
+
+      try {
+        await react('⏳');
+        const shortRes = await ent.createShortLink(targetUrl);
+        if (shortRes.success && shortRes.shortUrl) {
+          await sock.sendMessage(jid, { text: `🔗 *Link Pendek Berhasil Dibuat:*\n\n${shortRes.shortUrl}` });
+          await react('✅');
+        } else {
+          await react('❌');
+          await sock.sendMessage(jid, { text: `❌ ${shortRes.message}` });
+        }
+      } catch (err) {
+        await react('❌');
+        console.error("[SHORTLINK_ERR]", err.message);
+        await sock.sendMessage(jid, { text: `❌ Gagal memperpendek link.` });
+      }
+      return true;
+    }
+
+    // 15. Informasi Cuaca (.cuaca)
+    if (['cuaca'].includes(cleanCmd)) {
+      const city = args.slice(1).join(' ');
+      if (!city) {
+        await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Ketik `.cuaca [NAMA_KOTA]`!\n\n_Contoh:_ `.cuaca Jakarta` atau `.cuaca Bandung`" });
+        return true;
+      }
+
+      try {
+        await react('⏳');
+        const wRes = await ent.getWeather(city);
+        await sock.sendMessage(jid, { text: wRes.text || wRes.message });
+        await react('🌤️');
+      } catch (err) {
+        await react('❌');
+        console.error("[WEATHER_ERR]", err.message);
+        await sock.sendMessage(jid, { text: `❌ Gagal mengambil informasi cuaca.` });
+      }
+      return true;
+    }
+
+    // 16. Enhance Image HD (.hd, .remini)
+    if (['hd', 'remini'].includes(cleanCmd)) {
+      const hasImage = m.message?.imageMessage || m.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage;
+      if (!hasImage) {
+        await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Kirim foto dengan caption `.hd` atau balas foto dengan `.hd` untuk menjernihkan gambar!" });
+        return true;
+      }
+
+      try {
+        await react('⏳');
+        let targetMessage = m;
+        if (m.message?.extendedTextMessage?.contextInfo?.quotedMessage) {
+          targetMessage = {
+            key: {
+              remoteJid: jid,
+              id: m.message.extendedTextMessage.contextInfo.stanzaId
+            },
+            message: m.message.extendedTextMessage.contextInfo.quotedMessage
+          };
+        }
+
+        const imgBuf = await downloadMediaMessage(targetMessage, 'buffer', {});
+        const hdRes = await ent.enhanceImageHD(imgBuf);
+        if (hdRes.success && hdRes.buffer) {
+          await sock.sendMessage(jid, { image: hdRes.buffer, caption: "✨ *Foto Berhasil Ditingkatkan ke Kualitas HD!*" });
+          await react('✅');
+        } else {
+          await react('❌');
+          await sock.sendMessage(jid, { text: `❌ Gagal menjernihkan foto.` });
+        }
+      } catch (err) {
+        await react('❌');
+        console.error("[HD_ERR]", err.message);
+        await sock.sendMessage(jid, { text: `❌ Gagal menjernihkan foto.` });
+      }
+      return true;
+    }
+
+    // 17. Brat Sticker Aesthetics Generator (.brat)
+    if (['brat'].includes(cleanCmd)) {
+      const bratText = args.slice(1).join(' ') || (m.message?.extendedTextMessage?.contextInfo?.quotedMessage?.conversation || m.message?.extendedTextMessage?.contextInfo?.quotedMessage?.extendedTextMessage?.text);
+      if (!bratText) {
+        await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Ketik `.brat [TEKS]` atau balas chat dengan `.brat`!\n\n_Contoh:_ `.brat kamu nanya?`" });
+        return true;
+      }
+
+      try {
+        await react('⏳');
+        const bratRes = await mediaHandler.generateBratSticker(bratText);
+        if (bratRes.success && bratRes.buffer) {
+          await sock.sendMessage(jid, { sticker: bratRes.buffer });
+          await react('✅');
+        } else {
+          await react('❌');
+          await sock.sendMessage(jid, { text: `❌ Gagal membuat stiker Brat.` });
+        }
+      } catch (err) {
+        await react('❌');
+        console.error("[BRAT_ERR]", err.message);
+        await sock.sendMessage(jid, { text: `❌ Gagal membuat Stiker Brat.` });
+      }
+      return true;
+    }
+
+    // 18. Invoice / Struk Resmi Transaksi (.invoice, .struk)
+    if (['invoice', 'struk'].includes(cleanCmd)) {
+      const orderIdStr = args[1]?.replace('#', '');
+      if (!orderIdStr) {
+        await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Ketik `.invoice [ORDER_ID]`!\n\n_Contoh:_ `.invoice ORD-20260730-1001`" });
+        return true;
+      }
+      try {
+        await react('⏳');
+        const orderObj = await db.getOrderById(orderIdStr); // Bug Fix: Order ID adalah string, bukan integer
+        if (!orderObj) {
+          await react('❌');
+          await sock.sendMessage(jid, { text: `❌ Transaksi dengan Order ID *#${orderIdStr}* tidak ditemukan.` });
+          return true;
+        }
+        const invRes = await ent.generateInvoiceImage(orderObj);
+        if (invRes.success && invRes.buffer) {
+          await sock.sendMessage(jid, { image: invRes.buffer, caption: `📄 *Invoice Resmi Transaksi #${orderObj.id}*\nStatus: *${orderObj.status}*\nTotal: *Rp${(orderObj.total_harga || 0).toLocaleString('id-ID')}*` });
+          await react('✅');
+        } else {
+          await react('❌');
+          await sock.sendMessage(jid, { text: `❌ Gagal memuat invoice transaksi.` });
+        }
+      } catch (err) {
+        await react('❌');
+        console.error("[INVOICE_CMD_ERR]", err.message);
+        await sock.sendMessage(jid, { text: `❌ Terjadi kesalahan saat memuat invoice.` });
+      }
+      return true;
+    }
+
+    // 19. Game Tebak Gambar Berhadiah Saldo Toko (.tebakgambar)
+    if (['tebakgambar'].includes(cleanCmd)) {
+      if (ent.activeGames.has(jid)) {
+        await sock.sendMessage(jid, { text: "⚠️ Masih ada sesi permainan Tebak Gambar yang sedang berlangsung di chat ini!" });
+        return true;
+      }
+
+      const q = ent.getTebakGambarQuestion();
+      ent.activeGames.set(jid, {
+        answer: q.answer.toUpperCase(),
+        hint: q.hint,
+        reward: 1000
+      });
+
+      await react('🎮');
+      const gameCaption = `🎮 *GAME TEBAK GAMBAR BERHADIAH SALDO* 🎮
+
+💡 *Petunjuk:* ${q.hint}
+🎁 *Hadiah:* Saldo Toko Rp1.000 (Otomatis ditambahkan ke pemenang!)
+
+_Ketik jawaban langsung di chat ini untuk menjawab!_`;
+
+      await sock.sendMessage(jid, { image: { url: q.image }, caption: gameCaption });
+      return true;
+    }
+
+    // 19.5. Cek Status & Kecepatan Respon Bot (.ping, .p, .statusbot)
+    if (['ping', 'p', 'statusbot'].includes(cleanCmd)) {
+      const startTime = Date.now();
+      await react('⚡');
+      const latencySec = ((Date.now() - startTime) / 1000).toFixed(4);
+
+      const fmtUptime = (seconds) => {
+        const d = Math.floor(seconds / (3600 * 24));
+        const h = Math.floor((seconds % (3600 * 24)) / 3600);
+        const m = Math.floor((seconds % 3600) / 60);
+        const s = Math.floor(seconds % 60);
+        const parts = [];
+        if (d > 0) parts.push(`${d} day${d > 1 ? 's' : ''}`);
+        if (h > 0) parts.push(`${h} hour${h > 1 ? 's' : ''}`);
+        if (m > 0) parts.push(`${m} minute${m > 1 ? 's' : ''}`);
+        parts.push(`${s} second${s > 1 ? 's' : ''}`);
+        return parts.join(', ');
+      };
+
+      const botUptime = fmtUptime(process.uptime());
+      const serverUptime = fmtUptime(os.uptime());
+
+      // RAM Calculation
+      const totalMemGB = (os.totalmem() / 1024 / 1024 / 1024).toFixed(2);
+      const usedMemGB = ((os.totalmem() - os.freemem()) / 1024 / 1024 / 1024).toFixed(2);
+
+      // CPU Usage Calculation
+      const cpus = os.cpus();
+      let totalIdle = 0, totalTick = 0;
+      cpus.forEach(cpu => {
+        for (const type in cpu.times) totalTick += cpu.times[type];
+        totalIdle += cpu.times.idle;
+      });
+      const cpuUsagePct = (100 - (totalIdle / totalTick) * 100).toFixed(2);
+
+      const cpuModel = (cpus[0]?.model || 'Generic CPU').trim();
+      const cpuSpeed = cpus[0]?.speed || 0;
+      const cpuCores = cpus.length;
+      const osInfo = `${os.type()} ${os.release()} ${os.arch()}`;
+
+      const pingMsg = `🏎️🟀 *Ping:* ${latencySec} Second
+
+*Runtime BOT :* ${botUptime}
+
+*Runtime Server :* ${serverUptime}
+
+💻 *Info Server*
+
+*OS :* ${osInfo}
+
+*RAM:* ${usedMemGB} GB / ${totalMemGB} GB
+
+*CPU USAGE:* ${cpuUsagePct}%
+
+*CPU:* ${cpuModel} (${cpuSpeed} MHZ) ${cpuCores} Core(s) CPU`;
+
+      await sock.sendMessage(jid, { text: pingMsg });
+      return true;
+    }
+
+    // 20. Kontak Owner / Pemilik Bot (.owner, .kontakowner, /owner)
+    if (['owner', 'kontakowner'].includes(cleanCmd) || textTrim.toLowerCase().includes('kontak owner')) {
+      const ownerJid = botSettings.ownerNumber || config.defaults.ownerNumber;
+      const ownerNum = ownerJid.split('@')[0];
+      const ownerName = `Owner ${botSettings.botName || 'Akbar Store'}`;
+
+      const vcard = `BEGIN:VCARD
+VERSION:3.0
+FN:${ownerName}
+ORG:${botSettings.botName || 'Akbar Store'};
+TEL;type=CELL;type=VOICE;waid=${ownerNum}:+${ownerNum}
+END:VCARD`;
+
+      try {
+        await react('👑');
+        await sock.sendMessage(jid, { 
+          contacts: { 
+            displayName: ownerName, 
+            contacts: [{ vcard }] 
+          } 
+        });
+
+        const infoMsg = `👑 *KONTAK PEMILIK (OWNER) TOKO* 👑
+
+👤 Nama Toko: *${botSettings.botName || 'Akbar Store'}*
+📞 WhatsApp: *+${ownerNum}*
+🔗 Chat Langsung: https://wa.me/${ownerNum}
+
+_Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan kerjasama._`;
+
+        await sock.sendMessage(jid, { text: infoMsg });
+      } catch (err) {
+        console.error("[OWNER_CMD_ERR]", err.message);
+      }
+      return true;
+    }
+
+    // 21. Tag All / Hidetag Anggota Grup (.tagall, .hidetag, /tagall, /hidetag)
+    if (['tagall', 'hidetag', 'everyone'].includes(cleanCmd)) {
+      const isGroup = jid.endsWith('@g.us');
+      if (!isGroup) {
+        await sock.sendMessage(jid, { text: "⚠️ Perintah ini hanya dapat dijalankan di dalam Grup WhatsApp!" });
+        return true;
+      }
+
+      // Cek apakah pengirim admin toko/admin grup
+      const isGroupAdmin = isGroup ? (async () => {
+        try {
+          const groupMeta = await sock.groupMetadata(jid);
+          const participant = groupMeta.participants.find(p => jidNormalizedUser(p.id) === senderNumber);
+          return participant && (participant.admin === 'admin' || participant.admin === 'superadmin');
+        } catch (e) { return false; }
+      })() : false;
+
+      const isAdminUser = senderNumber === botSettings.ownerNumber || (await isGroupAdmin);
+      if (!isAdminUser) {
+        await sock.sendMessage(jid, { text: "❌ Perintah ini hanya dapat dijalankan oleh Admin atau Owner." });
+        return true;
+      }
+
+      try {
+        await react('📣');
+        const groupMeta = await sock.groupMetadata(jid);
+        const participants = groupMeta.participants || [];
+        const mentions = participants.map(p => p.id);
+        const annText = args.slice(1).join(' ') || (m.message?.extendedTextMessage?.contextInfo?.quotedMessage?.conversation || m.message?.extendedTextMessage?.contextInfo?.quotedMessage?.extendedTextMessage?.text) || 'Pengumuman untuk seluruh anggota grup!';
+
+        let tagMsg = `📣 *PENGUMUMAN GRUP (${groupMeta.subject})* 📣\n\n📌 *Pesan:* ${annText}\n\n👥 *Anggota (${participants.length}):*\n`;
+        participants.forEach((p, idx) => {
+          tagMsg += `${idx + 1}. @${p.id.split('@')[0]}\n`;
+        });
+
+        await sock.sendMessage(jid, { text: tagMsg, mentions });
+        await react('✅');
+      } catch (err) {
+        await react('❌');
+        console.error("[TAGALL_ERR]", err.message);
+        await sock.sendMessage(jid, { text: `❌ Gagal melakukan Tag All: ${err.message}` });
+      }
+      return true;
+    }
+
+    return false;
+  }
+
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     try {
       if (type !== 'notify') return;
@@ -620,7 +1454,60 @@ export async function startBot(onSocketReady) {
         const senderNormalized = jidNormalizedUser(sender);
         const isFromMe = m.key.fromMe;
 
+        if (m.pushName && senderNormalized) {
+          userPushNamesMap.set(senderNormalized, m.pushName);
+        }
+
         if (isFromMe) continue;
+
+        // ====================================================================
+        // DETEKSI OWNER & ADMIN — Sistem LID-Aware
+        // Masalah: WhatsApp kini kirim pesan dari grup sebagai @lid (bukan nomor HP)
+        // Solusi: cek ownerJid yang tersimpan (registrasi sekali via .setownerid di DM)
+        //         + fallback ke phone digit match (untuk DM)
+        // ====================================================================
+        const extractDigits = (s) => s ? String(s).replace(/[^0-9]/g, '') : '';
+        const senderDigits = extractDigits(senderNormalized);
+        const ownerPhoneDigits = extractDigits(botSettings.ownerNumber || config.defaults.ownerNumber || '');
+        const storedOwnerJid = (botSettings.ownerJid || '').trim(); // JID (bisa @lid) yang disimpan via .setownerid
+        const adminEntries = (botSettings.adminNumbers || config.defaults.adminNumbers || "").split(',').map(n => extractDigits(n)).filter(d => d.length > 6);
+
+        // Cek apakah sender adalah Owner (by stored JID exact match, atau phone digit match)
+        let isOwnerSender = false;
+        if (storedOwnerJid && senderNormalized === storedOwnerJid) {
+          isOwnerSender = true; // Exact JID match (handles @lid)
+        } else if (ownerPhoneDigits && senderDigits && senderDigits.length > 6 && senderDigits.includes(ownerPhoneDigits)) {
+          isOwnerSender = true; // Phone number match (works in DM)
+        }
+
+        let isAdmin = isOwnerSender;
+
+        // Cek admin entries dari settings
+        if (!isAdmin && adminEntries.some(adm => senderDigits.length > 6 && senderDigits.includes(adm))) {
+          isAdmin = true;
+        }
+
+        // Di GRUP: cek status admin grup via groupMetadata (untuk fitur grup seperti anti-link)
+        if (!isAdmin && isGroup) {
+          try {
+            const groupMeta = await sock.groupMetadata(jid);
+            const pMatch = groupMeta.participants.find(p =>
+              p.id === sender || p.id === senderNormalized ||
+              p.lid === sender || p.lid === senderNormalized
+            );
+            if (pMatch && (pMatch.admin === 'admin' || pMatch.admin === 'superadmin')) {
+              isAdmin = true;
+            }
+          } catch (e) {
+            // Silent fail jika tidak bisa ambil metadata grup
+          }
+        }
+
+        // Cek apakah user sedang di-banned (Owner/Admin tidak pernah kena ban)
+        if (!isAdmin) {
+          const isBanned = await db.isUserBanned(senderNormalized);
+          if (isBanned) continue;
+        }
 
         const mainBuyerGroupJid = botSettings.buyerGroupId || "";
 
@@ -631,46 +1518,40 @@ export async function startBot(onSocketReady) {
           ""
         ).trim();
 
-        // Deteksi admin menggunakan 2 metode:
-        // 1. Di GRUP: gunakan groupMetadata (anti-LID) — cek apakah pengirim adalah admin/superadmin grup
-        // 2. Di DM / Fallback: cocokkan angka nomor dari database (fuzzy match tanpa suffix @s.whatsapp.net/@lid)
-        let isAdmin = false;
-        
+        // Cek jika ini adalah perintah media utility (.tt, .ig, .yt, .stiker, .gif, .toimg)
+        const isMediaHandled = await handleMediaCommands(jid, senderNormalized, m, msgText);
+        if (isMediaHandled) continue;
+
+        console.log(`[DEBUG_MSG] Grup: ${isGroup} (${jid}), Pengirim: ${senderNormalized}, Text: "${msgText}", Admin: ${isAdmin}, Owner: ${isOwnerSender}`);
+
+        // Cek Anti-Spam & Anti-Link (Semua pengirim dicek, namun admin tidak akan di-kick)
         if (isGroup) {
-          try {
-            const groupMeta = await sock.groupMetadata(jid);
-            isAdmin = groupMeta.participants.some(
-              p => (p.id === sender || p.id === senderNormalized) && 
-                   (p.admin === 'admin' || p.admin === 'superadmin')
-            );
-          } catch (e) {
-            console.error(`[ADMIN_CHECK] Gagal mengambil metadata grup ${jid}:`, e.message);
-          }
-        }
-        
-        // Fallback / DM: cocokkan angka nomor telepon dari database settings
-        if (!isAdmin) {
-          const adminEntries = (botSettings.adminNumbers || "").split(',').map(n => n.trim());
-          // Ekstrak angka saja dari setiap entry admin dan dari senderNormalized
-          const extractDigits = (s) => s.replace(/[^0-9]/g, '');
-          const senderDigits = extractDigits(senderNormalized);
-          isAdmin = adminEntries.some(entry => {
-            const adminDigits = extractDigits(entry);
-            return adminDigits.length > 6 && senderDigits.includes(adminDigits);
-          });
-        }
-
-        console.log(`[DEBUG_MSG] Grup: ${isGroup} (${jid}), Pengirim: ${senderNormalized}, Text: "${msgText}", Admin: ${isAdmin}`);
-
-        // Cek Anti-Spam & Anti-Link (Khusus pesan grup dari non-admin)
-        if (isGroup && !isAdmin) {
-          const isHandled = await handleAntiSpamAndAntiLink(m, jid, senderNormalized, isGroup, msgText);
+          const isHandled = await handleAntiSpamAndAntiLink(m, jid, senderNormalized, isGroup, msgText, isAdmin);
           if (isHandled) continue;
         }
 
         // Ambil status percakapan (Take Over check)
         const conv = await db.getOrCreateConversation(senderNormalized);
         const isTakenOver = conv.conversation_state === 'ADMIN';
+
+        // 🎮 Cek jika ada game Tebak Gambar aktif di chat/grup ini
+        if (ent.activeGames.has(jid)) {
+          const game = ent.activeGames.get(jid);
+          if (msgText.toUpperCase().trim() === game.answer) {
+            ent.activeGames.delete(jid);
+            const newBal = await db.addCustomerBalance(senderNormalized, game.reward);
+            await sock.sendMessage(jid, { 
+              text: `🎉 *SELAMAT! TEBAKAN ANDA BENAR!* 🎉
+
+👤 Pemenang: *@${senderNormalized.split('@')[0]}* (${m.pushName || 'Pelanggan'})
+✅ Jawaban: *${game.answer}*
+🎁 Hadiah: *+Rp${game.reward.toLocaleString('id-ID')} Saldo Toko*
+💰 Saldo Anda Sekarang: *Rp${newBal.toLocaleString('id-ID')}*`,
+              mentions: [senderNormalized]
+            });
+            await sock.sendMessage(jid, { react: { text: '🎉', key: m.key } });
+          }
+        }
 
         if (!isGroup) {
           // Download media jika ada
@@ -712,29 +1593,42 @@ export async function startBot(onSocketReady) {
             });
           }).catch(err => console.error("Gagal menyimpan pesan masuk ke DB:", err));
 
-          // Jika pesan dimulai dengan '/' dan pengirim adalah Admin, proses sebagai perintah admin/owner (buka /getjid untuk semua)
-          if (msgText.startsWith('/getjid')) {
-            await handleGroupMessage(jid, senderNormalized, m, msgText, isAdmin);
-          } else if (msgText.startsWith('/') && isAdmin) {
-            await handleGroupMessage(jid, senderNormalized, m, msgText, isAdmin);
-          } else {
-            // Jika chat sedang diambil alih admin (Take Over), bot diam
-            if (isTakenOver) {
-              console.log(`[BOT] Percakapan dengan ${senderNormalized} sedang diambil alih admin. Auto-reply dinonaktifkan.`);
-            } else {
-              // Menangani Pesan DM Pelanggan
-              await handleCustomerMessage(jid, senderNormalized, m, msgText, false);
+          // Memproses Perintah Bot (Plugins, Media/Downloader, Admin/Group, Customer)
+          const routerArgs = msgText.trim().split(/\s+/);
+          const routerRawCmd = routerArgs[0].toLowerCase();
+          const routerCleanCmd = routerRawCmd.replace(/^[./#]/, '');
+          const isPlugin = await executePlugin(routerCleanCmd, { sock, jid, senderNumber: senderNormalized, m, msgText, args: routerArgs, cleanCmd: routerCleanCmd, isAdmin });
+          
+          if (!isPlugin) {
+            const isMedia = await handleMediaCommands(jid, senderNormalized, m, msgText);
+            if (!isMedia) {
+              const isHandledAdmin = await handleGroupMessage(jid, senderNormalized, m, msgText, isAdmin);
+              if (!isHandledAdmin) {
+                if (isTakenOver) {
+                  console.log(`[BOT] Percakapan dengan ${senderNormalized} sedang diambil alih admin. Auto-reply dinonaktifkan.`);
+                } else {
+                  // Menangani Pesan DM Pelanggan
+                  await handleCustomerMessage(jid, senderNormalized, m, msgText, false);
+                }
+              }
             }
           }
         } else {
           // Menangani Pesan Grup di SEMUA Grup tempat Bot bergabung
-          if (msgText.startsWith('/')) {
-            // Perintah bertanda '/' (seperti /getjid, /kick, /paid, /done, /cancel, /add, /group, /restock)
-            await handleGroupMessage(jid, senderNormalized, m, msgText, isAdmin);
-          } else {
-            // Perintah pelanggan (list, menu, buy, checkout, status, dll) di grup manapun.
-            // (handleCustomerMessage hanya merespon perintah resmi & diam pada chat biasa)
-            await handleCustomerMessage(jid, senderNormalized, m, msgText, true);
+          const routerArgs = msgText.trim().split(/\s+/);
+          const routerRawCmd = routerArgs[0].toLowerCase();
+          const routerCleanCmd = routerRawCmd.replace(/^[./#]/, '');
+          const isPlugin = await executePlugin(routerCleanCmd, { sock, jid, senderNumber: senderNormalized, m, msgText, args: routerArgs, cleanCmd: routerCleanCmd, isAdmin });
+
+          if (!isPlugin) {
+            const isMedia = await handleMediaCommands(jid, senderNormalized, m, msgText);
+            if (!isMedia) {
+              const isHandledAdmin = await handleGroupMessage(jid, senderNormalized, m, msgText, isAdmin);
+              if (!isHandledAdmin) {
+                // Perintah pelanggan (list, menu, buy, checkout, status, dll) di grup
+                await handleCustomerMessage(jid, senderNormalized, m, msgText, true);
+              }
+            }
           }
         }
       }
@@ -749,30 +1643,17 @@ export async function startBot(onSocketReady) {
 // ==========================================
 async function handleCustomerMessage(jid, senderNumber, messageObj, text, isFromGroup = false) {
   const textLower = text.toLowerCase();
+  const args = text.trim().split(/\s+/);
+  const rawCmd = args[0].toLowerCase();
+  const cleanCmd = rawCmd.replace(/^[./#]/, '');
+
   const customerName = messageObj.pushName || "Pelanggan";
   await db.getOrCreateCustomer(senderNumber, customerName);
 
-  // Jika pesan dikenali sebagai perintah utama, reset penghitung pesan tidak dikenal
-  if (textLower === 'help' || textLower === 'menu' || textLower === 'bantuan' || 
-      textLower === 'list' || textLower === 'produk' || 
-      textLower === 'cart' || textLower === 'keranjang' || 
-      textLower === 'checkout' || textLower === 'bayar' || 
-      textLower === 'cancel' || textLower === 'batal' || 
-      textLower === 'status' || /^notify\s+/i.test(textLower) || 
-      /^(beli|buy)\s+/i.test(textLower) || messageObj.message?.imageMessage) {
-    unknownMessageCounter.set(senderNumber, 0);
-  }
-
   // Periksa apakah perintah butuh privasi (transaksi personal)
   const isPrivateCommand = 
-    /^(beli|buy)\s+/i.test(textLower) ||
-    textLower === 'cart' || 
-    textLower === 'keranjang' || 
-    textLower === 'checkout' || 
-    textLower === 'bayar' || 
-    textLower === 'cancel' || 
-    textLower === 'batal' || 
-    textLower === 'status';
+    ['beli', 'buy'].includes(cleanCmd) ||
+    ['cart', 'keranjang', 'checkout', 'bayar', 'cancel', 'batal', 'status', 'riwayat', 'history'].includes(cleanCmd);
 
   const responseJid = (isFromGroup && isPrivateCommand) ? senderNumber : jid;
 
@@ -787,28 +1668,224 @@ async function handleCustomerMessage(jid, senderNumber, messageObj, text, isFrom
     }
   };
 
-  // 1. HELP / MENU / BANTUAN
-  if (textLower === 'help' || textLower === 'menu' || textLower === 'bantuan') {
-    const welcomeMessage = `━━━━━━━━━━━━━━━━━━
-🏪 *SELAMAT DATANG DI ${botSettings.storeName || config.defaults.storeName}*
-━━━━━━━━━━━━━━━━━━
+  // ==========================================
+  // LOGIKA NAVIGASI MENU TERKATEGORI (ASCII ART DESIGN)
+  // ==========================================
+  const menuMatch = textLower.match(/^(?:menu|help|bantuan)(?:\s+(1|2|3|4|5|6|jualan|produk|transaksi|bayar|downloader|media|hiburan|promo|diskon|referral|favorit|wishlist|admin|all|semua))?$/i);
 
-Halo *${customerName}*, berikut adalah daftar perintah yang bisa Anda gunakan:
+  if (menuMatch) {
+    const subCat = menuMatch[1] ? menuMatch[1].toLowerCase() : '';
 
-📌 *PERINTAH UTAMA:*
-• *list* / *produk* : Melihat katalog produk & status stok kami.
-• *beli [KODE] [JUMLAH]* : Memasukkan produk ke keranjang.
-  _(Contoh: beli NET01 2)_
-• *keranjang* / *cart* : Melihat isi keranjang belanja Anda saat ini.
-• *checkout* / *bayar* : Melanjutkan ke pembayaran dengan QRIS.
-• *status* : Mengecek status transaksi terakhir Anda.
-• *batal* / *cancel* : Membatalkan pesanan yang sedang berjalan.
-• *notify [KODE]* : Mendaftar notifikasi jika produk sedang habis.
-• *bantuan* / *help* : Menampilkan menu petunjuk ini.
+    // Deteksi mode grup (Sales Mode vs All Mode)
+    let isSalesModeGroup = false;
+    if (isFromGroup) {
+      const gSettings = await db.getGroupSettings(jid);
+      if (gSettings.bot_mode === 'sales') {
+        isSalesModeGroup = true;
+      }
+    }
 
-💡 _Setelah melakukan checkout, cukup kirim foto BUKTI TRANSFER langsung ke chat ini untuk konfirmasi pembayaran otomatis._
-━━━━━━━━━━━━━━━━━━`;
-    await sock.sendMessage(responseJid, { text: welcomeMessage });
+    if (isSalesModeGroup && ['3', 'downloader', 'media', 'hiburan'].includes(subCat)) {
+      await sock.sendMessage(responseJid, { 
+        text: "🛍️ *MODE JUALAN AKTIF:* Grup ini berada dalam *Mode Jualan/Toko*. Fitur media, downloader, dan game tidak diaktifkan di grup ini agar grup tetap tertib khusus jualan." 
+      });
+      return;
+    }
+
+    // Hitung Uptime
+    const uptimeSec = Math.floor(process.uptime());
+    const hours = Math.floor(uptimeSec / 3600);
+    const mins = Math.floor((uptimeSec % 3600) / 60);
+    const secs = uptimeSec % 60;
+    const uptimeStr = `${hours}j ${mins}m ${secs}d`;
+    const storeTitle = (botSettings.storeName || config.defaults.storeName).toUpperCase();
+    const modeBadge = isSalesModeGroup ? "🛍️ MODE JUALAN" : "🌐 MODE ALL";
+
+    const headerCard = `📋 *MENU UTAMA TOKO*
+━━━━━━━━━━━━━━━━━━━
+👤 *User:* ${customerName}
+⏱️ *Uptime:* ${uptimeStr}
+⚙️ *Mode:* ${modeBadge}
+⌨️ *Prefix:* \`.\` / \`/\` / \`#\`
+━━━━━━━━━━━━━━━━━━━\n\n`;
+
+    // Sub-Menu 1: Jualan & Produk
+    if (['1', 'jualan', 'produk'].includes(subCat)) {
+      const msg = headerCard + `🛍️ *PRODUK & JUALAN*
+▫️ \`.produk\` — Katalog & sisa stok produk
+▫️ \`.beli <kode> <qty>\` — Beli produk digital
+▫️ \`.cari <kata kunci>\` — Cari produk toko
+▫️ \`.bundle\` — Lihat paket hemat bundling
+
+━━━━━━━━━━━━━━━━━━━
+💡 _Contoh penggunaan: .produk atau .beli NET01 1_`;
+      await sock.sendMessage(responseJid, { text: msg });
+      return;
+    }
+
+    // Sub-Menu 2: Transaksi & Pembayaran
+    if (['2', 'transaksi', 'bayar'].includes(subCat)) {
+      const msg = headerCard + `🛒 *TRANSAKSI & PEMBAYARAN*
+▫️ \`.keranjang\` — Cek isi keranjang belanja
+▫️ \`.checkout\` — Link pembayaran QRIS/Midtrans
+▫️ \`.status\` — Cek status transaksi terbaru
+▫️ \`.riwayat\` — 5 riwayat transaksi terakhir
+▫️ \`.batal\` — Batalkan pesanan aktif
+
+━━━━━━━━━━━━━━━━━━━
+💡 _Contoh penggunaan: .keranjang atau .status_`;
+      await sock.sendMessage(responseJid, { text: msg });
+      return;
+    }
+
+    // Sub-Menu 3: Downloader, Media & Hiburan
+    if (['3', 'downloader', 'media', 'hiburan'].includes(subCat)) {
+      const msg = headerCard + `📥 *DOWNLOADER & MEDIA*
+▫️ \`.tt <link>\` — Download video TikTok
+▫️ \`.ig <link>\` — Download Reels/Foto IG
+▫️ \`.fb <link>\` — Download video Facebook
+▫️ \`.yt <link>\` — Download MP3/MP4 YouTube
+▫️ \`.stiker\` — Foto/Video ke Stiker WA
+▫️ \`.toimg\` / \`.tovid\` — Stiker ke Foto/Video
+▫️ \`.qc <teks>\` — Stiker Quote Chat
+▫️ \`.brat <teks>\` — Stiker Brat Aesthetics
+▫️ \`.draw <prompt>\` — Generate foto AI
+▫️ \`.hd\` — Jernihkan foto buram
+▫️ \`.khodam <nama>\` — Cek khodam lucu
+▫️ \`.tts <teks>\` — Ubah teks ke Voice Note
+
+━━━━━━━━━━━━━━━━━━━
+💡 _Contoh penggunaan: .brat kamu nanya? atau .khodam Budi_`;
+      await sock.sendMessage(responseJid, { text: msg });
+      return;
+    }
+
+    // Sub-Menu 4: Promo & Diskon
+    if (['4', 'promo', 'diskon', 'referral'].includes(subCat)) {
+      const msg = headerCard + `🎟️ *PROMO & REFERRAL*
+▫️ \`.kupon <kode>\` — Gunakan kupon diskon
+▫️ \`.referral\` — Ajak teman & dapatkan kupon 10%
+▫️ \`.bundle\` — Lihat paket hemat bundling
+
+━━━━━━━━━━━━━━━━━━━
+💡 _Contoh penggunaan: .kupon DISKON10_`;
+      await sock.sendMessage(responseJid, { text: msg });
+      return;
+    }
+
+    // Sub-Menu 5: Wishlist & Notifikasi Stok
+    if (['5', 'favorit', 'wishlist'].includes(subCat)) {
+      const msg = headerCard + `💝 *FAVORIT & NOTIFIKASI*
+▫️ \`.simpan <kode>\` — Simpan produk ke wishlist
+▫️ \`.favorit\` — Lihat daftar produk favorit
+▫️ \`.notify <kode>\` — Langganan notifikasi restok
+
+━━━━━━━━━━━━━━━━━━━
+💡 _Contoh penggunaan: .favorit atau .notify NET01_`;
+      await sock.sendMessage(responseJid, { text: msg });
+      return;
+    }
+
+    // Sub-Menu 6: Admin & Owner
+    if (['6', 'admin'].includes(subCat)) {
+      const msg = headerCard + `👑 *ADMIN & OWNER*
+▫️ \`.owner\` — Kontak resmi Pemilik Toko
+▫️ \`.ping\` — Cek status & kecepatan respon
+▫️ \`.mode <jualan/all>\` — Atur mode grup
+▫️ \`.setupdategroup\` — Set grup notifikasi restok
+▫️ \`.testupdate\` — Test pesan tagall grup
+▫️ \`.checkupdate\` — Paksa cek update supplier
+▫️ \`.psbalance\` — Saldo ProdSeller USDT
+▫️ \`.psproducts\` — Katalog produk ProdSeller
+▫️ \`.setpsid <kode> <id>\` — Hubungkan produk supplier
+▫️ \`.paid <order_id>\` — Konfirmasi pembayaran
+▫️ \`.done <order_id>\` — Pesanan selesai
+▫️ \`.cancel <order_id>\` — Batalkan pesanan
+▫️ \`.tagall <pesan>\` — Mention semua member
+
+━━━━━━━━━━━━━━━━━━━
+💡 _Contoh penggunaan: .mode jualan atau .psbalance_`;
+      await sock.sendMessage(responseJid, { text: msg });
+      return;
+    }
+
+    // TAMPILAN MENU UTAMA KHUSUS MODE JUALAN / TOKO
+    if (isSalesModeGroup) {
+      const salesMenu = headerCard + `🛍️ *PRODUK & JUALAN*
+▫️ \`.produk\` — Katalog & sisa stok produk
+▫️ \`.beli <kode> <qty>\` — Beli produk digital
+▫️ \`.cari <kata kunci>\` — Cari produk toko
+▫️ \`.bundle\` — Lihat paket hemat bundling
+
+🛒 *TRANSAKSI & PEMBAYARAN*
+▫️ \`.keranjang\` — Cek isi keranjang belanja
+▫️ \`.checkout\` — Link pembayaran QRIS/Midtrans
+▫️ \`.status\` — Cek status transaksi terbaru
+▫️ \`.riwayat\` — 5 riwayat transaksi terakhir
+▫️ \`.batal\` — Batalkan pesanan aktif
+
+🎟️ *PROMO & REFERRAL*
+▫️ \`.kupon <kode>\` — Gunakan kupon diskon
+▫️ \`.referral\` — Ajak teman & dapatkan diskon
+
+👑 *ADMIN & OWNER*
+▫️ \`.owner\`  •  \`.ping\`  •  \`.mode\`  •  \`.tagall\`
+
+━━━━━━━━━━━━━━━━━━━
+💡 _Ketik perintah langsung di atas (Contoh: .produk atau .beli NET01 1)_`;
+
+      await sock.sendMessage(responseJid, { text: salesMenu });
+      return;
+    }
+
+    // TAMPILAN MENU UTAMA FULL (MODE ALL)
+    const fullMenu = headerCard + `🛍️ *PRODUK & JUALAN*
+▫️ \`.produk\` — Katalog & sisa stok produk
+▫️ \`.beli <kode> <qty>\` — Beli produk digital
+▫️ \`.cari <kata kunci>\` — Cari produk toko
+▫️ \`.bundle\` — Lihat paket hemat bundling
+
+🛒 *TRANSAKSI & PEMBAYARAN*
+▫️ \`.keranjang\` — Cek isi keranjang belanja
+▫️ \`.checkout\` — Link pembayaran QRIS/Midtrans
+▫️ \`.status\` — Cek status transaksi terbaru
+▫️ \`.riwayat\` — 5 riwayat transaksi terakhir
+▫️ \`.batal\` — Batalkan pesanan aktif
+
+📥 *DOWNLOADER & MEDIA*
+▫️ \`.tt <link>\` — Download video TikTok
+▫️ \`.ig <link>\` — Download Reels/Foto IG
+▫️ \`.fb <link>\` — Download video Facebook
+▫️ \`.yt <link>\` — Download MP3/MP4 YouTube
+▫️ \`.stiker\` — Foto/Video ke Stiker WA
+▫️ \`.toimg\` / \`.tovid\` — Stiker ke Foto/Video
+▫️ \`.qc <teks>\` — Stiker Quote Chat
+▫️ \`.brat <teks>\` — Stiker Brat Aesthetics
+▫️ \`.draw <prompt>\` — Generate foto AI
+▫️ \`.hd\` — Jernihkan foto buram
+▫️ \`.khodam <nama>\` — Cek khodam lucu
+▫️ \`.tts <teks>\` — Ubah teks ke Voice Note
+
+🎟️ *PROMO & REFERRAL*
+▫️ \`.kupon <kode>\` — Gunakan kupon diskon
+▫️ \`.referral\` — Kode referral ajak teman
+▫️ \`.favorit\` — Lihat produk favorit/wishlist
+
+👑 *ADMIN & OWNER*
+▫️ \`.owner\` — Kontak resmi Owner
+▫️ \`.ping\` — Cek status & kecepatan respon
+▫️ \`.mode <jualan/all>\` — Atur mode grup
+▫️ \`.setupdategroup\` — Set grup notifikasi
+▫️ \`.psbalance\` — Saldo ProdSeller USDT
+▫️ \`.psproducts\` — Katalog produk ProdSeller
+▫️ \`.setpsid <kode> <id>\` — Link produk supplier
+▫️ \`.checkupdate\` — Cek restock/diskon
+▫️ \`.tagall <pesan>\` — Mention semua member
+
+━━━━━━━━━━━━━━━━━━━
+💡 _Ketik perintah langsung di atas (Contoh: .produk atau .tt <link>)_`;
+
+    await sock.sendMessage(responseJid, { text: fullMenu });
     return;
   }
 
@@ -816,35 +1893,37 @@ Halo *${customerName}*, berikut adalah daftar perintah yang bisa Anda gunakan:
   if (textLower === 'list' || textLower === 'produk') {
     const products = await db.getProducts();
     if (products.length === 0) {
-      await sock.sendMessage(responseJid, { text: "Saat ini belum ada produk yang terdaftar di sistem." });
+      await sock.sendMessage(responseJid, { text: "Saat ini belum ada produk yang terdaftar di toko kami." });
       return;
     }
 
-    let msg = `━━━━━━━━━━━━━━━━━━
-📦 *DAFTAR PRODUK*
-━━━━━━━━━━━━━━━━━━\n\n`;
+    let msg = `━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📦 *KATALOG PRODUK TOKO*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
 
     const limit = botSettings.lowStockLimit || config.defaults.lowStockLimit;
     for (const p of products) {
       let stockStatus = "";
       if (p.stok === 0) {
-        stockStatus = "🔴 *Habis* (Ketik `notify " + p.kode + "` untuk dikabari)";
+        stockStatus = "🔴 *Stok Habis* (Ketik `notify " + p.kode + "` agar diingatkan via DM saat restok)";
       } else if (p.stok <= limit) {
-        stockStatus = `🟡 *Hampir Habis* (Sisa: ${p.stok})`;
+        stockStatus = `🟡 *Stok Terbatas* (Sisa: ${p.stok} pcs)`;
       } else {
-        stockStatus = `🟢 *Ready* (Stok: ${p.stok})`;
+        stockStatus = `🟢 *Ready Stock* (Tersedia: ${p.stok} pcs)`;
       }
 
-      msg += `${stockStatus} *${p.nama}*
-Kode : \`${p.kode}\`
-Harga : Rp${p.harga.toLocaleString('id-ID')}
-Deskripsi : ${p.deskripsi || '-'}\n\n`;
+      msg += `${stockStatus}
+📌 *${p.nama}*
+• Kode Produk : \`${p.kode}\`
+• Harga       : *Rp${p.harga.toLocaleString('id-ID')}*
+• Deskripsi   : ${p.deskripsi || '-'}\n\n`;
     }
 
-    msg += `━━━━━━━━━━━━━━━━━━
-Ketik perintah berikut untuk membeli:
-*beli [KODE] [JUMLAH]*
-_(Contoh: beli NET01 1)_`;
+    msg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 *CARA MEMBELI:*
+Ketik: *beli [KODE] [JUMLAH]*
+_(Contoh: \`beli NET01 1\`)_
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
 
     await sock.sendMessage(responseJid, { text: msg });
     return;
@@ -853,6 +1932,15 @@ _(Contoh: beli NET01 1)_`;
   // 3. BELI [KODE] [JUMLAH]
   const buyRegex = /^(beli|buy)\s+(\w+)(?:\s+(\d+))?$/i;
   if (buyRegex.test(text)) {
+    const match = text.match(buyRegex);
+    const code = match[2].toUpperCase();
+
+    // Cek apakah kode produk benar-benar terdaftar di database toko
+    const existingProduct = await db.getProductByKode(code);
+    if (!existingProduct) {
+      // Jika kode produk tidak terdaftar di database (misal: "lu kemaren beli itu kah"), anggap ini percakapan biasa -> Bot DIAM
+      return;
+    }
     // Validasi Wajib Join Grup sebelum beli
     const groupCheck = await checkIsUserInGroup(senderNumber);
     if (!groupCheck.isMember) {
@@ -862,7 +1950,7 @@ Halo Kak! Untuk dapat memesan & membeli produk di toko kami, Anda diwajibkan unt
 
 📢 *Grup:* ${groupCheck.groupName}
 🔗 *Link Undangan Grup:*
-${groupCheck.inviteLink || "Silakan minta link undangan grup ke Admin Toko."}
+${groupCheck.inviteLink || "Silakan minta link undangan grup ke Admin atau Owner."}
 
 _Silakan klik link di atas untuk bergabung, kemudian ulangi perintah \`${text}\` kembali. Terima kasih!_ 🙏`;
 
@@ -871,8 +1959,6 @@ _Silakan klik link di atas untuk bergabung, kemudian ulangi perintah \`${text}\`
       return;
     }
 
-    const match = text.match(buyRegex);
-    const code = match[2].toUpperCase();
     const qty = match[3] ? parseInt(match[3]) : 1;
 
     if (qty <= 0) {
@@ -943,7 +2029,7 @@ Halo Kak! Untuk melanjutkan pembayaran & checkout pesanan Anda, Anda diwajibkan 
 
 📢 *Grup:* ${groupCheck.groupName}
 🔗 *Link Undangan Grup:*
-${groupCheck.inviteLink || "Silakan minta link undangan grup ke Admin Toko."}
+${groupCheck.inviteLink || "Silakan minta link undangan grup ke Admin atau Owner."}
 
 _Silakan klik link di atas untuk bergabung, kemudian ulangi perintah \`checkout\` kembali. Terima kasih!_ 🙏`;
 
@@ -1085,7 +2171,6 @@ Status: *${statusTranslate}*
     const code = match[2].toUpperCase();
     const p = await db.getProductByKode(code);
     if (!p) {
-      await sock.sendMessage(responseJid, { text: `❌ Produk dengan kode *${code}* tidak ditemukan.` });
       return;
     }
     if (p.stok > 0) {
@@ -1104,7 +2189,346 @@ Kami akan otomatis mengirimkan pesan WhatsApp ke nomor ini begitu produk *${p.na
     return;
   }
 
-  // 9. MENERIMA FOTO BUKTI TRANSFER (DISIMPAN SECARA BERTIKAT YYYY/MM)
+  // 9. RIWAYAT / HISTORY
+  if (textLower === 'riwayat' || textLower === 'history') {
+    const history = await db.getCustomerOrderHistory(senderNumber);
+    if (history.length === 0) {
+      await sock.sendMessage(responseJid, { text: "📜 Anda belum memiliki riwayat pesanan." });
+      await sendRedirectNotice();
+      return;
+    }
+    let msg = `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📜 *RIWAYAT 5 PESANAN TERAKHIR*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    for (const o of history) {
+      let statusEmoji = '🔄';
+      switch(o.status) {
+        case 'COMPLETED': statusEmoji = '✅'; break;
+        case 'CANCELLED': statusEmoji = '❌'; break;
+        case 'WAITING_PAYMENT': statusEmoji = '⏳'; break;
+        case 'PAID': statusEmoji = '🟢'; break;
+        case 'CART': statusEmoji = '🛒'; break;
+      }
+      msg += `${statusEmoji} *${o.order_id}*\n`;
+      msg += `   Total: Rp${o.total.toLocaleString('id-ID')}`;
+      if (o.discount_amount > 0) msg += ` (Diskon: -Rp${o.discount_amount.toLocaleString('id-ID')})`;
+      msg += `\n   Status: ${o.status}\n   Tanggal: ${new Date(o.created_at).toLocaleDateString('id-ID')}\n   Item: ${o.items_summary || '-'}\n\n`;
+    }
+    msg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+    await sock.sendMessage(responseJid, { text: msg });
+    await sendRedirectNotice();
+    return;
+  }
+
+  // 10. CARI PRODUK
+  const cariRegex = /^cari\s+(.+)$/i;
+  if (cariRegex.test(text)) {
+    const keyword = text.match(cariRegex)[1];
+    const results = await db.searchProducts(keyword);
+    if (results.length === 0) {
+      await sock.sendMessage(responseJid, { text: `🔎 Tidak ditemukan produk dengan kata kunci "*${keyword}*".\nKetik *produk* untuk melihat semua katalog.` });
+      return;
+    }
+    let msg = `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🔎 *HASIL PENCARIAN:* "${keyword}"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    for (const p of results) {
+      const stockLabel = p.stok === 0 ? '🔴 Habis' : p.stok <= 3 ? `🟡 Sisa ${p.stok}` : `🟢 ${p.stok} pcs`;
+      msg += `📌 *${p.nama}* (\`${p.kode}\`)\n   Harga: *Rp${p.harga.toLocaleString('id-ID')}* | Stok: ${stockLabel}\n\n`;
+    }
+    msg += `Ketik *beli [KODE] [JUMLAH]* untuk membeli.`;
+    await sock.sendMessage(responseJid, { text: msg });
+    return;
+  }
+
+  // 11. KUPON
+  const kuponRegex = /^kupon\s+(\w+)$/i;
+  if (kuponRegex.test(text)) {
+    const code = text.match(kuponRegex)[1].toUpperCase();
+    const coupon = await db.getCoupon(code);
+    if (!coupon) {
+      await sock.sendMessage(responseJid, { text: `❌ Kupon *${code}* tidak ditemukan atau sudah tidak berlaku.` });
+      return;
+    }
+    // Validasi: cek expired
+    if (coupon.expires_at && new Date(coupon.expires_at) < new Date()) {
+      await sock.sendMessage(responseJid, { text: `❌ Kupon *${code}* sudah kedaluwarsa.` });
+      return;
+    }
+    // Validasi: cek max uses
+    if (coupon.max_uses > 0 && coupon.used_count >= coupon.max_uses) {
+      await sock.sendMessage(responseJid, { text: `❌ Kupon *${code}* sudah mencapai batas pemakaian.` });
+      return;
+    }
+    // Cek ada order CART aktif
+    const lastOrder = await db.getCustomerLastOrder(senderNumber);
+    if (!lastOrder || lastOrder.status !== 'CART') {
+      await sock.sendMessage(responseJid, { text: `⚠️ Anda belum memiliki keranjang belanja aktif.\nSilakan tambah produk terlebih dahulu dengan *beli [KODE] [JUMLAH]*.` });
+      return;
+    }
+    // Validasi: min order
+    if (coupon.min_order > 0 && lastOrder.total < coupon.min_order) {
+      await sock.sendMessage(responseJid, { text: `⚠️ Minimal belanja untuk kupon ini adalah *Rp${coupon.min_order.toLocaleString('id-ID')}*. Total belanja Anda saat ini: Rp${lastOrder.total.toLocaleString('id-ID')}.` });
+      return;
+    }
+    // Hitung diskon
+    let discount = 0;
+    if (coupon.type === 'percent') {
+      discount = Math.floor(lastOrder.total * coupon.value / 100);
+    } else {
+      discount = coupon.value;
+    }
+    if (discount > lastOrder.total) discount = lastOrder.total;
+    
+    await db.applyCouponToOrder(lastOrder.order_id, code, discount);
+    await db.incrementCouponUsage(code);
+    const discountLabel = coupon.type === 'percent' ? `${coupon.value}%` : `Rp${coupon.value.toLocaleString('id-ID')}`;
+    await sock.sendMessage(responseJid, { text: `✅ *Kupon ${code} berhasil diterapkan!*\n\n🏷️ Diskon: ${discountLabel}\n💰 Potongan: *-Rp${discount.toLocaleString('id-ID')}*\n🧾 Total setelah diskon: *Rp${(lastOrder.total - discount).toLocaleString('id-ID')}*\n\nKetik *checkout* untuk melanjutkan pembayaran.` });
+    await sendRedirectNotice();
+    return;
+  }
+
+  // 12. REFERRAL (Ajak 3 Teman = Kupon Diskon 10%)
+  const refUseRegex = /^(?:referral|ref)\s+(REF-[\w]+)$/i;
+  if (refUseRegex.test(text)) {
+    const targetCode = text.match(refUseRegex)[1].toUpperCase();
+    const referrer = await db.getReferralByCode(targetCode);
+    if (!referrer) {
+      await sock.sendMessage(responseJid, { text: `❌ Kode referral *${targetCode}* tidak ditemukan.` });
+      return;
+    }
+    if (referrer.nomor === senderNumber) {
+      await sock.sendMessage(responseJid, { text: `⚠️ Anda tidak dapat menggunakan kode referral sendiri.` });
+      return;
+    }
+    const res = await db.addReferral(referrer.nomor, senderNumber);
+    if (res.success) {
+      await sock.sendMessage(responseJid, { text: `🎉 *Berhasil!* Anda mendaftar melalui referral *${referrer.nama || 'Pelanggan'}* (\`${targetCode}\`). Terima kasih!` });
+    } else {
+      await sock.sendMessage(responseJid, { text: `⚠️ Anda sudah pernah menggunakan kode referral sebelumnya.` });
+    }
+    return;
+  }
+
+  if (textLower === 'referral' || textLower === 'ref') {
+    const refCode = await db.generateReferralCode(senderNumber);
+    const stats = await db.getReferralStats(senderNumber);
+    const total = stats.totalReferred;
+    const claimed = stats.rewardsClaimed;
+    const eligibleRewards = Math.floor(total / 3);
+    const unclaimed = eligibleRewards - claimed;
+
+    let rewardStatusMsg = "";
+    if (unclaimed > 0) {
+      const newCouponCode = 'REF10-' + Math.random().toString(36).substring(2, 7).toUpperCase();
+      await db.addCoupon(newCouponCode, 'percent', 10, 0, 1, null);
+      await db.claimReferralRewardCount(senderNumber, unclaimed);
+      rewardStatusMsg = `🎉 *SELAMAT! Anda telah mengundang ${total} teman!*\n\n🏷️ *KUPON DISKON 10% ANDA:* \`${newCouponCode}\`\n💡 _Gunakan dengan mengetik:_ \`kupon ${newCouponCode}\` _saat checkout!_\n\n`;
+    } else {
+      const progress = total % 3;
+      const needed = 3 - progress;
+      rewardStatusMsg = `📊 Progres Hadiah: *${progress}/3 teman diajak*\n💡 Ajak *${needed} teman lagi* untuk mendapatkan Kupon Diskon 10%!\n\n`;
+    }
+
+    const refMsg = `━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎁 *PROGRAM REFERRAL*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Kode Referral Anda: *${refCode}*
+
+${rewardStatusMsg}📋 *Detail Statistik:*
+• Total Teman Diajak: *${total}*
+• Kupon Diskon Diklaim: *${claimed + (unclaimed > 0 ? unclaimed : 0)}x Kupon 10%*
+
+💡 *Cara Menggunakan:*
+Ajak teman Anda untuk mengetik \`ref ${refCode}\` di chat ini. Setiap 3 teman yang diajak, Anda berhak mendapatkan 1 Kupon Diskon 10%!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+    await sock.sendMessage(responseJid, { text: refMsg });
+    return;
+  }
+
+  // 15. BUNDLE / PAKET
+  if (textLower === 'bundle' || textLower === 'paket') {
+    const bundles = await db.getActiveBundles();
+    if (bundles.length === 0) {
+      await sock.sendMessage(responseJid, { text: "📦 Saat ini belum ada paket bundling yang tersedia." });
+      return;
+    }
+    let msg = `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📦 *PAKET BUNDLING HEMAT*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    for (const b of bundles) {
+      const items = b.produk_list.map(p => `${p.kode} x${p.qty}`).join(', ');
+      msg += `🎁 *${b.nama}*\n   Isi: ${items}\n   Harga Paket: *Rp${b.harga_bundle.toLocaleString('id-ID')}*\n\n`;
+    }
+    msg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n_Hubungi admin untuk memesan paket bundling._`;
+    await sock.sendMessage(responseJid, { text: msg });
+    return;
+  }
+
+  // 16. SIMPAN / ADD TO WISHLIST
+  const simpanRegex = /^simpan\s+(\w+)$/i;
+  if (simpanRegex.test(text)) {
+    const code = text.match(simpanRegex)[1].toUpperCase();
+    const p = await db.getProductByKode(code);
+    if (!p) {
+      await sock.sendMessage(responseJid, { text: `❌ Produk dengan kode *${code}* tidak ditemukan.` });
+      return;
+    }
+    await db.addToWishlist(senderNumber, code);
+    await sock.sendMessage(responseJid, { text: `💝 Produk *${p.nama}* (\`${code}\`) berhasil ditambahkan ke wishlist Anda!\nKetik *favorit* untuk melihat daftar wishlist.` });
+    return;
+  }
+
+  // 17. FAVORIT / WISHLIST
+  if (textLower === 'favorit' || textLower === 'wishlist') {
+    const items = await db.getWishlist(senderNumber);
+    if (items.length === 0) {
+      await sock.sendMessage(responseJid, { text: "💝 Wishlist Anda masih kosong.\nKetik *simpan [KODE]* untuk menambahkan produk favorit." });
+      return;
+    }
+    let msg = `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n💝 *WISHLIST / FAVORIT ANDA*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    for (const item of items) {
+      const stockLabel = item.stok === 0 ? '🔴 Habis' : `🟢 ${item.stok} pcs`;
+      msg += `📌 *${item.nama}* (\`${item.produk_kode}\`)\n   Harga: *Rp${item.harga.toLocaleString('id-ID')}* | Stok: ${stockLabel}\n\n`;
+    }
+    msg += `Ketik *beli [KODE] [JUMLAH]* untuk memesan.\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+    await sock.sendMessage(responseJid, { text: msg });
+    return;
+  }
+
+  // 19. SALDO PELANGGAN (.saldo)
+  if (textLower === 'saldo' || textLower === '.saldo') {
+    const bal = await db.getCustomerBalance(senderNumber);
+    const msg = `💳 *SALDO DEPOSIT ANDA* 💳
+
+👤 Pengguna: *${m.pushName || 'Pelanggan'}*
+💰 Sisa Saldo: *Rp${bal.toLocaleString('id-ID')}*
+
+💡 *Fungsi Saldo:*
+Saldo dapat digunakan untuk membeli produk secara instan tanpa perlu melakukan scan QRIS setiap kali belanja!
+
+_Ketik \`.deposit [NOMINAL]\` untuk melakukan Top Up Saldo._`;
+    await sock.sendMessage(responseJid, { text: msg });
+    return;
+  }
+
+  // 20. DEPOSIT TOPUP SALDO (.deposit [NOMINAL])
+  const depositMatch = text.match(/^[\.\/]?deposit\s+(\d+)$/i);
+  if (depositMatch) {
+    const amount = parseInt(depositMatch[1]);
+    if (amount < 5000) {
+      await sock.sendMessage(responseJid, { text: "⚠️ *Nominal Minimal Deposit:* Rp5.000" });
+      return;
+    }
+    try {
+      // Build a deposit order object compatible with createMidtransTransaction
+      const depositOrderId = `DEP-${Date.now()}`;
+      const depositOrder = {
+        order_id: depositOrderId,
+        total: amount,
+        customer_nomor: senderJid,
+        customer_nama: m.pushName || 'Pelanggan',
+      };
+      const qrisRes = await createMidtransTransaction(depositOrder);
+      if (qrisRes && qrisRes.redirect_url) {
+        let qrisMsg = `💳 *TOP UP SALDO DEPOSIT* 💳\n\n📌 Nominal Deposit: *Rp${amount.toLocaleString('id-ID')}*\n👤 Pelanggan: *${m.pushName || 'Pelanggan'}*\n\nSilakan lakukan pembayaran melalui link berikut:\n🔗 ${qrisRes.redirect_url}\n\n_Setelah pembayaran berhasil, saldo akan otomatis bertambah ke akun Anda!_`;
+        await sock.sendMessage(responseJid, { text: qrisMsg });
+      } else {
+        await sock.sendMessage(responseJid, { text: `❌ Gagal membuat link pembayaran deposit. Pastikan Midtrans sudah dikonfigurasi di pengaturan toko.` });
+      }
+    } catch (depErr) {
+      console.error('[DEPOSIT_ERR]', depErr.message);
+      await sock.sendMessage(responseJid, { text: `❌ Gagal membuat QRIS Top Up. Hubungi admin untuk bantuan.` });
+    }
+    return;
+  }
+
+  // 21. REVIEW / ULASAN PRODUK (.review [ORDER_ID] [RATING 1-5] [ULASAN])
+  const reviewMatch = text.match(/^[\.\/]?review\s+(\S+)\s+([1-5])\s+(.+)$/i);
+  if (reviewMatch) {
+    const orderId = reviewMatch[1]; // Bug Fix: Order ID adalah string (ORD-xxx), bukan integer
+    const rating = parseInt(reviewMatch[2]);
+    const comment = reviewMatch[3].trim();
+
+    const orderObj = await db.getOrderById(orderId);
+    if (!orderObj || orderObj.customer_nomor !== senderNumber) {
+      await sock.sendMessage(responseJid, { text: `❌ Transaksi #${orderId} tidak ditemukan pada akun Anda.` });
+      return;
+    }
+    await db.addReview(orderId, senderNumber, orderObj.items?.[0]?.produk_kode || 'PRODUK', rating, comment);
+    const stars = '⭐'.repeat(rating);
+    await sock.sendMessage(responseJid, { text: `🎉 *Terima Kasih Atas Ulasan Anda!*\n\nRating: ${stars} (${rating}/5)\nUlasan: "${comment}"` });
+    return;
+  }
+
+  // 22. PETUNJUK PENGGUNAAN PRODUK (.carapake [KODE] / .petunjuk [KODE])
+  if (['carapake', 'petunjuk', 'tutor', 'cara'].includes(cleanCmd)) {
+    const pKode = args[1]?.toUpperCase();
+    if (!pKode) {
+      await sock.sendMessage(responseJid, { text: "⚠️ Format salah. Gunakan: `.carapake <KODE_PRODUK>`\nContoh: `.carapake APM01`" });
+      return;
+    }
+    const product = await db.getProductByKode(pKode);
+    if (!product) {
+      await sock.sendMessage(responseJid, { text: `❌ Produk dengan kode *${pKode}* tidak ditemukan.` });
+      return;
+    }
+    await sock.sendMessage(responseJid, { text: product.petunjuk });
+    return;
+  }
+
+  // 23. RIWAYAT VOUCHER & KREDENSIAL DIGITAL PELANGGAN (.voucherku / .riwayat / .history / .myvouchers)
+  if (['voucherku', 'myvouchers', 'riwayat', 'history', 'pesananku', 'myorders', 'akunku'].includes(cleanCmd)) {
+    const history = await db.getCustomerVoucherHistory(senderNumber);
+
+    if (!history || history.length === 0) {
+      const emptyMsg = `ℹ️ Halo *${customerName}*, Anda belum memiliki riwayat pembelian produk digital yang selesai.
+
+Ketik *.produk* untuk melihat daftar produk toko kami!`;
+      await sock.sendMessage(responseJid, { text: emptyMsg });
+      return;
+    }
+
+    let msg = `━━━━━━━━━━━━━━━━━━━━
+🔑 *RIWAYAT VOUCHER & PRODUK DIGITAL*
+━━━━━━━━━━━━━━━━━━━━
+Halo *${customerName}*, berikut adalah daftar voucher / akun digital dari pesanan Anda sebelumnya:\n\n`;
+
+    history.forEach((order, idx) => {
+      const dateStr = new Date(order.created_at).toLocaleString('id-ID');
+      msg += `📦 *[${idx + 1}] Order ID:* \`${order.order_id}\`
+⏰ Waktu: ${dateStr}
+💰 Total: Rp${order.total.toLocaleString('id-ID')}\n`;
+
+      if (order.items && order.items.length > 0) {
+        order.items.forEach(item => {
+          msg += `   • *${item.produk_nama}* (\`${item.produk_kode}\`) x${item.qty}\n`;
+        });
+      }
+
+      if (order.credentials && order.credentials.length > 0) {
+        msg += `   🔑 *Kredensial / Voucher:* \n`;
+        order.credentials.forEach((c, cIdx) => {
+          msg += `      ${cIdx + 1}. \`${c.data_content}\`\n`;
+        });
+      } else {
+        msg += `   ℹ️ *Item Manual / Diproses Admin*\n`;
+      }
+      msg += `━━━━━━━━━━━━━━━━━━━━\n\n`;
+    });
+
+    msg += `💡 *Tips:* Ketik \`.carapake <KODE>\` jika Anda membutuhkan petunjuk penggunaan ulang produk (Contoh: \`.carapake APM01\`).`;
+
+    if (isFromGroup) {
+      const mentionJid = senderNumber.split('@')[0];
+      await sock.sendMessage(jid, { 
+        text: `🔐 *Keamanan Akun:* Halo @${mentionJid}, demi menjaga kerahasiaan password & voucher Anda, daftar riwayat voucher belanja telah kami kirimkan ke *Chat Pribadi (DM)* Anda. Silakan periksa pesan masuk dari bot!`,
+        mentions: [senderNumber]
+      });
+      await sock.sendMessage(senderNumber, { text: msg });
+    } else {
+      await sock.sendMessage(jid, { text: msg });
+    }
+    return;
+  }
+
+  // 18. MENERIMA FOTO BUKTI TRANSFER (DISIMPAN SECARA BERTIKAT YYYY/MM)
   if (messageObj.message.imageMessage) {
     const lastOrder = await db.getCustomerLastOrder(senderNumber);
     if (lastOrder && lastOrder.status === 'WAITING_PAYMENT') {
@@ -1168,54 +2592,130 @@ ${orderDetails.items.map(item => `- ${item.produk_nama} (\`${item.produk_kode}\`
     }
   }
 
-  // Jika pesan tidak dikenali dan bukan command (hanya balas di DM agar tidak spam grup, max 1x per 5 pesan)
-  if (!isFromGroup && !textLower.startsWith('/') && !buyRegex.test(text) && !notifyRegex.test(text)) {
-    const count = (unknownMessageCounter.get(senderNumber) || 0) + 1;
-    unknownMessageCounter.set(senderNumber, count);
-
-    if (count % 5 === 1) {
-      await sock.sendMessage(jid, { text: "Saya tidak memahami perintah tersebut. Silakan ketik *menu* atau *help* untuk petunjuk penggunaan." });
+  // FAQ OTOMATIS — cek kemiripan keyword sebelum balas 'tidak dikenal'
+  if (!isFromGroup && !textLower.startsWith('/')) {
+    const faqMatch = await db.findFaqMatch(text);
+    if (faqMatch) {
+      await sock.sendMessage(jid, { text: faqMatch.answer });
+      return;
     }
   }
+
 }
 
 // ==========================================
 // LOGIKA PESAN GRUP (ADMIN GROUP / GET JID)
 // ==========================================
-async function handleGroupMessage(jid, senderNumber, messageObj, text, isAdmin) {
+async function handleGroupMessage(jid, senderNumber, messageObj, text, isGroupAdminParam) {
   const isGroup = jid.endsWith('@g.us');
   const m = messageObj;
   const senderNormalized = senderNumber;
+  const args = text.trim().split(/\s+/);
+  const rawCmd = args[0].toLowerCase();
+  const cleanCmd = rawCmd.replace(/^[./#]/, '');
 
-  if (text.startsWith('/getjid')) {
+  const adminStoreCommands = [
+    'paid', 'done', 'cancel', 'flashsale', 'stats', 'broadcast', 'addcoupon', 
+    'delcoupon', 'listcoupon', 'addfaq', 'delfaq', 'listfaq', 'laporan', 
+    'restock', 'stock', 'price', 'out', 'ready', 'addproduct', 'takeover', 
+    'release', 'setname', 'setowner', 'eval', 'exec', 'backup'
+  ];
+
+  const groupModerationCommands = [
+    'add', 'kick', 'promote', 'demote', 'group', 'link', 'tagall', 'hidetag', 
+    'everyone', 'admins', 'mode', 'setmode', 'botmode', 'antilink', 'welcome', 
+    'autowelcomeswitch', 'setwelcome', 'setupdategroup'
+  ];
+
+  const banCommands = ['ban', 'unban', 'addmod', 'delmod', 'listmod', 'setownerid'];
+  const prodsellerCommands = ['psbalance', 'psproducts', 'setpsid', 'pshistory', 'checkupdate', 'testupdate'];
+
+  // Jika bukan perintah admin/moderasi, lewati agar ditangani handler lain
+  if (!adminStoreCommands.includes(cleanCmd) && !groupModerationCommands.includes(cleanCmd) && !banCommands.includes(cleanCmd) && !prodsellerCommands.includes(cleanCmd) && cleanCmd !== 'getjid' && cleanCmd !== 'owner') {
+    return false;
+  }
+
+  if (cleanCmd === 'getjid') {
     await sock.sendMessage(jid, { 
       text: `ID Chat/Grup ini adalah:\n\`${jid}\`\n\nID Anda adalah:\n\`${senderNumber}\`\n\nSilakan salin ID di atas dan masukkan ke pengaturan Web Dashboard jika ini adalah Grup Transaksi atau Grup Log.` 
     });
-    return;
+    return true;
   }
 
-  if (text.startsWith('/')) {
-    if (!isAdmin) {
-      await sock.sendMessage(jid, { text: "❌ Perintah ini hanya dapat dijalankan oleh Admin Toko atau Admin Grup." });
-      return;
+  // /owner diperbolehkan di mana saja
+  if (cleanCmd === 'owner') {
+    const ownerJid = botSettings.ownerNumber || config.defaults.ownerNumber;
+    const ownerNum = ownerJid.split('@')[0].replace(/[^0-9]/g, '');
+    const ownerName = `Owner ${botSettings.botName || 'Akbar Store'}`;
+
+    const vcard = `BEGIN:VCARD
+VERSION:3.0
+FN:${ownerName}
+ORG:${botSettings.botName || 'Akbar Store'};
+TEL;type=CELL;type=VOICE;waid=${ownerNum}:+${ownerNum}
+END:VCARD`;
+
+    try {
+      await sock.sendMessage(jid, { 
+        contacts: { 
+          displayName: ownerName, 
+          contacts: [{ vcard }] 
+        } 
+      });
+
+      const infoMsg = `👑 *KONTAK PEMILIK (OWNER) TOKO* 👑
+
+👤 Nama Toko: *${botSettings.botName || 'Akbar Store'}*
+📞 WhatsApp: *+${ownerNum}*
+🔗 Chat Langsung: https://wa.me/${ownerNum}
+
+_Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan kerjasama._`;
+
+      await sock.sendMessage(jid, { text: infoMsg });
+    } catch (err) {
+      console.error("[OWNER_CMD_ERR]", err.message);
     }
+    return true;
+  }
 
-    const isOwner = senderNumber === botSettings.ownerNumber;
-    const args = text.split(' ');
-    const cmd = args[0].toLowerCase();
+  // Normalisasi nomor HP untuk verifikasi Owner & Admin yang 100% Presisi
+  const cleanDigits = str => (str || '').split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+  const ownerPhoneNum = cleanDigits(botSettings.ownerNumber || config.defaults.ownerNumber);
+  const storedOwnerJid = (botSettings.ownerJid || '').trim();
+  const senderDigits = cleanDigits(senderNumber);
+  const jidDigits = cleanDigits(jid);
 
-    // ==========================================
-    // PERINTAH KHUSUS OWNER
-    // ==========================================
-    if (cmd === '/owner') {
-      await sock.sendMessage(jid, { text: `👑 *PEMILIK BOT:*\nPemilik bot utama adalah wa.me/${(botSettings.ownerNumber || '').split('@')[0]}` });
-      return;
+  // Cek Moderator dari DB
+  const isMod = await db.isModerator(senderNormalized);
+
+  // Cek Owner: via m.key.fromMe, stored JID (handles @lid), phone digit match, atau JID DM match
+  const isOwner = !!m.key?.fromMe ||
+                  !!(storedOwnerJid && (senderNormalized === storedOwnerJid || senderNormalized.includes(storedOwnerJid))) ||
+                  !!(ownerPhoneNum && senderDigits && (ownerPhoneNum === senderDigits || senderDigits.includes(ownerPhoneNum))) ||
+                  !!(!isGroup && ownerPhoneNum && jidDigits && (ownerPhoneNum === jidDigits || jidDigits.includes(ownerPhoneNum)));
+
+  const adminList = (botSettings.adminNumbers || config.defaults.adminNumbers || '').split(',').map(n => cleanDigits(n));
+  const isAdminStore = isOwner || isMod || adminList.includes(senderDigits);
+  const isAdminUser = isAdminStore || isGroupAdminParam;
+
+  // Jika bukan Admin/Owner dan mencoba perintah khusus Admin, diam (kecuali setownerid)
+  if (!isAdminUser && cleanCmd !== 'setownerid') {
+    return true;
+  }
+
+  // 🔒 Guard Grup Admin ACC khusus untuk perintah transaksi toko
+  if (adminStoreCommands.includes(cleanCmd)) {
+    const adminGroupId = botSettings.adminGroupId || botSettings.transactionLogGroupId || "";
+    if (adminGroupId && isGroup && jid !== adminGroupId) {
+      // Diam / tidak merespons perintah admin yang salah tempat agar tidak spam grup
+      return true;
     }
+  }
 
-    if (cmd === '/stats') {
+    if (cleanCmd === 'stats') {
       if (!isOwner) {
         await sock.sendMessage(jid, { text: "❌ Perintah ini hanya dapat dijalankan oleh Pemilik (Owner) bot." });
-        return;
+        return true;
       }
       const stats = await db.getStats();
       const statsText = `📊 *STATISTIK TOKO DIGITAL*
@@ -1225,76 +2725,631 @@ async function handleGroupMessage(jid, senderNumber, messageObj, text, isAdmin) 
 • Total Pesanan Selesai: *${stats.completedOrders}*
 • Total Omset Penjualan: *Rp${stats.totalRevenue.toLocaleString('id-ID')}*`;
       await sock.sendMessage(jid, { text: statsText });
-      return;
+      return true;
     }
 
-    if (cmd === '/broadcast') {
+    // .setupdategroup — Mengatur grup ini sebagai grup pengumuman (restock/price drop)
+    if (cleanCmd === 'setupdategroup') {
+      if (!isAdminUser) return true;
+      if (!isGroup) {
+        await sock.sendMessage(jid, { text: "❌ Perintah ini hanya bisa digunakan di dalam grup." });
+        return true;
+      }
+      await db.updateSettings({ updateGroupId: jid });
+      // Update config lokal di memori agar terbaca cepat
+      botSettings.updateGroupId = jid; 
+      await sock.sendMessage(jid, { 
+        text: `✅ *Berhasil!* Grup ini (\`${jid}\`) telah ditetapkan sebagai grup untuk menerima notifikasi otomatis (Restock & Penurunan Harga).\n\nKetik \`.testupdate\` untuk uji coba kirim pesan tagall ke grup ini.` 
+      });
+      return true;
+    }
+
+    // .testupdate — Mengirimkan pesan uji coba tagall ke grup update
+    if (cleanCmd === 'testupdate') {
+      if (!isAdminUser) return true;
+      const targetGroup = botSettings.updateGroupId || (isGroup ? jid : null);
+      if (!targetGroup) {
+        await sock.sendMessage(jid, { text: `⚠️ Belum ada grup update yang diset. Jalankan \`.setupdategroup\` di grup pilihanmu terlebih dahulu.` });
+        return true;
+      }
+      const testMsg = `📣 *TEST NOTIFIKASI RESTOCK & HARGA TOKO* 📣\n\nHalo member! Ini adalah pesan uji coba sistem notifikasi otomatis toko.\n\n_Jika Anda menerima notifikasi ini dengan tag, berarti sistem bekerja dengan baik!_`;
+      const success = await broadcastTagAll(sock, targetGroup, testMsg);
+      if (success) {
+        await sock.sendMessage(jid, { text: `✅ Berhasil mengirimkan pesan tagall uji coba ke grup \`${targetGroup}\`!` });
+      } else {
+        await sock.sendMessage(jid, { text: `❌ Gagal mengirimkan pesan tagall ke grup \`${targetGroup}\`. Pastikan bot adalah anggota/admin di grup tersebut.` });
+      }
+      return true;
+    }
+
+    // .checkupdate — Memaksa pengecekan update ProdSeller saat ini juga
+    if (cleanCmd === 'checkupdate') {
+      if (!isAdminUser) return true;
+      const updateGroup = botSettings.updateGroupId;
+      if (!updateGroup) {
+        await sock.sendMessage(jid, { 
+          text: `⚠️ *Grup Update Belum Diset!*\n\nSilakan buka grup toko/langganan Anda, lalu ketik:\n\`.setupdategroup\`\n\nagar bot tahu ke mana harus mengirimkan notifikasi tagall.` 
+        });
+        return true;
+      }
+      const psProducts = await db.allQuery("SELECT * FROM products WHERE prodseller_id IS NOT NULL");
+      if (psProducts.length === 0) {
+        await sock.sendMessage(jid, { 
+          text: `⚠️ *Belum Ada Produk ProdSeller!*\n\nBelum ada produk bot yang dihubungkan ke ProdSeller API.\n\nCara menghubungkan:\n1. Ketik \`.psproducts\` untuk lihat daftar ID produk supplier.\n2. Ketik \`.setpsid [KODE_PRODUK] [PRODSELLER_ID]\` (contoh: \`.setpsid GEMINI 64abc123\`)\n\nSetelah di-link, bot akan memantau perubahan harga & stoknya.` 
+        });
+        return true;
+      }
+
+      await sock.sendMessage(jid, { text: `⏳ Memeriksa perubahan harga & stok dari ProdSeller API...` });
+      const updates = await prodSeller.getProdSellerUpdates();
+      if (updates.restocks.length === 0 && updates.priceDrops.length === 0) {
+        await sock.sendMessage(jid, { 
+          text: `ℹ️ *Pengecekan Selesai*\n\nDipantau *${psProducts.length}* produk ProdSeller. Saat ini **belum ada** penurunan harga atau restock baru dari supplier.\n\n_Sistem akan terus mengecek secara otomatis setiap 30 menit._` 
+        });
+      } else {
+        let msg = `📣 *INFO UPDATE TOKO DIGITAL* 📣\n\n`;
+        if (updates.restocks.length > 0) {
+          msg += `📦 *PRODUK RESTOCK (TERSEDIA KEMBALI):*\n`;
+          updates.restocks.forEach(r => { msg += `✅ *${r.nama}* (\`${r.kode}\`) - $${r.price}\n`; });
+          msg += `\n`;
+        }
+        if (updates.priceDrops.length > 0) {
+          msg += `📉 *PENURUNAN HARGA PRODUK:*\n`;
+          updates.priceDrops.forEach(r => { msg += `🔥 *${r.nama}* (\`${r.kode}\`)\n   Harga Lama: ~$${r.oldPrice}~\n   Harga Baru: *$${r.newPrice}*\n`; });
+          msg += `\n`;
+        }
+        msg += `_Ketik .menu untuk mulai berbelanja._`;
+        const success = await broadcastTagAll(sock, updateGroup, msg);
+        if (success) {
+          await sock.sendMessage(jid, { text: `✅ Ditemukan update! Pesan tagall berhasil dikirim ke grup \`${updateGroup}\`.` });
+        } else {
+          await sock.sendMessage(jid, { text: `⚠️ Ditemukan update, tapi gagal kirim ke grup \`${updateGroup}\`.` });
+        }
+      }
+      return true;
+    }
+
+    // ===================================================================
+    // PRODSELLER COMMANDS — Manajemen Supplier Produk Digital
+    // ===================================================================
+
+    // .psbalance — Cek saldo USDT ProdSeller
+    if (cleanCmd === 'psbalance') {
+      if (!isAdminUser) return true;
+      try {
+        const bal = await prodSeller.fetchBalance();
+        await sock.sendMessage(jid, {
+          text: `💰 *SALDO PRODSELLER*
+
+👤 Username: ${bal.username || '-'}
+💵 Balance: *$${Number(bal.balance || 0).toFixed(2)} USDT*
+🏅 Membership: ${bal.membership || 'standard'}
+
+_Top up saldo di dashboard ProdSeller untuk beli produk._`
+        });
+      } catch (e) {
+        await sock.sendMessage(jid, { text: `❌ Gagal cek saldo ProdSeller: ${e.message}` });
+      }
+      return true;
+    }
+
+    // .psproducts — Lihat daftar produk ProdSeller
+    if (cleanCmd === 'psproducts') {
+      if (!isAdminUser) return true;
+      try {
+        const products = await prodSeller.fetchProducts();
+        const msg = prodSeller.formatProductList(products);
+        await sock.sendMessage(jid, { text: msg });
+      } catch (e) {
+        await sock.sendMessage(jid, { text: `❌ Gagal ambil produk ProdSeller: ${e.message}` });
+      }
+      return true;
+    }
+
+    // .setpsid [KODE_PRODUK] [PS_PRODUCT_ID] — Link produk lokal ke ProdSeller
+    if (cleanCmd === 'setpsid') {
+      if (!isAdminUser) return true;
+      const kode = args[1]?.toUpperCase();
+      const psId = args[2];
+      if (!kode || !psId) {
+        await sock.sendMessage(jid, { text: `⚠️ Gunakan: \`.setpsid [KODE_PRODUK] [PRODSELLER_ID]\`
+
+Contoh: \`.setpsid GEMINI1M 64abc123\`
+
+Lihat ID produk ProdSeller via \`.psproducts\`` });
+        return true;
+      }
+      const produk = await db.getProductByKode(kode);
+      if (!produk) {
+        await sock.sendMessage(jid, { text: `❌ Produk dengan kode *${kode}* tidak ditemukan di database bot.` });
+        return true;
+      }
+      await db.setProductProdsellerID(kode, psId);
+      // Otomatis set delivery_type ke PRODSELLER
+      await db.runQuery(`UPDATE products SET delivery_type = 'PRODSELLER' WHERE kode = ?`, [kode]);
+      await sock.sendMessage(jid, {
+        text: `✅ *Produk berhasil dihubungkan ke ProdSeller!*
+
+📦 Produk: *${produk.nama}* (\`${kode}\`)
+🔗 ProdSeller ID: \`${psId}\`
+🚀 Delivery Type: *PRODSELLER* (otomatis)
+
+Sekarang produk ini akan otomatis diorder dari ProdSeller saat ada pembeli.`
+      });
+      return true;
+    }
+
+    // .pshistory — Lihat riwayat 10 pembelian terakhir dari ProdSeller
+    if (cleanCmd === 'pshistory') {
+      if (!isAdminUser) return true;
+      try {
+        const history = await db.getProdsellerOrders(10);
+        if (!history || history.length === 0) {
+          await sock.sendMessage(jid, { text: `📋 *Riwayat ProdSeller*
+
+Belum ada pembelian dari ProdSeller.` });
+          return true;
+        }
+        let msg = `📋 *RIWAYAT PEMBELIAN PRODSELLER* (${history.length} terakhir)
+━━━━━━━━━━━━━━━━━━
+
+`;
+        history.forEach((h, i) => {
+          const tgl = new Date(h.created_at).toLocaleString('id-ID');
+          const status = h.status === 'DELIVERED' ? '✅' : h.status === 'FAILED' ? '❌' : '⏳';
+          msg += `${i+1}. ${status} *${h.produk_kode}* — Order: \`${h.order_id}\`
+   💵 $${h.amount_usd || '?'} | ${tgl}
+${h.error_message ? `   ❗ ${h.error_message}
+` : ''}
+`;
+        });
+        await sock.sendMessage(jid, { text: msg });
+      } catch (e) {
+        await sock.sendMessage(jid, { text: `❌ Gagal ambil riwayat: ${e.message}` });
+      }
+      return true;
+    }
+
+    // ===================================================================
+    // BAN SYSTEM — Owner-only by default, atau Moderator yang didaftarkan
+    // ===================================================================
+
+    // .setownerid — Owner mendaftarkan JID aktifnya (handles @lid, HANYA dari DM)
+    if (cleanCmd === 'setownerid') {
+      if (isGroup) {
+        await sock.sendMessage(jid, { text: `⚠️ Perintah ini hanya bisa dipakai di *DM* (chat privat ke bot), bukan di grup.` });
+        return true;
+      }
+      
+      // Jika ownerJid sudah ada, dan pengirim bukan owner & bukan dari nomor bot sendiri
+      if (storedOwnerJid && !isOwner && !m.key?.fromMe) {
+        await sock.sendMessage(jid, { text: `❌ Anda tidak memiliki izin untuk mengubah Owner JID.` });
+        return true;
+      }
+
+      await db.updateSettings({ ownerJid: senderNormalized });
+      botSettings = await db.getSettings();
+      await sock.sendMessage(jid, { text: `✅ *Owner JID Berhasil Didaftarkan!*
+
+🆔 JID Tersimpan: \`${senderNormalized}\`
+
+Sekarang Anda akan dikenali sebagai Owner di semua grup meskipun menggunakan sistem @lid WhatsApp terbaru. 🎉` });
+      return true;
+    }
+
+    // .ban / .unban — Owner atau Moderator terdaftar
+    if (cleanCmd === 'ban' || cleanCmd === 'unban') {
+      const isMod = await db.isModerator(senderNormalized);
+      if (!isOwner && !isMod) {
+        return true; // Silent — bukan owner atau mod
+      }
+
+      // Cari target JID dari mention, quote, atau angka manual
+      let targetJid = '';
+      const mentionedList = m.message?.extendedTextMessage?.contextInfo?.mentionedJid;
+      const quotedParticipant = m.message?.extendedTextMessage?.contextInfo?.participant;
+      if (mentionedList?.length > 0) {
+        targetJid = mentionedList[0];
+      } else if (quotedParticipant) {
+        targetJid = quotedParticipant;
+      } else if (args[1]) {
+        const numOnly = args[1].replace(/[^0-9]/g, '');
+        if (numOnly) targetJid = numOnly + '@s.whatsapp.net';
+      }
+
+      if (!targetJid) {
+        await sock.sendMessage(jid, { text: `⚠️ Gunakan: \`.${cleanCmd} @user\`, reply pesan usernya, atau \`.${cleanCmd} 628xxx\`` });
+        return true;
+      }
+
+      // Proteksi: tidak bisa ban Owner atau Moderator lain
+      const targetDigitsCheck = cleanDigits(targetJid);
+      const isTargetOwner = (storedOwnerJid && targetJid === storedOwnerJid) || (ownerPhoneNum && targetDigitsCheck === ownerPhoneNum);
+      const isTargetMod = await db.isModerator(targetJid);
+
+      if (cleanCmd === 'ban' && (isTargetOwner || isTargetMod)) {
+        await sock.sendMessage(jid, { text: `❌ Tidak bisa mem-ban Owner atau Moderator.` });
+        return true;
+      }
+
+      if (cleanCmd === 'ban') {
+        const reason = args.slice(2).join(' ') || 'Tanpa alasan.';
+        await db.banUser(targetJid, reason, senderNormalized);
+        await sock.sendMessage(jid, {
+          text: `🚫 *USER DI-BAN*
+
+👤 Target: @${targetJid.split('@')[0]}
+📝 Alasan: ${reason}
+🔨 Oleh: ${m.pushName || senderNormalized}
+
+Bot tidak akan merespons pesan dari user ini.`,
+          mentions: [targetJid]
+        });
+      } else {
+        await db.unbanUser(targetJid);
+        await sock.sendMessage(jid, {
+          text: `✅ *USER DI-UNBAN*
+
+👤 Target: @${targetJid.split('@')[0]}
+✔️ Oleh: ${m.pushName || senderNormalized}
+
+User ini sekarang bisa kembali berinteraksi dengan bot.`,
+          mentions: [targetJid]
+        });
+      }
+      return true;
+    }
+
+    // .addmod — Daftarkan Moderator (Owner only)
+    if (cleanCmd === 'addmod') {
+      if (!isOwner) return true;
+      const mentionedJid = m.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0] ||
+                           m.message?.extendedTextMessage?.contextInfo?.participant || '';
+      if (!mentionedJid) {
+        await sock.sendMessage(jid, { text: `⚠️ Gunakan: \`.addmod @user\`` });
+        return true;
+      }
+      await db.addModerator(mentionedJid, senderNormalized);
+      await sock.sendMessage(jid, {
+        text: `✅ @${mentionedJid.split('@')[0]} telah didaftarkan sebagai *Moderator Bot*.
+Dia sekarang bisa menggunakan perintah \`.ban\` dan \`.unban\`.`,
+        mentions: [mentionedJid]
+      });
+      return true;
+    }
+
+    // .delmod — Hapus Moderator (Owner only)
+    if (cleanCmd === 'delmod') {
+      if (!isOwner) return true;
+      const mentionedJid = m.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0] ||
+                           m.message?.extendedTextMessage?.contextInfo?.participant || '';
+      if (!mentionedJid) {
+        await sock.sendMessage(jid, { text: `⚠️ Gunakan: \`.delmod @user\`` });
+        return true;
+      }
+      await db.removeModerator(mentionedJid);
+      await sock.sendMessage(jid, {
+        text: `✅ @${mentionedJid.split('@')[0]} telah dihapus dari daftar Moderator Bot.`,
+        mentions: [mentionedJid]
+      });
+      return true;
+    }
+
+    // .listmod — Lihat daftar Moderator (Owner only)
+    if (cleanCmd === 'listmod') {
+      if (!isOwner) return true;
+      const mods = await db.listModerators();
+      if (!mods || mods.length === 0) {
+        await sock.sendMessage(jid, { text: `📋 *Daftar Moderator Bot*
+
+Belum ada moderator yang terdaftar.
+Gunakan \`.addmod @user\` untuk menambahkan.` });
+      } else {
+        const modList = mods.map((mod, i) => `${i+1}. \`${mod.jid}\`\n   📅 ${new Date(mod.created_at).toLocaleDateString('id-ID')}`).join('\n');
+        await sock.sendMessage(jid, { text: `📋 *Daftar Moderator Bot* (${mods.length} orang)
+
+${modList}
+
+Moderataor dapat menggunakan \`.ban\` dan \`.unban\`.` });
+      }
+      return true;
+    }
+
+    // OWNER SUITE: Backup Database Instan via DM/Chat WA (.backup)
+    if (cleanCmd === 'backup') {
       if (!isOwner) {
         await sock.sendMessage(jid, { text: "❌ Perintah ini hanya dapat dijalankan oleh Pemilik (Owner) bot." });
-        return;
+        return true;
+      }
+      await sock.sendMessage(jid, { text: "⏳ Sedang membuat file cadangan database SQLite..." });
+      const backupFilePath = backupDatabase();
+      if (backupFilePath && fs.existsSync(backupFilePath)) {
+        const dbBuffer = fs.readFileSync(backupFilePath);
+        await sock.sendMessage(jid, { 
+          document: dbBuffer, 
+          mimetype: 'application/x-sqlite3', 
+          fileName: path.basename(backupFilePath), 
+          caption: `💾 *BACKUP DATABASE BERHASIL!*\n\n📁 File: \`${path.basename(backupFilePath)}\`\n⏰ Waktu: ${new Date().toLocaleString('id-ID')}` 
+        });
+      } else {
+        await sock.sendMessage(jid, { text: "❌ Gagal membuat backup database." });
+      }
+      return true;
+    }
+
+    // OWNER SUITE: Ubah Nama Toko / Bot (.setname)
+    if (cleanCmd === 'setname') {
+      if (!isOwner) {
+        await sock.sendMessage(jid, { text: "❌ Perintah ini hanya dapat dijalankan oleh Pemilik (Owner) bot." });
+        return true;
+      }
+      const newName = args.slice(1).join(' ');
+      if (!newName) {
+        await sock.sendMessage(jid, { text: "⚠️ Gunakan: `.setname [NAMA_TOKO_BARU]`" });
+        return true;
+      }
+      await db.updateSettings({ storeName: newName, botName: newName });
+      botSettings = await db.getSettings(); // Bug Fix: was getBotSettings (tidak ada)
+      await sock.sendMessage(jid, { text: `✅ Nama Toko / Bot berhasil diperbarui menjadi: *${newName}*` });
+      return true;
+    }
+
+    // OWNER SUITE: Ubah Nomor Owner Utama (.setowner)
+    if (cleanCmd === 'setowner') {
+      if (!isOwner) {
+        await sock.sendMessage(jid, { text: "❌ Perintah ini hanya dapat dijalankan oleh Pemilik (Owner) bot." });
+        return true;
+      }
+      let newNum = args[1]?.replace(/[^0-9]/g, '');
+      if (!newNum) {
+        await sock.sendMessage(jid, { text: "⚠️ Gunakan: `.setowner [NOMOR_WA]`\nContoh: `.setowner 628123456789`" });
+        return true;
+      }
+      const newOwnerJid = `${newNum}@s.whatsapp.net`;
+      await db.updateSettings({ ownerNumber: newOwnerJid });
+      botSettings = await db.getSettings(); // Bug Fix: was getBotSettings (tidak ada)
+      await sock.sendMessage(jid, { text: `✅ Nomor Owner utama berhasil diperbarui ke: *+${newNum}*` });
+      return true;
+    }
+    if (['mode', 'setmode', 'botmode'].includes(cleanCmd)) {
+      const isGroup = jid.endsWith('@g.us');
+      if (!isGroup) {
+        await sock.sendMessage(jid, { text: "⚠️ Perintah pengaturan mode grup hanya dapat dijalankan di dalam Grup WhatsApp!" });
+        return true;
+      }
+      const newMode = args[1]?.toLowerCase();
+      const currentSettings = await db.getGroupSettings(jid);
+      
+      if (!newMode) {
+        const modeLabel = currentSettings.bot_mode === 'sales' ? '🛍️ MODE JUALAN (Respon Produk & Transaksi Toko Sahaja)' : '🌐 MODE ALL (Respon Seluruh Fitur, Media & Entertainment)';
+        await sock.sendMessage(jid, { 
+          text: `⚙️ *STATUS MODE BOT GRUP INI:*
+          
+Mode Saat Ini: *${modeLabel}*
+
+💡 *Cara Mengubah Mode:*
+• Ketik \`.mode jualan\` atau \`.mode sales\` (Khusus jualan & transaksi saja)
+• Ketik \`.mode all\` atau \`.mode semua\` (Respon seluruh fitur & media)` 
+        });
+        return true;
+      }
+
+      if (!['sales', 'jualan', 'toko', 'all', 'semua', 'full'].includes(newMode)) {
+        await sock.sendMessage(jid, { text: "⚠️ Mode tidak valid. Gunakan: `.mode jualan` atau `.mode all`" });
+        return true;
+      }
+
+      const targetMode = ['sales', 'jualan', 'toko'].includes(newMode) ? 'sales' : 'all';
+      await db.updateGroupSettings(jid, { bot_mode: targetMode });
+      
+      const successMsg = targetMode === 'sales' 
+        ? "🛍️ *MODE JUALAN DIAKTIFKAN UNTUK GRUP INI!* 🛍️\n\nBot sekarang *HANYA AKAN MERESPONS* perintah produk, katalog, transaksi, dan stok toko di grup ini. Perintah media/downloader/game/hiburan diabaikan agar grup tetap tertib khusus jualan." 
+        : "🌐 *MODE ALL DIAKTIFKAN UNTUK GRUP INI!* 🌐\n\nBot sekarang merespons seluruh fitur (Jualan, Transaksi, Media, Downloader, Game, dan AI) di grup ini.";
+
+      await sock.sendMessage(jid, { text: successMsg });
+      return true;
+    }
+
+    // MODERASI GRUP: Sakelar Proteksi Anti-Link (.antilink)
+    if (cleanCmd === 'antilink') {
+      const param = args[1]?.toLowerCase();
+      if (!['on', 'off', '1', '0', 'aktif', 'matikan'].includes(param)) {
+        await sock.sendMessage(jid, { text: "⚠️ Gunakan: `.antilink on` atau `.antilink off`" });
+        return true;
+      }
+      const isEnable = ['on', '1', 'aktif'].includes(param);
+      await db.updateGroupSettings(jid, { anti_link: isEnable ? 1 : 0 });
+      await sock.sendMessage(jid, { text: `🛡️ Proteksi Anti-Link Grup berhasil *${isEnable ? 'DIAKTIFKAN 🟢' : 'DINONAKTIFKAN 🔴'}* di grup ini!` });
+      return true;
+    }
+
+    // MODERASI GRUP: Sakelar Auto-Welcome Member Baru (.welcome, .autowelcomeswitch)
+    if (['welcome', 'autowelcomeswitch'].includes(cleanCmd)) {
+      const param = args[1]?.toLowerCase();
+      if (!['on', 'off', '1', '0', 'aktif', 'matikan'].includes(param)) {
+        await sock.sendMessage(jid, { text: "⚠️ Gunakan: `.welcome on` atau `.welcome off`" });
+        return true;
+      }
+      const isEnable = ['on', '1', 'aktif'].includes(param);
+      await db.updateGroupSettings(jid, { welcome_enabled: isEnable ? 1 : 0 });
+      await sock.sendMessage(jid, { text: `👋 Ucapan Auto-Welcome Member Baru berhasil *${isEnable ? 'DIAKTIFKAN 🟢' : 'DINONAKTIFKAN 🔴'}* di grup ini!` });
+      return true;
+    }
+
+    // MODERASI GRUP: Kustomisasi Pesan Auto-Welcome (.setwelcome)
+    if (cleanCmd === 'setwelcome') {
+      const welcomeMsg = args.slice(1).join(' ');
+      if (!welcomeMsg) {
+        await sock.sendMessage(jid, { text: "⚠️ Gunakan: `.setwelcome [TEKS_UCAPAN]`" });
+        return true;
+      }
+      await db.updateGroupSettings(jid, { welcome_msg: welcomeMsg, welcome_enabled: 1 });
+      await sock.sendMessage(jid, { text: `✅ Teks Auto-Welcome grup berhasil diperbarui!` });
+      return true;
+    }
+
+    // OWNER SUITE: Evaluasi Kode JavaScript Direct (.eval)
+    if (cleanCmd === 'eval') {
+      if (!isOwner) {
+        await sock.sendMessage(jid, { text: "❌ Perintah ini hanya dapat dijalankan oleh Pemilik (Owner) bot." });
+        return true;
+      }
+      const code = args.slice(1).join(' ');
+      if (!code) {
+        await sock.sendMessage(jid, { text: "⚠️ Gunakan: `.eval [KODE_JAVASCRIPT]`" });
+        return true;
+      }
+      try {
+        let result = eval(code);
+        if (typeof result !== 'string') {
+          result = await import('util').then(u => u.inspect(result));
+        }
+        await sock.sendMessage(jid, { text: `💻 *EVAL RESULT:*\n\`\`\`javascript\n${result}\n\`\`\`` });
+      } catch (err) {
+        await sock.sendMessage(jid, { text: `❌ *EVAL ERROR:*\n\`\`\`\n${err.message}\n\`\`\`` });
+      }
+      return true;
+    }
+
+    // OWNER SUITE: Eksekusi Terminal Shell Direct (.exec)
+    if (cleanCmd === 'exec') {
+      if (!isOwner) {
+        await sock.sendMessage(jid, { text: "❌ Perintah ini hanya dapat dijalankan oleh Pemilik (Owner) bot." });
+        return true;
+      }
+      const execCmd = args.slice(1).join(' ');
+      if (!execCmd) {
+        await sock.sendMessage(jid, { text: "⚠️ Gunakan: `.exec [PERINTAH_TERMINAL]`" });
+        return true;
+      }
+      exec(execCmd, (err, stdout, stderr) => {
+        if (err) {
+          sock.sendMessage(jid, { text: `❌ *EXEC ERROR:*\n\`\`\`\n${err.message}\n\`\`\`` });
+          return;
+        }
+        if (stderr) {
+          sock.sendMessage(jid, { text: `⚠️ *EXEC STDERR:*\n\`\`\`\n${stderr}\n\`\`\`` });
+          return;
+        }
+        sock.sendMessage(jid, { text: `💻 *EXEC STDOUT:*\n\`\`\`\n${stdout || 'Done (no output)'}\n\`\`\`` });
+      });
+      return true;
+    }
+
+    // PERINTAH ADMIN: .flashsale <KODE_PRODUK> <HARGA_FLASH> <DURASI_JAM>
+    if (cleanCmd === 'flashsale') {
+      const pKode = args[1]?.toUpperCase();
+      const hFlash = parseInt(args[2]);
+      const dur = parseInt(args[3]) || 2;
+
+      if (!pKode || isNaN(hFlash)) {
+        await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Gunakan `.flashsale <KODE_PRODUK> <HARGA_FLASH> [DURASI_JAM]`\n\n_Contoh:_ `.flashsale NET01 15000 2`" });
+        return true;
+      }
+
+      const p = await db.getProductByKode(pKode);
+      if (!p) {
+        await sock.sendMessage(jid, { text: `❌ Produk dengan kode *${pKode}* tidak ditemukan.` });
+        return true;
+      }
+
+      const endTime = await db.setFlashSale(pKode, hFlash, dur);
+      const endStr = new Date(endTime).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+
+      await sock.sendMessage(jid, { 
+        text: `⚡ *FLASH SALE BERHASIL DIAKTIFKAN!* ⚡
+
+📦 Produk: *${p.nama}* (\`${pKode}\`)
+💰 Harga Asli: ~Rp${p.harga.toLocaleString('id-ID')}~
+🔥 Harga Flash Sale: *Rp${hFlash.toLocaleString('id-ID')}*
+⏱️ Berlaku Hingga: *${endStr} WIB* (${dur} Jam)` 
+      });
+      return true;
+    }
+
+    if (cleanCmd === 'broadcast') {
+      if (!isOwner) {
+        await sock.sendMessage(jid, { text: "❌ Perintah ini hanya dapat dijalankan oleh Pemilik (Owner) bot." });
+        return true;
       }
       const broadcastMsg = args.slice(1).join(' ');
       if (!broadcastMsg) {
-        await sock.sendMessage(jid, { text: "⚠️ Format salah. Gunakan: `/broadcast [PESAN]`" });
-        return;
+        await sock.sendMessage(jid, { text: "⚠️ Format salah. Gunakan: `.broadcast [PESAN]`" });
+        return true;
       }
       
       const delayVal = botSettings.broadcastDelay || config.defaults.broadcastDelay;
-      const customers = await db.getAllCustomers();
-      await sock.sendMessage(jid, { text: `📢 Memulai broadcast ke *${customers.length}* pelanggan dengan jeda acak...` });
+      
+      let targetGroupJids = [];
+      if (botSettings.buyerGroupId) {
+        targetGroupJids.push(botSettings.buyerGroupId);
+      } else {
+        try {
+          const groups = await sock.groupFetchAllParticipating();
+          targetGroupJids = Object.keys(groups);
+        } catch (e) {
+          console.error("Gagal mengambil daftar grup:", e.message);
+        }
+      }
+
+      if (targetGroupJids.length === 0) {
+        await sock.sendMessage(jid, { text: "⚠️ Bot belum dikonfigurasi ID Grup atau belum bergabung di grup manapun untuk siaran broadcast." });
+        return true;
+      }
+
+      await sock.sendMessage(jid, { text: `📢 Memulai broadcast ke *${targetGroupJids.length}* Grup WhatsApp...` });
       
       let success = 0;
-      for (const c of customers) {
+      for (const gJid of targetGroupJids) {
         if (botState.whatsappConnected && sock) {
           try {
-            await sock.sendMessage(c.nomor, { text: `📢 *PENGUMUMAN TOKO:*\n\n${broadcastMsg}` });
+            await sock.sendMessage(gJid, { text: `📢 *PENGUMUMAN RESMI TOKO:*\n\n${broadcastMsg}` });
             success++;
             
-            // Hitung delay acak
-            const randomDelay = Math.floor(Math.random() * 4001) + delayVal;
+            const randomDelay = Math.floor(Math.random() * 2000) + delayVal;
             await new Promise(resolve => setTimeout(resolve, randomDelay)); 
           } catch (err) {
-            console.error(`Gagal kirim broadcast ke ${c.nomor}:`, err.message);
+            console.error(`Gagal kirim broadcast grup ke ${gJid}:`, err.message);
           }
         } else {
           break;
         }
       }
-      await sock.sendMessage(jid, { text: `✅ *Broadcast selesai!*\nBerhasil dikirim ke *${success}/${customers.length}* pelanggan.` });
-      await logToSystem('BROADCAST', `📢 Siaran pesan selesai dikirim ke ${success}/${customers.length} pelanggan oleh Owner.`);
-      return;
+      await sock.sendMessage(jid, { text: `✅ *Broadcast selesai!*\nBerhasil dikirim ke *${success}/${targetGroupJids.length}* Grup WhatsApp.` });
+      await logToSystem('BROADCAST', `📢 Siaran pesan selesai dikirim ke ${success}/${targetGroupJids.length} Grup WhatsApp oleh Owner.`);
+      return true;
     }
 
     // ==========================================
     // PERINTAH MODERASI GRUP & BOT MANAGEMENT (v2)
     // ==========================================
-    if (isGroup && (cmd === '/add' || cmd === '/kick' || cmd === '/promote' || cmd === '/demote')) {
+    if (isGroup && ['add', 'kick', 'promote', 'demote'].includes(cleanCmd)) {
       const targetJid = extractTargetJid(m, args);
       if (!targetJid) {
-        await sock.sendMessage(jid, { text: `⚠️ Format salah. Tag user atau masukkan nomor. Contoh: \`${cmd} @user\` atau \`${cmd} 628123456789\`` });
-        return;
+        await sock.sendMessage(jid, { text: `⚠️ Format salah. Tag user atau masukkan nomor. Contoh: \`.${cleanCmd} @user\` atau \`.${cleanCmd} 628123456789\`` });
+        return true;
       }
 
       try {
-        const actionMap = { '/add': 'add', '/kick': 'remove', '/promote': 'promote', '/demote': 'demote' };
-        const actNameMap = { '/add': 'ditambahkan', '/kick': 'dikeluarkan', '/promote': 'diangkat jadi admin', '/demote': 'diturunkan dari admin' };
+        const actionMap = { 'add': 'add', 'kick': 'remove', 'promote': 'promote', 'demote': 'demote' };
+        const actNameMap = { 'add': 'ditambahkan', 'kick': 'dikeluarkan', 'promote': 'diangkat jadi admin', 'demote': 'diturunkan dari admin' };
         
-        await sock.groupParticipantsUpdate(jid, [targetJid], actionMap[cmd]);
-        await sock.sendMessage(jid, { text: `✅ Berhasil! Pengguna @${targetJid.split('@')[0]} telah ${actNameMap[cmd]}.`, mentions: [targetJid] });
-        await db.addLog("MODERATION", `Admin (${senderNormalized}) menjalankan ${cmd} pada ${targetJid} di grup ${jid}`);
+        await sock.groupParticipantsUpdate(jid, [targetJid], actionMap[cleanCmd]);
+        await sock.sendMessage(jid, { text: `✅ Berhasil! Pengguna @${targetJid.split('@')[0]} telah ${actNameMap[cleanCmd]}.`, mentions: [targetJid] });
+        await db.addLog("MODERATION", `Admin (${senderNormalized}) menjalankan ${cleanCmd} pada ${targetJid} di grup ${jid}`);
       } catch (err) {
         await sock.sendMessage(jid, { 
-          text: `❌ Gagal menjalankan ${cmd}: ${err.message}.\n\n💡 *PENTING:* Pastikan **nomor WhatsApp Bot sudah dijadikan ADMIN GRUP** di WhatsApp agar fitur moderasi (${cmd}, /add, /promote, /demote) dapat mengeksekusi tindakan.` 
+          text: `❌ Gagal menjalankan ${cleanCmd}: ${err.message}.\n\n💡 *PENTING:* Pastikan **nomor WhatsApp Bot sudah dijadikan ADMIN GRUP** di WhatsApp agar fitur moderasi (${cleanCmd}) dapat mengeksekusi tindakan.` 
         });
       }
-      return;
+      return true;
     }
 
-    if (isGroup && cmd === '/group') {
+    if (isGroup && cleanCmd === 'group') {
       const option = args[1]?.toLowerCase();
       if (option !== 'open' && option !== 'close') {
-        await sock.sendMessage(jid, { text: "⚠️ Format salah. Gunakan: `/group open` (semua anggota) atau `/group close` (hanya admin)." });
-        return;
+        await sock.sendMessage(jid, { text: "⚠️ Format salah. Gunakan: `.group open` (semua anggota) atau `.group close` (hanya admin)." });
+        return true;
       }
 
       try {
@@ -1304,26 +3359,26 @@ async function handleGroupMessage(jid, senderNumber, messageObj, text, isAdmin) 
       } catch (err) {
         await sock.sendMessage(jid, { text: `❌ Gagal mengubah status grup: ${err.message}. Pastikan bot adalah Admin di grup.` });
       }
-      return;
+      return true;
     }
 
-    if (isGroup && cmd === '/link') {
+    if (isGroup && cleanCmd === 'link') {
       try {
         const code = await sock.groupInviteCode(jid);
         await sock.sendMessage(jid, { text: `🔗 *LINK UNDANGAN GRUP*\nhttps://chat.whatsapp.com/${code}` });
       } catch (err) {
         await sock.sendMessage(jid, { text: `❌ Gagal mengambil link grup: ${err.message}. Pastikan bot adalah Admin.` });
       }
-      return;
+      return true;
     }
 
-    if (isGroup && (cmd === '/tagall' || cmd === '/hidetag')) {
+    if (isGroup && (cleanCmd === 'tagall' || cleanCmd === 'hidetag' || cleanCmd === 'everyone')) {
       try {
         const groupMeta = await sock.groupMetadata(jid);
         const participants = groupMeta.participants.map(p => p.id);
         const extraMsg = args.slice(1).join(' ');
         
-        let tagMsg = `📢 *PENGUMUMAN GRUP*\n${extraMsg ? extraMsg + '\n\n' : ''}`;
+        let tagMsg = `📢 *PENGUMUMAN GRUP (${groupMeta.subject})*\n${extraMsg ? extraMsg + '\n\n' : ''}`;
         participants.forEach((pId, idx) => {
           tagMsg += `${idx + 1}. @${pId.split('@')[0]}\n`;
         });
@@ -1332,10 +3387,10 @@ async function handleGroupMessage(jid, senderNumber, messageObj, text, isAdmin) 
       } catch (err) {
         await sock.sendMessage(jid, { text: `❌ Gagal tagall: ${err.message}` });
       }
-      return;
+      return true;
     }
 
-    if (isGroup && cmd === '/admins') {
+    if (isGroup && cleanCmd === 'admins') {
       try {
         const groupMeta = await sock.groupMetadata(jid);
         const admins = groupMeta.participants.filter(p => p.admin === 'admin' || p.admin === 'superadmin').map(p => p.id);
@@ -1350,65 +3405,103 @@ async function handleGroupMessage(jid, senderNumber, messageObj, text, isAdmin) 
       } catch (err) {
         await sock.sendMessage(jid, { text: `❌ Gagal panggil admin: ${err.message}` });
       }
-      return;
+      return true;
     }
 
-    if (cmd === '/restock') {
+    if (cleanCmd === 'restock') {
       const code = args[1]?.toUpperCase();
       if (!code) {
-        await sock.sendMessage(jid, { text: "⚠️ Format salah. Gunakan: `/restock [KODE_PRODUK]`\nContoh: `/restock NET01`" });
-        return;
+        await sock.sendMessage(jid, { text: "⚠️ Format salah. Gunakan: `.restock [KODE_PRODUK]`\nContoh: `.restock NET01`" });
+        return true;
       }
 
       const p = await db.getProductByKode(code);
       if (!p) {
         await sock.sendMessage(jid, { text: `❌ Produk dengan kode *${code}* tidak ditemukan.` });
-        return;
+        return true;
       }
 
       await sock.sendMessage(jid, { text: `⏳ Memulai pengiriman siaran restok untuk *${p.nama}* (\`${code}\`)...` });
       triggerRestockBroadcast(code);
-      return;
+      return true;
     }
 
     // ==========================================
     // PERINTAH ADMIN & TRANSAKSI
     // ==========================================
-    if (cmd === '/takeover') {
+    if (cleanCmd === 'takeover') {
       const targetNumber = args[1];
       if (!targetNumber) {
-        await sock.sendMessage(jid, { text: "⚠️ Format salah. Gunakan: `/takeover [NOMOR]`\nContoh: `/takeover 6281234567890`" });
-        return;
+        await sock.sendMessage(jid, { text: "⚠️ Format salah. Gunakan: `.takeover [NOMOR]`\nContoh: `.takeover 6281234567890`" });
+        return true;
       }
       const targetJid = targetNumber.includes('@') ? targetNumber : `${targetNumber}@s.whatsapp.net`;
       await db.updateConversationState(targetJid, 'ADMIN');
       await sock.sendMessage(jid, { text: `✅ Chat dengan ${targetNumber} telah diambil alih. Bot tidak akan membalas otomatis pesannya.` });
-      return;
+      return true;
     }
 
-    if (cmd === '/release') {
+    if (cleanCmd === 'release') {
       const targetNumber = args[1];
       if (!targetNumber) {
-        await sock.sendMessage(jid, { text: "⚠️ Format salah. Gunakan: `/release [NOMOR]`\nContoh: `/release 6281234567890`" });
-        return;
+        await sock.sendMessage(jid, { text: "⚠️ Format salah. Gunakan: `.release [NOMOR]`\nContoh: `.release 6281234567890`" });
+        return true;
       }
       const targetJid = targetNumber.includes('@') ? targetNumber : `${targetNumber}@s.whatsapp.net`;
       await db.updateConversationState(targetJid, 'BOT');
       await sock.sendMessage(jid, { text: `✅ Chat dengan ${targetNumber} telah dikembalikan ke Bot. Bot akan membalas otomatis kembali.` });
-      return;
+      return true;
     }
 
-    if (cmd === '/paid') {
-      const orderId = args[1]?.toUpperCase();
+// Helper universal mengekstrak Order ID baik diketik langsung maupun dari membalas/reply pesan
+function extractOrderIdFromMessage(args, m) {
+  if (args && args[1]) {
+    return args[1].trim().toUpperCase();
+  }
+
+  const contextInfo = m?.message?.extendedTextMessage?.contextInfo || 
+                      m?.message?.conversation?.contextInfo ||
+                      m?.message?.imageMessage?.contextInfo ||
+                      m?.message?.videoMessage?.contextInfo;
+
+  if (contextInfo && contextInfo.quotedMessage) {
+    const qMsg = contextInfo.quotedMessage;
+    const quotedText = 
+      qMsg.conversation ||
+      qMsg.extendedTextMessage?.text ||
+      qMsg.imageMessage?.caption ||
+      qMsg.videoMessage?.caption ||
+      qMsg.documentMessage?.caption ||
+      '';
+
+    if (quotedText) {
+      const m1 = quotedText.match(/Order\s*ID\s*:\s*\*?([A-Za-z0-9_-]+)\*?/i);
+      if (m1 && m1[1]) return m1[1].toUpperCase();
+
+      const m2 = quotedText.match(/\b(ORD[-_]?[A-Za-z0-9]+)\b/i);
+      if (m2 && m2[1]) return m2[1].toUpperCase();
+
+      const m3 = quotedText.match(/(?:Order|ID|Pesanan|Struk)?\s*:?\s*#?([A-Za-z0-9]{3,20})\b/i);
+      if (m3 && m3[1]) return m3[1].toUpperCase();
+    }
+  }
+
+  return null;
+}
+
+    if (['paid', 'acc', 'terima', 'konfirmasi'].includes(cleanCmd)) {
+      const orderId = extractOrderIdFromMessage(args, m);
       if (!orderId) {
-        await sock.sendMessage(jid, { text: "⚠️ Format salah. Gunakan: `/paid ORD-YYYYMMDD-XXXX`" });
-        return;
+        await sock.sendMessage(jid, { 
+          text: "⚠️ *Gagal Deteksi Order ID:*\n\nSilakan **balas (reply)** pesan notifikasi pesanan dengan `.paid` atau `.acc`, atau ketik: `.paid <ORDER_ID>`" 
+        });
+        return true;
       }
 
       const res = await db.updateOrderStatus(orderId, 'PAID');
       if (!res.success) {
         await sock.sendMessage(jid, { text: `❌ Gagal: ${res.message}` });
-        return;
+        return true;
       }
 
       await sock.sendMessage(jid, { text: `✅ Order ID *${orderId}* berhasil diubah ke status *PAID*. Memproses pengiriman otomatis...` });
@@ -1420,68 +3513,107 @@ Pembayaran Anda telah *DITERIMA* dan diverifikasi oleh admin kami. Terima kasih!
       await sock.sendMessage(res.customerNomor, { text: notifCustomer });
       await logToSystem('PAYMENT', `💸 Order ID *${orderId}* dikonfirmasi PAID oleh admin (wa.me/${senderNumber.split('@')[0]})`);
 
-      // AUTO-DELIVERY: Kirim kredensial digital secara otomatis
+      // ══════════════════════════════════════════════════════════
+      // AUTO-DELIVERY: Gabungan Local Stock + ProdSeller API
+      // ══════════════════════════════════════════════════════════
       try {
+        // 1. Ambil item-item order yang bertipe PRODSELLER (dari DB + join products)
+        const orderItemsFull = await db.allQuery(
+          `SELECT oi.produk_kode, oi.qty, p.nama as produk_nama, p.delivery_type, p.prodseller_id, p.petunjuk
+           FROM order_items oi
+           JOIN products p ON oi.produk_kode = p.kode
+           WHERE oi.order_id = ?`,
+          [orderId]
+        );
+
+        // 2. Deliver LOCAL (AUTO dari product_items)
         const deliveredData = await db.claimAndDeliverItems(orderId);
-        const deliveredKeys = Object.keys(deliveredData);
 
-        if (deliveredKeys.length > 0) {
-          let credMsg = `━━━━━━━━━━━━━━━━━━
-📦 *PENGIRIMAN PRODUK DIGITAL*
-━━━━━━━━━━━━━━━━━━
-Order ID: *${orderId}*
+        // 3. Deliver PRODSELLER — panggil API untuk item bertipe PRODSELLER
+        const prodsellerItems = orderItemsFull.filter(i => i.delivery_type === 'PRODSELLER' && i.prodseller_id);
+        let psResult = { delivered: {}, errors: [] };
+        if (prodsellerItems.length > 0) {
+          psResult = await prodSeller.deliverViaProdSeller(orderId, prodsellerItems);
+        }
 
-Berikut adalah detail akun/voucher Anda:\n\n`;
+        // 4. Bangun pesan pengiriman gabungan
+        const localKeys = Object.keys(deliveredData);
+        const psKeys = Object.keys(psResult.delivered);
+        const hasAnyDelivery = localKeys.length > 0 || psKeys.length > 0;
 
+        if (hasAnyDelivery) {
+          let credMsg = `━━━━━━━━━━━━━━━━━━\n📦 *PENGIRIMAN PRODUK DIGITAL*\n━━━━━━━━━━━━━━━━━━\nOrder ID: *${orderId}*\n\nBerikut adalah detail akun/voucher Anda:\n\n`;
+
+          // Local stock items
           for (const [kode, info] of Object.entries(deliveredData)) {
             credMsg += `🔑 *${info.produk_nama}* (\`${kode}\`):\n`;
             if (info.credentials.length > 0) {
-              info.credentials.forEach((cred, i) => {
-                credMsg += `   ${i + 1}. ${cred}\n`;
-              });
+              info.credentials.forEach((cred, i) => { credMsg += `   ${i + 1}. ${cred}\n`; });
             } else {
-              credMsg += `   ⚠️ Stok kredensial habis, admin akan mengirimkan secara manual.\n`;
+              credMsg += `   ⚠️ Stok habis, admin akan mengirim secara manual.\n`;
             }
+            if (info.petunjuk) credMsg += `\n${info.petunjuk}\n`;
             credMsg += `\n`;
           }
 
-          credMsg += `━━━━━━━━━━━━━━━━━━
-⚠️ _Harap simpan data ini dengan baik. Jika ada masalah, silakan hubungi admin._
-━━━━━━━━━━━━━━━━━━`;
+          // ProdSeller items
+          for (const [kode, info] of Object.entries(psResult.delivered)) {
+            credMsg += `🔑 *${info.produk_nama}* (\`${kode}\`):\n`;
+            if (info.keys.length > 0) {
+              info.keys.forEach((key, i) => { credMsg += `   ${i + 1}. ${key}\n`; });
+            } else {
+              credMsg += `   ⚠️ Pengiriman ProdSeller masih diproses, admin akan mengirimkan segera.\n`;
+            }
+            if (info.petunjuk) credMsg += `\n${info.petunjuk}\n`;
+            credMsg += `\n`;
+          }
+
+          credMsg += `━━━━━━━━━━━━━━━━━━\n⚠️ _Harap simpan data ini dengan baik. Jika ada masalah, silakan hubungi admin._\n━━━━━━━━━━━━━━━━━━`;
           await sock.sendMessage(res.customerNomor, { text: credMsg });
 
-          // Otomatis tandai COMPLETED jika semua item berhasil dikirim
-          const allDelivered = deliveredKeys.every(k => deliveredData[k].credentials.length > 0);
+          // Cek apakah semua terkirim sempurna
+          const localAllOk = localKeys.every(k => deliveredData[k].credentials.length > 0);
+          const psAllOk = psKeys.every(k => psResult.delivered[k].keys.length > 0) && psResult.errors.length === 0;
+          const allDelivered = localAllOk && psAllOk;
+
           if (allDelivered) {
             await db.updateOrderStatus(orderId, 'COMPLETED');
             await sock.sendMessage(res.customerNomor, { text: `✅ Pesanan *${orderId}* telah *SELESAI*. Terima kasih telah berbelanja! 🙏` });
-            await sock.sendMessage(jid, { text: `✅ Order *${orderId}* otomatis ditandai *COMPLETED* — semua kredensial digital berhasil dikirim ke pelanggan.` });
-            await logToSystem('ORDER', `✅ Order *${orderId}* auto-completed setelah pengiriman kredensial digital.`);
+            await sock.sendMessage(jid, { text: `✅ Order *${orderId}* otomatis *COMPLETED* — semua item berhasil dikirim ke pelanggan.` });
+            await logToSystem('ORDER', `✅ Order *${orderId}* auto-completed (Local: ${localKeys.length}, ProdSeller: ${psKeys.length}).`);
           } else {
-            await sock.sendMessage(jid, { text: `⚠️ Order *${orderId}*: Sebagian kredensial digital berhasil dikirim, tetapi ada item yang stok kredensialnya habis. Silakan kirim secara manual.` });
+            let adminNote = `⚠️ Order *${orderId}*: Pengiriman sebagian berhasil.`;
+            if (psResult.errors.length > 0) {
+              adminNote += `\n\n❌ *Gagal dari ProdSeller:*\n`;
+              psResult.errors.forEach(e => { adminNote += `- ${e.produk_nama}: ${e.error}\n`; });
+            }
+            adminNote += `\nSilakan kirim item yang gagal secara manual.`;
+            await sock.sendMessage(jid, { text: adminNote });
           }
         } else {
-          // Tidak ada item AUTO, semua MANUAL — beri tahu admin
-          await sock.sendMessage(jid, { text: `ℹ️ Order *${orderId}* tidak memiliki item bertipe AUTO. Silakan kirimkan produk secara manual ke pelanggan, lalu ketik \`/done ${orderId}\` setelah selesai.` });
+          // Tidak ada item AUTO/PRODSELLER — semua MANUAL
+          await sock.sendMessage(jid, { text: `ℹ️ Order *${orderId}* tidak memiliki item bertipe AUTO/PRODSELLER. Silakan kirimkan produk secara manual ke pelanggan, lalu ketik \`.done\` setelah selesai.` });
         }
       } catch (deliveryErr) {
         console.error(`[AUTO_DELIVERY] Gagal mengirim kredensial untuk ${orderId}:`, deliveryErr.message);
-        await sock.sendMessage(jid, { text: `⚠️ Terjadi error saat auto-delivery untuk Order *${orderId}*: ${deliveryErr.message}. Silakan kirim kredensial secara manual.` });
+        await sock.sendMessage(jid, { text: `⚠️ Error saat auto-delivery untuk Order *${orderId}*: ${deliveryErr.message}. Silakan kirim kredensial secara manual.` });
       }
-      return;
+      return true;
     }
 
-    if (cmd === '/done') {
-      const orderId = args[1]?.toUpperCase();
+    if (['done', 'selesai'].includes(cleanCmd)) {
+      const orderId = extractOrderIdFromMessage(args, m);
       if (!orderId) {
-        await sock.sendMessage(jid, { text: "⚠️ Format salah. Gunakan: `/done ORD-YYYYMMDD-XXXX`" });
-        return;
+        await sock.sendMessage(jid, { 
+          text: "⚠️ *Gagal Deteksi Order ID:*\n\nSilakan **balas (reply)** pesan notifikasi pesanan dengan `.done` atau `.selesai`, atau ketik: `.done <ORDER_ID>`" 
+        });
+        return true;
       }
 
       const res = await db.updateOrderStatus(orderId, 'COMPLETED');
       if (!res.success) {
         await sock.sendMessage(jid, { text: `❌ Gagal: ${res.message}` });
-        return;
+        return true;
       }
 
       await sock.sendMessage(jid, { text: `✅ Order ID *${orderId}* ditandai *COMPLETED*. Pelanggan telah dinotifikasi.` });
@@ -1492,20 +3624,22 @@ Pesanan Anda telah *SELESAI* diproses / dikirimkan oleh admin!
 Silakan cek akun/detail pesanan Anda. Jika ada kendala, hubungi admin. Terima kasih telah berbelanja! 🙏`;
       await sock.sendMessage(res.customerNomor, { text: notifCustomer });
       await logToSystem('ORDER', `✅ Order ID *${orderId}* ditandai COMPLETED oleh admin.`);
-      return;
+      return true;
     }
 
-    if (cmd === '/cancel') {
-      const orderId = args[1]?.toUpperCase();
+    if (['cancel', 'batal'].includes(cleanCmd)) {
+      const orderId = extractOrderIdFromMessage(args, m);
       if (!orderId) {
-        await sock.sendMessage(jid, { text: "⚠️ Format salah. Gunakan: `/cancel ORD-YYYYMMDD-XXXX`" });
-        return;
+        await sock.sendMessage(jid, { 
+          text: "⚠️ *Gagal Deteksi Order ID:*\n\nSilakan **balas (reply)** pesan notifikasi pesanan dengan `.cancel` atau `.batal`, atau ketik: `.cancel <ORDER_ID>`" 
+        });
+        return true;
       }
 
       const res = await db.updateOrderStatus(orderId, 'CANCELLED');
       if (!res.success) {
         await sock.sendMessage(jid, { text: `❌ Gagal: ${res.message}` });
-        return;
+        return true;
       }
 
       await sock.sendMessage(jid, { text: `✅ Order ID *${orderId}* berhasil dibatalkan dan stok produk telah dikembalikan.` });
@@ -1515,22 +3649,22 @@ Silakan cek akun/detail pesanan Anda. Jika ada kendala, hubungi admin. Terima ka
 Mohon maaf, pesanan Anda dengan Order ID *${orderId}* telah *DIBATALKAN* oleh admin. Jika Anda sudah melakukan pembayaran, silakan hubungi admin di chat ini untuk konfirmasi manual.`;
       await sock.sendMessage(res.customerNomor, { text: notifCustomer });
       await logToSystem('ORDER', `❌ Order ID *${orderId}* dibatalkan oleh admin.`);
-      return;
+      return true;
     }
 
-    if (cmd === '/stock') {
+    if (cleanCmd === 'stock') {
       const code = args[1]?.toUpperCase();
       const stock = parseInt(args[2]);
 
       if (!code || isNaN(stock)) {
-        await sock.sendMessage(jid, { text: "⚠️ Format salah. Gunakan: `/stock [KODE] [STOK_BARU]`\nContoh: `/stock NET01 15`" });
-        return;
+        await sock.sendMessage(jid, { text: "⚠️ Format salah. Gunakan: `.stock [KODE] [STOK_BARU]`\nContoh: `.stock NET01 15`" });
+        return true;
       }
 
       const p = await db.getProductByKode(code);
       if (!p) {
         await sock.sendMessage(jid, { text: `❌ Produk dengan kode *${code}* tidak ditemukan.` });
-        return;
+        return true;
       }
 
       await db.updateProductStock(code, stock);
@@ -1539,60 +3673,60 @@ Mohon maaf, pesanan Anda dengan Order ID *${orderId}* telah *DIBATALKAN* oleh ad
       
       // Picu notifikasi stok ready jika stok baru > 0
       await checkAndNotifySubscribers(code, stock);
-      return;
+      return true;
     }
 
-    if (cmd === '/price') {
+    if (cleanCmd === 'price') {
       const code = args[1]?.toUpperCase();
       const price = parseInt(args[2]);
 
       if (!code || isNaN(price)) {
-        await sock.sendMessage(jid, { text: "⚠️ Format salah. Gunakan: `/price [KODE] [HARGA_BARU]`\nContoh: `/price NET01 50000`" });
-        return;
+        await sock.sendMessage(jid, { text: "⚠️ Format salah. Gunakan: `.price [KODE] [HARGA_BARU]`\nContoh: `.price NET01 50000`" });
+        return true;
       }
 
       const p = await db.getProductByKode(code);
       if (!p) {
         await sock.sendMessage(jid, { text: `❌ Produk dengan kode *${code}* tidak ditemukan.` });
-        return;
+        return true;
       }
 
       await db.updateProductPrice(code, price);
       await sock.sendMessage(jid, { text: `💸 Harga *${p.nama}* (\`${code}\`) berhasil diperbarui menjadi *Rp${price.toLocaleString('id-ID')}*.` });
       await logToSystem('SYSTEM', `💸 Harga produk *${code}* diperbarui menjadi Rp${price} oleh admin.`);
-      return;
+      return true;
     }
 
-    if (cmd === '/out') {
+    if (cleanCmd === 'out') {
       const code = args[1]?.toUpperCase();
       if (!code) {
-        await sock.sendMessage(jid, { text: "⚠️ Format salah. Gunakan: `/out [KODE]`" });
-        return;
+        await sock.sendMessage(jid, { text: "⚠️ Format salah. Gunakan: `.out [KODE]`" });
+        return true;
       }
 
       const p = await db.getProductByKode(code);
       if (!p) {
         await sock.sendMessage(jid, { text: `❌ Produk dengan kode *${code}* tidak ditemukan.` });
-        return;
+        return true;
       }
 
       await db.updateProductStock(code, 0);
       await sock.sendMessage(jid, { text: `🔴 Produk *${p.nama}* (\`${code}\`) ditandai sebagai *Habis* (stok diset ke 0).` });
       await logToSystem('SYSTEM', `🔴 Produk *${code}* diset habis oleh admin.`);
-      return;
+      return true;
     }
 
-    if (cmd === '/ready') {
+    if (cleanCmd === 'ready') {
       const code = args[1]?.toUpperCase();
       if (!code) {
-        await sock.sendMessage(jid, { text: "⚠️ Format salah. Gunakan: `/ready [KODE]`" });
-        return;
+        await sock.sendMessage(jid, { text: "⚠️ Format salah. Gunakan: `.ready [KODE]`" });
+        return true;
       }
 
       const p = await db.getProductByKode(code);
       if (!p) {
         await sock.sendMessage(jid, { text: `❌ Produk dengan kode *${code}* tidak ditemukan.` });
-        return;
+        return true;
       }
 
       await db.updateProductStock(code, 10);
@@ -1601,17 +3735,17 @@ Mohon maaf, pesanan Anda dengan Order ID *${orderId}* telah *DIBATALKAN* oleh ad
       
       // Picu notifikasi stok ready jika stok baru > 0
       await checkAndNotifySubscribers(code, 10);
-      return;
+      return true;
     }
 
-    if (cmd === '/addproduct') {
+    if (cleanCmd === 'addproduct') {
       const rawArgs = args.slice(1).join(' ');
       const parts = rawArgs.split('|').map(p => p.trim());
       
       if (parts.length < 5) {
-        const errorHelp = `⚠️ Format salah. Gunakan pemisah vertikal (\`|\`):\n\`/addproduct [KODE] | [NAMA_PRODUK] | [HARGA] | [STOK] | [DESKRIPSI]\`\n\n_Contoh:_\n\`/addproduct NET02 | Netflix 2 Bulan | 85000 | 5 | Sharing 1 Profil\``;
+        const errorHelp = `⚠️ Format salah. Gunakan pemisah vertikal (\`|\`):\n\`.addproduct [KODE] | [NAMA_PRODUK] | [HARGA] | [STOK] | [DESKRIPSI]\`\n\n_Contoh:_\n\`.addproduct NET02 | Netflix 2 Bulan | 85000 | 5 | Sharing 1 Profil\``;
         await sock.sendMessage(jid, { text: errorHelp });
-        return;
+        return true;
       }
 
       const codePart = parts[0].split(' ');
@@ -1624,7 +3758,7 @@ Mohon maaf, pesanan Anda dengan Order ID *${orderId}* telah *DIBATALKAN* oleh ad
 
       if (isNaN(harga) || isNaN(stok)) {
         await sock.sendMessage(jid, { text: "❌ Gagal. Harga dan Stok harus berupa angka/nominal." });
-        return;
+        return true;
       }
 
       await db.addProduct(code, nama, harga, stok, deskripsi, "");
@@ -1640,9 +3774,136 @@ Mohon maaf, pesanan Anda dengan Order ID *${orderId}* telah *DIBATALKAN* oleh ad
       
       // Picu notifikasi jika stok baru > 0
       await checkAndNotifySubscribers(code, stok);
-      return;
+      return true;
     }
-  }
+
+    if (cleanCmd === 'addcoupon') {
+      const rawArgs = args.slice(1).join(' ');
+      const parts = rawArgs.split('|').map(p => p.trim());
+      if (parts.length < 3) {
+        await sock.sendMessage(jid, { text: `⚠️ Format: \`.addcoupon [KODE] | [TIPE: percent/fixed] | [NILAI] | [MIN_ORDER] | [MAX_PAKAI] | [EXPIRED: YYYY-MM-DD]\`\n\n_Contoh:_ \`.addcoupon DISKON10 | percent | 10 | 50000 | 100 | 2026-12-31\`` });
+        return true;
+      }
+      const code = parts[0].toUpperCase();
+      const type = parts[1].toLowerCase();
+      const value = parseInt(parts[2]);
+      const minOrder = parts[3] ? parseInt(parts[3]) : 0;
+      const maxUses = parts[4] ? parseInt(parts[4]) : 0;
+      const expiresAt = parts[5] || null;
+      if (type !== 'percent' && type !== 'fixed') {
+        await sock.sendMessage(jid, { text: "❌ Tipe kupon harus *percent* atau *fixed*." });
+        return true;
+      }
+      if (isNaN(value)) {
+        await sock.sendMessage(jid, { text: "❌ Nilai kupon harus berupa angka." });
+        return true;
+      }
+      try {
+        await db.addCoupon(code, type, value, minOrder, maxUses, expiresAt);
+        await sock.sendMessage(jid, { text: `✅ Kupon *${code}* berhasil ditambahkan!\n• Tipe: ${type}\n• Nilai: ${type === 'percent' ? value + '%' : 'Rp' + value.toLocaleString('id-ID')}\n• Min. Order: Rp${minOrder.toLocaleString('id-ID')}\n• Max Pakai: ${maxUses || 'Unlimited'}` });
+      } catch (err) {
+        await sock.sendMessage(jid, { text: `❌ Gagal: ${err.message}` });
+      }
+      return true;
+    }
+
+    if (cleanCmd === 'delcoupon') {
+      const code = args[1]?.toUpperCase();
+      if (!code) {
+        await sock.sendMessage(jid, { text: "⚠️ Format: \`.delcoupon [KODE]\`" });
+        return true;
+      }
+      const deleted = await db.deleteCoupon(code);
+      await sock.sendMessage(jid, { text: deleted ? `✅ Kupon *${code}* berhasil dihapus.` : `❌ Kupon *${code}* tidak ditemukan.` });
+      return true;
+    }
+
+    if (cleanCmd === 'listcoupon') {
+      const coupons = await db.getAllCoupons();
+      if (coupons.length === 0) {
+        await sock.sendMessage(jid, { text: "🏷️ Belum ada kupon yang terdaftar." });
+        return true;
+      }
+      let msg = `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🏷️ *DAFTAR KUPON*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+      for (const c of coupons) {
+        const valLabel = c.type === 'percent' ? `${c.value}%` : `Rp${c.value.toLocaleString('id-ID')}`;
+        msg += `• *${c.code}* — ${valLabel} | Terpakai: ${c.used_count}/${c.max_uses || '∞'} | ${c.is_active ? '🟢 Aktif' : '🔴 Nonaktif'}\n`;
+      }
+      msg += `\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+      await sock.sendMessage(jid, { text: msg });
+      return true;
+    }
+
+    if (cleanCmd === 'addfaq') {
+      const rawArgs = args.slice(1).join(' ');
+      const parts = rawArgs.split('|').map(p => p.trim());
+      if (parts.length < 2) {
+        await sock.sendMessage(jid, { text: `⚠️ Format: \`.addfaq [KEYWORDS dipisah koma] | [JAWABAN]\`\n\n_Contoh:_ \`.addfaq jam buka,jam operasional | Toko kami buka 24 jam dengan layanan bot otomatis!\`` });
+        return true;
+      }
+      const id = await db.addFaq(parts[0], parts[1]);
+      await sock.sendMessage(jid, { text: `✅ FAQ #${id} berhasil ditambahkan!\n• Keywords: ${parts[0]}\n• Jawaban: ${parts[1]}` });
+      return true;
+    }
+
+    if (cleanCmd === 'delfaq') {
+      const id = parseInt(args[1]);
+      if (isNaN(id)) {
+        await sock.sendMessage(jid, { text: "⚠️ Format: \`.delfaq [ID]\`" });
+        return true;
+      }
+      const deleted = await db.deleteFaq(id);
+      await sock.sendMessage(jid, { text: deleted ? `✅ FAQ #${id} berhasil dihapus.` : `❌ FAQ #${id} tidak ditemukan.` });
+      return true;
+    }
+
+    if (cleanCmd === 'listfaq') {
+      const faqs = await db.getAllFaqs();
+      if (faqs.length === 0) {
+        await sock.sendMessage(jid, { text: "💬 Belum ada FAQ yang terdaftar." });
+        return true;
+      }
+      let msg = `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n💬 *DAFTAR FAQ*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+      for (const f of faqs) {
+        msg += `#${f.id} — Keywords: *${f.keywords}*\n   Jawaban: ${f.answer}\n\n`;
+      }
+      msg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+      await sock.sendMessage(jid, { text: msg });
+      return true;
+    }
+
+    if (cleanCmd === 'laporan') {
+      const period = args[1]?.toLowerCase() || 'harian';
+      const today = new Date().toISOString().split('T')[0];
+      const report = await db.getDailySalesReport(today);
+      let msg = `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📊 *LAPORAN PENJUALAN HARI INI*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📅 ${new Date().toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}\n\n`;
+      msg += `📦 Pesanan Selesai: *${report.total_orders}*\n`;
+      msg += `💰 Total Omzet: *Rp${report.total_revenue.toLocaleString('id-ID')}*\n\n`;
+      if (report.topProducts.length > 0) {
+        msg += `🏆 *Produk Terlaris:*\n`;
+        report.topProducts.forEach((p, i) => {
+          msg += `${i + 1}. ${p.nama} — ${p.total_qty} terjual\n`;
+        });
+        msg += `\n`;
+      }
+      if (report.lowStockProducts.length > 0) {
+        msg += `🟡 *Stok Menipis:*\n`;
+        report.lowStockProducts.forEach(p => {
+          msg += `• ${p.nama} (\`${p.kode}\`) — Sisa: ${p.stok}\n`;
+        });
+        msg += `\n`;
+      }
+      if (report.outOfStockProducts.length > 0) {
+        msg += `🔴 *Stok Habis:*\n`;
+        report.outOfStockProducts.forEach(p => {
+          msg += `• ${p.nama} (\`${p.kode}\`)\n`;
+        });
+      }
+      msg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+      await sock.sendMessage(jid, { text: msg });
+      return true;
+    }
+  return false;
 }
 
 // Fungsi eksternal untuk memicu status online/mengetik di WhatsApp

@@ -5,5 +5,7 @@ session/
 *.db
 *.db-journal
 backups/
-public/uploads/qris.png
+public/uploads/
 public/receipts/
+tmp/
+ig_cookies.txt

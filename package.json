@@ -9,17 +9,31 @@
     "test-db": "node test-db.js"
   },
   "dependencies": {
+    "@distube/ytdl-core": "^4.16.12",
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@hapi/boom": "^10.0.1",
+    "@napi-rs/canvas": "^1.0.2",
+    "@renpwn/fb-downloader": "^1.0.16",
     "@whiskeysockets/baileys": "^6.7.9",
+    "ab-downloader": "^1.0.2",
+    "axios": "^1.18.1",
     "bcryptjs": "^3.0.3",
+    "btch-downloader": "^6.0.37",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "fluent-ffmpeg": "^2.1.3",
+    "google-tts-api": "^2.0.2",
+    "instagram-url-direct": "^2.0.7",
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.2.0",
+    "nayan-media-downloader": "^0.0.1-security",
     "pino": "^9.0.0",
     "pino-pretty": "^11.0.0",
     "qrcode-terminal": "^0.12.0",
+    "sharp": "^0.35.3",
+    "snapsave-media-downloader": "^2.4.0",
     "socket.io": "^4.8.3",
-    "sqlite3": "^5.1.7"
+    "sqlite3": "^5.1.7",
+    "wa-sticker-formatter": "^4.4.4"
   }
 }

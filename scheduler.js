@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import * as db from './database.js';
 import { botState } from './server.js';
+import { getProdSellerUpdates } from './prodsellerHandler.js';
 
 let lastBackupTime = 0;
 
@@ -88,8 +89,120 @@ Stok produk telah dikembalikan ke inventori. Silakan ketik *menu* jika Anda ingi
       }
     }
 
+    // 3. PROSES ABANDONED CART RECOVERY (Keranjang Tertinggal > 2 Jam)
+    try {
+      const abandonedCarts = await db.getAbandonedCarts(2);
+      for (const cart of abandonedCarts) {
+        try {
+          const cartMsg = `🛒 Halo Kak *${cart.customer_nama}*!\n\nKeranjang belanja Anda masih menunggu:\n${cart.items_summary}\n\n💰 Total: *Rp${cart.total.toLocaleString('id-ID')}*\n\nKetik *checkout* untuk melanjutkan pembayaran, atau *batal* jika ingin membatalkan. 🙏`;
+          await sock.sendMessage(cart.customer_nomor, { text: cartMsg });
+          await db.markCartReminderSent(cart.order_id);
+          console.log(`[SCHEDULER] Abandoned cart reminder terkirim untuk ${cart.order_id}`);
+        } catch (err) {
+          console.error(`[SCHEDULER ERROR] Gagal kirim abandoned cart reminder ${cart.order_id}:`, err.message);
+        }
+      }
+    } catch (err) {
+      console.error("[SCHEDULER ERROR] Gagal proses abandoned cart:", err.message);
+    }
   } catch (err) {
     console.error("[SCHEDULER ERROR] Gagal mengeksekusi automasi order:", err.message);
+  }
+}
+
+// Fungsi Laporan Penjualan Harian Otomatis
+async function sendDailySalesReport(sock) {
+  if (!sock || !botState.whatsappConnected) return;
+  
+  try {
+    const today = new Date();
+    const dateStr = today.toISOString().split('T')[0];
+    const report = await db.getDailySalesReport(dateStr);
+    
+    let msg = `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📊 *LAPORAN PENJUALAN HARIAN*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📅 Tanggal: *${today.toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}*\n\n`;
+    msg += `📦 Total Pesanan Selesai: *${report.total_orders}*\n`;
+    msg += `💰 Total Omzet: *Rp${report.total_revenue.toLocaleString('id-ID')}*\n\n`;
+    
+    if (report.topProducts.length > 0) {
+      msg += `🏆 *Produk Terlaris Hari Ini:*\n`;
+      report.topProducts.forEach((p, i) => {
+        msg += `${i + 1}. ${p.nama} (\`${p.produk_kode}\`) — ${p.total_qty} terjual (Rp${p.total_sales.toLocaleString('id-ID')})\n`;
+      });
+      msg += `\n`;
+    }
+    
+    if (report.lowStockProducts.length > 0) {
+      msg += `🟡 *Stok Menipis:*\n`;
+      report.lowStockProducts.forEach(p => {
+        msg += `• ${p.nama} (\`${p.kode}\`) — Sisa: ${p.stok} pcs\n`;
+      });
+      msg += `\n`;
+    }
+    
+    if (report.outOfStockProducts.length > 0) {
+      msg += `🔴 *Stok Habis:*\n`;
+      report.outOfStockProducts.forEach(p => {
+        msg += `• ${p.nama} (\`${p.kode}\`)\n`;
+      });
+      msg += `\n`;
+    }
+    
+    msg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+    
+    // Kirim ke log group atau owner
+    const settings = await db.getSettings();
+    const targetJid = settings.logGroupId || settings.transactionGroupId || settings.ownerNumber;
+    if (targetJid) {
+      await sock.sendMessage(targetJid, { text: msg });
+      console.log(`[SCHEDULER] Laporan harian terkirim ke ${targetJid}`);
+    }
+  } catch (err) {
+    console.error('[SCHEDULER ERROR] Gagal kirim laporan harian:', err.message);
+  }
+}
+
+// Pengecekan otomatis ProdSeller untuk notifikasi restock & harga turun
+async function checkProdSellerUpdates(sock) {
+  if (!sock || !botState.whatsappConnected) return;
+
+  try {
+    const settings = await db.getSettings();
+    const targetGroupId = settings.updateGroupId;
+    if (!targetGroupId) return; // Belum diset admin
+
+    const updates = await getProdSellerUpdates();
+    if (updates.restocks.length === 0 && updates.priceDrops.length === 0) return;
+
+    let msg = `📣 *INFO UPDATE TOKO DIGITAL* 📣\n\n`;
+
+    if (updates.restocks.length > 0) {
+      msg += `📦 *PRODUK RESTOCK (TERSEDIA KEMBALI):*\n`;
+      updates.restocks.forEach(r => {
+        msg += `✅ *${r.nama}* (\`${r.kode}\`) - $${r.price}\n`;
+      });
+      msg += `\n`;
+    }
+
+    if (updates.priceDrops.length > 0) {
+      msg += `📉 *PENURUNAN HARGA PRODUK:*\n`;
+      updates.priceDrops.forEach(r => {
+        msg += `🔥 *${r.nama}* (\`${r.kode}\`)\n   Harga Lama: ~$${r.oldPrice}~\n   Harga Baru: *$${r.newPrice}*\n`;
+      });
+      msg += `\n`;
+    }
+
+    msg += `_Ketik .menu untuk mulai berbelanja._`;
+
+    // Dynamic import to avoid circular dependency
+    const { broadcastTagAll } = await import('./bot.js');
+    const success = await broadcastTagAll(sock, targetGroupId, msg);
+    
+    if (success) {
+      console.log(`[SCHEDULER] Notifikasi restock/harga terkirim ke ${targetGroupId}`);
+      await db.addLog('SYSTEM', `Notifikasi tagall restock/harga terkirim ke grup ${targetGroupId}`);
+    }
+  } catch (err) {
+    console.error("[SCHEDULER ERROR] Gagal mengecek update ProdSeller:", err.message);
   }
 }
 
@@ -115,7 +228,22 @@ export function startScheduler(sock) {
     }
   }, 60 * 60 * 1000);
 
+  // Set interval pengecekan laporan harian (setiap jam, kirim saat jam 21:00)
+  setInterval(() => {
+    const now = new Date();
+    if (now.getHours() === 21 && now.getMinutes() < 5) {
+      sendDailySalesReport(sock);
+    }
+  }, 5 * 60 * 1000);
+
+  // Set interval pengecekan ProdSeller (setiap 30 menit)
+  setInterval(() => {
+    checkProdSellerUpdates(sock);
+  }, 30 * 60 * 1000);
+
   // Jalankan backup database pertama kali saat scheduler mulai
   backupDatabase();
   lastBackupTime = Date.now();
 }
+
+export { sendDailySalesReport };

@@ -107,6 +107,28 @@ export async function initDb() {
     // Abaikan jika kolom sudah ada
   }
 
+  // Jalankan migrasi kolom petunjuk penggunaan
+  try {
+    await runQuery("ALTER TABLE products ADD COLUMN petunjuk TEXT");
+  } catch (e) {
+    // Abaikan jika kolom sudah ada
+  }
+
+  // Jalankan migrasi kolom prodseller_id (link ke ProdSeller API supplier)
+  try {
+    await runQuery("ALTER TABLE products ADD COLUMN prodseller_id TEXT");
+  } catch (e) {
+    // Abaikan jika kolom sudah ada
+  }
+
+  // Jalankan migrasi kolom notifikasi restock/harga
+  try {
+    await runQuery("ALTER TABLE products ADD COLUMN last_price REAL");
+  } catch (e) {}
+  try {
+    await runQuery("ALTER TABLE products ADD COLUMN last_stock_status INTEGER");
+  } catch (e) {}
+
   // 5. Tabel product_items (Kredensial Stok Digital Siap Kirim)
   await runQuery(`
     CREATE TABLE IF NOT EXISTS product_items (
@@ -124,7 +146,37 @@ export async function initDb() {
   await runQuery(`
     CREATE TABLE IF NOT EXISTS customers (
       nomor TEXT PRIMARY KEY,
-      nama TEXT
+      nama TEXT,
+      balance INTEGER DEFAULT 0,
+      referral_code TEXT,
+      referred_by TEXT
+    )
+  `);
+
+  try { await runQuery("ALTER TABLE customers ADD COLUMN balance INTEGER DEFAULT 0"); } catch (e) {}
+  try { await runQuery("ALTER TABLE customers ADD COLUMN referral_code TEXT"); } catch (e) {}
+  try { await runQuery("ALTER TABLE customers ADD COLUMN referred_by TEXT"); } catch (e) {}
+
+  // 6b. Tabel Reviews / Rating Produk
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS reviews (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_id INTEGER NOT NULL,
+      customer_nomor TEXT NOT NULL,
+      produk_kode TEXT,
+      rating INTEGER NOT NULL,
+      comment TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // 6c. Tabel Flash Sale
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS flash_sales (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      produk_kode TEXT UNIQUE NOT NULL,
+      harga_flash INTEGER NOT NULL,
+      end_time DATETIME NOT NULL
     )
   `);
 
@@ -211,6 +263,50 @@ export async function initDb() {
     )
   `);
 
+  // 12. Tabel Banned Users
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS banned_users (
+      jid TEXT PRIMARY KEY,
+      reason TEXT,
+      banned_by TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // 12b. Tabel Moderators (user yang bisa pakai perintah .ban/.unban atas izin Owner)
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS moderators (
+      jid TEXT PRIMARY KEY,
+      added_by TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Migrasi: tambah ownerJid ke settings (untuk mapping LID -> phone owner)
+  try {
+    const ownerJidSetting = await getQuery("SELECT value FROM settings WHERE key = 'ownerJid'");
+    if (!ownerJidSetting) {
+      await runQuery("INSERT INTO settings (key, value) VALUES ('ownerJid', '')");
+    }
+  } catch(e) {}
+
+  // 12c. Tabel ProdSeller Orders — Riwayat pembelian dari ProdSeller API
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS prodseller_orders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_id TEXT NOT NULL,
+      prodseller_order_id TEXT,
+      produk_kode TEXT NOT NULL,
+      prodseller_product_id TEXT,
+      quantity INTEGER DEFAULT 1,
+      amount_usd REAL,
+      delivered_keys TEXT,
+      status TEXT DEFAULT 'PENDING',
+      error_message TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
   // 12. Tabel Pengaturan Moderasi Per-Grup
   await runQuery(`
     CREATE TABLE IF NOT EXISTS group_settings (
@@ -218,9 +314,118 @@ export async function initDb() {
       welcome_enabled INTEGER DEFAULT 1,
       welcome_msg TEXT,
       goodbye_enabled INTEGER DEFAULT 1,
-      goodbye_msg TEXT
+      goodbye_msg TEXT,
+      anti_link INTEGER DEFAULT 0,
+      bot_mode TEXT DEFAULT 'all'
     )
   `);
+  try {
+    await runQuery(`ALTER TABLE group_settings ADD COLUMN anti_link INTEGER DEFAULT 0`);
+  } catch (e) {}
+  try {
+    await runQuery(`ALTER TABLE group_settings ADD COLUMN bot_mode TEXT DEFAULT 'all'`);
+  } catch (e) {}
+
+  // 13. Tabel coupons
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS coupons (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      code TEXT UNIQUE NOT NULL,
+      type TEXT NOT NULL,
+      value INTEGER NOT NULL,
+      min_order INTEGER DEFAULT 0,
+      max_uses INTEGER DEFAULT 0,
+      used_count INTEGER DEFAULT 0,
+      expires_at DATETIME,
+      is_active INTEGER DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // 14. Tabel reviews
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS reviews (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_id TEXT NOT NULL,
+      customer_nomor TEXT NOT NULL,
+      rating INTEGER NOT NULL,
+      comment TEXT,
+      review_reminder_sent INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(order_id)
+    )
+  `);
+
+  // 15. Tabel referrals
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS referrals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      referrer_nomor TEXT NOT NULL,
+      referred_nomor TEXT NOT NULL,
+      reward_claimed INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(referred_nomor)
+    )
+  `);
+
+  // 16. Tabel faqs
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS faqs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      keywords TEXT NOT NULL,
+      answer TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // 17. Tabel loyalty
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS loyalty (
+      customer_nomor TEXT PRIMARY KEY,
+      points INTEGER DEFAULT 0,
+      total_spent INTEGER DEFAULT 0,
+      tier TEXT DEFAULT 'Bronze'
+    )
+  `);
+
+  // 18. Tabel bundles
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS bundles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      nama TEXT NOT NULL,
+      produk_list TEXT NOT NULL,
+      harga_bundle INTEGER NOT NULL,
+      is_active INTEGER DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // 19. Tabel wishlist
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS wishlist (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      customer_nomor TEXT NOT NULL,
+      produk_kode TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(customer_nomor, produk_kode)
+    )
+  `);
+
+  try {
+    await runQuery("ALTER TABLE customers ADD COLUMN referral_code TEXT");
+  } catch (e) {}
+
+  try {
+    await runQuery("ALTER TABLE orders ADD COLUMN review_reminder_sent INTEGER DEFAULT 0");
+  } catch (e) {}
+
+  try {
+    await runQuery("ALTER TABLE orders ADD COLUMN coupon_code TEXT");
+  } catch (e) {}
+
+  try {
+    await runQuery("ALTER TABLE orders ADD COLUMN discount_amount INTEGER DEFAULT 0");
+  } catch (e) {}
 
   // Masukkan pengaturan default ke tabel settings jika belum ada
   const defaultSettings = config.defaults;
@@ -265,6 +470,80 @@ export async function initDb() {
       );
     }
     console.log("Produk contoh berhasil dimasukkan.");
+  }
+
+  // Perbarui petunjuk penggunaan pada produk yang sudah ada (misal: APPLEMUSIC, ADOBE, GEMINI)
+  const userInstructionsMap = [
+    {
+      keywords: ['APPLEMUSIC', 'APM01', 'APPLE MUSIC'],
+      petunjuk: `🍎 *Apple Music (Up to 6 Months)*
+
+📌 *User Requirements*
+
+✅ Apple ID required (new or existing).
+✅ Works on both Android & iPhone.
+
+⚠️ If you encounter a region restriction or region mismatch error, connect to an Indian VPN and try again.
+⚠️ If you've already used Apple's 1-month free trial, you'll receive up to 5 months instead of 6.
+⚠️ Subscription remains active for the benefit period.`
+    },
+    {
+      keywords: ['ADB01', 'ADOBE', 'ADOBEEXPRESS', 'ADOBE EXPRESS'],
+      petunjuk: `🎨 *Adobe Express Premium (12 Months)*
+
+📌 *User Requirements*
+
+✅ Adobe account required (new or existing).
+✅ No payment method required.
+✅ Existing Adobe Premium users can also redeem (subscription extension depends on Adobe policy).
+
+⚠️ If you encounter a region restriction or region mismatch error, connect to an Indian VPN and try again.
+
+❌ Non-transferable.
+❌ Cannot be exchanged for cash.`
+    },
+    {
+      keywords: ['GEMINI01', 'GEMINI', 'GEMINIPRO', 'GEMINI PRO'],
+      petunjuk: `🚀 *ACTIVATE YOUR 18-MONTH GEMINI PRO + 5TB STORAGE IN 3 EASY STEPS* 🚀
+
+Got your activation link? Follow these quick steps to unlock your premium benefits instantly — no password, OTP, or payment details required.
+
+✅ *STEP 1: CHECK YOUR GOOGLE ACCOUNT*
+
+Make sure you’re logged into the personal Google account where you want the benefits activated.
+
+⚠️ *Important:*
+• Workspace, school, or business accounts are NOT supported
+• If your account is already in another Google Family Group, leave it first: g.co/yourfamily
+
+✅ *STEP 2: OPEN THE ACTIVATION LINK*
+
+Click the unique activation link provided by our bot.
+
+You’ll automatically be redirected to the official Google invitation page.
+
+✅ *STEP 3: ACCEPT THE INVITATION*
+
+Tap “Join Family” or “Accept Invitation”.
+
+🎉 *That’s it! Your account will be upgraded instantly.*
+
+You can now enjoy:
+✔ Gemini Advanced / Gemini Pro Features
+✔ 5TB Google Drive Storage
+✔ Premium Google AI Tools
+
+📌 Open Google Drive to confirm the storage upgrade and open Gemini to start using advanced AI features instantly.`
+    }
+  ];
+
+  for (const item of userInstructionsMap) {
+    for (const kw of item.keywords) {
+      await runQuery(
+        "UPDATE products SET petunjuk = ? WHERE (kode = ? OR UPPER(nama) LIKE ?) AND (petunjuk IS NULL OR petunjuk = '')",
+        [item.petunjuk, kw, `%${kw}%`]
+      );
+    }
   }
 
   // 10. Tabel Conversations (Live Chat State)
@@ -354,6 +633,12 @@ export async function addSubscription(customerNomor, productKode) {
   }
 }
 
+export async function getSubscribers(productKode) {
+  const code = productKode.toUpperCase();
+  const rows = await allQuery("SELECT customer_nomor FROM subscriptions WHERE produk_kode = ?", [code]);
+  return rows;
+}
+
 export async function getAndClearSubscribers(productKode) {
   const code = productKode.toUpperCase();
   // Ambil semua subscriber
@@ -422,7 +707,7 @@ export async function getProductByKode(kode) {
   return await getQuery("SELECT * FROM products WHERE kode = ?", [kode.toUpperCase()]);
 }
 
-export async function addProduct(kode, nama, harga, stok, deskripsi, gambar = "", delivery_type = "MANUAL", oldKode = "") {
+export async function addProduct(kode, nama, harga, stok, deskripsi, gambar = "", delivery_type = "MANUAL", oldKode = "", petunjuk = "") {
   let finalStok = stok;
   const newKodeUpper = kode.toUpperCase();
 
@@ -439,8 +724,8 @@ export async function addProduct(kode, nama, harga, stok, deskripsi, gambar = ""
   }
 
   const res = await runQuery(
-    "INSERT OR REPLACE INTO products (kode, nama, harga, stok, deskripsi, gambar, delivery_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    [newKodeUpper, nama, harga, finalStok, deskripsi, gambar, delivery_type]
+    "INSERT OR REPLACE INTO products (kode, nama, harga, stok, deskripsi, gambar, delivery_type, petunjuk) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    [newKodeUpper, nama, harga, finalStok, deskripsi, gambar, delivery_type, petunjuk]
   );
   await addLog("SYSTEM", `Produk diperbarui/ditambahkan: ${newKodeUpper} - ${nama} (Stok: ${finalStok}, Tipe: ${delivery_type})`);
   return res;
@@ -520,7 +805,7 @@ export async function deleteProductItem(id) {
 export async function claimAndDeliverItems(orderId) {
   // Ambil rincian produk bertipe otomatis yang dibeli dalam order ini
   const itemsPurchased = await allQuery(`
-    SELECT oi.produk_kode, oi.qty, p.delivery_type, p.nama as produk_nama 
+    SELECT oi.produk_kode, oi.qty, p.delivery_type, p.nama as produk_nama, p.petunjuk 
     FROM order_items oi 
     JOIN products p ON oi.produk_kode = p.kode 
     WHERE oi.order_id = ?
@@ -538,6 +823,7 @@ export async function claimAndDeliverItems(orderId) {
 
       deliveredData[item.produk_kode] = {
         produk_nama: item.produk_nama,
+        petunjuk: item.petunjuk || '',
         credentials: readyItems.map(ri => ri.data_content)
       };
 
@@ -627,6 +913,45 @@ export async function getCustomerDetails(nomor) {
   };
 }
 
+export async function getCustomerVoucherHistory(customerNomor) {
+  const orders = await allQuery(`
+    SELECT order_id, total, status, created_at 
+    FROM orders 
+    WHERE customer_nomor = ? AND status IN ('COMPLETED', 'PAID')
+    ORDER BY created_at DESC 
+    LIMIT 10
+  `, [customerNomor]);
+
+  if (!orders || orders.length === 0) return [];
+
+  const history = [];
+  for (const order of orders) {
+    const items = await allQuery(`
+      SELECT oi.produk_kode, oi.qty, p.nama as produk_nama, p.petunjuk 
+      FROM order_items oi 
+      JOIN products p ON oi.produk_kode = p.kode 
+      WHERE oi.order_id = ?
+    `, [order.order_id]);
+
+    const credentials = await allQuery(`
+      SELECT produk_kode, data_content, used_at 
+      FROM product_items 
+      WHERE order_id = ?
+    `, [order.order_id]);
+
+    history.push({
+      order_id: order.order_id,
+      total: order.total,
+      status: order.status,
+      created_at: order.created_at,
+      items,
+      credentials
+    });
+  }
+
+  return history;
+}
+
 // --- FUNGSI PESANAN & SCHEDULER HELPER ---
 
 export async function getActiveCart(customerNomor) {
@@ -658,6 +983,12 @@ export async function addToCart(customerNomor, productKode, qty) {
   const cart = await getActiveCart(customerNomor);
   const orderId = cart.order_id;
 
+  let activePrice = product.harga;
+  const activeFlashSale = await getActiveFlashSale(product.kode);
+  if (activeFlashSale) {
+    activePrice = activeFlashSale.harga_flash;
+  }
+
   const existingItem = await getQuery(
     "SELECT * FROM order_items WHERE order_id = ? AND produk_kode = ?",
     [orderId, product.kode]
@@ -668,16 +999,16 @@ export async function addToCart(customerNomor, productKode, qty) {
     if (availableStock < newQty) {
       return { success: false, message: `Gagal menambahkan. Jumlah di keranjang (${newQty}) melebihi stok (${availableStock}).` };
     }
-    const newSubtotal = newQty * product.harga;
+    const newSubtotal = newQty * activePrice;
     await runQuery(
-      "UPDATE order_items SET qty = ?, subtotal = ? WHERE id = ?",
-      [newQty, newSubtotal, existingItem.id]
+      "UPDATE order_items SET qty = ?, subtotal = ?, harga = ? WHERE id = ?",
+      [newQty, newSubtotal, activePrice, existingItem.id]
     );
   } else {
-    const subtotal = qty * product.harga;
+    const subtotal = qty * activePrice;
     await runQuery(
       "INSERT INTO order_items (order_id, produk_kode, qty, harga, subtotal) VALUES (?, ?, ?, ?, ?)",
-      [orderId, product.kode, qty, product.harga, subtotal]
+      [orderId, product.kode, qty, activePrice, subtotal]
     );
   }
 
@@ -686,7 +1017,8 @@ export async function addToCart(customerNomor, productKode, qty) {
     success: true,
     productName: product.nama,
     qty: qty,
-    subtotal: qty * product.harga
+    subtotal: qty * activePrice,
+    isFlashSale: !!activeFlashSale
   };
 }
 
@@ -712,8 +1044,13 @@ export async function getCartDetails(customerNomor) {
 
 async function updateOrderTotal(orderId) {
   const result = await getQuery("SELECT SUM(subtotal) as total FROM order_items WHERE order_id = ?", [orderId]);
-  const total = result.total || 0;
-  await runQuery("UPDATE orders SET total = ? WHERE order_id = ?", [total, orderId]);
+  const rawTotal = result.total || 0;
+  
+  const order = await getQuery("SELECT discount_amount FROM orders WHERE order_id = ?", [orderId]);
+  const discount = order ? (order.discount_amount || 0) : 0;
+  
+  const finalTotal = Math.max(0, rawTotal - discount);
+  await runQuery("UPDATE orders SET total = ? WHERE order_id = ?", [finalTotal, orderId]);
 }
 
 export async function checkoutCart(customerNomor) {
@@ -844,7 +1181,7 @@ export async function updateOrderStatus(orderId, status) {
   const newStatus = status;
   const isPaidStatus = (s) => s === 'PAID' || s === 'COMPLETED';
 
-  // Jika berubah dari BELUM BAYAR ke SUDAH BAYAR, kurangi stok produk MANUAL
+  // Jika berubah dari BELUM BAYAR ke SUDAH BAYAR, kurangi stok produk MANUAL & Tambah Poin Loyalitas
   if (!isPaidStatus(oldStatus) && isPaidStatus(newStatus)) {
     const items = await allQuery("SELECT * FROM order_items WHERE order_id = ?", [orderId]);
     for (const item of items) {
@@ -855,6 +1192,11 @@ export async function updateOrderStatus(orderId, status) {
           [item.qty, item.produk_kode]
         );
       }
+    }
+    
+    // Tambah Poin Loyalitas
+    if (order.total > 0) {
+      await addLoyaltyPoints(order.customer_nomor, order.total);
     }
   }
 
@@ -1214,17 +1556,671 @@ export async function getGroupSettings(jid) {
       welcome_enabled: defaults.welcomeEnabled === "true" ? 1 : 0,
       welcome_msg: defaults.welcomeMessage,
       goodbye_enabled: defaults.goodbyeEnabled === "true" ? 1 : 0,
-      goodbye_msg: defaults.goodbyeMessage
+      goodbye_msg: defaults.goodbyeMessage,
+      anti_link: 0,
+      bot_mode: 'all'
     };
+  }
+  return { ...row, bot_mode: row.bot_mode || 'all' };
+}
+
+export async function updateGroupSettings(jid, settingsObj) {
+  const current = await getGroupSettings(jid);
+  const updated = { ...current, ...settingsObj };
+  await runQuery(
+    "INSERT OR REPLACE INTO group_settings (jid, welcome_enabled, welcome_msg, goodbye_enabled, goodbye_msg, anti_link, bot_mode) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    [jid, updated.welcome_enabled ? 1 : 0, updated.welcome_msg, updated.goodbye_enabled ? 1 : 0, updated.goodbye_msg, updated.anti_link ? 1 : 0, updated.bot_mode || 'all']
+  );
+  await addLog("SYSTEM", `Pengaturan grup ${jid} diperbarui dari Web Dashboard/Bot.`);
+}
+
+// --- FUNGSI KUPON & DISKON ---
+export async function addCoupon(code, type, value, minOrder = 0, maxUses = 0, expiresAt = null) {
+  await runQuery(
+    "INSERT INTO coupons (code, type, value, min_order, max_uses, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+    [code.toUpperCase(), type, value, minOrder, maxUses, expiresAt]
+  );
+  await addLog("SYSTEM", `Kupon baru ditambahkan: ${code.toUpperCase()} (${type} ${value})`);
+}
+
+export async function deleteCoupon(code) {
+  const res = await runQuery("DELETE FROM coupons WHERE code = ?", [code.toUpperCase()]);
+  return res.changes > 0;
+}
+
+export async function getCoupon(code) {
+  return await getQuery("SELECT * FROM coupons WHERE code = ? AND is_active = 1", [code.toUpperCase()]);
+}
+
+export async function getAllCoupons() {
+  return await allQuery("SELECT * FROM coupons ORDER BY created_at DESC");
+}
+
+export async function incrementCouponUsage(code) {
+  await runQuery("UPDATE coupons SET used_count = used_count + 1 WHERE code = ?", [code.toUpperCase()]);
+}
+
+export async function applyCouponToOrder(orderId, couponCode, discountAmount) {
+  await runQuery("UPDATE orders SET coupon_code = ?, discount_amount = ? WHERE order_id = ?", [couponCode, discountAmount, orderId]);
+  await updateOrderTotal(orderId);
+}
+
+// --- FUNGSI REVIEW & RATING ---
+export async function addReview(orderId, customerNomor, rating, comment) {
+  await runQuery(
+    "INSERT OR REPLACE INTO reviews (order_id, customer_nomor, rating, comment) VALUES (?, ?, ?, ?)",
+    [orderId, customerNomor, rating, comment || '']
+  );
+  await addLog("REVIEW", `Review diterima untuk Order ${orderId}: ${rating} bintang`);
+}
+
+export async function getReviewByOrder(orderId) {
+  return await getQuery("SELECT * FROM reviews WHERE order_id = ?", [orderId]);
+}
+
+export async function getProductReviews(produkKode) {
+  return await allQuery(
+    `SELECT r.*, oi.produk_kode FROM reviews r 
+     JOIN order_items oi ON r.order_id = oi.order_id 
+     WHERE oi.produk_kode = ? ORDER BY r.created_at DESC LIMIT 10`,
+    [produkKode.toUpperCase()]
+  );
+}
+
+export async function getAverageRating(produkKode) {
+  const row = await getQuery(
+    `SELECT AVG(r.rating) as avg_rating, COUNT(r.id) as total_reviews FROM reviews r 
+     JOIN order_items oi ON r.order_id = oi.order_id 
+     WHERE oi.produk_kode = ?`,
+    [produkKode.toUpperCase()]
+  );
+  return row || { avg_rating: 0, total_reviews: 0 };
+}
+
+export async function getOrdersNeedingReviewReminder() {
+  return await allQuery(
+    `SELECT o.order_id, o.customer_nomor, c.nama as customer_nama 
+     FROM orders o 
+     JOIN customers c ON o.customer_nomor = c.nomor
+     LEFT JOIN reviews r ON o.order_id = r.order_id
+     WHERE o.status = 'COMPLETED' 
+     AND o.review_reminder_sent = 0 
+     AND r.id IS NULL
+     AND o.created_at <= datetime('now', '-24 hours')`
+  );
+}
+
+export async function markReviewReminderSent(orderId) {
+  await runQuery("UPDATE orders SET review_reminder_sent = 1 WHERE order_id = ?", [orderId]);
+}
+
+// --- FUNGSI REFERRAL ---
+export async function generateReferralCode(customerNomor) {
+  const existing = await getQuery("SELECT referral_code FROM customers WHERE nomor = ?", [customerNomor]);
+  if (existing && existing.referral_code) return existing.referral_code;
+  
+  const code = 'REF-' + Math.random().toString(36).substring(2, 8).toUpperCase();
+  await runQuery("UPDATE customers SET referral_code = ? WHERE nomor = ?", [code, customerNomor]);
+  return code;
+}
+
+export async function getReferralByCode(code) {
+  return await getQuery("SELECT * FROM customers WHERE referral_code = ?", [code.toUpperCase()]);
+}
+
+export async function addReferral(referrerNomor, referredNomor) {
+  try {
+    await runQuery(
+      "INSERT INTO referrals (referrer_nomor, referred_nomor) VALUES (?, ?)",
+      [referrerNomor, referredNomor]
+    );
+    await addLog("REFERRAL", `Referral: ${referredNomor} direferensikan oleh ${referrerNomor}`);
+    return { success: true };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+}
+
+export async function getReferralStats(customerNomor) {
+  const count = await getQuery(
+    "SELECT COUNT(*) as total FROM referrals WHERE referrer_nomor = ?", [customerNomor]
+  );
+  const claimed = await getQuery(
+    "SELECT COUNT(*) as total FROM referrals WHERE referrer_nomor = ? AND reward_claimed = 1", [customerNomor]
+  );
+  return { totalReferred: count?.total || 0, rewardsClaimed: claimed?.total || 0 };
+}
+
+export async function claimReferralRewardCount(referrerNomor, countToClaim) {
+  const unclaimedList = await allQuery(
+    "SELECT id FROM referrals WHERE referrer_nomor = ? AND reward_claimed = 0 LIMIT ?",
+    [referrerNomor, countToClaim * 3]
+  );
+  for (const item of unclaimedList) {
+    await runQuery("UPDATE referrals SET reward_claimed = 1 WHERE id = ?", [item.id]);
+  }
+}
+
+// --- FUNGSI FAQ OTOMATIS ---
+export async function addFaq(keywords, answer) {
+  const res = await runQuery(
+    "INSERT INTO faqs (keywords, answer) VALUES (?, ?)",
+    [keywords.toLowerCase(), answer]
+  );
+  await addLog("SYSTEM", `FAQ baru ditambahkan: ${keywords}`);
+  return res.lastID;
+}
+
+export async function deleteFaq(id) {
+  const res = await runQuery("DELETE FROM faqs WHERE id = ?", [id]);
+  return res.changes > 0;
+}
+
+export async function getAllFaqs() {
+  return await allQuery("SELECT * FROM faqs ORDER BY id ASC");
+}
+
+export async function findFaqMatch(text) {
+  const faqs = await allQuery("SELECT * FROM faqs");
+  const textLower = text.toLowerCase();
+  for (const faq of faqs) {
+    const keywords = faq.keywords.split(',').map(k => k.trim());
+    for (const keyword of keywords) {
+      if (textLower.includes(keyword) && keyword.length >= 3) {
+        return faq;
+      }
+    }
+  }
+  return null;
+}
+
+// --- FUNGSI LOYALTY POINTS ---
+export async function getLoyalty(customerNomor) {
+  let row = await getQuery("SELECT * FROM loyalty WHERE customer_nomor = ?", [customerNomor]);
+  if (!row) {
+    await runQuery("INSERT INTO loyalty (customer_nomor, points, total_spent, tier) VALUES (?, 0, 0, 'Bronze')", [customerNomor]);
+    row = { customer_nomor: customerNomor, points: 0, total_spent: 0, tier: 'Bronze' };
   }
   return row;
 }
 
-export async function updateGroupSettings(jid, settingsObj) {
-  const { welcome_enabled, welcome_msg, goodbye_enabled, goodbye_msg } = settingsObj;
+export async function addLoyaltyPoints(customerNomor, orderTotal) {
+  const pointsEarned = Math.floor(orderTotal / 10000);
+  await getLoyalty(customerNomor);
   await runQuery(
-    "INSERT OR REPLACE INTO group_settings (jid, welcome_enabled, welcome_msg, goodbye_enabled, goodbye_msg) VALUES (?, ?, ?, ?, ?)",
-    [jid, welcome_enabled ? 1 : 0, welcome_msg, goodbye_enabled ? 1 : 0, goodbye_msg]
+    "UPDATE loyalty SET points = points + ?, total_spent = total_spent + ? WHERE customer_nomor = ?",
+    [pointsEarned, orderTotal, customerNomor]
   );
-  await addLog("SYSTEM", `Pengaturan grup ${jid} diperbarui dari Web Dashboard.`);
+  
+  // Update tier
+  const updated = await getLoyalty(customerNomor);
+  let newTier = 'Bronze';
+  if (updated.points >= 151) newTier = 'Gold';
+  else if (updated.points >= 51) newTier = 'Silver';
+  
+  if (newTier !== updated.tier) {
+    await runQuery("UPDATE loyalty SET tier = ? WHERE customer_nomor = ?", [newTier, customerNomor]);
+  }
+  
+  return { pointsEarned, totalPoints: updated.points + pointsEarned, tier: newTier };
+}
+
+export async function redeemLoyaltyPoints(customerNomor, pointsToRedeem) {
+  const loyalty = await getLoyalty(customerNomor);
+  if (loyalty.points < pointsToRedeem) {
+    return { success: false, message: `Poin tidak cukup. Saldo poin Anda: ${loyalty.points}` };
+  }
+  await runQuery(
+    "UPDATE loyalty SET points = points - ? WHERE customer_nomor = ?",
+    [pointsToRedeem, customerNomor]
+  );
+  const discountValue = pointsToRedeem * 500; // 1 poin = Rp500
+  return { success: true, discount: discountValue, remainingPoints: loyalty.points - pointsToRedeem };
+}
+
+// --- FUNGSI BUNDLING PRODUK ---
+export async function addBundle(nama, produkList, hargaBundle) {
+  const res = await runQuery(
+    "INSERT INTO bundles (nama, produk_list, harga_bundle) VALUES (?, ?, ?)",
+    [nama, JSON.stringify(produkList), hargaBundle]
+  );
+  await addLog("SYSTEM", `Bundle baru ditambahkan: ${nama}`);
+  return res.lastID;
+}
+
+export async function deleteBundle(id) {
+  const res = await runQuery("DELETE FROM bundles WHERE id = ?", [id]);
+  return res.changes > 0;
+}
+
+export async function getActiveBundles() {
+  const rows = await allQuery("SELECT * FROM bundles WHERE is_active = 1 ORDER BY id ASC");
+  return rows.map(r => ({ ...r, produk_list: JSON.parse(r.produk_list) }));
+}
+
+export async function getBundleById(id) {
+  const row = await getQuery("SELECT * FROM bundles WHERE id = ? AND is_active = 1", [id]);
+  if (row) row.produk_list = JSON.parse(row.produk_list);
+  return row;
+}
+
+// --- FUNGSI WISHLIST ---
+export async function addToWishlist(customerNomor, produkKode) {
+  try {
+    await runQuery(
+      "INSERT OR IGNORE INTO wishlist (customer_nomor, produk_kode) VALUES (?, ?)",
+      [customerNomor, produkKode.toUpperCase()]
+    );
+    return { success: true };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+}
+
+export async function removeFromWishlist(customerNomor, produkKode) {
+  const res = await runQuery(
+    "DELETE FROM wishlist WHERE customer_nomor = ? AND produk_kode = ?",
+    [customerNomor, produkKode.toUpperCase()]
+  );
+  return res.changes > 0;
+}
+
+export async function getWishlist(customerNomor) {
+  return await allQuery(
+    `SELECT w.*, p.nama, p.harga, p.stok FROM wishlist w 
+     JOIN products p ON w.produk_kode = p.kode 
+     WHERE w.customer_nomor = ? ORDER BY w.created_at DESC`,
+    [customerNomor]
+  );
+}
+
+// --- FUNGSI RIWAYAT PESANAN ---
+export async function getCustomerOrderHistory(customerNomor, limit = 5) {
+  return await allQuery(
+    `SELECT o.order_id, o.total, o.status, o.discount_amount, o.coupon_code, o.created_at,
+     GROUP_CONCAT(oi.produk_kode || ' x' || oi.qty, ', ') as items_summary
+     FROM orders o
+     LEFT JOIN order_items oi ON o.order_id = oi.order_id
+     WHERE o.customer_nomor = ?
+     GROUP BY o.order_id
+     ORDER BY o.created_at DESC LIMIT ?`,
+    [customerNomor, limit]
+  );
+}
+
+// --- FUNGSI PENCARIAN PRODUK ---
+export async function searchProducts(keyword) {
+  return await allQuery(
+    "SELECT * FROM products WHERE nama LIKE ? OR deskripsi LIKE ? OR kode LIKE ?",
+    [`%${keyword}%`, `%${keyword}%`, `%${keyword}%`]
+  );
+}
+
+// --- FUNGSI LAPORAN PENJUALAN ---
+export async function getDailySalesReport(dateStr) {
+  const orders = await allQuery(
+    `SELECT COUNT(*) as total_orders, COALESCE(SUM(total), 0) as total_revenue 
+     FROM orders WHERE status = 'COMPLETED' AND DATE(created_at) = ?`, [dateStr]
+  );
+  const topProducts = await allQuery(
+    `SELECT oi.produk_kode, p.nama, SUM(oi.qty) as total_qty, SUM(oi.subtotal) as total_sales
+     FROM order_items oi
+     JOIN orders o ON oi.order_id = o.order_id
+     JOIN products p ON oi.produk_kode = p.kode
+     WHERE o.status = 'COMPLETED' AND DATE(o.created_at) = ?
+     GROUP BY oi.produk_kode ORDER BY total_qty DESC LIMIT 5`, [dateStr]
+  );
+  const lowStockProducts = await allQuery(
+    "SELECT kode, nama, stok FROM products WHERE stok <= 3 AND stok > 0 ORDER BY stok ASC"
+  );
+  const outOfStockProducts = await allQuery(
+    "SELECT kode, nama FROM products WHERE stok = 0"
+  );
+  return { ...orders[0], topProducts, lowStockProducts, outOfStockProducts };
+}
+
+// --- FUNGSI SALDO & DEPOSIT ---
+export async function getCustomerBalance(customerNomor) {
+  const row = await getQuery("SELECT balance FROM customers WHERE nomor = ?", [customerNomor]);
+  return row ? (row.balance || 0) : 0;
+}
+
+export async function addCustomerBalance(customerNomor, amount) {
+  await runQuery("UPDATE customers SET balance = COALESCE(balance, 0) + ? WHERE nomor = ?", [amount, customerNomor]);
+  return await getCustomerBalance(customerNomor);
+}
+
+export async function deductCustomerBalance(customerNomor, amount) {
+  const current = await getCustomerBalance(customerNomor);
+  if (current < amount) return false;
+  await runQuery("UPDATE customers SET balance = balance - ? WHERE nomor = ?", [amount, customerNomor]);
+  return true;
+}
+
+// --- FUNGSI REFERRAL ---
+export async function getOrCreateReferralCode(customerNomor, name = 'Pelanggan') {
+  let customer = await getQuery("SELECT referral_code FROM customers WHERE nomor = ?", [customerNomor]);
+  if (customer && customer.referral_code) {
+    return customer.referral_code;
+  }
+  const cleanName = (name || 'USER').replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 5) || 'USER';
+  const randNum = Math.floor(100 + Math.random() * 900);
+  const refCode = `REF-${cleanName}${randNum}`;
+  await runQuery("UPDATE customers SET referral_code = ? WHERE nomor = ?", [refCode, customerNomor]);
+  return refCode;
+}
+
+export async function getCustomerByReferral(code) {
+  return await getQuery("SELECT * FROM customers WHERE UPPER(referral_code) = UPPER(?)", [(code || '').trim()]);
+}
+
+// --- FUNGSI FLASH SALE ---
+export async function setFlashSale(produkKode, hargaFlash, durationHours = 2) {
+  const endTime = new Date(Date.now() + durationHours * 3600000).toISOString();
+  await runQuery(
+    "INSERT OR REPLACE INTO flash_sales (produk_kode, harga_flash, end_time) VALUES (?, ?, ?)",
+    [produkKode.toUpperCase(), hargaFlash, endTime]
+  );
+  return endTime;
+}
+
+export async function getActiveFlashSale(produkKode) {
+  const now = new Date().toISOString();
+  return await getQuery(
+    "SELECT * FROM flash_sales WHERE produk_kode = ? AND end_time > ?",
+    [produkKode.toUpperCase(), now]
+  );
+}
+
+export async function getAllActiveFlashSales() {
+  const now = new Date().toISOString();
+  return await allQuery(
+    `SELECT fs.*, p.nama, p.harga as harga_asli, p.stok FROM flash_sales fs
+     JOIN products p ON fs.produk_kode = p.kode
+     WHERE fs.end_time > ? ORDER BY fs.end_time ASC`,
+    [now]
+  );
+}
+
+export async function endFlashSale(produkKode) {
+  const res = await runQuery("DELETE FROM flash_sales WHERE produk_kode = ?", [produkKode.toUpperCase()]);
+  return res.changes > 0;
+}
+
+export async function getAbandonedCarts(hoursThreshold = 2) {
+  return await allQuery(
+    `SELECT o.order_id, o.customer_nomor, o.total, c.nama as customer_nama,
+     GROUP_CONCAT(p.nama || ' (x' || oi.qty || ')', ', ') as items_summary
+     FROM orders o
+     JOIN customers c ON o.customer_nomor = c.nomor
+     JOIN order_items oi ON o.order_id = oi.order_id
+     JOIN products p ON oi.produk_kode = p.kode
+     WHERE o.status = 'CART' 
+     AND o.created_at <= datetime('now', '-' || ? || ' hours')
+     AND o.reminder_sent = 0
+     GROUP BY o.order_id`,
+    [hoursThreshold]
+  );
+}
+
+export async function markCartReminderSent(orderId) {
+  await runQuery("UPDATE orders SET reminder_sent = 1 WHERE order_id = ?", [orderId]);
+}
+
+// --- FUNGSI ALIAS & KOMPATIBILITAS ---
+
+/**
+ * Alias untuk getOrderDetails — dipanggil dari bot.js (.invoice & .review)
+ */
+export async function getOrderById(orderId) {
+  return await getOrderDetails(orderId);
+}
+
+/**
+ * Ambil data customer by nomor (tanpa create). Alias dari getOrCreateCustomer
+ * tapi hanya READ — tidak membuat record baru jika tidak ada.
+ */
+export async function getCustomer(nomor) {
+  return await getQuery("SELECT * FROM customers WHERE nomor = ?", [nomor]);
+}
+
+// --- FUNGSI ANALITIK LANJUTAN ---
+
+/**
+ * Data pendapatan per hari untuk grafik timeline
+ * @param {number} days - Jumlah hari terakhir (default: 30)
+ */
+export async function getDailySalesTimeline(days = 30) {
+  return await allQuery(`
+    SELECT 
+      date(created_at) as date, 
+      SUM(total) as revenue,
+      COUNT(*) as order_count
+    FROM orders
+    WHERE status = 'COMPLETED' 
+      AND date(created_at) >= date('now', '-' || ? || ' days')
+    GROUP BY date(created_at)
+    ORDER BY date ASC
+  `, [days]);
+}
+
+/**
+ * Top produk berdasarkan qty terjual dan revenue
+ * @param {number} limit
+ */
+export async function getTopProducts(limit = 10) {
+  return await allQuery(`
+    SELECT 
+      p.kode,
+      p.nama,
+      SUM(oi.qty) as total_qty,
+      SUM(oi.subtotal) as total_revenue,
+      COUNT(DISTINCT oi.order_id) as order_count
+    FROM order_items oi
+    JOIN products p ON oi.produk_kode = p.kode
+    JOIN orders o ON oi.order_id = o.order_id
+    WHERE o.status = 'COMPLETED'
+    GROUP BY p.kode
+    ORDER BY total_revenue DESC
+    LIMIT ?
+  `, [limit]);
+}
+
+/**
+ * Top pelanggan berdasarkan total belanja
+ * @param {number} limit
+ */
+export async function getTopCustomers(limit = 10) {
+  return await allQuery(`
+    SELECT 
+      c.nomor,
+      c.nama,
+      COUNT(o.order_id) as total_orders,
+      SUM(o.total) as total_spent,
+      MAX(o.created_at) as last_order_at
+    FROM customers c
+    JOIN orders o ON c.nomor = o.customer_nomor
+    WHERE o.status = 'COMPLETED'
+    GROUP BY c.nomor
+    ORDER BY total_spent DESC
+    LIMIT ?
+  `, [limit]);
+}
+
+/**
+ * KPI summary untuk analytics dashboard
+ */
+export async function getAnalyticsSummary() {
+  const [omzetBulanIni, omzetBulanLalu, avgOrder, repeatBuyers, totalCompleted, totalCustomers] = await Promise.all([
+    getQuery(`SELECT COALESCE(SUM(total), 0) as val FROM orders WHERE status='COMPLETED' AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')`),
+    getQuery(`SELECT COALESCE(SUM(total), 0) as val FROM orders WHERE status='COMPLETED' AND strftime('%Y-%m', created_at) = strftime('%Y-%m', date('now', '-1 month'))`),
+    getQuery(`SELECT COALESCE(AVG(total), 0) as val FROM orders WHERE status='COMPLETED'`),
+    getQuery(`SELECT COUNT(*) as val FROM (SELECT customer_nomor FROM orders WHERE status='COMPLETED' GROUP BY customer_nomor HAVING COUNT(*) > 1)`),
+    getQuery(`SELECT COUNT(*) as val FROM orders WHERE status='COMPLETED'`),
+    getQuery(`SELECT COUNT(*) as val FROM customers`),
+  ]);
+
+  const omzetIni = omzetBulanIni.val || 0;
+  const omzetLalu = omzetBulanLalu.val || 0;
+  const growthPct = omzetLalu > 0 ? ((omzetIni - omzetLalu) / omzetLalu * 100).toFixed(1) : null;
+
+  return {
+    omzetBulanIni: omzetIni,
+    omzetBulanLalu: omzetLalu,
+    growthPct,
+    avgOrderValue: Math.round(avgOrder.val || 0),
+    repeatBuyers: repeatBuyers.val || 0,
+    totalCompleted: totalCompleted.val || 0,
+    totalCustomers: totalCustomers.val || 0,
+    repeatRate: totalCustomers.val > 0 ? ((repeatBuyers.val / totalCustomers.val) * 100).toFixed(1) : '0.0',
+  };
+}
+
+/**
+ * Data heatmap per hari dalam sebulan
+ * @param {number} year
+ * @param {number} month (1-12)
+ */
+export async function getSalesHeatmap(year, month) {
+  const paddedMonth = String(month).padStart(2, '0');
+  return await allQuery(`
+    SELECT 
+      date(created_at) as date,
+      COUNT(*) as order_count,
+      COALESCE(SUM(total), 0) as revenue
+    FROM orders
+    WHERE status = 'COMPLETED'
+      AND strftime('%Y', created_at) = ?
+      AND strftime('%m', created_at) = ?
+    GROUP BY date(created_at)
+    ORDER BY date ASC
+  `, [String(year), paddedMonth]);
+}
+
+/**
+ * Fitur Ban / Unban User
+ */
+export async function banUser(jid, reason = '', bannedBy = 'system') {
+  if (!jid) return false;
+  const clean = jid.trim();
+  await runQuery(
+    `INSERT OR REPLACE INTO banned_users (jid, reason, banned_by) VALUES (?, ?, ?)`,
+    [clean, reason, bannedBy]
+  );
+  return true;
+}
+
+export async function unbanUser(jid) {
+  if (!jid) return false;
+  const clean = jid.trim();
+  const digits = clean.replace(/[^0-9]/g, '');
+  await runQuery(
+    `DELETE FROM banned_users WHERE jid = ? OR (length(?) > 6 AND jid LIKE '%' || ? || '%')`,
+    [clean, digits, digits]
+  );
+  return true;
+}
+
+export async function isUserBanned(jid) {
+  if (!jid) return false;
+  const clean = jid.trim();
+  const digits = clean.replace(/[^0-9]/g, '');
+  const row = await getQuery(
+    `SELECT * FROM banned_users WHERE jid = ? OR (length(?) > 6 AND jid LIKE '%' || ? || '%')`,
+    [clean, digits, digits]
+  );
+  return row ? true : false;
+}
+
+/**
+ * Moderator System — User yang diberi izin Owner untuk pakai .ban/.unban
+ */
+export async function addModerator(jid, addedBy = 'owner') {
+  if (!jid) return false;
+  await runQuery(
+    `INSERT OR REPLACE INTO moderators (jid, added_by) VALUES (?, ?)`,
+    [jid.trim(), addedBy]
+  );
+  return true;
+}
+
+export async function removeModerator(jid) {
+  if (!jid) return false;
+  const clean = jid.trim();
+  const digits = clean.replace(/[^0-9]/g, '');
+  await runQuery(
+    `DELETE FROM moderators WHERE jid = ? OR (length(?) > 6 AND jid LIKE '%' || ? || '%')`,
+    [clean, digits, digits]
+  );
+  return true;
+}
+
+export async function isModerator(jid) {
+  if (!jid) return false;
+  const clean = jid.trim();
+  const digits = clean.replace(/[^0-9]/g, '');
+  const row = await getQuery(
+    `SELECT * FROM moderators WHERE jid = ? OR (length(?) > 6 AND jid LIKE '%' || ? || '%')`,
+    [clean, digits, digits]
+  );
+  return row ? true : false;
+}
+
+export async function listModerators() {
+  return await allQuery(`SELECT jid, added_by, created_at FROM moderators ORDER BY created_at ASC`);
+}
+
+/**
+ * ProdSeller API — Riwayat Pembelian
+ */
+export async function saveProdsellerOrder({ order_id, prodseller_order_id, produk_kode, prodseller_product_id, quantity, amount_usd, delivered_keys, status, error_message }) {
+  return await runQuery(
+    `INSERT INTO prodseller_orders 
+      (order_id, prodseller_order_id, produk_kode, prodseller_product_id, quantity, amount_usd, delivered_keys, status, error_message)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      order_id,
+      prodseller_order_id || null,
+      produk_kode,
+      prodseller_product_id || null,
+      quantity || 1,
+      amount_usd || null,
+      delivered_keys ? JSON.stringify(delivered_keys) : null,
+      status || 'PENDING',
+      error_message || null
+    ]
+  );
+}
+
+export async function getProdsellerOrders(limit = 10) {
+  return await allQuery(
+    `SELECT ps.*, o.customer_nomor 
+     FROM prodseller_orders ps
+     LEFT JOIN orders o ON ps.order_id = o.order_id
+     ORDER BY ps.created_at DESC LIMIT ?`,
+    [limit]
+  );
+}
+
+export async function getProdsellerOrdersByBotOrder(orderId) {
+  return await allQuery(
+    `SELECT * FROM prodseller_orders WHERE order_id = ? ORDER BY created_at ASC`,
+    [orderId]
+  );
+}
+
+// Update prodseller_id pada produk
+export async function setProductProdsellerID(kode, prodsellerId) {
+  return await runQuery(
+    `UPDATE products SET prodseller_id = ? WHERE kode = ?`,
+    [prodsellerId, kode]
+  );
+}
+
+// Memperbarui status terakhir (harga & stok) sebuah produk untuk notifikasi
+export async function updateProductLastState(kode, lastPrice, lastStockStatus) {
+  return await runQuery(
+    `UPDATE products SET last_price = ?, last_stock_status = ? WHERE kode = ?`,
+    [lastPrice, lastStockStatus, kode]
+  );
 }

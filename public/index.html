@@ -1206,6 +1206,9 @@
         <button onclick="switchTab('products')" class="nav-btn" id="btn-products"><span>🛒</span> Produk (Products)</button>
         <button onclick="switchTab('customers')" class="nav-btn" id="btn-customers"><span>👥</span> Pelanggan</button>
         <button onclick="switchTab('chats')" class="nav-btn" id="btn-chats"><span>💬</span> Chats</button>
+        <button onclick="switchTab('coupons')" class="nav-btn" id="btn-coupons"><span>🏷️</span> Kupon & Diskon</button>
+        <button onclick="switchTab('faqs')" class="nav-btn" id="btn-faqs"><span>❓</span> FAQ Bot</button>
+        <button onclick="switchTab('referrals')" class="nav-btn" id="btn-referrals"><span>🎁</span> Referral</button>
         <button onclick="switchTab('broadcast')" class="nav-btn" id="btn-broadcast"><span>📢</span> Broadcast Panel</button>
         <button onclick="switchTab('analytics')" class="nav-btn" id="btn-analytics"><span>📈</span> Analitik (Charts)</button>
         <button onclick="switchTab('botStatus')" class="nav-btn" id="btn-botStatus"><span>🤖</span> Status Monitor</button>
@@ -1460,6 +1463,127 @@
           </div>
 
         </div>
+      </div>
+
+      <!-- ==================== TAB KUPON ==================== -->
+      <div id="tab-coupons" class="tab-content space-y">
+        <div class="layout-2col">
+          <div class="glass-card" style="padding: 24px;">
+            <h3 class="section-title">Tambah Kupon Baru</h3>
+            <form id="addCouponForm" onsubmit="handleAddCoupon(event)" class="space-y-sm">
+              <div>
+                <label class="form-label">Kode Kupon</label>
+                <input type="text" id="cpCode" required placeholder="Contoh: DISKON10" class="form-input" style="text-transform: uppercase;">
+              </div>
+              <div>
+                <label class="form-label">Tipe Diskon</label>
+                <select id="cpType" class="form-select">
+                  <option value="percent">Persentase (%)</option>
+                  <option value="fixed">Nominal Tetap (Rp)</option>
+                </select>
+              </div>
+              <div>
+                <label class="form-label">Nilai Diskon</label>
+                <input type="number" id="cpValue" required placeholder="Contoh: 10 atau 10000" class="form-input">
+              </div>
+              <div>
+                <label class="form-label">Minimal Belanja (Rp)</label>
+                <input type="number" id="cpMinOrder" value="0" class="form-input">
+              </div>
+              <div>
+                <label class="form-label">Maksimal Penggunaan (0 = Tanpa Batas)</label>
+                <input type="number" id="cpMaxUses" value="0" class="form-input">
+              </div>
+              <div>
+                <label class="form-label">Tanggal Kedaluwarsa (Opsional)</label>
+                <input type="date" id="cpExpiresAt" class="form-input">
+              </div>
+              <button type="submit" class="btn-accent" style="width: 100%; padding: 12px; margin-top: 10px;">+ Simpan Kupon</button>
+            </form>
+          </div>
+
+          <div class="glass-card" style="padding: 24px;">
+            <h3 class="section-title">Daftar Kupon Aktif</h3>
+            <div style="overflow-x: auto;">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Kode</th>
+                    <th>Tipe / Nilai</th>
+                    <th>Min. Order</th>
+                    <th>Terpakai</th>
+                    <th>Aksi</th>
+                  </tr>
+                </thead>
+                <tbody id="couponsTableBody">
+                  <tr><td colspan="5" style="text-align:center;">Memuat data kupon...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ==================== TAB FAQ ==================== -->
+      <div id="tab-faqs" class="tab-content space-y">
+        <div class="layout-2col">
+          <div class="glass-card" style="padding: 24px;">
+            <h3 class="section-title">Tambah Q&A / FAQ Otomatis</h3>
+            <form id="addFaqForm" onsubmit="handleAddFaq(event)" class="space-y-sm">
+              <div>
+                <label class="form-label">Kata Kunci (Keywords dipisah koma)</label>
+                <input type="text" id="faqKeywords" required placeholder="Contoh: jam buka, jam kerja, operasional" class="form-input">
+              </div>
+              <div>
+                <label class="form-label">Jawaban Otomatis Bot</label>
+                <textarea id="faqAnswer" rows="5" required placeholder="Tulis jawaban bot di sini..." class="form-textarea"></textarea>
+              </div>
+              <button type="submit" class="btn-accent" style="width: 100%; padding: 12px; margin-top: 10px;">+ Simpan FAQ</button>
+            </form>
+          </div>
+
+          <div class="glass-card" style="padding: 24px;">
+            <h3 class="section-title">Daftar FAQ Bot</h3>
+            <div style="overflow-x: auto;">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Kata Kunci</th>
+                    <th>Jawaban</th>
+                    <th>Aksi</th>
+                  </tr>
+                </thead>
+                <tbody id="faqsTableBody">
+                  <tr><td colspan="4" style="text-align:center;">Memuat data FAQ...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ==================== TAB REFERRAL ==================== -->
+      <div id="tab-referrals" class="tab-content space-y">
+        <div class="glass-card" style="padding: 24px;">
+          <h3 class="section-title">Riwayat & Statistik Referral</h3>
+          <div style="overflow-x: auto;">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Pengundang (Referrer)</th>
+                  <th>Teman Diajak (Referred)</th>
+                  <th>Status Hadiah</th>
+                  <th>Tanggal</th>
+                </tr>
+              </thead>
+              <tbody id="referralsTableBody">
+                <tr><td colspan="4" style="text-align:center;">Memuat data referral...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
 
       <!-- ==================== 5. TAB BROADCAST ==================== -->
       <div id="tab-broadcast" class="tab-content">
@@ -1503,31 +1627,139 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
 
       <!-- ==================== 6. TAB ANALYTICS ==================== -->
       <div id="tab-analytics" class="tab-content space-y">
-        <div class="grid-3">
-          <div class="glass-card metric-card" style="text-align:center;">
-            <span class="metric-label">Omset Hari Ini</span>
-            <span class="metric-value text-emerald" id="analyticsRevToday">Rp0</span>
+
+        <!-- KPI Cards Row -->
+        <div class="grid-4">
+          <div class="glass-card metric-card" style="position:relative;overflow:hidden;">
+            <span class="metric-label">Omzet Bulan Ini</span>
+            <span class="metric-value text-emerald" id="kpiOmzetBulanIni">Rp0</span>
+            <span class="metric-sub" id="kpiGrowth" style="color:var(--text-muted);">vs bulan lalu</span>
+            <div style="position:absolute;right:16px;top:50%;transform:translateY(-50%);font-size:2.2rem;opacity:0.12;">💰</div>
           </div>
-          <div class="glass-card metric-card" style="text-align:center;">
-            <span class="metric-label">Omset 7 Hari Terakhir</span>
-            <span class="metric-value" style="color:#2dd4bf;" id="analyticsRevWeek">Rp0</span>
+          <div class="glass-card metric-card" style="position:relative;overflow:hidden;">
+            <span class="metric-label">Rata-rata Nilai Order</span>
+            <span class="metric-value" style="color:var(--color-blue);" id="kpiAvgOrder">Rp0</span>
+            <span class="metric-sub">Average Order Value (AOV)</span>
+            <div style="position:absolute;right:16px;top:50%;transform:translateY(-50%);font-size:2.2rem;opacity:0.12;">📊</div>
           </div>
-          <div class="glass-card metric-card" style="text-align:center;">
-            <span class="metric-label">Omset 30 Hari Terakhir</span>
-            <span class="metric-value text-indigo" id="analyticsRevMonth">Rp0</span>
+          <div class="glass-card metric-card" style="position:relative;overflow:hidden;">
+            <span class="metric-label">Repeat Buyers</span>
+            <span class="metric-value text-indigo" id="kpiRepeatBuyers">0</span>
+            <span class="metric-sub" id="kpiRepeatRate">Rate: 0%</span>
+            <div style="position:absolute;right:16px;top:50%;transform:translateY(-50%);font-size:2.2rem;opacity:0.12;">♻️</div>
+          </div>
+          <div class="glass-card metric-card" style="position:relative;overflow:hidden;">
+            <span class="metric-label">Total Order Selesai</span>
+            <span class="metric-value" style="color:var(--color-amber);" id="kpiTotalCompleted">0</span>
+            <span class="metric-sub" id="kpiTotalCustomers">0 pelanggan terdaftar</span>
+            <div style="position:absolute;right:16px;top:50%;transform:translateY(-50%);font-size:2.2rem;opacity:0.12;">✅</div>
           </div>
         </div>
+
+        <!-- Revenue Timeline Chart -->
+        <div class="glass-card" style="padding:24px;">
+          <div class="flex-between" style="margin-bottom:16px;">
+            <h3 style="font-weight:700;font-size:1rem;color:var(--text-primary);">📈 Grafik Pendapatan</h3>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+              <div style="display:flex;gap:6px;">
+                <button onclick="setTimelinePeriod(7)" id="period-7" class="btn-ghost" style="padding:4px 12px;font-size:0.75rem;">7H</button>
+                <button onclick="setTimelinePeriod(30)" id="period-30" class="btn-accent" style="padding:4px 12px;font-size:0.75rem;">30H</button>
+                <button onclick="setTimelinePeriod(90)" id="period-90" class="btn-ghost" style="padding:4px 12px;font-size:0.75rem;">90H</button>
+              </div>
+              <a id="exportCsvBtn" href="/api/analytics/export?days=90" class="btn-ghost" style="padding:4px 14px;font-size:0.75rem;text-decoration:none;" download>⬇️ Export CSV</a>
+            </div>
+          </div>
+          <div style="height:300px;width:100%;"><canvas id="revenueTimelineChart"></canvas></div>
+        </div>
+
+        <!-- Top Products + Top Customers -->
         <div class="layout-2col">
+
+          <!-- Top Products Table -->
           <div class="glass-card" style="padding:20px;">
-            <h3 style="font-weight:700;font-size:1rem;margin-bottom:16px;color:var(--text-primary);">Produk Terlaris (Qty Terjual)</h3>
-            <div style="height:240px;"><canvas id="topProductsChart"></canvas></div>
+            <h3 style="font-weight:700;font-size:0.9375rem;color:var(--text-primary);margin-bottom:16px;">🏆 Produk Terlaris</h3>
+            <div style="overflow-x:auto;">
+              <table class="data-table" id="topProductsTable">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Produk</th>
+                    <th style="text-align:right;">Terjual</th>
+                    <th style="text-align:right;">Revenue</th>
+                  </tr>
+                </thead>
+                <tbody id="topProductsBody">
+                  <tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:24px;">Memuat data...</td></tr>
+                </tbody>
+              </table>
+            </div>
           </div>
+
+          <!-- Top Customers Table -->
           <div class="glass-card" style="padding:20px;">
-            <h3 style="font-weight:700;font-size:1rem;margin-bottom:16px;color:var(--text-primary);">Jam Transaksi Teramai (Peak Hours)</h3>
-            <div style="height:240px;"><canvas id="peakHoursChart"></canvas></div>
+            <h3 style="font-weight:700;font-size:0.9375rem;color:var(--text-primary);margin-bottom:16px;">👑 Pelanggan Terbaik</h3>
+            <div style="overflow-x:auto;">
+              <table class="data-table" id="topCustomersTable">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Pelanggan</th>
+                    <th style="text-align:center;">Orders</th>
+                    <th style="text-align:right;">Total Belanja</th>
+                  </tr>
+                </thead>
+                <tbody id="topCustomersBody">
+                  <tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:24px;">Memuat data...</td></tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
+
+        <!-- Sales Heatmap Calendar + Peak Hours Chart -->
+        <div class="layout-2col">
+          <!-- Heatmap Kalender -->
+          <div class="glass-card" style="padding:20px;">
+            <div class="flex-between" style="margin-bottom:16px;">
+              <h3 style="font-weight:700;font-size:0.9375rem;color:var(--text-primary);">📅 Heatmap Transaksi</h3>
+              <div style="display:flex;gap:8px;align-items:center;">
+                <button onclick="changeHeatmapMonth(-1)" class="btn-ghost" style="padding:4px 10px;font-size:0.8rem;">◀</button>
+                <span id="heatmapMonthLabel" style="font-size:0.8125rem;color:var(--text-secondary);font-weight:600;min-width:120px;text-align:center;"></span>
+                <button onclick="changeHeatmapMonth(1)" class="btn-ghost" style="padding:4px 10px;font-size:0.8rem;">▶</button>
+              </div>
+            </div>
+            <div id="heatmapCalendar" style="display:grid;grid-template-columns:repeat(7,1fr);gap:5px;"></div>
+            <div style="display:flex;align-items:center;gap:8px;margin-top:14px;font-size:0.7rem;color:var(--text-muted);">
+              <span>Sepi</span>
+              <div style="display:flex;gap:3px;">
+                <div style="width:14px;height:14px;border-radius:3px;background:rgba(16,185,129,0.08);border:1px solid var(--border-subtle);"></div>
+                <div style="width:14px;height:14px;border-radius:3px;background:rgba(16,185,129,0.25);"></div>
+                <div style="width:14px;height:14px;border-radius:3px;background:rgba(16,185,129,0.5);"></div>
+                <div style="width:14px;height:14px;border-radius:3px;background:rgba(16,185,129,0.8);"></div>
+                <div style="width:14px;height:14px;border-radius:3px;background:#10b981;"></div>
+              </div>
+              <span>Ramai</span>
+            </div>
+          </div>
+
+          <!-- Peak Hours Chart -->
+          <div class="glass-card" style="padding:20px;">
+            <h3 style="font-weight:700;font-size:0.9375rem;color:var(--text-primary);margin-bottom:16px;">⏰ Jam Transaksi Teramai</h3>
+            <div style="height:220px;"><canvas id="peakHoursChart"></canvas></div>
+          </div>
+        </div>
+
+        <!-- Old metrics for backward compatibility (hidden) -->
+        <div style="display:none;">
+          <span id="analyticsRevToday">Rp0</span>
+          <span id="analyticsRevWeek">Rp0</span>
+          <span id="analyticsRevMonth">Rp0</span>
+          <canvas id="topProductsChart"></canvas>
+        </div>
+
       </div>
+
+
 
       <!-- ==================== 7. TAB BOT STATUS ==================== -->
       <div id="tab-botStatus" class="tab-content space-y">
@@ -1832,6 +2064,10 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
           <textarea id="prodDeskripsi" rows="3" placeholder="Deskripsi fitur produk digital..." class="form-textarea"></textarea>
         </div>
         <div>
+          <label class="form-label">Petunjuk / Cara Penggunaan (Opsional)</label>
+          <textarea id="prodPetunjuk" rows="4" placeholder="Petunjuk otomatis yang akan dikirimkan ke pembeli saat order selesai..." class="form-textarea" style="font-size:0.75rem;line-height:1.4;"></textarea>
+        </div>
+        <div>
           <label class="form-label">Gambar Produk (Opsional)</label>
           <input type="file" id="prodFile" accept="image/*" class="file-input" style="width:100%;">
         </div>
@@ -1974,6 +2210,13 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
     let revenueChart = null;
     let topProductsChart = null;
     let peakHoursChart = null;
+    let revenueTimelineChartInst = null;
+
+    // Analytics state
+    let currentTimelineDays = 30;
+    let heatmapYear = new Date().getFullYear();
+    let heatmapMonth = new Date().getMonth() + 1;
+
 
     // Local state
     let globalOrders = [];
@@ -2194,6 +2437,9 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
         products: '🛒 Inventori Produk (Products)',
         customers: '👥 Data Pelanggan',
         chats: '💬 Live Chat Support',
+        coupons: '🏷️ Kelola Kupon & Diskon',
+        faqs: '❓ Kelola Q&A FAQ Bot',
+        referrals: '🎁 Program Referral Pelanggan',
         broadcast: '📢 Broadcast Panel Siaran',
         analytics: '📈 Statistik & Grafik Analitik',
         botStatus: '🤖 Monitor Status Bot & Server',
@@ -2215,6 +2461,9 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
         initSocket();
         loadChatsList();
       }
+      else if (tabId === 'coupons') loadCouponsData();
+      else if (tabId === 'faqs') loadFaqsData();
+      else if (tabId === 'referrals') loadReferralsData();
       else if (tabId === 'analytics') loadAnalyticsData();
       else if (tabId === 'botStatus') loadLogs();
       else if (tabId === 'settings') {
@@ -2497,54 +2746,251 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
 
     // --- ANALYTICS ---
     async function loadAnalyticsData() {
-      const data = await apiRequest('/api/analytics');
-      if (data && data.success) {
-        const a = data.analytics;
-        document.getElementById('analyticsRevToday').textContent = `Rp${a.revenueToday.toLocaleString('id-ID')}`;
-        document.getElementById('analyticsRevWeek').textContent = `Rp${a.revenueWeek.toLocaleString('id-ID')}`;
-        document.getElementById('analyticsRevMonth').textContent = `Rp${a.revenueMonth.toLocaleString('id-ID')}`;
+      // Load all analytics in parallel
+      await Promise.all([
+        loadAnalyticsSummary(),
+        loadTimelineChart(currentTimelineDays),
+        loadTopProducts(),
+        loadTopCustomers(),
+        loadOldAnalytics(), // backwards compat (peak hours)
+        loadHeatmap(heatmapYear, heatmapMonth),
+      ]);
+    }
 
-        const colors = getChartColors();
+    async function loadAnalyticsSummary() {
+      const data = await apiRequest('/api/analytics/summary');
+      if (!data || !data.success) return;
+      const s = data.data;
+      document.getElementById('kpiOmzetBulanIni').textContent = `Rp${(s.omzetBulanIni||0).toLocaleString('id-ID')}`;
+      document.getElementById('kpiAvgOrder').textContent = `Rp${(s.avgOrderValue||0).toLocaleString('id-ID')}`;
+      document.getElementById('kpiRepeatBuyers').textContent = s.repeatBuyers || 0;
+      document.getElementById('kpiRepeatRate').textContent = `Rate: ${s.repeatRate}% dari pelanggan`;
+      document.getElementById('kpiTotalCompleted').textContent = s.totalCompleted || 0;
+      document.getElementById('kpiTotalCustomers').textContent = `${s.totalCustomers} pelanggan terdaftar`;
 
-        if (topProductsChart) topProductsChart.destroy();
-        topProductsChart = new Chart(document.getElementById('topProductsChart').getContext('2d'), {
-          type: 'bar',
-          data: {
-            labels: a.topProducts.map(p => p.nama),
-            datasets: [{ data: a.topProducts.map(p => p.total_sold), backgroundColor: ['#10b981', '#3b82f6', '#6366f1', '#f59e0b', '#ec4899'], borderRadius: 8 }]
-          },
-          options: {
-            responsive: true, maintainAspectRatio: false,
-            plugins: { legend: { display: false } },
-            scales: {
-              x: { ticks: { color: colors.text }, grid: { display: false } },
-              y: { ticks: { color: colors.text }, grid: { color: colors.grid } }
-            }
-          }
-        });
-
-        if (peakHoursChart) peakHoursChart.destroy();
-        const hourLabels = Array.from({ length: 24 }, (_, i) => `${i.toString().padStart(2, '0')}:00`);
-        const hourValues = Array.from({ length: 24 }, () => 0);
-        a.peakHours.forEach(h => { const idx = parseInt(h.hour); if (idx >= 0 && idx < 24) hourValues[idx] = h.count; });
-
-        peakHoursChart = new Chart(document.getElementById('peakHoursChart').getContext('2d'), {
-          type: 'line',
-          data: {
-            labels: hourLabels,
-            datasets: [{ label: 'Pesanan', data: hourValues, borderColor: '#6366f1', backgroundColor: 'rgba(99, 102, 241, 0.1)', borderWidth: 2, fill: true, tension: 0.4 }]
-          },
-          options: {
-            responsive: true, maintainAspectRatio: false,
-            plugins: { legend: { display: false } },
-            scales: {
-              x: { ticks: { color: colors.text }, grid: { display: false } },
-              y: { ticks: { color: colors.text, precision: 0 }, grid: { color: colors.grid } }
-            }
-          }
-        });
+      // Growth indicator
+      const growthEl = document.getElementById('kpiGrowth');
+      if (s.growthPct !== null) {
+        const isUp = parseFloat(s.growthPct) >= 0;
+        growthEl.innerHTML = `<span style="color:${isUp ? 'var(--accent)' : 'var(--color-rose)'};font-weight:700;">${isUp ? '▲' : '▼'} ${Math.abs(s.growthPct)}%</span> vs bulan lalu`;
+      } else {
+        growthEl.textContent = `Rp${(s.omzetBulanLalu||0).toLocaleString('id-ID')} bulan lalu`;
       }
     }
+
+    async function setTimelinePeriod(days) {
+      currentTimelineDays = days;
+      // Update button styles
+      [7, 30, 90].forEach(d => {
+        const btn = document.getElementById(`period-${d}`);
+        if (btn) { btn.className = d === days ? 'btn-accent' : 'btn-ghost'; btn.style.cssText = 'padding:4px 12px;font-size:0.75rem;'; }
+      });
+      // Update export link
+      const expBtn = document.getElementById('exportCsvBtn');
+      if (expBtn) expBtn.href = `/api/analytics/export?days=${days}`;
+      await loadTimelineChart(days);
+    }
+
+    async function loadTimelineChart(days) {
+      const data = await apiRequest(`/api/analytics/timeline?days=${days}`);
+      if (!data || !data.success) return;
+      const colors = getChartColors();
+
+      // Fill missing dates
+      const rows = data.data;
+      const dateMap = {};
+      rows.forEach(r => { dateMap[r.date] = { revenue: r.revenue, order_count: r.order_count }; });
+      const labels = [], revenues = [], orderCounts = [];
+      for (let i = days - 1; i >= 0; i--) {
+        const d = new Date(); d.setDate(d.getDate() - i);
+        const key = d.toISOString().slice(0, 10);
+        labels.push(key.slice(5)); // MM-DD
+        revenues.push(dateMap[key] ? dateMap[key].revenue : 0);
+        orderCounts.push(dateMap[key] ? dateMap[key].order_count : 0);
+      }
+
+      if (revenueTimelineChartInst) revenueTimelineChartInst.destroy();
+      revenueTimelineChartInst = new Chart(document.getElementById('revenueTimelineChart').getContext('2d'), {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [
+            {
+              label: 'Pendapatan (Rp)',
+              data: revenues,
+              backgroundColor: 'rgba(16, 185, 129, 0.7)',
+              borderColor: '#10b981',
+              borderRadius: 6,
+              borderSkipped: false,
+              yAxisID: 'y',
+            },
+            {
+              label: 'Jumlah Order',
+              data: orderCounts,
+              type: 'line',
+              borderColor: '#818cf8',
+              backgroundColor: 'rgba(129, 140, 248, 0.1)',
+              borderWidth: 2,
+              fill: false,
+              tension: 0.4,
+              pointRadius: days <= 30 ? 3 : 0,
+              yAxisID: 'y2',
+            }
+          ]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          interaction: { mode: 'index', intersect: false },
+          plugins: {
+            legend: { display: true, labels: { color: colors.text, boxWidth: 12, font: { size: 11 } } },
+            tooltip: {
+              callbacks: {
+                label: ctx => ctx.datasetIndex === 0
+                  ? ` Rp${ctx.parsed.y.toLocaleString('id-ID')}`
+                  : ` ${ctx.parsed.y} order`
+              }
+            }
+          },
+          scales: {
+            x: { ticks: { color: colors.text, maxTicksLimit: days > 30 ? 15 : 30, font: { size: 10 } }, grid: { display: false } },
+            y: { ticks: { color: colors.text, callback: v => 'Rp' + (v >= 1000000 ? (v/1000000).toFixed(1)+'jt' : v >= 1000 ? (v/1000).toFixed(0)+'rb' : v) }, grid: { color: colors.grid }, position: 'left' },
+            y2: { ticks: { color: colors.text, precision: 0 }, grid: { display: false }, position: 'right' }
+          }
+        }
+      });
+    }
+
+    async function loadTopProducts() {
+      const data = await apiRequest('/api/analytics/top-products?limit=10');
+      if (!data || !data.success) return;
+      const tbody = document.getElementById('topProductsBody');
+      if (!tbody) return;
+      if (!data.data.length) {
+        tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:24px;">Belum ada data penjualan.</td></tr>`;
+        return;
+      }
+      const medals = ['🥇', '🥈', '🥉'];
+      tbody.innerHTML = data.data.map((p, i) => `
+        <tr>
+          <td style="font-size:1rem;text-align:center;">${medals[i] || `<span style="color:var(--text-muted);">${i+1}</span>`}</td>
+          <td>
+            <div style="font-weight:700;font-size:0.8125rem;color:var(--text-primary);">${p.nama}</div>
+            <div style="font-size:0.6875rem;color:var(--text-muted);font-family:monospace;">${p.kode}</div>
+          </td>
+          <td style="text-align:right;font-weight:700;color:var(--accent-light);">${p.total_qty} qty</td>
+          <td style="text-align:right;font-weight:700;color:var(--text-primary);">Rp${(p.total_revenue||0).toLocaleString('id-ID')}</td>
+        </tr>
+      `).join('');
+    }
+
+    async function loadTopCustomers() {
+      const data = await apiRequest('/api/analytics/top-customers?limit=10');
+      if (!data || !data.success) return;
+      const tbody = document.getElementById('topCustomersBody');
+      if (!tbody) return;
+      if (!data.data.length) {
+        tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:24px;">Belum ada data pelanggan.</td></tr>`;
+        return;
+      }
+      const medals = ['🥇', '🥈', '🥉'];
+      tbody.innerHTML = data.data.map((c, i) => {
+        const lastOrder = c.last_order_at ? new Date(c.last_order_at).toLocaleDateString('id-ID') : '-';
+        return `
+          <tr>
+            <td style="font-size:1rem;text-align:center;">${medals[i] || `<span style="color:var(--text-muted);">${i+1}</span>`}</td>
+            <td>
+              <div style="font-weight:700;font-size:0.8125rem;color:var(--text-primary);">${c.nama}</div>
+              <div style="font-size:0.6875rem;color:var(--text-muted);">Terakhir: ${lastOrder}</div>
+            </td>
+            <td style="text-align:center;font-weight:700;color:var(--color-blue);">${c.total_orders}x</td>
+            <td style="text-align:right;font-weight:700;color:var(--accent-light);">Rp${(c.total_spent||0).toLocaleString('id-ID')}</td>
+          </tr>`;
+      }).join('');
+    }
+
+    async function loadHeatmap(year, month) {
+      const monthNames = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'];
+      const label = document.getElementById('heatmapMonthLabel');
+      if (label) label.textContent = `${monthNames[month-1]} ${year}`;
+
+      const data = await apiRequest(`/api/analytics/heatmap?year=${year}&month=${month}`);
+      const container = document.getElementById('heatmapCalendar');
+      if (!container) return;
+
+      const heatData = {};
+      if (data && data.success) {
+        data.data.forEach(r => { heatData[r.date] = { orders: r.order_count, revenue: r.revenue }; });
+      }
+
+      const maxOrders = Math.max(...Object.values(heatData).map(v => v.orders), 1);
+      const daysInMonth = new Date(year, month, 0).getDate();
+      const firstDay = new Date(year, month - 1, 1).getDay(); // 0=Sun
+
+      const dayLabels = ['Min', 'Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab'];
+      let html = dayLabels.map(d => `<div style="text-align:center;font-size:0.6rem;color:var(--text-muted);font-weight:600;padding-bottom:4px;">${d}</div>`).join('');
+
+      // Empty cells for first week offset
+      for (let i = 0; i < firstDay; i++) {
+        html += `<div></div>`;
+      }
+
+      for (let day = 1; day <= daysInMonth; day++) {
+        const dateStr = `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+        const info = heatData[dateStr];
+        const intensity = info ? Math.min(info.orders / maxOrders, 1) : 0;
+        const alpha = intensity === 0 ? 0.08 : 0.2 + intensity * 0.8;
+        const bg = intensity === 0 ? `rgba(16,185,129,0.06)` : `rgba(16,185,129,${alpha.toFixed(2)})`;
+        const borderClr = intensity === 0 ? `var(--border-subtle)` : `rgba(16,185,129,0.4)`;
+        const tooltip = info ? `${day} — ${info.orders} order | Rp${info.revenue.toLocaleString('id-ID')}` : `${day} — Tidak ada transaksi`;
+        html += `<div title="${tooltip}" style="aspect-ratio:1;border-radius:4px;background:${bg};border:1px solid ${borderClr};display:flex;align-items:center;justify-content:center;font-size:0.65rem;color:${intensity > 0.5 ? '#fff' : 'var(--text-muted)'};font-weight:${intensity > 0 ? '700' : '400'};cursor:default;transition:transform 0.15s;" onmouseover="this.style.transform='scale(1.2)'" onmouseout="this.style.transform='scale(1)'">${day}</div>`;
+      }
+      container.innerHTML = html;
+    }
+
+    async function changeHeatmapMonth(delta) {
+      heatmapMonth += delta;
+      if (heatmapMonth > 12) { heatmapMonth = 1; heatmapYear++; }
+      if (heatmapMonth < 1) { heatmapMonth = 12; heatmapYear--; }
+      await loadHeatmap(heatmapYear, heatmapMonth);
+    }
+
+    async function loadOldAnalytics() {
+      // Load original analytics for peak hours chart & old metric IDs
+      const data = await apiRequest('/api/analytics');
+      if (!data || !data.success) return;
+      const a = data.analytics;
+      // Update hidden compat IDs
+      const elToday = document.getElementById('analyticsRevToday');
+      const elWeek = document.getElementById('analyticsRevWeek');
+      const elMonth = document.getElementById('analyticsRevMonth');
+      if (elToday) elToday.textContent = `Rp${(a.revenueToday||0).toLocaleString('id-ID')}`;
+      if (elWeek) elWeek.textContent = `Rp${(a.revenueWeek||0).toLocaleString('id-ID')}`;
+      if (elMonth) elMonth.textContent = `Rp${(a.revenueMonth||0).toLocaleString('id-ID')}`;
+
+      // Peak hours chart
+      const colors = getChartColors();
+      if (peakHoursChart) peakHoursChart.destroy();
+      const hourLabels = Array.from({ length: 24 }, (_, i) => `${i.toString().padStart(2, '0')}:00`);
+      const hourValues = Array.from({ length: 24 }, () => 0);
+      (a.peakHours || []).forEach(h => { const idx = parseInt(h.hour); if (idx >= 0 && idx < 24) hourValues[idx] = h.count; });
+      peakHoursChart = new Chart(document.getElementById('peakHoursChart').getContext('2d'), {
+        type: 'line',
+        data: {
+          labels: hourLabels,
+          datasets: [{ label: 'Pesanan', data: hourValues, borderColor: '#6366f1', backgroundColor: 'rgba(99, 102, 241, 0.1)', borderWidth: 2, fill: true, tension: 0.4 }]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { ticks: { color: colors.text, maxTicksLimit: 12 }, grid: { display: false } },
+            y: { ticks: { color: colors.text, precision: 0 }, grid: { color: colors.grid } }
+          }
+        }
+      });
+    }
+
+
 
     // --- LOGS ---
     async function loadLogs() {
@@ -2763,12 +3209,14 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
           document.getElementById('prodHarga').value = product.harga;
           document.getElementById('prodStok').value = product.stok;
           document.getElementById('prodDeskripsi').value = product.deskripsi || '';
+          document.getElementById('prodPetunjuk').value = product.petunjuk || '';
           document.getElementById('prodExistingImage').value = product.gambar || '';
           document.getElementById('prodDeliveryType').value = product.delivery_type || 'MANUAL';
         }
       } else {
         document.getElementById('productModalTitle').textContent = 'Tambah Produk Baru';
         document.getElementById('prodOldKode').value = '';
+        document.getElementById('prodPetunjuk').value = '';
         document.getElementById('prodExistingImage').value = '';
         document.getElementById('prodDeliveryType').value = 'MANUAL';
       }
@@ -2788,6 +3236,7 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
       formData.append('harga', document.getElementById('prodHarga').value);
       formData.append('stok', document.getElementById('prodStok').value);
       formData.append('deskripsi', document.getElementById('prodDeskripsi').value);
+      formData.append('petunjuk', document.getElementById('prodPetunjuk').value);
       formData.append('gambar_existing', document.getElementById('prodExistingImage').value);
       formData.append('delivery_type', document.getElementById('prodDeliveryType').value);
 
@@ -3825,6 +4274,120 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
         "'": '&#039;'
       };
       return text.replace(/[&<>"']/g, function(m) { return map[m]; });
+    }
+
+    // --- KUPON & DISKON HANDLERS ---
+    async function loadCouponsData() {
+      const tbody = document.getElementById('couponsTableBody');
+      const data = await apiRequest('/api/coupons');
+      if (!data || !data.success || !data.coupons || data.coupons.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);">Belum ada kupon yang terdaftar.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = data.coupons.map(c => {
+        const valLabel = c.type === 'percent' ? `${c.value}%` : `Rp${c.value.toLocaleString('id-ID')}`;
+        return `
+          <tr>
+            <td><strong style="color:var(--accent);">${c.code}</strong></td>
+            <td>${valLabel} (${c.type})</td>
+            <td>Rp${c.min_order.toLocaleString('id-ID')}</td>
+            <td>${c.used_count} / ${c.max_uses || '∞'}</td>
+            <td><button onclick="handleDeleteCoupon('${c.code}')" class="btn-sm btn-danger">Hapus</button></td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    async function handleAddCoupon(e) {
+      e.preventDefault();
+      const code = document.getElementById('cpCode').value.trim();
+      const type = document.getElementById('cpType').value;
+      const value = document.getElementById('cpValue').value;
+      const min_order = document.getElementById('cpMinOrder').value;
+      const max_uses = document.getElementById('cpMaxUses').value;
+      const expires_at = document.getElementById('cpExpiresAt').value;
+
+      const res = await apiRequest('/api/coupons', 'POST', { code, type, value, min_order, max_uses, expires_at });
+      if (res && res.success) {
+        showToast(res.message, 'success');
+        document.getElementById('addCouponForm').reset();
+        loadCouponsData();
+      } else {
+        showToast(res ? res.message : 'Gagal membuat kupon', 'error');
+      }
+    }
+
+    async function handleDeleteCoupon(code) {
+      if (!confirm(`Yakin ingin menghapus kupon ${code}?`)) return;
+      const res = await apiRequest(`/api/coupons/${code}`, 'DELETE');
+      if (res && res.success) {
+        showToast(res.message, 'success');
+        loadCouponsData();
+      } else {
+        showToast(res ? res.message : 'Gagal menghapus kupon', 'error');
+      }
+    }
+
+    // --- FAQ BOT HANDLERS ---
+    async function loadFaqsData() {
+      const tbody = document.getElementById('faqsTableBody');
+      const data = await apiRequest('/api/faqs');
+      if (!data || !data.success || !data.faqs || data.faqs.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-muted);">Belum ada FAQ yang terdaftar.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = data.faqs.map(f => `
+        <tr>
+          <td>#${f.id}</td>
+          <td><code>${f.keywords}</code></td>
+          <td style="max-width:300px;white-space:pre-wrap;">${f.answer}</td>
+          <td><button onclick="handleDeleteFaq(${f.id})" class="btn-sm btn-danger">Hapus</button></td>
+        </tr>
+      `).join('');
+    }
+
+    async function handleAddFaq(e) {
+      e.preventDefault();
+      const keywords = document.getElementById('faqKeywords').value.trim();
+      const answer = document.getElementById('faqAnswer').value.trim();
+
+      const res = await apiRequest('/api/faqs', 'POST', { keywords, answer });
+      if (res && res.success) {
+        showToast(res.message, 'success');
+        document.getElementById('addFaqForm').reset();
+        loadFaqsData();
+      } else {
+        showToast(res ? res.message : 'Gagal menambah FAQ', 'error');
+      }
+    }
+
+    async function handleDeleteFaq(id) {
+      if (!confirm(`Yakin ingin menghapus FAQ #${id}?`)) return;
+      const res = await apiRequest(`/api/faqs/${id}`, 'DELETE');
+      if (res && res.success) {
+        showToast(res.message, 'success');
+        loadFaqsData();
+      } else {
+        showToast(res ? res.message : 'Gagal menghapus FAQ', 'error');
+      }
+    }
+
+    // --- REFERRAL HANDLERS ---
+    async function loadReferralsData() {
+      const tbody = document.getElementById('referralsTableBody');
+      const data = await apiRequest('/api/referrals');
+      if (!data || !data.success || !data.referrals || data.referrals.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-muted);">Belum ada riwayat referral.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = data.referrals.map(r => `
+        <tr>
+          <td><strong>${r.referrer_nama || 'Pelanggan'}</strong><br><span style="font-size:0.7rem;color:var(--text-muted);">${formatPhoneNumber(r.referrer_nomor)}</span></td>
+          <td><strong>${r.referred_nama || 'Pelanggan'}</strong><br><span style="font-size:0.7rem;color:var(--text-muted);">${formatPhoneNumber(r.referred_nomor)}</span></td>
+          <td>${r.reward_claimed ? '<span class="status-badge status-completed">Terklaim</span>' : '<span class="status-badge status-waiting">Pending</span>'}</td>
+          <td>${new Date(r.created_at).toLocaleDateString('id-ID')}</td>
+        </tr>
+      `).join('');
     }
 
     function playNotificationSound() {

@@ -14,6 +14,7 @@ import { reloadBotSettings, checkAndNotifySubscribers, startBot } from './bot.js
 import { backupDatabase } from './scheduler.js';
 import { initWebSocket, broadcastToAdmins } from './websocket.js';
 import * as chatManager from './chatManager.js';
+import * as prodSeller from './prodsellerHandler.js';
 
 const app = express();
 app.use(express.json());
@@ -217,6 +218,102 @@ app.get('/api/analytics', authenticateJWT, authorizeRoles('Owner'), async (req, 
   }
 });
 
+// --- ANALYTICS LANJUTAN ---
+
+// Grafik timeline pendapatan harian
+app.get('/api/analytics/timeline', authenticateJWT, authorizeRoles('Owner'), async (req, res) => {
+  try {
+    const days = parseInt(req.query.days) || 30;
+    const data = await db.getDailySalesTimeline(days);
+    res.json({ success: true, data });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Top produk terlaris
+app.get('/api/analytics/top-products', authenticateJWT, authorizeRoles('Owner'), async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 10;
+    const data = await db.getTopProducts(limit);
+    res.json({ success: true, data });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Top pelanggan terbaik
+app.get('/api/analytics/top-customers', authenticateJWT, authorizeRoles('Owner'), async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 10;
+    const data = await db.getTopCustomers(limit);
+    res.json({ success: true, data });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// KPI Summary cards
+app.get('/api/analytics/summary', authenticateJWT, authorizeRoles('Owner'), async (req, res) => {
+  try {
+    const data = await db.getAnalyticsSummary();
+    res.json({ success: true, data });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Heatmap data untuk kalender
+app.get('/api/analytics/heatmap', authenticateJWT, authorizeRoles('Owner'), async (req, res) => {
+  try {
+    const now = new Date();
+    const year = parseInt(req.query.year) || now.getFullYear();
+    const month = parseInt(req.query.month) || (now.getMonth() + 1);
+    const data = await db.getSalesHeatmap(year, month);
+    res.json({ success: true, data, year, month });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Export data penjualan ke CSV
+app.get('/api/analytics/export', authenticateJWT, authorizeRoles('Owner'), async (req, res) => {
+  try {
+    const days = parseInt(req.query.days) || 90;
+    const timeline = await db.getDailySalesTimeline(days);
+    const topProducts = await db.getTopProducts(20);
+    const topCustomers = await db.getTopCustomers(20);
+
+    let csv = 'LAPORAN PENJUALAN\n\n';
+    csv += 'PENDAPATAN HARIAN\n';
+    csv += 'Tanggal,Pendapatan (Rp),Jumlah Order\n';
+    timeline.forEach(r => {
+      csv += `${r.date},${r.revenue},${r.order_count}\n`;
+    });
+
+    csv += '\nPRODUK TERLARIS\n';
+    csv += 'Kode,Nama Produk,Qty Terjual,Revenue (Rp),Jumlah Order\n';
+    topProducts.forEach(p => {
+      csv += `${p.kode},"${p.nama}",${p.total_qty},${p.total_revenue},${p.order_count}\n`;
+    });
+
+    csv += '\nPELANGGAN TERBAIK\n';
+    csv += 'Nomor WA,Nama,Total Order,Total Belanja (Rp),Terakhir Order\n';
+    topCustomers.forEach(c => {
+      csv += `${c.nomor},"${c.nama}",${c.total_orders},${c.total_spent},${c.last_order_at}\n`;
+    });
+
+    const filename = `laporan-penjualan-${new Date().toISOString().slice(0, 10)}.csv`;
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send('\uFEFF' + csv); // BOM untuk Excel
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+
+
 // --- API MANAJEMEN PRODUK ---
 
 // Semua role diizinkan membaca produk
@@ -232,7 +329,7 @@ app.get('/api/products', authenticateJWT, async (req, res) => {
 // Owner dan Admin bisa menulis/edit produk
 app.post('/api/products', authenticateJWT, authorizeRoles('Owner', 'Admin'), uploadProduct.single('gambar'), async (req, res) => {
   try {
-    const { kode, nama, harga, stok, deskripsi, delivery_type, old_kode } = req.body;
+    const { kode, nama, harga, stok, deskripsi, delivery_type, old_kode, petunjuk } = req.body;
     if (!kode || !nama || harga === undefined || harga === '' || stok === undefined || stok === '') {
       return res.status(400).json({ success: false, message: "Kolom kode, nama, harga, dan stok wajib diisi." });
     }
@@ -242,7 +339,7 @@ app.post('/api/products', authenticateJWT, authorizeRoles('Owner', 'Admin'), upl
       gambarUrl = `/uploads/products/${req.file.filename}`;
     }
 
-    await db.addProduct(kode, nama, parseInt(harga), parseInt(stok), deskripsi, gambarUrl, delivery_type || 'MANUAL', old_kode || '');
+    await db.addProduct(kode, nama, parseInt(harga), parseInt(stok), deskripsi, gambarUrl, delivery_type || 'MANUAL', old_kode || '', petunjuk || '');
     await checkAndNotifySubscribers(kode, parseInt(stok));
     res.json({ success: true, message: "Produk berhasil disimpan." });
   } catch (err) {
@@ -509,57 +606,68 @@ app.get('/api/logs', authenticateJWT, authorizeRoles('Owner'), async (req, res) 
   }
 });
 
-// --- API BROADCAST (KHUSUS OWNER) ---
+// --- API BROADCAST (KHUSUS OWNER - KE GRUP WHATSAPP) ---
 
 app.post('/api/broadcast', authenticateJWT, authorizeRoles('Owner'), async (req, res) => {
   try {
-    const { message, targetTier, delay } = req.body;
+    const { message, delay } = req.body;
     if (!message) {
       return res.status(400).json({ success: false, message: "Pesan broadcast wajib diisi." });
     }
 
-    const broadcastDelay = parseInt(delay) || 3000;
-    const customers = await db.getCustomersWithTiers();
-    
-    // Filter berdasarkan target tier
-    const targetCustomers = targetTier === 'ALL' 
-      ? customers 
-      : customers.filter(c => c.tier.toUpperCase() === targetTier.toUpperCase());
+    if (!botState.sock || !botState.whatsappConnected) {
+      return res.status(400).json({ success: false, message: "Koneksi WhatsApp bot belum terhubung." });
+    }
 
-    if (targetCustomers.length === 0) {
-      return res.status(400).json({ success: false, message: `Tidak ada pelanggan dengan kriteria tier *${targetTier}*` });
+    const broadcastDelay = parseInt(delay) || 3000;
+    
+    // Ambil daftar grup yang diikuti oleh bot
+    let targetGroupJids = [];
+    const settings = await db.getSettings();
+    if (settings.buyerGroupId) {
+      targetGroupJids.push(settings.buyerGroupId);
+    } else {
+      try {
+        const groups = await botState.sock.groupFetchAllParticipating();
+        targetGroupJids = Object.keys(groups);
+      } catch (e) {
+        console.error("[BROADCAST] Gagal mengambil daftar grup:", e.message);
+      }
+    }
+
+    if (targetGroupJids.length === 0) {
+      return res.status(400).json({ success: false, message: "Bot belum bergabung ke grup WhatsApp manapun untuk siaran broadcast." });
     }
 
     // Jalankan broadcast di background dengan delay acak
-    runBroadcastInBackground(targetCustomers, message, broadcastDelay);
+    runBroadcastInBackground(targetGroupJids, message, broadcastDelay);
 
     res.json({ 
       success: true, 
-      message: `Proses siaran (broadcast) dimulai di background untuk *${targetCustomers.length}* pelanggan.`,
-      targetCount: targetCustomers.length
+      message: `Proses siaran (broadcast) dimulai di background untuk *${targetGroupJids.length}* Grup WhatsApp.`,
+      targetCount: targetGroupJids.length
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// Fungsi pembantu broadcast background dengan jeda acak (+ 0 s.d 4 detik)
-async function runBroadcastInBackground(customers, messageText, delayMs) {
-  await db.addLog("BROADCAST", `Memulai siaran pesan ke ${customers.length} pelanggan dengan jeda acak.`);
+// Fungsi pembantu broadcast background ke Grup WhatsApp
+async function runBroadcastInBackground(groupJids, messageText, delayMs) {
+  await db.addLog("BROADCAST", `Memulai siaran pesan ke ${groupJids.length} Grup WhatsApp dengan jeda acak.`);
   let successCount = 0;
 
-  for (const c of customers) {
+  for (const jid of groupJids) {
     if (botState.sock && botState.whatsappConnected) {
       try {
-        await botState.sock.sendMessage(c.nomor, { text: messageText });
+        await botState.sock.sendMessage(jid, { text: `📢 *PENGUMUMAN RESMI TOKO:*\n\n${messageText}` });
         successCount++;
-        // Hitung jeda acak: delay dasar + antara 0 s.d 4000 md
-        const randomDelay = Math.floor(Math.random() * 4001) + delayMs;
-        console.log(`[BROADCAST] Terkirim ke ${c.nomor}. Menunggu ${randomDelay} ms...`);
+        const randomDelay = Math.floor(Math.random() * 2000) + delayMs;
+        console.log(`[BROADCAST] Terkirim ke grup ${jid}. Menunggu ${randomDelay} ms...`);
         await new Promise(resolve => setTimeout(resolve, randomDelay));
       } catch (err) {
-        console.error(`Gagal kirim broadcast ke nomor ${c.nomor}:`, err.message);
-        await db.addLog("ERROR", `Gagal kirim broadcast ke ${c.nomor}: ${err.message}`);
+        console.error(`Gagal kirim broadcast ke grup ${jid}:`, err.message);
+        await db.addLog("ERROR", `Gagal kirim broadcast ke grup ${jid}: ${err.message}`);
       }
     } else {
       console.warn(`Soket WhatsApp tidak siap. Broadcast dihentikan.`);
@@ -568,8 +676,88 @@ async function runBroadcastInBackground(customers, messageText, delayMs) {
     }
   }
 
-  await db.addLog("BROADCAST", `Selesai menyiarkan pesan. Sukses terkirim ke ${successCount}/${customers.length} pelanggan.`);
+  await db.addLog("BROADCAST", `Selesai menyiarkan pesan ke ${successCount}/${groupJids.length} Grup WhatsApp.`);
 }
+
+// --- API KUPON & DISKON ---
+app.get('/api/coupons', authenticateJWT, async (req, res) => {
+  try {
+    const coupons = await db.getAllCoupons();
+    res.json({ success: true, coupons });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.post('/api/coupons', authenticateJWT, authorizeRoles('Owner', 'Admin'), async (req, res) => {
+  try {
+    const { code, type, value, min_order, max_uses, expires_at } = req.body;
+    if (!code || !type || value === undefined) {
+      return res.status(400).json({ success: false, message: "Kode, tipe (percent/fixed), dan nilai wajib diisi." });
+    }
+    await db.addCoupon(code, type, parseInt(value), parseInt(min_order || 0), parseInt(max_uses || 0), expires_at || null);
+    res.json({ success: true, message: `Kupon ${code.toUpperCase()} berhasil dibuat!` });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.delete('/api/coupons/:code', authenticateJWT, authorizeRoles('Owner', 'Admin'), async (req, res) => {
+  try {
+    const deleted = await db.deleteCoupon(req.params.code);
+    res.json({ success: true, deleted, message: deleted ? "Kupon berhasil dihapus." : "Kupon tidak ditemukan." });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// --- API FAQ OTOMATIS ---
+app.get('/api/faqs', authenticateJWT, async (req, res) => {
+  try {
+    const faqs = await db.getAllFaqs();
+    res.json({ success: true, faqs });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.post('/api/faqs', authenticateJWT, authorizeRoles('Owner', 'Admin'), async (req, res) => {
+  try {
+    const { keywords, answer } = req.body;
+    if (!keywords || !answer) {
+      return res.status(400).json({ success: false, message: "Keywords dan Jawaban wajib diisi." });
+    }
+    const id = await db.addFaq(keywords, answer);
+    res.json({ success: true, id, message: "FAQ berhasil ditambahkan!" });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.delete('/api/faqs/:id', authenticateJWT, authorizeRoles('Owner', 'Admin'), async (req, res) => {
+  try {
+    const deleted = await db.deleteFaq(req.params.id);
+    res.json({ success: true, deleted, message: deleted ? "FAQ berhasil dihapus." : "FAQ tidak ditemukan." });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// --- API REFERRALS ---
+app.get('/api/referrals', authenticateJWT, authorizeRoles('Owner', 'Admin'), async (req, res) => {
+  try {
+    const referrals = await db.allQuery(
+      `SELECT r.*, c1.nama as referrer_nama, c2.nama as referred_nama 
+       FROM referrals r 
+       LEFT JOIN customers c1 ON r.referrer_nomor = c1.nomor
+       LEFT JOIN customers c2 ON r.referred_nomor = c2.nomor
+       ORDER BY r.created_at DESC`
+    );
+    res.json({ success: true, referrals });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
 
 // --- API MANAJEMEN PENGGUNA (KHUSUS OWNER) ---
 
@@ -1010,36 +1198,78 @@ app.post('/api/payment/webhook', async (req, res) => {
         await db.updateOrderStatus(order_id, 'PAID');
         await db.addLog("PAYMENT", `Pembayaran lunas terverifikasi via Midtrans untuk Order ID ${order_id}.`);
 
+        // ══════════════════════════════════════════════════════════
+        // AUTO-DELIVERY via WEBHOOK: Gabungan Local + ProdSeller
+        // ══════════════════════════════════════════════════════════
         let waSent = false;
         let deliveredItemsMsg = "";
         let hasAutoDelivery = false;
 
-        // Cek jika produk bertipe AUTO (Auto-Send)
-        const claims = await db.claimAndDeliverItems(order_id);
-        const productCodes = Object.keys(claims);
+        const orderItemsFull = await db.allQuery(
+          `SELECT oi.produk_kode, oi.qty, p.nama as produk_nama, p.delivery_type, p.prodseller_id, p.petunjuk
+           FROM order_items oi
+           JOIN products p ON oi.produk_kode = p.kode
+           WHERE oi.order_id = ?`,
+          [order_id]
+        );
 
-        if (productCodes.length > 0) {
+        // 1. Deliver LOCAL (AUTO)
+        const localClaims = await db.claimAndDeliverItems(order_id);
+        
+        // 2. Deliver PRODSELLER
+        const psItems = orderItemsFull.filter(i => i.delivery_type === 'PRODSELLER' && i.prodseller_id);
+        let psResult = { delivered: {}, errors: [] };
+        if (psItems.length > 0) {
+          psResult = await prodSeller.deliverViaProdSeller(order_id, psItems);
+        }
+
+        const localCodes = Object.keys(localClaims);
+        const psCodes = Object.keys(psResult.delivered);
+
+        if (localCodes.length > 0 || psCodes.length > 0) {
           hasAutoDelivery = true;
-          // Format pesan kredensial otomatis
-          deliveredItemsMsg = `🎁 *PENGIRIMAN PRODUK OTOMATIS*\n\nTerima kasih! Pembayaran Anda telah kami terima dan terverifikasi secara otomatis oleh sistem.\n\nBerikut adalah detail produk digital Anda:\n`;
+          deliveredItemsMsg = `🎁 *PENGIRIMAN PRODUK DIGITAL*\n\nTerima kasih! Pembayaran Anda telah kami terima dan terverifikasi otomatis (Midtrans).\n\nBerikut adalah detail pesanan Anda:\n\n`;
           
-          for (const code of productCodes) {
-            const itemClaim = claims[code];
-            deliveredItemsMsg += `\n*${itemClaim.produk_nama}* (\`${code}\`):\n`;
-            itemClaim.credentials.forEach((cred) => {
-              deliveredItemsMsg += `👉 \`${cred}\`\n`;
-            });
+          // Format Local Items
+          for (const code of localCodes) {
+            const item = localClaims[code];
+            deliveredItemsMsg += `🔑 *${item.produk_nama}* (\`${code}\`):\n`;
+            if (item.credentials.length > 0) {
+              item.credentials.forEach((cred, i) => { deliveredItemsMsg += `   ${i+1}. ${cred}\n`; });
+            } else {
+              deliveredItemsMsg += `   ⚠️ Stok habis, admin akan mengirimkan manual.\n`;
+            }
+            if (item.petunjuk) deliveredItemsMsg += `\n${item.petunjuk}\n`;
+            deliveredItemsMsg += `\n`;
           }
 
-          deliveredItemsMsg += `\n_Silakan simpan detail di atas. Hubungi CS jika menemui kendala login atau penggunaan. Selamat menikmati!_`;
+          // Format ProdSeller Items
+          for (const code of psCodes) {
+            const item = psResult.delivered[code];
+            deliveredItemsMsg += `🔑 *${item.produk_nama}* (\`${code}\`):\n`;
+            if (item.keys.length > 0) {
+              item.keys.forEach((key, i) => { deliveredItemsMsg += `   ${i+1}. ${key}\n`; });
+            } else {
+              deliveredItemsMsg += `   ⚠️ Sedang diproses sistem, admin akan mengirimkan segera.\n`;
+            }
+            if (item.petunjuk) deliveredItemsMsg += `\n${item.petunjuk}\n`;
+            deliveredItemsMsg += `\n`;
+          }
+
+          deliveredItemsMsg += `━━━━━━━━━━━━━━━━━━\n_Simpan detail ini baik-baik. Hubungi CS jika ada kendala._`;
           
-          // Ubah status order langsung ke COMPLETED karena produk sudah dikirim otomatis
-          await db.updateOrderStatus(order_id, 'COMPLETED');
+          // Cek kelengkapan
+          const localOk = localCodes.every(k => localClaims[k].credentials.length > 0);
+          const psOk = psCodes.every(k => psResult.delivered[k].keys.length > 0) && psResult.errors.length === 0;
+          
+          if (localOk && psOk) {
+            await db.updateOrderStatus(order_id, 'COMPLETED');
+          }
         } else {
-          // Jika MANUAL, beri notifikasi standar
+          // MANUAL
           deliveredItemsMsg = `🔔 *INFO PESANAN (Order: ${order_id})*
       
-Pembayaran Anda telah *DITERIMA* dan terverifikasi secara otomatis oleh sistem. Pesanan Anda saat ini sedang diproses manual oleh admin kami. Harap menunggu. Terima kasih!`;
+Pembayaran Anda telah *DITERIMA* dan terverifikasi otomatis. Pesanan Anda sedang diproses manual oleh admin kami. Harap menunggu.`;
         }
 
         // Kirim notifikasi WA ke pelanggan

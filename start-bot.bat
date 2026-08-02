@@ -10,7 +10,7 @@ echo Memulai bot... (Tekan CTRL+C dua kali untuk mematikan)
 echo.
 
 :: Menjalankan server menggunakan Node.js
-node server.js
+node index.js
 
 echo.
 echo Server bot telah berhenti/keluar.
