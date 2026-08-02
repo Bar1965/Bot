@@ -1672,7 +1672,12 @@ async function handleCustomerMessage(jid, senderNumber, messageObj, text, isFrom
   const cleanMemeText = text.toLowerCase().trim().replace(/[?!.,~_*-]+/g, '');
   const kapanMemeRegex = /^(?:kapan|kpn|wen|wnn|kpnn+|kpann+|(?:kapan|kpn)[-\s]?2|kapankapan)\s*(?:yah+|ya+|y+|yh+|nih+|tuh+|dong+|dng+|dek+)?$/i;
   if (kapanMemeRegex.test(cleanMemeText)) {
-    await sock.sendMessage(jid, { text: "Kapan Kapan yh sayang" });
+    try {
+      await sock.sendMessage(jid, { react: { text: '😜', key: messageObj.key } });
+    } catch (e) {}
+    await sock.sendMessage(jid, { 
+      text: "✨ *Kapan Kapan yh sayang...* 🤪💖\n\n_~ Basa-basi dulu, keputusannya nanti-nanti aja deh! 🙈✨_" 
+    }, { quoted: messageObj });
     return true;
   }
 
