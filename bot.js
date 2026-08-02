@@ -1668,6 +1668,14 @@ async function handleCustomerMessage(jid, senderNumber, messageObj, text, isFrom
     }
   };
 
+  // 🥚 EASTER EGG MEME: "Kapan Kapan yh sayang"
+  const cleanMemeText = text.toLowerCase().trim().replace(/[?!.,~_*-]+/g, '');
+  const kapanMemeRegex = /^(?:kapan|kpn|wen|wnn|kpnn+|kpann+|(?:kapan|kpn)[-\s]?2|kapankapan)\s*(?:yah+|ya+|y+|yh+|nih+|tuh+|dong+|dng+|dek+)?$/i;
+  if (kapanMemeRegex.test(cleanMemeText)) {
+    await sock.sendMessage(jid, { text: "Kapan Kapan yh sayang" });
+    return true;
+  }
+
   // ==========================================
   // LOGIKA NAVIGASI MENU TERKATEGORI (ASCII ART DESIGN)
   // ==========================================
@@ -2422,7 +2430,7 @@ _Ketik \`.deposit [NOMINAL]\` untuk melakukan Top Up Saldo._`;
       const depositOrder = {
         order_id: depositOrderId,
         total: amount,
-        customer_nomor: senderJid,
+        customer_nomor: senderNumber,
         customer_nama: m.pushName || 'Pelanggan',
       };
       const qrisRes = await createMidtransTransaction(depositOrder);
@@ -2451,7 +2459,7 @@ _Ketik \`.deposit [NOMINAL]\` untuk melakukan Top Up Saldo._`;
       await sock.sendMessage(responseJid, { text: `❌ Transaksi #${orderId} tidak ditemukan pada akun Anda.` });
       return;
     }
-    await db.addReview(orderId, senderNumber, orderObj.items?.[0]?.produk_kode || 'PRODUK', rating, comment);
+    await db.addReview(orderId, senderNumber, rating, comment);
     const stars = '⭐'.repeat(rating);
     await sock.sendMessage(responseJid, { text: `🎉 *Terima Kasih Atas Ulasan Anda!*\n\nRating: ${stars} (${rating}/5)\nUlasan: "${comment}"` });
     return;
@@ -2688,11 +2696,14 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
   // Cek Moderator dari DB
   const isMod = await db.isModerator(senderNormalized);
 
-  // Cek Owner: via m.key.fromMe, stored JID (handles @lid), phone digit match, atau JID DM match
+  // Cek Owner: via m.key.fromMe, stored JID (handles @lid), phone digit match, atau JID DM match.
+  // PENTING: exact match saja (bukan .includes()) — substring match membuka celah bypass,
+  // contoh nomor "6283170183637000" akan lolos jika ownerPhoneNum "6283170183637" dicek dengan includes().
   const isOwner = !!m.key?.fromMe ||
-                  !!(storedOwnerJid && (senderNormalized === storedOwnerJid || senderNormalized.includes(storedOwnerJid))) ||
-                  !!(ownerPhoneNum && senderDigits && (ownerPhoneNum === senderDigits || senderDigits.includes(ownerPhoneNum))) ||
-                  !!(!isGroup && ownerPhoneNum && jidDigits && (ownerPhoneNum === jidDigits || jidDigits.includes(ownerPhoneNum)));
+                  !!(storedOwnerJid && senderNormalized === storedOwnerJid) ||
+                  !!(ownerPhoneNum && senderDigits && ownerPhoneNum === senderDigits) ||
+                  !!(!isGroup && ownerPhoneNum && jidDigits && ownerPhoneNum === jidDigits);
+
 
   const adminList = (botSettings.adminNumbers || config.defaults.adminNumbers || '').split(',').map(n => cleanDigits(n));
   const isAdminStore = isOwner || isMod || adminList.includes(senderDigits);
