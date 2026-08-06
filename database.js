@@ -2043,6 +2043,17 @@ export async function getGameProfile(customerJid) {
   return await getQuery("SELECT * FROM game_profiles WHERE customer_jid = ?", [customerJid]);
 }
 
+export async function updateGameProfile(customerJid, data = {}) {
+  await getGameProfile(customerJid);
+  if (typeof data.points === 'number') {
+    await runQuery(
+      "UPDATE game_profiles SET points = ?, updated_at = CURRENT_TIMESTAMP WHERE customer_jid = ?",
+      [Math.max(0, Math.floor(data.points)), customerJid]
+    );
+  }
+  return await getGameProfile(customerJid);
+}
+
 export async function awardGamePoints(customerJid, points, won = false) {
   const safePoints = Math.max(0, Math.min(1000, Number.parseInt(points, 10) || 0));
   return withTransaction(async () => {
