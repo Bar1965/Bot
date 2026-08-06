@@ -1663,6 +1663,41 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
 
         const msgText = extractMessageText(m).trim();
 
+        // ====================================================================
+        // PROTEKSI WAJIB REGISTRASI MEMBER (.daftar <nama>) & ANTI-SPAM
+        // ====================================================================
+        const argsCheck = msgText.trim().split(/\s+/);
+        const rawCmdCheck = argsCheck[0].toLowerCase();
+        const cleanCmdCheck = rawCmdCheck.replace(/^[./#]/, '');
+
+        const isPrefixCmd = msgText.startsWith('.') || msgText.startsWith('/') || msgText.startsWith('#');
+        const knownCmdList = [
+          'daftar', 'register', 'registrasi', 'owner', 'kontakowner', 'menu', 'help', 'bantuan', 
+          'produk', 'beli', 'checkout', 'keranjang', 'cart', 'status', 'riwayat', 'batal', 'cancel',
+          'freegames', 'freegame', 'gamegratis', 'slot', 'slots', 'stiker', 'sticker', 's', 'gif',
+          'tt', 'tiktok', 'ig', 'instagram', 'yt', 'youtube', 'fb', 'facebook', 'quiz', 'trivia',
+          'tebakemoji', 'tebakkata', 'tebakgambar', 'zodiak', 'jodoh', 'khodam', 'truth', 'dare',
+          'torebot', 'tochipmunk', 'todeep', 'toecho', 'ping', 'statusbot', 'daily', 'poin', 'rank'
+        ];
+        const isBotCommand = isPrefixCmd || knownCmdList.includes(cleanCmdCheck);
+        const exemptCommands = ['daftar', 'register', 'registrasi', 'owner', 'kontakowner', 'menu', 'help', 'bantuan', 'ping', 'statusbot'];
+
+        if (isBotCommand && !exemptCommands.includes(cleanCmdCheck) && !isAdmin) {
+          const isRegistered = await db.isCustomerRegistered(senderNormalized);
+          if (!isRegistered) {
+            const senderMention = senderNormalized.split('@')[0];
+            const regNotice = `⚠️ *AKSES DITOLAK — REGISTRASI DIPERLUKAN* ⚠️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nHalo @${senderMention}! Untuk dapat menggunakan fitur bot kami & mencegah spam, Anda harus terdaftar sebagai member terlebih dahulu (100% Gratis).\n\n📌 *Cara Pendaftaran (Hanya 5 Detik):*\nKetik: \`.daftar Nama Kamu\`\n\n_Contoh:_ \`.daftar Budi Santoso\`\n\nSetelah terdaftar, Anda dapat langsung menikmati semua fitur katalog, transaksi, game, dan hiburan! 🙏`;
+            
+            await sendInteractiveButtons(sock, jid, {
+              text: regNotice,
+              buttons: [
+                { type: 'copy', text: '📋 Salin Format .daftar', copy_code: '.daftar ' }
+              ]
+            });
+            continue;
+          }
+        }
+
         // Cek jika ini adalah perintah media utility (.tt, .ig, .yt, .stiker, .gif, .toimg)
         const isMediaHandled = await handleMediaCommands(jid, senderNormalized, m, msgText);
         if (isMediaHandled) continue;

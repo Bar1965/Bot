@@ -990,6 +990,12 @@ export async function registerCustomer(nomor, nama) {
   return getCustomerMembershipProfile(nomor);
 }
 
+export async function isCustomerRegistered(nomor) {
+  if (!nomor) return false;
+  const row = await getQuery("SELECT profile_completed FROM customers WHERE nomor = ?", [nomor]);
+  return row && Number(row.profile_completed) === 1;
+}
+
 export async function getCustomerMembershipProfile(nomor) {
   const customer = await getQuery('SELECT * FROM customers WHERE nomor = ?', [nomor]);
   if (!customer) return null;
