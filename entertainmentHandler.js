@@ -435,12 +435,12 @@ export async function generateInvoiceImage(order) {
 }
 
 /**
- * 7. Peringatan Free Games (Steam, Epic Games, GOG, Ubisoft)
+ * 7. Peringatan Free Games (Semua Platform: Steam, Epic Games, GOG, Ubisoft, dll)
  */
-export async function fetchFreeGames(platformFilter = 'pc') {
+export async function fetchFreeGames() {
   try {
     const axios = (await import('axios')).default;
-    const res = await axios.get(`https://www.gamerpower.com/api/giveaways?platform=${encodeURIComponent(platformFilter)}`, {
+    const res = await axios.get('https://www.gamerpower.com/api/giveaways?platform=pc', {
       timeout: 10000
     });
 
@@ -448,10 +448,10 @@ export async function fetchFreeGames(platformFilter = 'pc') {
       return { success: false, message: 'Saat ini belum ada promo game PC gratis 100% yang aktif.' };
     }
 
-    // Ambil maksimal 8 game gratis teratas yang masih aktif
+    // Ambil maksimal 8 game gratis teratas dari semua platform
     const activeGamesList = res.data.slice(0, 8);
 
-    let msg = `🎮 *DAFTAR GAME PC GRATIS 100% (FREE GAMES)* 🎁\n`;
+    let msg = `🎮 *DAFTAR GAME PC GRATIS 100% (ALL PLATFORMS)* 🎁\n`;
     msg += `_Klaim sekarang & simpan selamanya di akun kamu!_\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
 
     activeGamesList.forEach((game, i) => {

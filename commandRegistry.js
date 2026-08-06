@@ -38,7 +38,7 @@ const categories = {
     title: '🎮 HIBURAN & GAME',
     aliases: ['hiburan', 'game', 'games', 'fun'],
     commands: [
-      ['.freegames [steam/epic/gog]', 'Info game PC gratis 100%'],
+      ['.freegames', 'Daftar semua game PC gratis 100% (Steam, Epic, GOG, dll)'],
       ['.slot [taruhan]', 'Spin judi slot machine virtual'],
       ['.zodiak <zodiak>', 'Ramalan harian zodiak'],
       ['.jodoh <nama1> & <nama2>', 'Tes kecocokan pasangan'],

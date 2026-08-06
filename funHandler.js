@@ -360,9 +360,8 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
   if (['freegames', 'freegame', 'gamegratis', 'freegamestag'].includes(command)) {
     if (isOnCooldown(`${scope}:freegames`, 5000)) return true;
     const isTagAllRequested = command === 'freegamestag' || args[1] === 'tag' || args[1] === 'tagall';
-    const platform = isTagAllRequested ? (args[2] || 'pc') : (args[1] || 'pc');
 
-    const res = await entertainment.fetchFreeGames(platform);
+    const res = await entertainment.fetchFreeGames();
     if (res.success) {
       if (isTagAllRequested && isFromGroup) {
         try {
@@ -377,13 +376,10 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
         } catch (e) {}
       }
 
+      const buttons = isFromGroup ? [{ type: 'reply', text: '📢 TagAll Group', id: '.freegames tag' }] : [];
       await send(sock, jid, messageObj, res.text, {
-        title: '🎮 FREE GAMES ALERT (STEAM / EPIC / GOG)',
-        buttons: [
-          { type: 'reply', text: '🎮 Steam', id: '.freegames steam' },
-          { type: 'reply', text: '🎁 Epic Games', id: '.freegames epic' },
-          { type: 'reply', text: '📢 TagAll Group', id: '.freegames tag' }
-        ]
+        title: '🎮 FREE GAMES ALERT (STEAM / EPIC / GOG / UBISOFT)',
+        buttons
       });
     } else {
       await send(sock, jid, messageObj, `❌ ${res.message}`);
