@@ -63,7 +63,6 @@ const categories = {
       ['.poin / .profile', 'Lihat XP, level, dan poin'],
       ['.rank / .leaderboard', 'Lihat peringkat pemain'],
       ['.badge', 'Lihat pencapaian game'],
-      ['.redeem <poin>', 'Tukar poin menjadi kupon'],
       ['.rekomendasi', 'Dapatkan rekomendasi produk'],
       ['.misi', 'Lihat misi harian'],
       ['.kupon <kode>', 'Gunakan kupon diskon'],

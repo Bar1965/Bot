@@ -2108,25 +2108,6 @@ export async function claimGameDaily(customerJid, today, reward = 25) {
   });
 }
 
-export async function redeemGamePoints(customerJid, pointsToRedeem) {
-  const points = Number.parseInt(pointsToRedeem, 10);
-  if (!Number.isInteger(points) || points < 10 || points > 10000) {
-    return { success: false, message: 'Penukaran poin minimal 10 dan maksimal 10.000 poin.' };
-  }
-  return withTransaction(async () => {
-    await getGameProfile(customerJid);
-    const result = await runQuery(
-      "UPDATE game_profiles SET points = points - ?, updated_at = CURRENT_TIMESTAMP WHERE customer_jid = ? AND points >= ?",
-      [points, customerJid, points]
-    );
-    if (result.changes !== 1) {
-      const profile = await getGameProfile(customerJid);
-      return { success: false, message: `Poin tidak cukup. Saldo kamu: ${profile.points} poin.` };
-    }
-    const profile = await getGameProfile(customerJid);
-    return { success: true, discount: Math.min(points * 100, 100000), remainingPoints: profile.points };
-  });
-}
 
 export async function getGameLeaderboard(limit = 10) {
   const safeLimit = Math.max(1, Math.min(50, Number.parseInt(limit, 10) || 10));

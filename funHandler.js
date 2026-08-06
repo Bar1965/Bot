@@ -183,7 +183,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
       const round = { type: 'wordchain', lastWord: starter, answer: '', expiresAt: Date.now() + ROUND_DURATION_MS };
       activeRounds.set(scope, round);
       scheduleRoundExpiry({ sock, jid, messageObj, key: scope, round });
-      await send(sock, jid, messageObj, `🔗 *SAMBUNG KATA*\n\nKata awal: *${starter}*\nKirim `.sambungkata <kata>` yang diawali huruf *${starter.slice(-1)}*.`);
+      await send(sock, jid, messageObj, `🔗 *SAMBUNG KATA*\n\nKata awal: *${starter}*\nKirim *.sambungkata <kata>* yang diawali huruf *${starter.slice(-1)}*.`);
       return true;
     }
     if (!round || round.type !== 'wordchain') {
@@ -290,18 +290,6 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     return true;
   }
 
-  if (['redeem', 'tukarpoin', 'tukar'].includes(command)) {
-    const points = Number.parseInt(args[1], 10);
-    const result = await db.redeemGamePoints(senderNumber, points);
-    if (!result.success) {
-      await send(sock, jid, messageObj, `❌ ${result.message}`);
-      return true;
-    }
-    const couponCode = `GAME${Date.now().toString(36).toUpperCase().slice(-8)}`;
-    await db.addCoupon(couponCode, 'fixed', result.discount, 0, 1, new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString());
-    await send(sock, jid, messageObj, `🎁 Penukaran berhasil!\n\nKupon: *${couponCode}*\nNilai: *Rp${result.discount.toLocaleString('id-ID')}*\nSisa poin: *${result.remainingPoints}*\n\nGunakan dengan .kupon ${couponCode} dalam 7 hari.`);
-    return true;
-  }
 
   if (['rekomendasi', 'recommend', 'saranproduk'].includes(command)) {
     const products = (await db.getProducts()).filter(product => product.stok > 0).sort(() => Math.random() - 0.5).slice(0, 3);
