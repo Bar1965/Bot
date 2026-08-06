@@ -212,15 +212,32 @@ async function checkFreeGamesAlerts(sock) {
       const worthStr = game.worth && game.worth !== 'N/A' ? `~${game.worth}~ ➡️ *GRATIS (Rp0)*` : '*GRATIS (Rp0)*';
       const endDateStr = game.end_date && game.end_date !== 'N/A' ? game.end_date.split(' ')[0] : 'Selama persediaan ada';
 
-      let alertMsg = `🔥 *FREE GAME ALERT (${game.platforms || 'PC'})* 🔥\n`;
+      let alertMsg = `📢 *PERINGATAN GAME GRATIS (FREE GAME ALERT)* 📢\n`;
       alertMsg += `_Ada game PC keren yang lagi GRATIS 100%! Klaim & simpan selamanya!_\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
       alertMsg += `${platformIcon} *${game.title}*\n`;
       alertMsg += `💰 Harga Normal: ${worthStr}\n`;
       alertMsg += `🕹️ Platform: *${game.platforms || 'PC'}*\n`;
       alertMsg += `⏳ Batas Klaim: *${endDateStr}*\n\n`;
       alertMsg += `🔗 *Klaim Sekarang:* ${game.open_giveaway_url || game.gamerpower_url}\n\n`;
-      alertMsg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n💡 _Dapatkan terus update game gratis dari Akbar Store Bot!_`;
 
+      if (targetJid.endsWith('@g.us')) {
+        try {
+          const meta = await sock.groupMetadata(targetJid);
+          const mentions = meta.participants.map(p => p.id);
+          alertMsg += `👥 *PANGGILAN SEMUA MEMBER (TAGALL):*\n`;
+          mentions.forEach(m => {
+            alertMsg += `@${m.split('@')[0]} `;
+          });
+          alertMsg += `\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n💡 _Dapatkan terus update game gratis dari Akbar Store Bot!_`;
+          await sock.sendMessage(targetJid, { text: alertMsg, mentions });
+          console.log(`[SCHEDULER] Free Game Alert + TagAll terkirim ke grup ${targetJid}: ${game.title}`);
+          continue;
+        } catch (groupErr) {
+          console.error('[SCHEDULER] Gagal TagAll di grup target:', groupErr.message);
+        }
+      }
+
+      alertMsg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n💡 _Dapatkan terus update game gratis dari Akbar Store Bot!_`;
       await sock.sendMessage(targetJid, { text: alertMsg });
       console.log(`[SCHEDULER] Free Game Alert terkirim: ${game.title}`);
     }

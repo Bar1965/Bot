@@ -357,17 +357,32 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     return true;
   }
 
-  if (['freegames', 'freegame', 'gamegratis'].includes(command)) {
-    if (isOnCooldown(`${scope}:freegames`, 10000)) return true;
-    const platform = args[1] || 'pc';
+  if (['freegames', 'freegame', 'gamegratis', 'freegamestag'].includes(command)) {
+    if (isOnCooldown(`${scope}:freegames`, 5000)) return true;
+    const isTagAllRequested = command === 'freegamestag' || args[1] === 'tag' || args[1] === 'tagall';
+    const platform = isTagAllRequested ? (args[2] || 'pc') : (args[1] || 'pc');
+
     const res = await entertainment.fetchFreeGames(platform);
     if (res.success) {
+      if (isTagAllRequested && isFromGroup) {
+        try {
+          const meta = await sock.groupMetadata(jid);
+          const mentions = meta.participants.map(p => p.id);
+          let tagMsg = `${res.text}\n\n👥 *PANGGILAN SEMUA MEMBER (TAGALL):*\n`;
+          mentions.forEach(m => {
+            tagMsg += `@${m.split('@')[0]} `;
+          });
+          await sock.sendMessage(jid, { text: tagMsg, mentions });
+          return true;
+        } catch (e) {}
+      }
+
       await send(sock, jid, messageObj, res.text, {
         title: '🎮 FREE GAMES ALERT (STEAM / EPIC / GOG)',
         buttons: [
           { type: 'reply', text: '🎮 Steam', id: '.freegames steam' },
           { type: 'reply', text: '🎁 Epic Games', id: '.freegames epic' },
-          { type: 'reply', text: '🕹️ GOG', id: '.freegames gog' }
+          { type: 'reply', text: '📢 TagAll Group', id: '.freegames tag' }
         ]
       });
     } else {
