@@ -113,76 +113,80 @@ export async function sendInteractiveButtons(targetSock, jid, { text, title, foo
   if (!activeSock) return false;
 
   try {
-    const nativeButtons = [];
+    let fullText = '';
+    if (title) fullText += `*${title}*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    fullText += text || '';
 
-    // 1. Tambahkan Section List/Dropdown jika ada
-    if (sections && sections.length > 0) {
-      nativeButtons.push({
-        name: 'single_select',
-        buttonParamsJson: JSON.stringify({
-          title: '📋 Pilih Menu',
-          sections: sections
-        })
+    if (buttons && buttons.length > 0) {
+      fullText += `\n\n📌 *PILIHAN / KONTROL:*`;
+      buttons.forEach(b => {
+        if (b.type === 'url') {
+          fullText += `\n🔗 *${b.text}:* ${b.url}`;
+        } else {
+          fullText += `\n▶️ *${b.text}* (Ketik \`${b.id || b.text}\`)`;
+        }
       });
     }
 
-    // 2. Tambahkan tombol individual (Quick Reply, CTA URL, CTA Copy)
-    if (buttons && buttons.length > 0) {
-      for (const b of buttons) {
-        if (b.type === 'url') {
-          nativeButtons.push({
-            name: 'cta_url',
-            buttonParamsJson: JSON.stringify({
-              display_text: b.text,
-              url: b.url,
-              merchant_url: b.url
-            })
-          });
-        } else if (b.type === 'copy') {
-          nativeButtons.push({
-            name: 'cta_copy',
-            buttonParamsJson: JSON.stringify({
-              display_text: b.text,
-              id: b.id || b.text,
-              copy_code: b.copy_code || b.text
-            })
-          });
-        } else {
-          nativeButtons.push({
-            name: 'quick_reply',
-            buttonParamsJson: JSON.stringify({
-              display_text: b.text,
-              id: b.id || b.text
-            })
+    if (sections && sections.length > 0) {
+      fullText += `\n\n📋 *MENU PILIHAN:*`;
+      sections.forEach(s => {
+        if (s.title) fullText += `\n*${s.title}*`;
+        if (s.rows && s.rows.length > 0) {
+          s.rows.forEach(r => {
+            fullText += `\n• *${r.title}* ${r.description ? `— ${r.description}` : ''} (Ketik \`${r.id || r.title}\`)`;
           });
         }
-      }
+      });
     }
 
-    const interactiveMsg = {
-      header: title ? { title, hasMediaAttachment: false } : undefined,
-      body: { text: text || '' },
-      footer: footer ? { text: footer } : undefined,
-      nativeFlowMessage: {
-        buttons: nativeButtons
+    if (footer) fullText += `\n\n_${footer}_`;
+
+    // 1. Kirimkan pesan teks terformat secara langsung (100% terbukti dapat diterima di semua grup & HP)
+    await activeSock.sendMessage(jid, { text: fullText });
+
+    // 2. Coba kirimkan tombol interaktif tambahan untuk WhatsApp client yang mendukung
+    try {
+      const nativeButtons = [];
+      if (sections && sections.length > 0) {
+        nativeButtons.push({
+          name: 'single_select',
+          buttonParamsJson: JSON.stringify({ title: '📋 Pilih Menu', sections })
+        });
       }
-    };
+      if (buttons && buttons.length > 0) {
+        for (const b of buttons) {
+          if (b.type === 'url') {
+            nativeButtons.push({ name: 'cta_url', buttonParamsJson: JSON.stringify({ display_text: b.text, url: b.url, merchant_url: b.url }) });
+          } else if (b.type === 'copy') {
+            nativeButtons.push({ name: 'cta_copy', buttonParamsJson: JSON.stringify({ display_text: b.text, id: b.id || b.text, copy_code: b.copy_code || b.text }) });
+          } else {
+            nativeButtons.push({ name: 'quick_reply', buttonParamsJson: JSON.stringify({ display_text: b.text, id: b.id || b.text }) });
+          }
+        }
+      }
 
-    const waMsg = generateWAMessageFromContent(
-      jid,
-      {
-        interactiveMessage: interactiveMsg
-      },
-      { userJid: jid }
-    );
+      const waMsg = generateWAMessageFromContent(
+        jid,
+        {
+          interactiveMessage: {
+            header: title ? { title, hasMediaAttachment: false } : undefined,
+            body: { text: text || '' },
+            footer: footer ? { text: footer } : undefined,
+            nativeFlowMessage: { buttons: nativeButtons }
+          }
+        },
+        { userJid: jid }
+      );
+      await activeSock.relayMessage(jid, waMsg.message, { messageId: waMsg.key.id });
+    } catch (btnErr) {}
 
-    await activeSock.relayMessage(jid, waMsg.message, { messageId: waMsg.key.id });
     return true;
   } catch (err) {
-    console.error('[INTERACTIVE MSG ERROR] Gagal mengirim pesan tombol, menggunakan fallback teks:', err.message);
-    let fallbackText = text;
-    if (footer) fallbackText += `\n\n_${footer}_`;
-    await activeSock.sendMessage(jid, { text: fallbackText });
+    console.error('[INTERACTIVE MSG ERROR]', err.message);
+    try {
+      await activeSock.sendMessage(jid, { text: text || 'Terjadi kesalahan pengiriman pesan.' });
+    } catch (e) {}
     return false;
   }
 }
