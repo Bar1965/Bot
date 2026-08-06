@@ -171,11 +171,7 @@ export async function sendInteractiveButtons(targetSock, jid, { text, title, foo
     const waMsg = generateWAMessageFromContent(
       jid,
       {
-        viewOnceMessage: {
-          message: {
-            interactiveMessage: interactiveMsg
-          }
-        }
+        interactiveMessage: interactiveMsg
       },
       { userJid: jid }
     );
