@@ -2132,13 +2132,34 @@ export async function getGameLeaderboard(limit = 10) {
   const safeLimit = Math.max(1, Math.min(50, Number.parseInt(limit, 10) || 10));
   return await allQuery(
     `SELECT g.customer_jid, g.points, g.level, g.games_won, g.games_played,
-            COALESCE(c.nama, 'Pelanggan') AS customer_nama
+            COALESCE(c.nama, 'Member') AS customer_nama
      FROM game_profiles g
-     LEFT JOIN customers c ON c.nomor = g.customer_jid
+     INNER JOIN customers c ON c.nomor = g.customer_jid
+     WHERE c.profile_completed = 1
      ORDER BY g.points DESC, g.level DESC, g.games_won DESC
      LIMIT ?`,
     [safeLimit]
   );
+}
+
+export async function resetGameLeaderboard() {
+  // 1. Hapus profile game dari user yang belum mendaftar (.daftar)
+  await runQuery(`
+    DELETE FROM game_profiles
+    WHERE customer_jid NOT IN (
+      SELECT nomor FROM customers WHERE profile_completed = 1
+    )
+  `);
+
+  // 2. Reset semua poin, XP, level, dan streak untuk member terdaftar
+  const result = await runQuery(`
+    UPDATE game_profiles
+    SET points = 0, xp = 0, level = 1, games_played = 0, games_won = 0,
+        daily_streak = 0, daily_claimed_at = NULL, updated_at = CURRENT_TIMESTAMP
+  `);
+
+  await addLog("ADMIN", `Leaderboard game di-reset bersih (${result.changes} member di-reset).`);
+  return { success: true, resetCount: result.changes };
 }
 
 // --- FUNGSI BUNDLING PRODUK ---

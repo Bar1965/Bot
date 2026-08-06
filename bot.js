@@ -3037,6 +3037,12 @@ async function handleGroupMessage(jid, senderNumber, messageObj, text, isGroupAd
     return false;
   }
 
+  if (cleanCmd === 'resetleaderboard') {
+    const res = await db.resetGameLeaderboard();
+    await sock.sendMessage(jid, { text: `✅ *LEADERBOARD GAME DIRESET BERSIH!*\n\nSemua poin, level, dan streak game pengguna un-registered telah dibersihkan.\n\nSekarang hanya member terdaftar (.daftar <nama>) yang dapat mengumpulkan poin dan masuk ke leaderboard!` });
+    return true;
+  }
+
   if (cleanCmd === 'getjid') {
     await sock.sendMessage(jid, { 
       text: `ID Chat/Grup ini adalah:\n\`${jid}\`\n\nID Anda adalah:\n\`${senderNumber}\`\n\nSilakan salin ID di atas dan masukkan ke pengaturan Web Dashboard jika ini adalah Grup Transaksi atau Grup Log.` 
