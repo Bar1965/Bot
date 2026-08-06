@@ -326,14 +326,131 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
 
   if (['love', 'jodoh', 'compatibility'].includes(command)) {
     if (isOnCooldown(`${scope}:love`, 5000)) return true;
+    const names = text.slice(command.length).trim();
+    if (names && names.includes('&')) {
+      const parts = names.split('&').map(p => p.trim());
+      const info = entertainment.getJodohInfo(parts[0], parts[1]);
+      if (info) {
+        await send(sock, jid, messageObj, info);
+        return true;
+      }
+    }
     const percent = Math.floor(Math.random() * 101);
     const target = args.slice(1).join(' ') || 'pasangan masa depanmu';
     await send(sock, jid, messageObj, `💘 Kecocokan kamu dengan *${target}*: *${percent}%*\n${percent > 75 ? 'Wah, cocok banget!' : percent > 45 ? 'Masih ada harapan 😄' : 'Coba berteman dulu ya.'}`);
     return true;
   }
 
+  if (['zodiak', 'zodiac', 'horoscope'].includes(command)) {
+    if (isOnCooldown(`${scope}:zodiak`, 3000)) return true;
+    const inputZodiak = args[1];
+    if (!inputZodiak) {
+      await send(sock, jid, messageObj, '⚠️ *Format Salah:* Masukkan nama zodiak kamu!\n\n_Contoh:_ `.zodiak leo`\n\n📌 *Daftar Zodiak:* Aries, Taurus, Gemini, Cancer, Leo, Virgo, Libra, Scorpio, Sagittarius, Capricorn, Aquarius, Pisces.');
+      return true;
+    }
+    const info = entertainment.getZodiakInfo(inputZodiak);
+    if (!info) {
+      await send(sock, jid, messageObj, '❌ Zodiak tidak ditemukan. Pilih salah satu: Aries, Taurus, Gemini, Cancer, Leo, Virgo, Libra, Scorpio, Sagittarius, Capricorn, Aquarius, Pisces.');
+      return true;
+    }
+    await send(sock, jid, messageObj, info);
+    return true;
+  }
+
+  if (['freegames', 'freegame', 'gamegratis'].includes(command)) {
+    if (isOnCooldown(`${scope}:freegames`, 10000)) return true;
+    const platform = args[1] || 'pc';
+    const res = await entertainment.fetchFreeGames(platform);
+    if (res.success) {
+      await send(sock, jid, messageObj, res.text, {
+        title: '🎮 FREE GAMES ALERT (STEAM / EPIC / GOG)',
+        buttons: [
+          { type: 'reply', text: '🎮 Steam', id: '.freegames steam' },
+          { type: 'reply', text: '🎁 Epic Games', id: '.freegames epic' },
+          { type: 'reply', text: '🕹️ GOG', id: '.freegames gog' }
+        ]
+      });
+    } else {
+      await send(sock, jid, messageObj, `❌ ${res.message}`);
+    }
+    return true;
+  }
+
+  if (['slot', 'slots', 'judi'].includes(command)) {
+    if (isOnCooldown(`${scope}:slot`, 4000)) return true;
+    const bet = Math.max(1, Math.min(1000, Number.parseInt(args[1] || '10', 10)));
+    const profile = await db.getGameProfile(senderNumber);
+
+    if (profile.points < bet) {
+      await send(sock, jid, messageObj, `❌ Poin kamu tidak cukup! Kamu butuh *${bet} poin*, tapi sisa poinmu hanya *${profile.points} poin*.\n\nKetik \`.daily\` untuk mengambil poin gratis harian!`);
+      return true;
+    }
+
+    const spin = entertainment.playSlotMachine(bet);
+    const pointDelta = spin.winAmount - bet;
+    const newPoints = Math.max(0, profile.points + pointDelta);
+
+    await db.updateGameProfile(senderNumber, { points: newPoints });
+
+    let msg = `🎰 *CASINO SLOT MACHINE* 🎰\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    msg += `   [ ${spin.reels.join(' | ')} ]\n\n`;
+    msg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+    if (spin.isWin) {
+      msg += `🎉 *MENANG!* ${spin.winType}\n`;
+      msg += `💰 Taruhan: *${bet} poin*\n`;
+      msg += `🎁 Hadiah: *+${spin.winAmount} poin*\n`;
+    } else {
+      msg += `💸 *RUNGKAD!* Sayang sekali belum beruntung.\n`;
+      msg += `💰 Taruhan: *-${bet} poin*\n`;
+    }
+    msg += `💳 Sisa Poin: *${newPoints} poin*`;
+
+    await send(sock, jid, messageObj, msg, {
+      buttons: [
+        { type: 'reply', text: `🎰 Spin Lagi (${bet} Poin)`, id: `.slot ${bet}` }
+      ]
+    });
+    return true;
+  }
+
+  if (['torebot', 'tochipmunk', 'todeep', 'toecho'].includes(command)) {
+    if (isOnCooldown(`${scope}:voiceeffect`, 5000)) return true;
+    const quoted = messageObj.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+    const audioMsg = quoted?.audioMessage || messageObj.message?.audioMessage;
+
+    if (!audioMsg) {
+      await send(sock, jid, messageObj, '⚠️ *Format Salah:* Balas (reply) sebuah Voice Note / Pesan Suara dengan perintah ini!\n\n_Contoh:_ Reply VN dengan `.torebot` atau `.tochipmunk`');
+      return true;
+    }
+
+    try {
+      const { downloadMediaMessage } = await import('@whiskeysockets/baileys');
+      const stream = await downloadMediaMessage(
+        { message: quoted ? { audioMessage: quoted.audioMessage } : messageObj },
+        'buffer',
+        {}
+      );
+
+      if (stream) {
+        const res = await entertainment.convertVoiceEffect(stream, command);
+        if (res.success && res.buffer) {
+          await sock.sendMessage(jid, {
+            audio: res.buffer,
+            ptt: true,
+            mimetype: 'audio/mp4'
+          }, { quoted: messageObj });
+          return true;
+        }
+      }
+    } catch (e) {
+      console.error('[VOICE_EFFECT_ERR]', e.message);
+    }
+    await send(sock, jid, messageObj, '❌ Gagal mengubah efek suara Voice Note. Pastikan media audio valid.');
+    return true;
+  }
+
   if (['fun', 'game', 'games', 'hiburan'].includes(command) && args.length === 1) {
-    await send(sock, jid, messageObj, '🎮 *MENU HIBURAN*\n\n.quiz · .tebakemoji · .tebakkata\n.jawab · .hint · .sambungkata\n.truth · .dare · .dadu · .coinflip\n.daily · .poin · .rank · .misi\n.poll · .love\n\nKetik `.menu hiburan` untuk panduan lengkap.');
+    await send(sock, jid, messageObj, '🎮 *MENU HIBURAN*\n\n.freegames · .slot · .zodiak · .jodoh\n.quiz · .tebakemoji · .tebakkata\n.jawab · .hint · .sambungkata\n.truth · .dare · .dadu · .coinflip\n.torebot · .tochipmunk · .todeep\n.daily · .poin · .rank · .misi\n.poll · .love\n\nKetik `.menu hiburan` untuk panduan lengkap.');
     return true;
   }
 

@@ -433,3 +433,220 @@ export async function generateInvoiceImage(order) {
     return { success: false, message: err.message };
   }
 }
+
+/**
+ * 7. Peringatan Free Games (Steam, Epic Games, GOG, Ubisoft)
+ */
+export async function fetchFreeGames(platformFilter = 'pc') {
+  try {
+    const axios = (await import('axios')).default;
+    const res = await axios.get(`https://www.gamerpower.com/api/giveaways?platform=${encodeURIComponent(platformFilter)}`, {
+      timeout: 10000
+    });
+
+    if (!res.data || !Array.isArray(res.data) || res.data.length === 0) {
+      return { success: false, message: 'Saat ini belum ada promo game PC gratis 100% yang aktif.' };
+    }
+
+    // Ambil maksimal 8 game gratis teratas yang masih aktif
+    const activeGamesList = res.data.slice(0, 8);
+
+    let msg = `🎮 *DAFTAR GAME PC GRATIS 100% (FREE GAMES)* 🎁\n`;
+    msg += `_Klaim sekarang & simpan selamanya di akun kamu!_\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+
+    activeGamesList.forEach((game, i) => {
+      const platformIcon = game.platforms?.includes('Steam') ? '🎮' :
+                           game.platforms?.includes('Epic') ? '🎁' :
+                           game.platforms?.includes('GOG') ? '🕹️' : '⚔️';
+      
+      const worthStr = game.worth && game.worth !== 'N/A' ? `~${game.worth}~ ➡️ *GRATIS (Rp0)*` : '*GRATIS (Rp0)*';
+      const endDateStr = game.end_date && game.end_date !== 'N/A' ? game.end_date.split(' ')[0] : 'Selama persediaan ada';
+
+      msg += `${i + 1}. ${platformIcon} *${game.title}*\n`;
+      msg += `   💰 Harga Asli: ${worthStr}\n`;
+      msg += `   🕹️ Platform: *${game.platforms || 'PC'}*\n`;
+      msg += `   ⏳ Batas Klaim: *${endDateStr}*\n`;
+      msg += `   🔗 *Klaim:* ${game.open_giveaway_url || game.gamerpower_url}\n\n`;
+    });
+
+    msg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n💡 _Tips: Buka link di atas, login ke akun Steam/Epic/GOG kamu, lalu tekan 'Add to Account' / 'Get'._`;
+
+    return { success: true, text: msg, games: activeGamesList };
+  } catch (err) {
+    console.error('[FREE_GAMES_ERR]', err.message);
+    return { success: false, message: 'Gagal mengambil info Free Games dari GamerPower API.' };
+  }
+}
+
+/**
+ * 8. Game Slot Machine (.slot)
+ */
+export function playSlotMachine(bet = 10) {
+  const symbols = ['🎰', '7️⃣', '💎', '🔔', '🍋', '🍒', '⭐'];
+
+  // Weighted random spin
+  const s1 = symbols[Math.floor(Math.random() * symbols.length)];
+  const s2 = symbols[Math.floor(Math.random() * symbols.length)];
+  const s3 = symbols[Math.floor(Math.random() * symbols.length)];
+
+  let multiplier = 0;
+  let winType = 'RUNGKAD';
+
+  if (s1 === '💎' && s2 === '💎' && s3 === '💎') {
+    multiplier = 10;
+    winType = '💎 SUPER DIAMOND JACKPOT! (10x)';
+  } else if (s1 === '7️⃣' && s2 === '7️⃣' && s3 === '7️⃣') {
+    multiplier = 7;
+    winType = '7️⃣ LUCKY SEVEN JACKPOT! (7x)';
+  } else if (s1 === '🎰' && s2 === '🎰' && s3 === '🎰') {
+    multiplier = 5;
+    winType = '🎰 CASINO SLOT JACKPOT! (5x)';
+  } else if (s1 === s2 && s2 === s3) {
+    multiplier = 3;
+    winType = '🎉 TRIPLE MATCH! (3x)';
+  } else if (s1 === s2 || s2 === s3 || s1 === s3) {
+    multiplier = 1.5;
+    winType = '✨ DOUBLE MATCH! (1.5x)';
+  }
+
+  const winAmount = Math.floor(bet * multiplier);
+
+  return {
+    reels: [s1, s2, s3],
+    multiplier,
+    winType,
+    winAmount,
+    isWin: multiplier > 0
+  };
+}
+
+/**
+ * 9. Ramalan Zodiak Harian (.zodiak)
+ */
+const ZODIAK_DATA = {
+  aries: { icon: '♈', name: 'Aries (21 Mar - 19 Apr)', ramalan: 'Energi positifmu melimpah hari ini. Waktu yang tepat untuk memulai project baru!', asmara: 'Ada pesan manis dari seseorang yang tak terduga.', keuangan: 'Stabil, namun hindari belanja impulsif.', angka: '7, 14, 21' },
+  taurus: { icon: '♉', name: 'Taurus (20 Apr - 20 Mei)', ramalan: 'Kekuatanmu ada pada kesabaran. Tetap fokus pada tujuan jangka panjang.', asmara: 'Pasangan butuh lebih banyak perhatian dan waktu luangmu.', keuangan: 'Rezeki tidak terduga akan datang di akhir minggu.', angka: '5, 18, 33' },
+  gemini: { icon: '♊', name: 'Gemini (21 Mei - 20 Jun)', ramalan: 'Komunikasimu sangat persuasif hari ini. Manfaatkan untuk bernegosiasi.', asmara: 'Coba lebih jujur dengan perasaanmu sendiri.', keuangan: 'Pengeluaran untuk hobi sedikit meningkat.', angka: '3, 12, 29' },
+  cancer: { icon: '♋', name: 'Cancer (21 Jun - 22 Jul)', ramalan: 'Intuisi hatimu sangat tajam. Dengarkan kata hatimu saat mengambil keputusan.', asmara: 'Suasana romantis menyelimuti harimu.', keuangan: 'Ada peluang investasi menarik.', angka: '2, 11, 24' },
+  leo: { icon: '♌', name: 'Leo (23 Jul - 22 Ags)', ramalan: 'Karisma kepemimpinanmu terpancar kuat. Semua orang mengagumi idemu.', asmara: 'Waktunya mengambil langkah berani.', keuangan: 'Bonus atau komisi menantimu.', angka: '1, 9, 19' },
+  virgo: { icon: '♍', name: 'Virgo (23 Ags - 22 Sep)', ramalan: 'Ketelitianmu menyelamatkan tim dari kesalahan besar.', asmara: 'Hindari terlalu kritis pada hal-hal kecil.', keuangan: 'Tabunganmu berkembang dengan baik.', angka: '4, 16, 28' },
+  libra: { icon: '♎', name: 'Libra (23 Sep - 22 Okt)', ramalan: 'Keseimbangan hidupmu kembali terjaga. Pikiran terasa tenang.', asmara: 'Hubungan asmara semakin harmonis.', keuangan: 'Arus kas lancar jaya.', angka: '6, 15, 27' },
+  scorpio: { icon: '♏', name: 'Scorpio (23 Okt - 21 Nov)', ramalan: 'Semangat pantang menyerahmu membuahkan hasil nyata.', asmara: 'Daya tarikmu sangat kuat hari ini.', keuangan: 'Hindari meminjamkan uang tanpa jaminan.', angka: '8, 13, 30' },
+  sagittarius: { icon: '♐', name: 'Sagittarius (22 Nov - 21 Des)', ramalan: 'Petualangan baru sudah di depan mata. Siapkan energimu!', asmara: 'Siap-siap berkenalan dengan orang baru.', keuangan: 'Keuangan aman terkendali.', angka: '10, 22, 35' },
+  capricorn: { icon: '♑', name: 'Capricorn (22 Des - 19 Jan)', ramalan: 'Kerja kerasmu diakui oleh atasan / klien.', asmara: 'Luangkan waktu untuk dinner santai.', keuangan: 'Peningkatan pendapatan terasa nyata.', angka: '17, 25, 31' },
+  aquarius: { icon: '♒', name: 'Aquarius (20 Jan - 18 Feb)', ramalan: 'Ide-ide kreatifmu menginspirasi banyak orang di sekitarmu.', asmara: 'Teman lama bisa jadi cinta baru.', keuangan: 'Ada pemasukan dari sumber sekunder.', angka: '11, 23, 34' },
+  pisces: { icon: '♓', name: 'Pisces (19 Feb - 20 Mar)', ramalan: 'Empatimu membuat suasana hati orang lain kembali hangat.', asmara: 'Momen manis bersama doi siap diukir.', keuangan: 'Bijaklah dalam membagi anggaran harian.', angka: '3, 18, 26' }
+};
+
+export function getZodiakInfo(zodiakInput) {
+  if (!zodiakInput) return null;
+  const key = zodiakInput.toLowerCase().trim();
+  const zData = ZODIAK_DATA[key];
+  if (!zData) return null;
+
+  let msg = `✨ *RAMALAN ZODIAK ${zData.icon}* ✨\n`;
+  msg += `*${zData.name}*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+  msg += `🌟 *Ramalan Hari Ini:*\n${zData.ramalan}\n\n`;
+  msg += `💖 *Asmara:*\n${zData.asmara}\n\n`;
+  msg += `💰 *Keuangan:*\n${zData.keuangan}\n\n`;
+  msg += `🎯 *Angka Keberuntungan:* ${zData.angka}`;
+
+  return msg;
+}
+
+/**
+ * 10. Calculator Kecocokan Jodoh (.jodoh)
+ */
+export function getJodohInfo(name1, name2) {
+  if (!name1 || !name2) return null;
+
+  const pair = `${name1.toLowerCase().trim()}_${name2.toLowerCase().trim()}`;
+  let hash = 0;
+  for (let i = 0; i < pair.length; i++) {
+    hash = (hash << 5) - hash + pair.charCodeAt(i);
+    hash |= 0;
+  }
+
+  const percentage = (Math.abs(hash) % 71) + 30; // 30% - 100%
+
+  let status = '';
+  let desc = '';
+
+  if (percentage >= 90) {
+    status = '💖 JODOH SEJATI (SOULMATE 99%)';
+    desc = 'Pasangan idaman! Kalian saling melengkapi dan punya chemistry yang sangat kuat. Hubungan ini berpotensi awet sampai kakek nenek!';
+  } else if (percentage >= 75) {
+    status = '💞 COCOK BANGET!';
+    desc = 'Tingkat keserasian kalian sangat tinggi. Ada sedikit perbedaan sifat tapi justru itu yang bikin hubungan kalian berwarna!';
+  } else if (percentage >= 60) {
+    status = '💗 CUKUP HARMONIS';
+    desc = 'Kalian berdua bisa saling memahami. Asalkan saling komunikasi dengan jujur, hubungan akan tetap langgeng.';
+  } else if (percentage >= 45) {
+    status = '💛 BUTUH PERJUANGAN';
+    desc = 'Tingkat kecocokan sedang. Kadang sering beda pendapat, tapi kalau sama-sama mau mengalah bisa jadi pasangan seru!';
+  } else {
+    status = '💔 HUBUNGAN COMPLICATED';
+    desc = 'Banyak tantangan dan drama! Tapi tenang, ujian adalah bumbu cinta. Tetap sabar dan saling mengerti ya!';
+  }
+
+  let msg = `💘 *TES KECOCOKAN JODOH* 💘\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+  msg += `👨 *${name1}*  ❤️  👩 *${name2}*\n\n`;
+  msg += `📊 *Tingkat Kecocokan:* *${percentage}%*\n`;
+  msg += `🏷️ *Status:* *${status}*\n\n`;
+  msg += `💬 *Analisis Ramalan:*\n"${desc}"`;
+
+  return msg;
+}
+
+/**
+ * 11. Voice Changer VN Audio Effects (.torebot, .tochipmunk, .todeep, .toecho)
+ */
+export async function convertVoiceEffect(audioBuffer, effectType = 'torebot') {
+  try {
+    const tmpDir = path.join(process.cwd(), 'tmp');
+    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+
+    const inputPath = path.join(tmpDir, `voice_in_${Date.now()}.mp3`);
+    const outputPath = path.join(tmpDir, `voice_out_${Date.now()}.mp3`);
+
+    fs.writeFileSync(inputPath, audioBuffer);
+
+    let afFilter = 'asetrate=44100*1.2,atempo=0.85'; // Default
+
+    if (effectType === 'torebot' || effectType === 'robot') {
+      afFilter = 'asetrate=44100*0.8,atempo=1.25,flanger=delay=2:depth=5';
+    } else if (effectType === 'tochipmunk' || effectType === 'tupai') {
+      afFilter = 'asetrate=44100*1.5,atempo=0.75';
+    } else if (effectType === 'todeep' || effectType === 'berat') {
+      afFilter = 'asetrate=44100*0.7,atempo=1.43';
+    } else if (effectType === 'toecho' || effectType === 'gema') {
+      afFilter = 'aecho=0.8:0.88:60:0.4';
+    }
+
+    const ffmpeg = (await import('fluent-ffmpeg')).default;
+    const ffmpegInstaller = (await import('@ffmpeg-installer/ffmpeg')).default;
+    ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+
+    await new Promise((resolve, reject) => {
+      ffmpeg(inputPath)
+        .audioFilters(afFilter)
+        .toFormat('mp3')
+        .on('end', resolve)
+        .on('error', reject)
+        .save(outputPath);
+    });
+
+    const outBuf = fs.readFileSync(outputPath);
+
+    try {
+      if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
+      if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+    } catch (e) {}
+
+    return { success: true, buffer: outBuf };
+  } catch (err) {
+    console.error('[VOICE_EFFECT_ERR]', err.message);
+    return { success: false, message: err.message };
+  }
+}
+

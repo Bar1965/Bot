@@ -186,6 +186,49 @@ async function sendDailySalesReport(sock) {
   }
 }
 
+// Memory set untuk melacak ID game gratis yang sudah pernah dikirim notifikasinya
+const notifiedFreeGameIds = new Set();
+
+async function checkFreeGamesAlerts(sock) {
+  if (!sock) return;
+  try {
+    const { fetchFreeGames } = await import('./entertainmentHandler.js');
+    const res = await fetchFreeGames('pc');
+    if (!res.success || !res.games || res.games.length === 0) return;
+
+    // Filter game gratis baru yang bernilai tinggi (misal dari Steam, Epic, GOG)
+    const newFreeGames = res.games.filter(g => !notifiedFreeGameIds.has(g.id));
+    if (newFreeGames.length === 0) return;
+
+    const targetJid = process.env.NOTIFICATION_JID || process.env.ADMIN_JID;
+    if (!targetJid) return;
+
+    for (const game of newFreeGames.slice(0, 3)) {
+      notifiedFreeGameIds.add(game.id);
+
+      const platformIcon = game.platforms?.includes('Steam') ? '🎮' :
+                           game.platforms?.includes('Epic') ? '🎁' :
+                           game.platforms?.includes('GOG') ? '🕹️' : '⚔️';
+      const worthStr = game.worth && game.worth !== 'N/A' ? `~${game.worth}~ ➡️ *GRATIS (Rp0)*` : '*GRATIS (Rp0)*';
+      const endDateStr = game.end_date && game.end_date !== 'N/A' ? game.end_date.split(' ')[0] : 'Selama persediaan ada';
+
+      let alertMsg = `🔥 *FREE GAME ALERT (${game.platforms || 'PC'})* 🔥\n`;
+      alertMsg += `_Ada game PC keren yang lagi GRATIS 100%! Klaim & simpan selamanya!_\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+      alertMsg += `${platformIcon} *${game.title}*\n`;
+      alertMsg += `💰 Harga Normal: ${worthStr}\n`;
+      alertMsg += `🕹️ Platform: *${game.platforms || 'PC'}*\n`;
+      alertMsg += `⏳ Batas Klaim: *${endDateStr}*\n\n`;
+      alertMsg += `🔗 *Klaim Sekarang:* ${game.open_giveaway_url || game.gamerpower_url}\n\n`;
+      alertMsg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n💡 _Dapatkan terus update game gratis dari Akbar Store Bot!_`;
+
+      await sock.sendMessage(targetJid, { text: alertMsg });
+      console.log(`[SCHEDULER] Free Game Alert terkirim: ${game.title}`);
+    }
+  } catch (err) {
+    console.error('[SCHEDULER ERROR] Gagal periksa free games alert:', err.message);
+  }
+}
+
 // Pemicu scheduler utama (diekspor untuk index.js)
 export function startScheduler(sock) {
   schedulerSock = sock;
@@ -196,10 +239,18 @@ export function startScheduler(sock) {
   // Jalankan pengecekan order pertama kali setelah 10 detik bot online
   setTimeout(() => processOrderAutomation(schedulerSock), 10000);
 
+  // Jalankan pengecekan Free Games pertama kali setelah 20 detik bot online
+  setTimeout(() => checkFreeGamesAlerts(schedulerSock), 20000);
+
   // Set interval pengecekan order setiap 5 menit
   setInterval(() => {
     processOrderAutomation(schedulerSock);
   }, 5 * 60 * 1000);
+
+  // Set interval pengecekan Free Game Alert setiap 6 jam
+  setInterval(() => {
+    checkFreeGamesAlerts(schedulerSock);
+  }, 6 * 60 * 60 * 1000);
 
   // Set interval pengecekan backup database setiap 1 jam
   setInterval(() => {
