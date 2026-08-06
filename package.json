@@ -5,8 +5,7 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "start": "node index.js",
-    "test-db": "node test-db.js"
+    "start": "node index.js"
   },
   "dependencies": {
     "@distube/ytdl-core": "^4.16.12",

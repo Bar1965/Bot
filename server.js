@@ -11,14 +11,101 @@ import { createServer } from 'http';
 import { config } from './config.js';
 import * as db from './database.js';
 import { reloadBotSettings, checkAndNotifySubscribers, startBot } from './bot.js';
-import { backupDatabase } from './scheduler.js';
+import { backupDatabase, startScheduler } from './scheduler.js';
 import { initWebSocket, broadcastToAdmins } from './websocket.js';
 import * as chatManager from './chatManager.js';
-import * as prodSeller from './prodsellerHandler.js';
 
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+const authCookieOptions = {
+  httpOnly: true,
+  sameSite: 'lax',
+  secure: process.env.NODE_ENV === 'production',
+  maxAge: 24 * 60 * 60 * 1000,
+  path: '/'
+};
+const loginAttempts = new Map();
+
+function getCookieValue(req, name) {
+  const cookies = req.headers.cookie?.split(';') || [];
+  const prefix = `${name}=`;
+  const entry = cookies.find(cookie => cookie.trim().startsWith(prefix));
+  return entry ? decodeURIComponent(entry.trim().slice(prefix.length)) : null;
+}
+
+function isLoginAllowed(ip) {
+  const now = Date.now();
+  const windowMs = 15 * 60 * 1000;
+  const maxAttempts = 5;
+  const recent = (loginAttempts.get(ip) || []).filter(timestamp => now - timestamp < windowMs);
+  loginAttempts.set(ip, recent);
+  return recent.length < maxAttempts;
+}
+
+function recordLoginAttempt(ip) {
+  const attempts = loginAttempts.get(ip) || [];
+  attempts.push(Date.now());
+  loginAttempts.set(ip, attempts);
+}
+
+const base32Alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+
+function encodeBase32(buffer) {
+  let bits = 0;
+  let value = 0;
+  let output = '';
+  for (const byte of buffer) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      output += base32Alphabet[(value >>> (bits - 5)) & 31];
+      bits -= 5;
+    }
+  }
+  if (bits > 0) output += base32Alphabet[(value << (5 - bits)) & 31];
+  return output;
+}
+
+function decodeBase32(value) {
+  const normalized = String(value || '').replace(/=+$/g, '').toUpperCase();
+  let bits = 0;
+  let current = 0;
+  const output = [];
+  for (const character of normalized) {
+    const index = base32Alphabet.indexOf(character);
+    if (index < 0) return null;
+    current = (current << 5) | index;
+    bits += 5;
+    if (bits >= 8) {
+      output.push((current >>> (bits - 8)) & 255);
+      bits -= 8;
+    }
+  }
+  return Buffer.from(output);
+}
+
+function verifyTotp(secret, token) {
+  if (!secret || !/^\d{6}$/.test(String(token || '').trim())) return false;
+  const key = decodeBase32(secret);
+  if (!key) return false;
+  const submitted = String(token).trim();
+  const currentStep = Math.floor(Date.now() / 1000 / 30);
+  for (let offset = -1; offset <= 1; offset += 1) {
+    const counter = Buffer.alloc(8);
+    counter.writeBigInt64BE(BigInt(currentStep + offset));
+    const digest = crypto.createHmac('sha1', key).update(counter).digest();
+    const dynamicOffset = digest[digest.length - 1] & 0x0f;
+    const binary = ((digest[dynamicOffset] & 0x7f) << 24)
+      | ((digest[dynamicOffset + 1] & 0xff) << 16)
+      | ((digest[dynamicOffset + 2] & 0xff) << 8)
+      | (digest[dynamicOffset + 3] & 0xff);
+    const expected = String(binary % 1_000_000).padStart(6, '0');
+    if (crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(submitted))) return true;
+  }
+  return false;
+}
 
 // Sesi / Status Bot Global yang dishare dari index.js & bot.js
 export const botState = {
@@ -56,8 +143,6 @@ const productStorage = multer.diskStorage({
     cb(null, `${code}_${Date.now()}${ext}`);
   }
 });
-const uploadProduct = multer({ storage: productStorage });
-
 // Storage QRIS
 const qrisStorage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -68,14 +153,37 @@ const qrisStorage = multer.diskStorage({
     cb(null, 'qris.png'); // Selalu menimpa qris.png lama
   }
 });
-const uploadQris = multer({ storage: qrisStorage });
+const imageUploadFilter = (req, file, cb) => {
+  const allowed = ['image/jpeg', 'image/png', 'image/webp'];
+  if (!allowed.includes(file.mimetype)) {
+    return cb(new Error('Format gambar harus JPG, PNG, atau WebP.'));
+  }
+  cb(null, true);
+};
+const qrisUploadFilter = (req, file, cb) => {
+  if (!['image/jpeg', 'image/png'].includes(file.mimetype)) {
+    return cb(new Error('Format QRIS harus JPG atau PNG.'));
+  }
+  cb(null, true);
+};
+const uploadProduct = multer({
+  storage: productStorage,
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: imageUploadFilter
+});
+const uploadQris = multer({
+  storage: qrisStorage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: qrisUploadFilter
+});
 
 // --- MIDDLEWARE AUTENTIKASI JWT ---
 
 function authenticateJWT(req, res, next) {
   const authHeader = req.headers.authorization;
-  if (authHeader) {
-    const token = authHeader.split(' ')[1]; // Bearer <token>
+  const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  const token = bearerToken || getCookieValue(req, 'auth_token');
+  if (token) {
     jwt.verify(token, config.jwtSecret, (err, user) => {
       if (err) {
         return res.status(403).json({ success: false, message: "Token kadaluarsa atau tidak valid." });
@@ -101,45 +209,149 @@ function authorizeRoles(...roles) {
   };
 }
 
-// Serve file statis di folder public
-app.use(express.static('public'));
+// Serve hanya halaman dashboard dan aset yang memang bersifat publik.
+app.get('/', (req, res) => res.sendFile(path.resolve('public/index.html')));
+app.get('/index.html', (req, res) => res.sendFile(path.resolve('public/index.html')));
+app.get('/login.html', (req, res) => res.sendFile(path.resolve('public/login.html')));
+app.use('/uploads/products', express.static(path.resolve('public/uploads/products')));
+app.get('/uploads/qris.png', (req, res) => res.sendFile(path.resolve('public/uploads/qris.png')));
+app.get('/api/chats/media/:filename', authenticateJWT, (req, res) => {
+  const mediaRoot = path.resolve('public/uploads/chat_media');
+  const filename = path.basename(req.params.filename);
+  const mediaPath = path.join(mediaRoot, filename);
+  if (!mediaPath.startsWith(`${mediaRoot}${path.sep}`) || !fs.existsSync(mediaPath)) {
+    return res.status(404).json({ success: false, message: "Media tidak ditemukan." });
+  }
+  res.sendFile(mediaPath);
+});
 
-// Serve gambar bukti transfer dan upload secara aman
-app.use('/receipts', express.static('public/receipts'));
-app.use('/uploads', express.static('public/uploads'));
+// Bukti transfer wajib dilindungi autentikasi dashboard.
+app.use('/receipts', authenticateJWT, express.static(path.resolve('public/receipts')));
 
 // --- API AUTHENTICATION (MULTI-ROLE) ---
 
 app.post('/api/login', async (req, res) => {
   try {
-    const { username, password } = req.body;
-    if (!username || !password) {
+    const { username, password, otp } = req.body;
+    if (typeof username !== 'string' || typeof password !== 'string' || !username.trim() || !password) {
       return res.status(400).json({ success: false, message: "Username dan password harus diisi." });
     }
+    const normalizedUsername = username.trim();
+    if (normalizedUsername.length > 80 || password.length > 200) {
+      return res.status(400).json({ success: false, message: "Data login tidak valid." });
+    }
 
-    const user = await db.getUserByUsername(username);
-    if (!user) {
+    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+    if (!isLoginAllowed(clientIp)) {
+      return res.status(429).json({ success: false, message: "Terlalu banyak percobaan login. Coba lagi dalam 15 menit." });
+    }
+    recordLoginAttempt(clientIp);
+
+    const user = await db.getUserByUsername(normalizedUsername);
+    const isConfiguredAdmin = normalizedUsername === config.adminUser;
+    if (!user && !isConfiguredAdmin) {
       return res.status(401).json({ success: false, message: "Username atau password salah." });
     }
 
-    const passwordMatched = bcrypt.compareSync(password, user.password_hash);
+    const passwordMatched = isConfiguredAdmin
+      ? bcrypt.compareSync(password, config.adminPasswordHash)
+      : bcrypt.compareSync(password, user.password_hash);
     if (!passwordMatched) {
       return res.status(401).json({ success: false, message: "Username atau password salah." });
     }
 
+    if (user && Number(user.two_factor_enabled) === 1 && !verifyTotp(user.two_factor_secret, otp)) {
+      return res.status(401).json({
+        success: false,
+        requiresTwoFactor: true,
+        message: otp ? "Kode authenticator tidak valid atau sudah kedaluwarsa." : "Masukkan kode 6 digit dari aplikasi authenticator."
+      });
+    }
+
+    loginAttempts.delete(clientIp);
+
+    const authenticatedUser = user || { username: config.adminUser, role: 'Owner' };
+
     // Buat token JWT dengan payload username dan role
     const token = jwt.sign(
-      { username: user.username, role: user.role }, 
+      { username: authenticatedUser.username, role: authenticatedUser.role },
       config.jwtSecret, 
       { expiresIn: '24h' }
     );
 
+    res.cookie('auth_token', token, authCookieOptions);
     return res.json({ 
       success: true, 
-      token, 
-      username: user.username, 
-      role: user.role 
+      username: authenticatedUser.username,
+      role: authenticatedUser.role
     });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.post('/api/logout', authenticateJWT, (req, res) => {
+  res.clearCookie('auth_token', {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: process.env.NODE_ENV === 'production',
+    path: '/'
+  });
+  res.json({ success: true });
+});
+
+app.get('/api/session', authenticateJWT, (req, res) => {
+  res.json({ success: true, user: req.user });
+});
+
+app.get('/api/2fa/status', authenticateJWT, authorizeRoles('Owner'), async (req, res) => {
+  try {
+    const user = await db.getUserByUsername(req.user.username);
+    res.json({ success: true, enabled: Boolean(user?.two_factor_enabled), hasSecret: Boolean(user?.two_factor_secret) });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.post('/api/2fa/setup', authenticateJWT, authorizeRoles('Owner'), async (req, res) => {
+  try {
+    const user = await db.getUserByUsername(req.user.username);
+    if (!user) return res.status(404).json({ success: false, message: "Akun Owner tidak ditemukan." });
+    if (Number(user.two_factor_enabled) === 1) {
+      return res.status(400).json({ success: false, message: "2FA sudah aktif pada akun ini." });
+    }
+    const secret = encodeBase32(crypto.randomBytes(20));
+    await db.setTwoFactorSecret(user.username, secret);
+    const label = encodeURIComponent(`Akbar Store:${user.username}`);
+    const otpauthUri = `otpauth://totp/${label}?secret=${secret}&issuer=Akbar%20Store`;
+    res.json({ success: true, secret, otpauthUri, message: "Secret 2FA dibuat. Tambahkan ke aplikasi authenticator lalu verifikasi kodenya." });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.post('/api/2fa/enable', authenticateJWT, authorizeRoles('Owner'), async (req, res) => {
+  try {
+    const user = await db.getUserByUsername(req.user.username);
+    if (!user?.two_factor_secret) return res.status(400).json({ success: false, message: "Buat setup 2FA terlebih dahulu." });
+    if (!verifyTotp(user.two_factor_secret, req.body.code)) {
+      return res.status(400).json({ success: false, message: "Kode authenticator tidak valid." });
+    }
+    await db.setTwoFactorEnabled(user.username, true);
+    res.json({ success: true, message: "2FA berhasil diaktifkan untuk akun Owner." });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.post('/api/2fa/disable', authenticateJWT, authorizeRoles('Owner'), async (req, res) => {
+  try {
+    const user = await db.getUserByUsername(req.user.username);
+    if (!user?.two_factor_secret || !verifyTotp(user.two_factor_secret, req.body.code)) {
+      return res.status(400).json({ success: false, message: "Kode authenticator tidak valid." });
+    }
+    await db.disableTwoFactor(user.username);
+    res.json({ success: true, message: "2FA berhasil dinonaktifkan." });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -334,13 +546,34 @@ app.post('/api/products', authenticateJWT, authorizeRoles('Owner', 'Admin'), upl
       return res.status(400).json({ success: false, message: "Kolom kode, nama, harga, dan stok wajib diisi." });
     }
 
+    const normalizedKode = String(kode).trim().toUpperCase();
+    const normalizedNama = String(nama).trim();
+    const parsedHarga = Number(harga);
+    const parsedStok = Number(stok);
+    const deliveryType = String(delivery_type || 'MANUAL').toUpperCase();
+    if (!/^[A-Z0-9_-]{2,40}$/.test(normalizedKode)) {
+      return res.status(400).json({ success: false, message: "Kode produk hanya boleh berisi huruf, angka, garis bawah, atau tanda hubung (2-40 karakter)." });
+    }
+    if (normalizedNama.length < 1 || normalizedNama.length > 120) {
+      return res.status(400).json({ success: false, message: "Nama produk harus berisi 1-120 karakter." });
+    }
+    if (!Number.isInteger(parsedHarga) || parsedHarga < 0 || parsedHarga > 1_000_000_000) {
+      return res.status(400).json({ success: false, message: "Harga produk harus berupa bilangan bulat antara 0 dan 1.000.000.000." });
+    }
+    if (!Number.isInteger(parsedStok) || parsedStok < 0 || parsedStok > 1_000_000) {
+      return res.status(400).json({ success: false, message: "Stok produk harus berupa bilangan bulat antara 0 dan 1.000.000." });
+    }
+    if (!['MANUAL', 'AUTO'].includes(deliveryType)) {
+      return res.status(400).json({ success: false, message: "Tipe pengiriman produk tidak valid." });
+    }
+
     let gambarUrl = req.body.gambar_existing || "";
     if (req.file) {
       gambarUrl = `/uploads/products/${req.file.filename}`;
     }
 
-    await db.addProduct(kode, nama, parseInt(harga), parseInt(stok), deskripsi, gambarUrl, delivery_type || 'MANUAL', old_kode || '', petunjuk || '');
-    await checkAndNotifySubscribers(kode, parseInt(stok));
+    await db.addProduct(normalizedKode, normalizedNama, parsedHarga, parsedStok, String(deskripsi || '').slice(0, 5000), gambarUrl, deliveryType, String(old_kode || '').trim(), String(petunjuk || '').slice(0, 5000));
+    await checkAndNotifySubscribers(normalizedKode, parsedStok);
     res.json({ success: true, message: "Produk berhasil disimpan." });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -399,6 +632,9 @@ app.post('/api/products/:kode/items', authenticateJWT, authorizeRoles('Owner', '
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ success: false, message: "Kredensial wajib diset dalam bentuk array." });
     }
+    if (items.length > 1000 || items.some(item => typeof item !== 'string' || item.trim().length === 0 || item.length > 5000)) {
+      return res.status(400).json({ success: false, message: "Maksimal 1.000 kredensial, masing-masing 1-5.000 karakter." });
+    }
     const updatedStock = await db.addProductItems(kode, items);
     res.json({ success: true, message: `Berhasil menambahkan ${items.length} kredensial stok.`, stock: updatedStock });
   } catch (err) {
@@ -438,6 +674,22 @@ app.post('/api/orders/:orderId/action', authenticateJWT, async (req, res) => {
 
     if (!['approve', 'complete', 'reject'].includes(action)) {
       return res.status(400).json({ success: false, message: "Aksi tidak dikenal." });
+    }
+
+    const currentOrder = await db.getOrderById(orderId);
+    if (!currentOrder) {
+      return res.status(404).json({ success: false, message: "Order ID tidak ditemukan." });
+    }
+    const allowedStatuses = {
+      approve: ['WAITING_CONFIRMATION'],
+      complete: ['PAID'],
+      reject: ['WAITING_PAYMENT', 'WAITING_CONFIRMATION']
+    };
+    if (!allowedStatuses[action].includes(currentOrder.status)) {
+      return res.status(409).json({
+        success: false,
+        message: `Aksi ${action} tidak dapat dilakukan saat status order ${currentOrder.status}.`
+      });
     }
 
     // Batasan role untuk tindakan order:
@@ -547,6 +799,24 @@ app.get('/api/customers/:nomor', authenticateJWT, authorizeRoles('Owner', 'Admin
   }
 });
 
+app.patch('/api/customers/:nomor/role', authenticateJWT, authorizeRoles('Owner'), async (req, res) => {
+  try {
+    const profile = await db.updateCustomerRole(req.params.nomor, req.body.role);
+    res.json({ success: true, customer: profile });
+  } catch (err) {
+    res.status(400).json({ success: false, message: err.message });
+  }
+});
+
+app.patch('/api/customers/:nomor/status', authenticateJWT, authorizeRoles('Owner', 'Admin'), async (req, res) => {
+  try {
+    const profile = await db.updateCustomerAccountStatus(req.params.nomor, req.body.status);
+    res.json({ success: true, customer: profile });
+  } catch (err) {
+    res.status(400).json({ success: false, message: err.message });
+  }
+});
+
 // --- API SETTINGS & QRIS (KHUSUS OWNER) ---
 
 app.get('/api/settings', authenticateJWT, authorizeRoles('Owner'), async (req, res) => {
@@ -583,7 +853,7 @@ app.post('/api/settings/qris', authenticateJWT, authorizeRoles('Owner'), uploadQ
 // Endpoint untuk memicu manual backup database
 app.get('/api/settings/backup', authenticateJWT, authorizeRoles('Owner'), async (req, res) => {
   try {
-    const backupFile = backupDatabase();
+    const backupFile = await backupDatabase();
     if (backupFile && fs.existsSync(backupFile)) {
       res.download(backupFile, 'shop_backup.db');
     } else {
@@ -611,7 +881,7 @@ app.get('/api/logs', authenticateJWT, authorizeRoles('Owner'), async (req, res) 
 app.post('/api/broadcast', authenticateJWT, authorizeRoles('Owner'), async (req, res) => {
   try {
     const { message, delay } = req.body;
-    if (!message) {
+    if (typeof message !== 'string' || !message.trim() || message.length > 4000) {
       return res.status(400).json({ success: false, message: "Pesan broadcast wajib diisi." });
     }
 
@@ -619,7 +889,10 @@ app.post('/api/broadcast', authenticateJWT, authorizeRoles('Owner'), async (req,
       return res.status(400).json({ success: false, message: "Koneksi WhatsApp bot belum terhubung." });
     }
 
-    const broadcastDelay = parseInt(delay) || 3000;
+    const broadcastDelay = delay === undefined || delay === '' ? 3000 : Number(delay);
+    if (!Number.isInteger(broadcastDelay) || broadcastDelay < 0 || broadcastDelay > 60_000) {
+      return res.status(400).json({ success: false, message: "Jeda broadcast harus berupa bilangan bulat 0-60.000 ms." });
+    }
     
     // Ambil daftar grup yang diikuti oleh bot
     let targetGroupJids = [];
@@ -695,8 +968,25 @@ app.post('/api/coupons', authenticateJWT, authorizeRoles('Owner', 'Admin'), asyn
     if (!code || !type || value === undefined) {
       return res.status(400).json({ success: false, message: "Kode, tipe (percent/fixed), dan nilai wajib diisi." });
     }
-    await db.addCoupon(code, type, parseInt(value), parseInt(min_order || 0), parseInt(max_uses || 0), expires_at || null);
-    res.json({ success: true, message: `Kupon ${code.toUpperCase()} berhasil dibuat!` });
+    const normalizedCode = String(code).trim().toUpperCase();
+    const normalizedType = String(type).trim().toLowerCase();
+    const parsedValue = Number(value);
+    const parsedMinOrder = min_order === undefined || min_order === '' ? 0 : Number(min_order);
+    const parsedMaxUses = max_uses === undefined || max_uses === '' ? 0 : Number(max_uses);
+    if (!/^[A-Z0-9_-]{3,40}$/.test(normalizedCode)) {
+      return res.status(400).json({ success: false, message: "Kode kupon hanya boleh berisi huruf, angka, garis bawah, atau tanda hubung (3-40 karakter)." });
+    }
+    if (!['percent', 'fixed'].includes(normalizedType)) {
+      return res.status(400).json({ success: false, message: "Tipe kupon harus percent atau fixed." });
+    }
+    if (!Number.isInteger(parsedValue) || parsedValue <= 0 || (normalizedType === 'percent' && parsedValue > 100)) {
+      return res.status(400).json({ success: false, message: "Nilai kupon tidak valid." });
+    }
+    if (!Number.isInteger(parsedMinOrder) || parsedMinOrder < 0 || !Number.isInteger(parsedMaxUses) || parsedMaxUses < 0) {
+      return res.status(400).json({ success: false, message: "Minimum order dan batas penggunaan harus bilangan bulat positif atau nol." });
+    }
+    await db.addCoupon(normalizedCode, normalizedType, parsedValue, parsedMinOrder, parsedMaxUses, expires_at || null);
+    res.json({ success: true, message: `Kupon ${normalizedCode} berhasil dibuat!` });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -724,7 +1014,7 @@ app.get('/api/faqs', authenticateJWT, async (req, res) => {
 app.post('/api/faqs', authenticateJWT, authorizeRoles('Owner', 'Admin'), async (req, res) => {
   try {
     const { keywords, answer } = req.body;
-    if (!keywords || !answer) {
+    if (typeof keywords !== 'string' || typeof answer !== 'string' || !keywords.trim() || !answer.trim() || keywords.length > 500 || answer.length > 5000) {
       return res.status(400).json({ success: false, message: "Keywords dan Jawaban wajib diisi." });
     }
     const id = await db.addFaq(keywords, answer);
@@ -776,6 +1066,9 @@ app.post('/api/users', authenticateJWT, authorizeRoles('Owner'), async (req, res
     if (!username || !password || !role) {
       return res.status(400).json({ success: false, message: "Semua kolom (username, password, role) wajib diisi." });
     }
+    if (!/^[a-zA-Z0-9_-]{3,40}$/.test(String(username).trim()) || String(password).length < 8 || String(password).length > 200) {
+      return res.status(400).json({ success: false, message: "Username harus 3-40 karakter dan password minimal 8 karakter." });
+    }
     if (!['Owner', 'Admin', 'CS'].includes(role)) {
       return res.status(400).json({ success: false, message: "Role tidak valid." });
     }
@@ -796,7 +1089,7 @@ app.put('/api/users/:username', authenticateJWT, authorizeRoles('Owner'), async 
   try {
     const { password } = req.body;
     const { username } = req.params;
-    if (!password) {
+    if (!password || String(password).length < 8 || String(password).length > 200) {
       return res.status(400).json({ success: false, message: "Password baru wajib diisi." });
     }
 
@@ -850,7 +1143,7 @@ app.post('/api/settings/session/reset', authenticateJWT, authorizeRoles('Owner')
 
     // Hubungkan kembali di background
     setTimeout(() => {
-      startBot();
+      startBot((newSock) => startScheduler(newSock));
     }, 2000);
 
   } catch (err) {
@@ -1135,6 +1428,9 @@ export async function createMidtransTransaction(order) {
   };
 
   try {
+    if (String(order.order_id).startsWith('DEP-')) {
+      await db.createDepositOrder(order.order_id, order.customer_nomor, order.total);
+    }
     const res = await fetch(baseUrl, {
       method: 'POST',
       headers: {
@@ -1191,42 +1487,45 @@ app.post('/api/payment/webhook', async (req, res) => {
       return res.status(404).json({ success: false, message: "Order ID tidak ditemukan." });
     }
 
+    if (String(order_id).startsWith('DEP-')) {
+      if (Number(order.total) !== Number(gross_amount)) {
+        return res.status(400).json({ success: false, message: "Nominal deposit tidak cocok." });
+      }
+      if (transaction_status === 'settlement' || transaction_status === 'capture') {
+        const settled = await db.settleDepositOrder(order_id, order.customer_nomor, order.total, transaction_status);
+        if (settled && botState.sock && botState.whatsappConnected) {
+          await botState.sock.sendMessage(order.customer_nomor, {
+            text: `Deposit sebesar *Rp${Number(order.total).toLocaleString('id-ID')}* berhasil masuk ke saldo Anda.`
+          });
+        }
+        return res.json({ success: true, message: settled ? "Deposit berhasil ditambahkan." : "Deposit sudah diproses sebelumnya." });
+      }
+      if (['expire', 'cancel', 'deny'].includes(transaction_status)) {
+        await db.updateOrderStatus(order_id, 'CANCELLED');
+        return res.json({ success: true, message: "Deposit dibatalkan." });
+      }
+      return res.json({ success: true, message: "Webhook deposit diterima." });
+    }
+
     // Hanya proses jika status saat ini sedang menunggu pembayaran
     if (order.status === 'WAITING_PAYMENT') {
       if (transaction_status === 'settlement' || transaction_status === 'capture') {
         // Pembayaran Sukses!
-        await db.updateOrderStatus(order_id, 'PAID');
+        await db.updateOrderStatus(order_id, 'PAID', transaction_status);
         await db.addLog("PAYMENT", `Pembayaran lunas terverifikasi via Midtrans untuk Order ID ${order_id}.`);
 
         // ══════════════════════════════════════════════════════════
-        // AUTO-DELIVERY via WEBHOOK: Gabungan Local + ProdSeller
+        // AUTO-DELIVERY via WEBHOOK: Local
         // ══════════════════════════════════════════════════════════
         let waSent = false;
         let deliveredItemsMsg = "";
         let hasAutoDelivery = false;
 
-        const orderItemsFull = await db.allQuery(
-          `SELECT oi.produk_kode, oi.qty, p.nama as produk_nama, p.delivery_type, p.prodseller_id, p.petunjuk
-           FROM order_items oi
-           JOIN products p ON oi.produk_kode = p.kode
-           WHERE oi.order_id = ?`,
-          [order_id]
-        );
-
         // 1. Deliver LOCAL (AUTO)
         const localClaims = await db.claimAndDeliverItems(order_id);
-        
-        // 2. Deliver PRODSELLER
-        const psItems = orderItemsFull.filter(i => i.delivery_type === 'PRODSELLER' && i.prodseller_id);
-        let psResult = { delivered: {}, errors: [] };
-        if (psItems.length > 0) {
-          psResult = await prodSeller.deliverViaProdSeller(order_id, psItems);
-        }
-
         const localCodes = Object.keys(localClaims);
-        const psCodes = Object.keys(psResult.delivered);
 
-        if (localCodes.length > 0 || psCodes.length > 0) {
+        if (localCodes.length > 0) {
           hasAutoDelivery = true;
           deliveredItemsMsg = `🎁 *PENGIRIMAN PRODUK DIGITAL*\n\nTerima kasih! Pembayaran Anda telah kami terima dan terverifikasi otomatis (Midtrans).\n\nBerikut adalah detail pesanan Anda:\n\n`;
           
@@ -1243,27 +1542,16 @@ app.post('/api/payment/webhook', async (req, res) => {
             deliveredItemsMsg += `\n`;
           }
 
-          // Format ProdSeller Items
-          for (const code of psCodes) {
-            const item = psResult.delivered[code];
-            deliveredItemsMsg += `🔑 *${item.produk_nama}* (\`${code}\`):\n`;
-            if (item.keys.length > 0) {
-              item.keys.forEach((key, i) => { deliveredItemsMsg += `   ${i+1}. ${key}\n`; });
-            } else {
-              deliveredItemsMsg += `   ⚠️ Sedang diproses sistem, admin akan mengirimkan segera.\n`;
-            }
-            if (item.petunjuk) deliveredItemsMsg += `\n${item.petunjuk}\n`;
-            deliveredItemsMsg += `\n`;
-          }
-
           deliveredItemsMsg += `━━━━━━━━━━━━━━━━━━\n_Simpan detail ini baik-baik. Hubungi CS jika ada kendala._`;
           
           // Cek kelengkapan
           const localOk = localCodes.every(k => localClaims[k].credentials.length > 0);
-          const psOk = psCodes.every(k => psResult.delivered[k].keys.length > 0) && psResult.errors.length === 0;
-          
-          if (localOk && psOk) {
+          if (localOk) {
             await db.updateOrderStatus(order_id, 'COMPLETED');
+            await db.addLog('ORDER', `✅ Order *${order_id}* auto-completed via Midtrans Webhook.`);
+          } else {
+            await db.updateOrderStatus(order_id, 'PROCESSING');
+            await db.addLog('ORDER', `⚠️ Order *${order_id}* terbayar tapi stok habis, status set ke PROCESSING.`);
           }
         } else {
           // MANUAL
@@ -1291,7 +1579,7 @@ Pembayaran Anda telah *DITERIMA* dan terverifikasi otomatis. Pesanan Anda sedang
 
       } else if (transaction_status === 'expire' || transaction_status === 'cancel' || transaction_status === 'deny') {
         // Pembayaran Batal / Kadaluarsa
-        await db.updateOrderStatus(order_id, 'CANCELLED');
+        await db.updateOrderStatus(order_id, 'CANCELLED', transaction_status);
         await db.addLog("ORDER", `Order ID ${order_id} dibatalkan otomatis oleh Webhook Midtrans (Status: ${transaction_status}).`);
 
         const cancelMsg = `🔔 *PEMBERITAHUAN PEMBATALAN PEMBAYARAN*
@@ -1324,7 +1612,8 @@ Silakan lakukan pemesanan ulang (ketik *menu*) jika Anda masih berminat membeli 
 let serverInstance = null;
 
 // Inisialisasi start server
-export function startServer() {
+export async function startServer() {
+  await db.initDb();
   const port = config.port;
   serverInstance = createServer(app);
   
@@ -1336,4 +1625,5 @@ export function startServer() {
   }).on('error', (err) => {
     console.error(`Gagal menjalankan server di port ${port}:`, err.message);
   });
+  return serverInstance;
 }

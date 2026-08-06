@@ -1,11 +1,25 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
+// Validasi env var wajib. Jika salah satu belum diset, hentikan aplikasi
+// daripada diam-diam memakai kredensial default yang sudah publik (bocor di repo/riwayat git).
+const requiredEnvVars = ['JWT_SECRET', 'ADMIN_USER', 'ADMIN_PASSWORD_HASH'];
+const missingEnvVars = requiredEnvVars.filter(key => !process.env[key]);
+if (missingEnvVars.length > 0) {
+  console.error(`❌ FATAL: Environment variable wajib belum diset: ${missingEnvVars.join(', ')}`);
+  console.error('   Set nilai ini di file .env sebelum menjalankan bot (lihat .env.example).');
+  process.exit(1);
+}
+
 export const config = {
   port: process.env.PORT || 3000,
-  jwtSecret: process.env.JWT_SECRET || 'super_secret_key_whatsapp_sales_bot',
-  adminUser: process.env.ADMIN_USER || 'admin',
-  adminPasswordHash: process.env.ADMIN_PASSWORD_HASH || '$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', // hash default untuk "admin123"
+  jwtSecret: process.env.JWT_SECRET,
+  adminUser: process.env.ADMIN_USER,
+  adminPasswordHash: process.env.ADMIN_PASSWORD_HASH,
+  // Origin yang diizinkan untuk koneksi WebSocket (pisahkan koma jika lebih dari satu).
+  // Default: false (tolak semua origin lintas domain) jika tidak diset.
+  corsOrigin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',').map(o => o.trim()) : false,
+
 
   // Pengaturan default awal yang akan dimasukkan ke tabel 'settings' database saat pertama kali dijalankan.
   // Setelah itu, nilai-nilai ini dapat diubah langsung secara dinamis melalui Web Dashboard.

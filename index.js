@@ -13,7 +13,7 @@ async function main() {
   try {
     // 1. Jalankan Express Web Server terlebih dahulu agar Admin Dashboard bisa diakses
     // meskipun WhatsApp Bot masih mencoba terhubung atau meminta scan QR code.
-    startServer();
+    await startServer();
 
     // 2. Jalankan WhatsApp Bot di background dan aktifkan Scheduler otomatisasi setelah online
     await startBot((sock) => {

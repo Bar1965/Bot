@@ -6,6 +6,7 @@ const sqlite = sqlite3.verbose();
 const dbFile = './shop.db';
 
 let db;
+let transactionQueue = Promise.resolve();
 
 // Membungkus method-method database dalam Promise agar bisa menggunakan async/await
 export function openDb() {
@@ -15,11 +16,32 @@ export function openDb() {
         console.error('Gagal membuka database:', err.message);
         reject(err);
       } else {
+        db.configure('busyTimeout', 5000);
         console.log('Terhubung ke database SQLite.');
         resolve();
       }
     });
   });
+}
+
+export async function withTransaction(callback) {
+  const transaction = transactionQueue.then(async () => {
+    await runQuery('BEGIN IMMEDIATE');
+    try {
+      const result = await callback();
+      await runQuery('COMMIT');
+      return result;
+    } catch (error) {
+      try {
+        await runQuery('ROLLBACK');
+      } catch (rollbackError) {
+        console.error('Gagal membatalkan transaksi SQLite:', rollbackError.message);
+      }
+      throw error;
+    }
+  });
+  transactionQueue = transaction.catch(() => undefined);
+  return transaction;
 }
 
 export function runQuery(query, params = []) {
@@ -51,6 +73,7 @@ export function allQuery(query, params = []) {
 
 // Inisialisasi skema tabel database
 export async function initDb() {
+  if (db) return;
   await openDb();
 
   // 1. Tabel Settings (Dinamis)
@@ -66,9 +89,13 @@ export async function initDb() {
     CREATE TABLE IF NOT EXISTS users (
       username TEXT PRIMARY KEY,
       password_hash TEXT NOT NULL,
-      role TEXT NOT NULL
+      role TEXT NOT NULL,
+      two_factor_secret TEXT,
+      two_factor_enabled INTEGER DEFAULT 0
     )
   `);
+  try { await runQuery("ALTER TABLE users ADD COLUMN two_factor_secret TEXT"); } catch (e) {}
+  try { await runQuery("ALTER TABLE users ADD COLUMN two_factor_enabled INTEGER DEFAULT 0"); } catch (e) {}
 
   // 3. Tabel Subscriptions (Notifikasi Stok Pelanggan)
   await runQuery(`
@@ -149,13 +176,23 @@ export async function initDb() {
       nama TEXT,
       balance INTEGER DEFAULT 0,
       referral_code TEXT,
-      referred_by TEXT
+      referred_by TEXT,
+      role TEXT DEFAULT 'MEMBER',
+      account_status TEXT DEFAULT 'ACTIVE',
+      profile_completed INTEGER DEFAULT 0,
+      registered_at DATETIME,
+      last_seen_at DATETIME
     )
   `);
 
   try { await runQuery("ALTER TABLE customers ADD COLUMN balance INTEGER DEFAULT 0"); } catch (e) {}
   try { await runQuery("ALTER TABLE customers ADD COLUMN referral_code TEXT"); } catch (e) {}
   try { await runQuery("ALTER TABLE customers ADD COLUMN referred_by TEXT"); } catch (e) {}
+  try { await runQuery("ALTER TABLE customers ADD COLUMN role TEXT DEFAULT 'MEMBER'"); } catch (e) {}
+  try { await runQuery("ALTER TABLE customers ADD COLUMN account_status TEXT DEFAULT 'ACTIVE'"); } catch (e) {}
+  try { await runQuery("ALTER TABLE customers ADD COLUMN profile_completed INTEGER DEFAULT 0"); } catch (e) {}
+  try { await runQuery("ALTER TABLE customers ADD COLUMN registered_at DATETIME"); } catch (e) {}
+  try { await runQuery("ALTER TABLE customers ADD COLUMN last_seen_at DATETIME"); } catch (e) {}
 
   // 6b. Tabel Reviews / Rating Produk
   await runQuery(`
@@ -290,23 +327,6 @@ export async function initDb() {
     }
   } catch(e) {}
 
-  // 12c. Tabel ProdSeller Orders — Riwayat pembelian dari ProdSeller API
-  await runQuery(`
-    CREATE TABLE IF NOT EXISTS prodseller_orders (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      order_id TEXT NOT NULL,
-      prodseller_order_id TEXT,
-      produk_kode TEXT NOT NULL,
-      prodseller_product_id TEXT,
-      quantity INTEGER DEFAULT 1,
-      amount_usd REAL,
-      delivered_keys TEXT,
-      status TEXT DEFAULT 'PENDING',
-      error_message TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
   // 12. Tabel Pengaturan Moderasi Per-Grup
   await runQuery(`
     CREATE TABLE IF NOT EXISTS group_settings (
@@ -388,6 +408,20 @@ export async function initDb() {
     )
   `);
 
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS game_profiles (
+      customer_jid TEXT PRIMARY KEY,
+      points INTEGER DEFAULT 0,
+      xp INTEGER DEFAULT 0,
+      level INTEGER DEFAULT 1,
+      games_played INTEGER DEFAULT 0,
+      games_won INTEGER DEFAULT 0,
+      daily_claimed_at TEXT,
+      daily_streak INTEGER DEFAULT 0,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
   // 18. Tabel bundles
   await runQuery(`
     CREATE TABLE IF NOT EXISTS bundles (
@@ -426,6 +460,12 @@ export async function initDb() {
   try {
     await runQuery("ALTER TABLE orders ADD COLUMN discount_amount INTEGER DEFAULT 0");
   } catch (e) {}
+  try {
+    await runQuery("ALTER TABLE orders ADD COLUMN coupon_redeemed INTEGER DEFAULT 0");
+  } catch (e) {}
+  try {
+    await runQuery("ALTER TABLE order_items ADD COLUMN stock_reserved INTEGER DEFAULT 0");
+  } catch (e) {}
 
   // Masukkan pengaturan default ke tabel settings jika belum ada
   const defaultSettings = config.defaults;
@@ -440,16 +480,11 @@ export async function initDb() {
   const usersCount = await getQuery("SELECT COUNT(*) as count FROM users");
   if (usersCount.count === 0) {
     console.log("Mengisi pengguna default ke database...");
-    const defaultUsers = [
-      { username: 'owner', password: 'owner123', role: 'Owner' },
-      { username: 'admin', password: 'admin123', role: 'Admin' },
-      { username: 'cs', password: 'cs123', role: 'CS' }
-    ];
-    for (const u of defaultUsers) {
-      const hash = bcrypt.hashSync(u.password, 10);
-      await runQuery("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)", [u.username, hash, u.role]);
-    }
-    console.log("Pengguna default berhasil dibuat (owner/owner123, admin/admin123, cs/cs123).");
+    await runQuery(
+      "INSERT INTO users (username, password_hash, role) VALUES (?, ?, 'Owner')",
+      [config.adminUser, config.adminPasswordHash]
+    );
+    console.log(`Pengguna admin dari environment berhasil dibuat (${config.adminUser}).`);
   }
 
   // Masukkan data contoh jika tabel produk kosong
@@ -592,17 +627,51 @@ export async function getUserByUsername(username) {
   return await getQuery("SELECT * FROM users WHERE username = ?", [username.toLowerCase()]);
 }
 
+export async function setTwoFactorSecret(username, secret) {
+  return await runQuery(
+    "UPDATE users SET two_factor_secret = ?, two_factor_enabled = 0 WHERE username = ?",
+    [secret, username.toLowerCase()]
+  );
+}
+
+export async function setTwoFactorEnabled(username, enabled) {
+  return await runQuery(
+    "UPDATE users SET two_factor_enabled = ? WHERE username = ?",
+    [enabled ? 1 : 0, username.toLowerCase()]
+  );
+}
+
+export async function disableTwoFactor(username) {
+  return await runQuery(
+    "UPDATE users SET two_factor_secret = NULL, two_factor_enabled = 0 WHERE username = ?",
+    [username.toLowerCase()]
+  );
+}
+
 export async function addUser(username, password, role) {
+  const normalizedUsername = String(username || '').trim().toLowerCase();
+  if (!/^[a-z0-9_-]{3,40}$/.test(normalizedUsername)) {
+    throw new Error('Username harus 3-40 karakter dan hanya boleh berisi huruf, angka, garis bawah, atau tanda hubung.');
+  }
+  if (String(password || '').length < 8 || String(password || '').length > 200) {
+    throw new Error('Password harus berisi 8-200 karakter.');
+  }
+  if (!['Owner', 'Admin', 'CS'].includes(role)) {
+    throw new Error('Role pengguna tidak valid.');
+  }
   const hash = bcrypt.hashSync(password, 10);
   const res = await runQuery(
     "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
-    [username.toLowerCase(), hash, role]
+    [normalizedUsername, hash, role]
   );
-  await addLog("SYSTEM", `Akun pengguna baru ditambahkan: ${username.toLowerCase()} (${role})`);
+  await addLog("SYSTEM", `Akun pengguna baru ditambahkan: ${normalizedUsername} (${role})`);
   return res;
 }
 
 export async function updateUserPassword(username, newPassword) {
+  if (String(newPassword || '').length < 8 || String(newPassword || '').length > 200) {
+    throw new Error('Password harus berisi 8-200 karakter.');
+  }
   const hash = bcrypt.hashSync(newPassword, 10);
   const res = await runQuery(
     "UPDATE users SET password_hash = ? WHERE username = ?",
@@ -708,14 +777,34 @@ export async function getProductByKode(kode) {
 }
 
 export async function addProduct(kode, nama, harga, stok, deskripsi, gambar = "", delivery_type = "MANUAL", oldKode = "", petunjuk = "") {
+  const normalizedKode = String(kode || '').trim().toUpperCase();
+  const normalizedNama = String(nama || '').trim();
+  if (!/^[A-Z0-9_-]{2,40}$/.test(normalizedKode)) {
+    throw new Error('Kode produk tidak valid.');
+  }
+  if (normalizedNama.length < 1 || normalizedNama.length > 120) {
+    throw new Error('Nama produk harus berisi 1-120 karakter.');
+  }
+  if (!Number.isInteger(harga) || harga < 0 || harga > 1_000_000_000) {
+    throw new Error('Harga produk tidak valid.');
+  }
+  if (!Number.isInteger(stok) || stok < 0 || stok > 1_000_000) {
+    throw new Error('Stok produk tidak valid.');
+  }
+  if (!['MANUAL', 'AUTO'].includes(delivery_type)) {
+    throw new Error('Tipe pengiriman produk tidak valid.');
+  }
   let finalStok = stok;
-  const newKodeUpper = kode.toUpperCase();
+  const newKodeUpper = normalizedKode;
 
   // Jika kode produk diubah (oldKode diset dan berbeda dengan kode baru)
   if (oldKode && oldKode.toUpperCase() !== newKodeUpper) {
     const oldUpper = oldKode.toUpperCase();
     await runQuery("UPDATE product_items SET produk_kode = ? WHERE produk_kode = ?", [newKodeUpper, oldUpper]);
     await runQuery("UPDATE order_items SET produk_kode = ? WHERE produk_kode = ?", [newKodeUpper, oldUpper]);
+    await runQuery("UPDATE subscriptions SET produk_kode = ? WHERE produk_kode = ?", [newKodeUpper, oldUpper]);
+    await runQuery("UPDATE wishlist SET produk_kode = ? WHERE produk_kode = ?", [newKodeUpper, oldUpper]);
+    await runQuery("UPDATE flash_sales SET produk_kode = ? WHERE produk_kode = ?", [newKodeUpper, oldUpper]);
     await runQuery("UPDATE products SET kode = ? WHERE kode = ?", [newKodeUpper, oldUpper]);
   }
 
@@ -725,7 +814,7 @@ export async function addProduct(kode, nama, harga, stok, deskripsi, gambar = ""
 
   const res = await runQuery(
     "INSERT OR REPLACE INTO products (kode, nama, harga, stok, deskripsi, gambar, delivery_type, petunjuk) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    [newKodeUpper, nama, harga, finalStok, deskripsi, gambar, delivery_type, petunjuk]
+    [newKodeUpper, normalizedNama, harga, finalStok, deskripsi, gambar, delivery_type, petunjuk]
   );
   await addLog("SYSTEM", `Produk diperbarui/ditambahkan: ${newKodeUpper} - ${nama} (Stok: ${finalStok}, Tipe: ${delivery_type})`);
   return res;
@@ -738,6 +827,9 @@ export async function deleteProduct(kode) {
 }
 
 export async function updateProductStock(kode, stok) {
+  if (!Number.isInteger(stok) || stok < 0 || stok > 1_000_000) {
+    throw new Error('Stok produk tidak valid.');
+  }
   const res = await runQuery(
     "UPDATE products SET stok = ? WHERE kode = ?",
     [stok, kode.toUpperCase()]
@@ -747,6 +839,9 @@ export async function updateProductStock(kode, stok) {
 }
 
 export async function updateProductPrice(kode, harga) {
+  if (!Number.isInteger(harga) || harga < 0 || harga > 1_000_000_000) {
+    throw new Error('Harga produk tidak valid.');
+  }
   const res = await runQuery(
     "UPDATE products SET harga = ? WHERE kode = ?",
     [harga, kode.toUpperCase()]
@@ -759,6 +854,9 @@ export async function updateProductPrice(kode, harga) {
 
 export async function addProductItems(kode, itemsArray) {
   const code = kode.toUpperCase();
+  if (!Array.isArray(itemsArray) || itemsArray.length === 0 || itemsArray.length > 1000 || itemsArray.some(item => typeof item !== 'string' || item.trim().length === 0 || item.length > 5000)) {
+    throw new Error('Daftar kredensial tidak valid.');
+  }
   for (const item of itemsArray) {
     if (item.trim()) {
       await runQuery(
@@ -803,45 +901,54 @@ export async function deleteProductItem(id) {
 
 // Fungsi utama untuk mengklaim voucher digital saat order dibayar (settlement)
 export async function claimAndDeliverItems(orderId) {
-  // Ambil rincian produk bertipe otomatis yang dibeli dalam order ini
-  const itemsPurchased = await allQuery(`
+  return withTransaction(async () => {
+    // Ambil rincian produk bertipe otomatis yang dibeli dalam order ini
+    const itemsPurchased = await allQuery(`
     SELECT oi.produk_kode, oi.qty, p.delivery_type, p.nama as produk_nama, p.petunjuk 
     FROM order_items oi 
     JOIN products p ON oi.produk_kode = p.kode 
     WHERE oi.order_id = ?
   `, [orderId]);
 
-  const deliveredData = {};
+    const deliveredData = {};
 
-  for (const item of itemsPurchased) {
-    if (item.delivery_type === 'AUTO') {
-      // Ambil kredensial siap pakai
-      const readyItems = await allQuery(
-        "SELECT id, data_content FROM product_items WHERE produk_kode = ? AND status = 'READY' LIMIT ?",
-        [item.produk_kode, item.qty]
+    for (const item of itemsPurchased) {
+      if (item.delivery_type === 'AUTO') {
+        // Ambil kredensial siap pakai
+        let readyItems = await allQuery(
+        "SELECT id, data_content FROM product_items WHERE produk_kode = ? AND status = 'RESERVED' AND order_id = ? LIMIT ?",
+        [item.produk_kode, orderId, item.qty]
       );
+        if (readyItems.length < item.qty) {
+          const fallbackItems = await allQuery(
+          "SELECT id, data_content FROM product_items WHERE produk_kode = ? AND status = 'READY' LIMIT ?",
+          [item.produk_kode, item.qty - readyItems.length]
+        );
+          readyItems = readyItems.concat(fallbackItems);
+        }
 
-      deliveredData[item.produk_kode] = {
-        produk_nama: item.produk_nama,
-        petunjuk: item.petunjuk || '',
-        credentials: readyItems.map(ri => ri.data_content)
-      };
+        deliveredData[item.produk_kode] = {
+          produk_nama: item.produk_nama,
+          petunjuk: item.petunjuk || '',
+          credentials: readyItems.map(ri => ri.data_content)
+        };
 
-      // Tandai kredensial sebagai USED
-      for (const ri of readyItems) {
-        await runQuery(
+        // Tandai kredensial sebagai USED
+        for (const ri of readyItems) {
+          await runQuery(
           "UPDATE product_items SET status = 'USED', order_id = ?, used_at = datetime('now') WHERE id = ?",
           [orderId, ri.id]
         );
+        }
+
+        // Sinkronisasi sisa stok produk utama
+        const sisaStok = await getAvailableItemsCount(item.produk_kode);
+        await runQuery("UPDATE products SET stok = ? WHERE kode = ?", [sisaStok, item.produk_kode]);
       }
-
-      // Sinkronisasi sisa stok produk utama
-      const sisaStok = await getAvailableItemsCount(item.produk_kode);
-      await runQuery("UPDATE products SET stok = ? WHERE kode = ?", [sisaStok, item.produk_kode]);
     }
-  }
 
-  return deliveredData;
+    return deliveredData;
+  });
 }
 
 // --- FUNGSI PELANGGAN (TIER DINAMIS) ---
@@ -852,12 +959,82 @@ export async function getOrCreateCustomer(nomor, nama) {
     if (nama && existing.nama !== nama) {
       await runQuery("UPDATE customers SET nama = ? WHERE nomor = ?", [nama, nomor]);
     }
+    await runQuery("UPDATE customers SET last_seen_at = CURRENT_TIMESTAMP WHERE nomor = ?", [nomor]);
     return { nomor, nama: nama || existing.nama };
   } else {
-    await runQuery("INSERT INTO customers (nomor, nama) VALUES (?, ?)", [nomor, nama || "Pelanggan"]);
+    await runQuery("INSERT INTO customers (nomor, nama, last_seen_at) VALUES (?, ?, CURRENT_TIMESTAMP)", [nomor, nama || "Pelanggan"]);
     await addLog("SYSTEM", `Pelanggan baru terdaftar: ${nama || 'Pelanggan'} (${nomor})`);
     return { nomor, nama: nama || "Pelanggan" };
   }
+}
+
+function calculateCustomerTier(totalOrders) {
+  if (totalOrders >= 15) return 'PLATINUM';
+  if (totalOrders >= 7) return 'GOLD';
+  if (totalOrders >= 3) return 'SILVER';
+  return 'BRONZE';
+}
+
+export async function registerCustomer(nomor, nama) {
+  const cleanName = String(nama || '').trim().replace(/\s+/g, ' ');
+  if (cleanName.length < 2 || cleanName.length > 40) {
+    throw new Error('Nama harus berisi 2-40 karakter.');
+  }
+  await getOrCreateCustomer(nomor, cleanName);
+  await runQuery(`
+    UPDATE customers
+    SET nama = ?, profile_completed = 1, registered_at = COALESCE(registered_at, CURRENT_TIMESTAMP), last_seen_at = CURRENT_TIMESTAMP
+    WHERE nomor = ?
+  `, [cleanName, nomor]);
+  await addLog('CUSTOMER', `Member mendaftar: ${cleanName} (${nomor})`);
+  return getCustomerMembershipProfile(nomor);
+}
+
+export async function getCustomerMembershipProfile(nomor) {
+  const customer = await getQuery('SELECT * FROM customers WHERE nomor = ?', [nomor]);
+  if (!customer) return null;
+  const [stats, gameProfile, loyalty] = await Promise.all([
+    getQuery(`
+      SELECT COUNT(CASE WHEN status = 'COMPLETED' THEN 1 END) AS total_orders,
+             COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN total ELSE 0 END), 0) AS total_spend
+      FROM orders WHERE customer_nomor = ?
+    `, [nomor]),
+    getQuery('SELECT * FROM game_profiles WHERE customer_jid = ?', [nomor]),
+    getQuery('SELECT * FROM loyalty WHERE customer_nomor = ?', [nomor])
+  ]);
+  return {
+    ...customer,
+    total_orders: stats?.total_orders || 0,
+    total_spend: stats?.total_spend || 0,
+    tier: calculateCustomerTier(stats?.total_orders || 0),
+    game_points: gameProfile?.points || 0,
+    game_xp: gameProfile?.xp || 0,
+    game_level: gameProfile?.level || 1,
+    game_streak: gameProfile?.daily_streak || 0,
+    loyalty_points: loyalty?.points || 0
+  };
+}
+
+export async function updateCustomerRole(nomor, role) {
+  const normalizedRole = String(role || '').toUpperCase();
+  if (!['MEMBER', 'ADMIN'].includes(normalizedRole)) {
+    throw new Error('Role valid: MEMBER atau ADMIN. Role OWNER hanya diatur dari konfigurasi sistem.');
+  }
+  const result = await runQuery("UPDATE customers SET role = ? WHERE nomor = ?", [normalizedRole, nomor]);
+  if (!result.changes) throw new Error('Member tidak ditemukan.');
+  await addLog('CUSTOMER', `Role member ${nomor} diubah menjadi ${normalizedRole}`);
+  return getCustomerMembershipProfile(nomor);
+}
+
+export async function updateCustomerAccountStatus(nomor, status) {
+  const normalizedStatus = String(status || '').toUpperCase();
+  if (!['ACTIVE', 'INACTIVE', 'BANNED'].includes(normalizedStatus)) {
+    throw new Error('Status valid: ACTIVE, INACTIVE, atau BANNED.');
+  }
+  const result = await runQuery("UPDATE customers SET account_status = ? WHERE nomor = ?", [normalizedStatus, nomor]);
+  if (!result.changes) throw new Error('Member tidak ditemukan.');
+  await addLog('CUSTOMER', `Status member ${nomor} diubah menjadi ${normalizedStatus}`);
+  return getCustomerMembershipProfile(nomor);
 }
 
 export async function getCustomersWithTiers() {
@@ -865,6 +1042,10 @@ export async function getCustomersWithTiers() {
     SELECT 
       c.nomor, 
       c.nama, 
+      c.role,
+      c.account_status,
+      c.profile_completed,
+      c.registered_at,
       COUNT(CASE WHEN o.status = 'COMPLETED' THEN 1 END) as total_orders,
       COALESCE(SUM(CASE WHEN o.status = 'COMPLETED' THEN o.total ELSE 0 END), 0) as total_spend
     FROM customers c
@@ -873,14 +1054,9 @@ export async function getCustomersWithTiers() {
   `);
 
   return rows.map(r => {
-    let tier = "Normal";
-    if (r.total_orders >= 15) tier = "VIP";
-    else if (r.total_orders >= 7) tier = "Gold";
-    else if (r.total_orders >= 3) tier = "Silver";
-    
     return {
       ...r,
-      tier
+      tier: calculateCustomerTier(r.total_orders || 0)
     };
   });
 }
@@ -897,10 +1073,7 @@ export async function getCustomerDetails(nomor) {
     WHERE customer_nomor = ?
   `, [nomor]);
 
-  let tier = "Normal";
-  if (stats.total_orders >= 15) tier = "VIP";
-  else if (stats.total_orders >= 7) tier = "Gold";
-  else if (stats.total_orders >= 3) tier = "Silver";
+  const tier = calculateCustomerTier(stats.total_orders || 0);
 
   const orders = await allQuery("SELECT * FROM orders WHERE customer_nomor = ? ORDER BY created_at DESC", [nomor]);
 
@@ -965,6 +1138,9 @@ export async function getActiveCart(customerNomor) {
 }
 
 export async function addToCart(customerNomor, productKode, qty) {
+  if (!Number.isInteger(qty) || qty <= 0) {
+    return { success: false, message: "Jumlah produk harus berupa bilangan bulat minimal 1." };
+  }
   const product = await getProductByKode(productKode);
   if (!product) {
     return { success: false, message: `Produk dengan kode *${productKode}* tidak ditemukan.` };
@@ -1054,6 +1230,7 @@ async function updateOrderTotal(orderId) {
 }
 
 export async function checkoutCart(customerNomor) {
+  return withTransaction(async () => {
   const cart = await getQuery("SELECT * FROM orders WHERE customer_nomor = ? AND status = 'CART'", [customerNomor]);
   if (!cart) {
     return { success: false, message: "Anda tidak memiliki keranjang belanja aktif." };
@@ -1064,23 +1241,41 @@ export async function checkoutCart(customerNomor) {
     return { success: false, message: "Keranjang belanja Anda masih kosong." };
   }
 
-  for (const item of items) {
-    const product = await getProductByKode(item.produk_kode);
-    let availableStock = product ? product.stok : 0;
-    
-    if (product && product.delivery_type === 'AUTO') {
-      availableStock = await getAvailableItemsCount(item.produk_kode);
-    }
+  const reservedManual = [];
+  try {
+    for (const item of items) {
+      const product = await getProductByKode(item.produk_kode);
+      if (!product) {
+        throw new Error(`Produk ${item.produk_kode} tidak ditemukan.`);
+      }
 
-    if (!product || availableStock < item.qty) {
-      return {
-        success: false,
-        message: `Checkout gagal. Stok *${product ? product.nama : item.produk_kode}* tidak mencukupi (Tersisa: ${product ? availableStock : 0}).`
-      };
+      if (product.delivery_type === 'AUTO') {
+        const reserveResult = await runQuery(
+          "UPDATE product_items SET status = 'RESERVED', order_id = ? WHERE id IN (SELECT id FROM product_items WHERE produk_kode = ? AND status = 'READY' LIMIT ?)",
+          [cart.order_id, item.produk_kode, item.qty]
+        );
+        if (reserveResult.changes !== item.qty) {
+          throw new Error(`Stok *${product.nama}* tidak mencukupi (Tersisa: ${await getAvailableItemsCount(item.produk_kode)}).`);
+        }
+      } else {
+        const reserveResult = await runQuery(
+          "UPDATE products SET stok = stok - ? WHERE kode = ? AND stok >= ?",
+          [item.qty, item.produk_kode, item.qty]
+        );
+        if (reserveResult.changes !== 1) {
+          throw new Error(`Stok *${product.nama}* tidak mencukupi (Tersisa: ${product.stok}).`);
+        }
+        await runQuery("UPDATE order_items SET stock_reserved = 1 WHERE order_id = ? AND produk_kode = ?", [cart.order_id, item.produk_kode]);
+        reservedManual.push({ produkKode: item.produk_kode, qty: item.qty });
+      }
     }
+  } catch (err) {
+    for (const item of reservedManual) {
+      await runQuery("UPDATE products SET stok = stok + ? WHERE kode = ?", [item.qty, item.produkKode]);
+    }
+    await runQuery("UPDATE product_items SET status = 'READY', order_id = NULL WHERE order_id = ? AND status = 'RESERVED'", [cart.order_id]);
+    return { success: false, message: `Checkout gagal. ${err.message}` };
   }
-
-  // (Pemotongan stok produk MANUAL sekarang dilakukan saat status berubah menjadi PAID/COMPLETED di updateOrderStatus)
 
   await runQuery(
     "UPDATE orders SET status = 'WAITING_PAYMENT' WHERE order_id = ?",
@@ -1093,6 +1288,7 @@ export async function checkoutCart(customerNomor) {
     success: true,
     order: orderDetails
   };
+  });
 }
 
 export async function updateOrderPaymentLink(orderId, paymentLink, midtransStatus = "pending") {
@@ -1100,6 +1296,26 @@ export async function updateOrderPaymentLink(orderId, paymentLink, midtransStatu
     "UPDATE orders SET payment_link = ?, midtrans_status = ? WHERE order_id = ?",
     [paymentLink, midtransStatus, orderId]
   );
+}
+
+export async function createDepositOrder(orderId, customerNomor, total) {
+  return await runQuery(
+    "INSERT OR IGNORE INTO orders (order_id, customer_nomor, total, status) VALUES (?, ?, ?, 'WAITING_PAYMENT')",
+    [orderId, customerNomor, total]
+  );
+}
+
+export async function settleDepositOrder(orderId, customerNomor, total, midtransStatus = 'settlement') {
+  return withTransaction(async () => {
+    const result = await runQuery(
+      "UPDATE orders SET status = 'COMPLETED', midtrans_status = ? WHERE order_id = ? AND customer_nomor = ? AND total = ? AND status = 'WAITING_PAYMENT'",
+      [midtransStatus, orderId, customerNomor, total]
+    );
+    if (result.changes === 1) {
+      await addCustomerBalance(customerNomor, total);
+    }
+    return result.changes === 1;
+  });
 }
 
 export async function cancelActiveOrder(customerNomor) {
@@ -1114,7 +1330,7 @@ export async function cancelActiveOrder(customerNomor) {
 
   // (Pengembalian stok produk sekarang ditangani secara otomatis di updateOrderStatus jika status pesanan dibatalkan)
 
-  await runQuery("UPDATE orders SET status = 'CANCELLED' WHERE order_id = ?", [activeOrder.order_id]);
+  await updateOrderStatus(activeOrder.order_id, 'CANCELLED');
   await addLog("ORDER", `Order dibatalkan: ${activeOrder.order_id} oleh customer`);
   return { success: true, orderId: activeOrder.order_id, prevStatus: activeOrder.status };
 }
@@ -1173,7 +1389,8 @@ export async function getAllOrders() {
   return result;
 }
 
-export async function updateOrderStatus(orderId, status) {
+export async function updateOrderStatus(orderId, status, paymentStatus = null) {
+  return withTransaction(async () => {
   const order = await getQuery("SELECT * FROM orders WHERE order_id = ?", [orderId]);
   if (!order) return { success: false, message: "Order ID tidak ditemukan." };
 
@@ -1181,16 +1398,32 @@ export async function updateOrderStatus(orderId, status) {
   const newStatus = status;
   const isPaidStatus = (s) => s === 'PAID' || s === 'COMPLETED';
 
+  if (!['CART', 'WAITING_PAYMENT', 'WAITING_CONFIRMATION', 'PAID', 'COMPLETED', 'CANCELLED'].includes(newStatus)) {
+    return { success: false, message: "Status order tidak valid." };
+  }
+
+  if (!isPaidStatus(oldStatus) && isPaidStatus(newStatus) && order.coupon_code && !order.coupon_redeemed) {
+    const couponResult = await runQuery(
+      "UPDATE coupons SET used_count = used_count + 1 WHERE code = ? AND (max_uses = 0 OR used_count < max_uses)",
+      [order.coupon_code]
+    );
+    if (couponResult.changes !== 1) {
+      return { success: false, message: "Kupon pada order ini sudah tidak tersedia." };
+    }
+    await runQuery("UPDATE orders SET coupon_redeemed = 1 WHERE order_id = ?", [orderId]);
+  }
+
   // Jika berubah dari BELUM BAYAR ke SUDAH BAYAR, kurangi stok produk MANUAL & Tambah Poin Loyalitas
   if (!isPaidStatus(oldStatus) && isPaidStatus(newStatus)) {
     const items = await allQuery("SELECT * FROM order_items WHERE order_id = ?", [orderId]);
     for (const item of items) {
       const product = await getProductByKode(item.produk_kode);
-      if (product && product.delivery_type === 'MANUAL') {
+      if (product && product.delivery_type === 'MANUAL' && !item.stock_reserved) {
         await runQuery(
           "UPDATE products SET stok = stok - ? WHERE kode = ?",
           [item.qty, item.produk_kode]
         );
+        await runQuery("UPDATE order_items SET stock_reserved = 1 WHERE id = ?", [item.id]);
       }
     }
     
@@ -1201,22 +1434,25 @@ export async function updateOrderStatus(orderId, status) {
   }
 
   // Jika berubah dari SUDAH BAYAR ke BATAL/BELUM BAYAR, kembalikan stok produk MANUAL
-  if (isPaidStatus(oldStatus) && !isPaidStatus(newStatus)) {
+  if (oldStatus !== newStatus && !isPaidStatus(newStatus)) {
     const items = await allQuery("SELECT * FROM order_items WHERE order_id = ?", [orderId]);
     for (const item of items) {
       const product = await getProductByKode(item.produk_kode);
-      if (product && product.delivery_type === 'MANUAL') {
+      if (product && product.delivery_type === 'MANUAL' && item.stock_reserved) {
         await runQuery(
           "UPDATE products SET stok = stok + ? WHERE kode = ?",
           [item.qty, item.produk_kode]
         );
       }
     }
+    await runQuery("UPDATE order_items SET stock_reserved = 0 WHERE order_id = ?", [orderId]);
+    await runQuery("UPDATE product_items SET status = 'READY', order_id = NULL, used_at = NULL WHERE order_id = ? AND status = 'RESERVED'", [orderId]);
   }
 
-  await runQuery("UPDATE orders SET status = ? WHERE order_id = ?", [status, orderId]);
+  await runQuery("UPDATE orders SET status = ?, midtrans_status = COALESCE(?, midtrans_status) WHERE order_id = ?", [status, paymentStatus, orderId]);
   await addLog("ORDER", `Status Order ${orderId} diubah dari ${order.status} ke ${status}`);
   return { success: true, customerNomor: order.customer_nomor };
+  });
 }
 
 // Menghapus 1 order dan rincian belanjaannya dari database
@@ -1224,6 +1460,9 @@ export async function deleteOrder(orderId) {
   const order = await getQuery("SELECT * FROM orders WHERE order_id = ?", [orderId]);
   if (!order) return { success: false, message: "Order ID tidak ditemukan." };
 
+  if (['WAITING_PAYMENT', 'WAITING_CONFIRMATION'].includes(order.status)) {
+    await updateOrderStatus(orderId, 'CANCELLED');
+  }
   await runQuery("DELETE FROM order_items WHERE order_id = ?", [orderId]);
   await runQuery("DELETE FROM orders WHERE order_id = ?", [orderId]);
   await addLog("ORDER", `Order ID ${orderId} berhasil dihapus dari database.`);
@@ -1251,6 +1490,10 @@ export async function clearOrders(filter = 'ALL') {
   }
 
   for (const id of ids) {
+    const order = await getQuery("SELECT status FROM orders WHERE order_id = ?", [id]);
+    if (order && ['WAITING_PAYMENT', 'WAITING_CONFIRMATION'].includes(order.status)) {
+      await updateOrderStatus(id, 'CANCELLED');
+    }
     await runQuery("DELETE FROM order_items WHERE order_id = ?", [id]);
     await runQuery("DELETE FROM orders WHERE order_id = ?", [id]);
   }
@@ -1576,11 +1819,24 @@ export async function updateGroupSettings(jid, settingsObj) {
 
 // --- FUNGSI KUPON & DISKON ---
 export async function addCoupon(code, type, value, minOrder = 0, maxUses = 0, expiresAt = null) {
+  const normalizedCode = String(code || '').trim().toUpperCase();
+  if (!/^[A-Z0-9_-]{3,40}$/.test(normalizedCode)) {
+    throw new Error('Kode kupon tidak valid.');
+  }
+  if (!['percent', 'fixed'].includes(type)) {
+    throw new Error('Tipe kupon tidak valid.');
+  }
+  if (!Number.isInteger(value) || value <= 0 || (type === 'percent' && value > 100)) {
+    throw new Error('Nilai kupon tidak valid.');
+  }
+  if (!Number.isInteger(minOrder) || minOrder < 0 || !Number.isInteger(maxUses) || maxUses < 0) {
+    throw new Error('Batas kupon tidak valid.');
+  }
   await runQuery(
     "INSERT INTO coupons (code, type, value, min_order, max_uses, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
-    [code.toUpperCase(), type, value, minOrder, maxUses, expiresAt]
+    [normalizedCode, type, value, minOrder, maxUses, expiresAt]
   );
-  await addLog("SYSTEM", `Kupon baru ditambahkan: ${code.toUpperCase()} (${type} ${value})`);
+  await addLog("SYSTEM", `Kupon baru ditambahkan: ${normalizedCode} (${type} ${value})`);
 }
 
 export async function deleteCoupon(code) {
@@ -1776,6 +2032,96 @@ export async function redeemLoyaltyPoints(customerNomor, pointsToRedeem) {
   );
   const discountValue = pointsToRedeem * 500; // 1 poin = Rp500
   return { success: true, discount: discountValue, remainingPoints: loyalty.points - pointsToRedeem };
+}
+
+// --- FUNGSI GAME, XP, DAN REWARD HARIAN ---
+export async function getGameProfile(customerJid) {
+  await runQuery(
+    "INSERT OR IGNORE INTO game_profiles (customer_jid) VALUES (?)",
+    [customerJid]
+  );
+  return await getQuery("SELECT * FROM game_profiles WHERE customer_jid = ?", [customerJid]);
+}
+
+export async function awardGamePoints(customerJid, points, won = false) {
+  const safePoints = Math.max(0, Math.min(1000, Number.parseInt(points, 10) || 0));
+  return withTransaction(async () => {
+    await getGameProfile(customerJid);
+    await runQuery(
+      `UPDATE game_profiles
+       SET points = points + ?, xp = xp + ?, games_played = games_played + 1,
+           games_won = games_won + ?, updated_at = CURRENT_TIMESTAMP
+       WHERE customer_jid = ?`,
+      [safePoints, safePoints, won ? 1 : 0, customerJid]
+    );
+    const profile = await getGameProfile(customerJid);
+    const level = Math.floor(profile.xp / 100) + 1;
+    if (level !== profile.level) {
+      await runQuery("UPDATE game_profiles SET level = ? WHERE customer_jid = ?", [level, customerJid]);
+      profile.level = level;
+    }
+    return { ...profile, earned: safePoints };
+  });
+}
+
+export async function claimGameDaily(customerJid, today, reward = 25) {
+  return withTransaction(async () => {
+    const profile = await getGameProfile(customerJid);
+    if (profile.daily_claimed_at === today) {
+      return { success: false, message: 'Hadiah harian sudah diklaim hari ini.', profile };
+    }
+    const yesterday = new Date(`${today}T00:00:00Z`);
+    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+    const streak = profile.daily_claimed_at === yesterday.toISOString().slice(0, 10)
+      ? Number(profile.daily_streak || 0) + 1
+      : 1;
+    const streakBonus = Math.min(50, Math.max(0, streak - 1) * 5);
+    const totalReward = reward + streakBonus;
+    await runQuery(
+      `UPDATE game_profiles
+       SET points = points + ?, xp = xp + ?, daily_claimed_at = ?, daily_streak = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE customer_jid = ?`,
+      [totalReward, totalReward, today, streak, customerJid]
+    );
+    const updated = await getGameProfile(customerJid);
+    const level = Math.floor(updated.xp / 100) + 1;
+    await runQuery("UPDATE game_profiles SET level = ? WHERE customer_jid = ?", [level, customerJid]);
+    updated.level = level;
+    return { success: true, reward: totalReward, streak, profile: updated };
+  });
+}
+
+export async function redeemGamePoints(customerJid, pointsToRedeem) {
+  const points = Number.parseInt(pointsToRedeem, 10);
+  if (!Number.isInteger(points) || points < 10 || points > 10000) {
+    return { success: false, message: 'Penukaran poin minimal 10 dan maksimal 10.000 poin.' };
+  }
+  return withTransaction(async () => {
+    await getGameProfile(customerJid);
+    const result = await runQuery(
+      "UPDATE game_profiles SET points = points - ?, updated_at = CURRENT_TIMESTAMP WHERE customer_jid = ? AND points >= ?",
+      [points, customerJid, points]
+    );
+    if (result.changes !== 1) {
+      const profile = await getGameProfile(customerJid);
+      return { success: false, message: `Poin tidak cukup. Saldo kamu: ${profile.points} poin.` };
+    }
+    const profile = await getGameProfile(customerJid);
+    return { success: true, discount: Math.min(points * 100, 100000), remainingPoints: profile.points };
+  });
+}
+
+export async function getGameLeaderboard(limit = 10) {
+  const safeLimit = Math.max(1, Math.min(50, Number.parseInt(limit, 10) || 10));
+  return await allQuery(
+    `SELECT g.customer_jid, g.points, g.level, g.games_won, g.games_played,
+            COALESCE(c.nama, 'Pelanggan') AS customer_nama
+     FROM game_profiles g
+     LEFT JOIN customers c ON c.nomor = g.customer_jid
+     ORDER BY g.points DESC, g.level DESC, g.games_won DESC
+     LIMIT ?`,
+    [safeLimit]
+  );
 }
 
 // --- FUNGSI BUNDLING PRODUK ---
@@ -2168,53 +2514,6 @@ export async function isModerator(jid) {
 
 export async function listModerators() {
   return await allQuery(`SELECT jid, added_by, created_at FROM moderators ORDER BY created_at ASC`);
-}
-
-/**
- * ProdSeller API — Riwayat Pembelian
- */
-export async function saveProdsellerOrder({ order_id, prodseller_order_id, produk_kode, prodseller_product_id, quantity, amount_usd, delivered_keys, status, error_message }) {
-  return await runQuery(
-    `INSERT INTO prodseller_orders 
-      (order_id, prodseller_order_id, produk_kode, prodseller_product_id, quantity, amount_usd, delivered_keys, status, error_message)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      order_id,
-      prodseller_order_id || null,
-      produk_kode,
-      prodseller_product_id || null,
-      quantity || 1,
-      amount_usd || null,
-      delivered_keys ? JSON.stringify(delivered_keys) : null,
-      status || 'PENDING',
-      error_message || null
-    ]
-  );
-}
-
-export async function getProdsellerOrders(limit = 10) {
-  return await allQuery(
-    `SELECT ps.*, o.customer_nomor 
-     FROM prodseller_orders ps
-     LEFT JOIN orders o ON ps.order_id = o.order_id
-     ORDER BY ps.created_at DESC LIMIT ?`,
-    [limit]
-  );
-}
-
-export async function getProdsellerOrdersByBotOrder(orderId) {
-  return await allQuery(
-    `SELECT * FROM prodseller_orders WHERE order_id = ? ORDER BY created_at ASC`,
-    [orderId]
-  );
-}
-
-// Update prodseller_id pada produk
-export async function setProductProdsellerID(kode, prodsellerId) {
-  return await runQuery(
-    `UPDATE products SET prodseller_id = ? WHERE kode = ?`,
-    [prodsellerId, kode]
-  );
 }
 
 // Memperbarui status terakhir (harga & stok) sebuah produk untuk notifikasi

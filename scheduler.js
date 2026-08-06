@@ -2,14 +2,33 @@ import fs from 'fs';
 import path from 'path';
 import * as db from './database.js';
 import { botState } from './server.js';
-import { getProdSellerUpdates } from './prodsellerHandler.js';
 
 let lastBackupTime = 0;
+let schedulerSock = null;
+let schedulerStarted = false;
+const backupRetentionDays = Math.max(1, Number.parseInt(process.env.BACKUP_RETENTION_DAYS || '14', 10) || 14);
+
+function removeExpiredBackups(backupsDir) {
+  const cutoff = Date.now() - backupRetentionDays * 24 * 60 * 60 * 1000;
+  const backupPattern = /^shop_backup_\d{8}_\d{6}\.db$/;
+  let removed = 0;
+  for (const filename of fs.readdirSync(backupsDir)) {
+    if (!backupPattern.test(filename)) continue;
+    const filePath = path.join(backupsDir, filename);
+    const stats = fs.statSync(filePath);
+    if (stats.isFile() && stats.mtimeMs < cutoff) {
+      fs.unlinkSync(filePath);
+      removed += 1;
+    }
+  }
+  return removed;
+}
 
 // Fungsi untuk melakukan backup database secara manual maupun otomatis
-export function backupDatabase() {
+export async function backupDatabase() {
   try {
-    const backupsDir = './backups';
+    await db.initDb();
+    const backupsDir = path.resolve('./backups');
     if (!fs.existsSync(backupsDir)) {
       fs.mkdirSync(backupsDir, { recursive: true });
     }
@@ -24,13 +43,19 @@ export function backupDatabase() {
                     now.getSeconds().toString().padStart(2, '0');
 
     const backupFile = path.join(backupsDir, `shop_backup_${dateStr}_${timeStr}.db`);
-    fs.copyFileSync('./shop.db', backupFile);
+    fs.copyFileSync(path.resolve('./shop.db'), backupFile);
+    const removedBackups = removeExpiredBackups(backupsDir);
     
-    db.addLog('SYSTEM', `Database backup berhasil dibuat secara otomatis: ${backupFile}`);
-    console.log(`[BACKUP] Database cadangan disimpan ke ${backupFile}`);
+    await db.addLog('SYSTEM', `Database backup berhasil dibuat: ${backupFile} (retensi ${backupRetentionDays} hari, ${removedBackups} file lama dihapus)`);
+    console.log(`[BACKUP] Database cadangan disimpan ke ${backupFile}; ${removedBackups} file lama dihapus.`);
     return backupFile;
   } catch (err) {
-    db.addLog('ERROR', `Gagal mencadangkan database: ${err.message}`);
+    try {
+      await db.initDb();
+      await db.addLog('ERROR', `Gagal mencadangkan database: ${err.message}`);
+    } catch (logError) {
+      console.error('[BACKUP LOG ERROR]', logError.message);
+    }
     console.error('[BACKUP ERROR]', err.message);
     return null;
   }
@@ -161,61 +186,19 @@ async function sendDailySalesReport(sock) {
   }
 }
 
-// Pengecekan otomatis ProdSeller untuk notifikasi restock & harga turun
-async function checkProdSellerUpdates(sock) {
-  if (!sock || !botState.whatsappConnected) return;
-
-  try {
-    const settings = await db.getSettings();
-    const targetGroupId = settings.updateGroupId;
-    if (!targetGroupId) return; // Belum diset admin
-
-    const updates = await getProdSellerUpdates();
-    if (updates.restocks.length === 0 && updates.priceDrops.length === 0) return;
-
-    let msg = `📣 *INFO UPDATE TOKO DIGITAL* 📣\n\n`;
-
-    if (updates.restocks.length > 0) {
-      msg += `📦 *PRODUK RESTOCK (TERSEDIA KEMBALI):*\n`;
-      updates.restocks.forEach(r => {
-        msg += `✅ *${r.nama}* (\`${r.kode}\`) - $${r.price}\n`;
-      });
-      msg += `\n`;
-    }
-
-    if (updates.priceDrops.length > 0) {
-      msg += `📉 *PENURUNAN HARGA PRODUK:*\n`;
-      updates.priceDrops.forEach(r => {
-        msg += `🔥 *${r.nama}* (\`${r.kode}\`)\n   Harga Lama: ~$${r.oldPrice}~\n   Harga Baru: *$${r.newPrice}*\n`;
-      });
-      msg += `\n`;
-    }
-
-    msg += `_Ketik .menu untuk mulai berbelanja._`;
-
-    // Dynamic import to avoid circular dependency
-    const { broadcastTagAll } = await import('./bot.js');
-    const success = await broadcastTagAll(sock, targetGroupId, msg);
-    
-    if (success) {
-      console.log(`[SCHEDULER] Notifikasi restock/harga terkirim ke ${targetGroupId}`);
-      await db.addLog('SYSTEM', `Notifikasi tagall restock/harga terkirim ke grup ${targetGroupId}`);
-    }
-  } catch (err) {
-    console.error("[SCHEDULER ERROR] Gagal mengecek update ProdSeller:", err.message);
-  }
-}
-
 // Pemicu scheduler utama (diekspor untuk index.js)
 export function startScheduler(sock) {
+  schedulerSock = sock;
+  if (schedulerStarted) return;
+  schedulerStarted = true;
   console.log("=== Scheduler Otomatisasi Sistem Diaktifkan ===");
 
   // Jalankan pengecekan order pertama kali setelah 10 detik bot online
-  setTimeout(() => processOrderAutomation(sock), 10000);
+  setTimeout(() => processOrderAutomation(schedulerSock), 10000);
 
   // Set interval pengecekan order setiap 5 menit
   setInterval(() => {
-    processOrderAutomation(sock);
+    processOrderAutomation(schedulerSock);
   }, 5 * 60 * 1000);
 
   // Set interval pengecekan backup database setiap 1 jam
@@ -232,14 +215,9 @@ export function startScheduler(sock) {
   setInterval(() => {
     const now = new Date();
     if (now.getHours() === 21 && now.getMinutes() < 5) {
-      sendDailySalesReport(sock);
+      sendDailySalesReport(schedulerSock);
     }
   }, 5 * 60 * 1000);
-
-  // Set interval pengecekan ProdSeller (setiap 30 menit)
-  setInterval(() => {
-    checkProdSellerUpdates(sock);
-  }, 30 * 60 * 1000);
 
   // Jalankan backup database pertama kali saat scheduler mulai
   backupDatabase();

@@ -7,9 +7,11 @@ let io = null;
 export function initWebSocket(httpServer) {
   io = new Server(httpServer, {
     cors: {
-      origin: "*",
-      methods: ["GET", "POST"]
+      origin: config.corsOrigin,
+      methods: ["GET", "POST"],
+      credentials: true
     },
+
     pingTimeout: 60000,
     pingInterval: 25000,
     connectTimeout: 45000
@@ -17,8 +19,14 @@ export function initWebSocket(httpServer) {
 
   // Middleware Autentikasi JWT
   io.use((socket, next) => {
-    // Ambil token dari handshake auth atau headers
-    const token = socket.handshake.auth?.token || socket.handshake.headers?.token;
+    // Ambil token dari handshake auth, headers, atau cookie sesi dashboard.
+    const cookieHeader = socket.handshake.headers?.cookie || '';
+    const sessionCookie = cookieHeader
+      .split(';')
+      .map(cookie => cookie.trim())
+      .find(cookie => cookie.startsWith('auth_token='));
+    const cookieToken = sessionCookie ? decodeURIComponent(sessionCookie.slice('auth_token='.length)) : null;
+    const token = socket.handshake.auth?.token || socket.handshake.headers?.token || cookieToken;
     if (!token) {
       return next(new Error("Authentication error: Token missing"));
     }

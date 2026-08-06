@@ -211,11 +211,16 @@
       <form id="loginForm">
         <div class="form-group">
           <label for="username" class="form-label">Username</label>
-          <input type="text" id="username" name="username" required class="form-input" placeholder="Masukkan username admin">
+          <input type="text" id="username" name="username" required autocomplete="username" class="form-input" placeholder="Masukkan username admin">
         </div>
         <div class="form-group">
           <label for="password" class="form-label">Password</label>
-          <input type="password" id="password" name="password" required class="form-input" placeholder="••••••••">
+          <input type="password" id="password" name="password" required autocomplete="current-password" class="form-input" placeholder="••••••••">
+        </div>
+        <div class="form-group" id="otpGroup" style="display:none;">
+          <label for="otp" class="form-label">Kode Authenticator</label>
+          <input type="text" id="otp" name="otp" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" class="form-input" placeholder="123456">
+          <small style="color:var(--text-muted);">Masukkan kode 6 digit dari aplikasi authenticator.</small>
         </div>
         <button type="submit" id="btnSubmit" class="btn-submit">Masuk Sekarang</button>
       </form>
@@ -225,10 +230,6 @@
   </div>
 
   <script>
-    if (localStorage.getItem('token')) {
-      window.location.href = '/index.html';
-    }
-
     const loginForm = document.getElementById('loginForm');
     const alertBox = document.getElementById('alertBox');
     const btnSubmit = document.getElementById('btnSubmit');
@@ -242,6 +243,7 @@
       e.preventDefault();
       const username = document.getElementById('username').value;
       const password = document.getElementById('password').value;
+      const otp = document.getElementById('otp').value.trim();
 
       btnSubmit.disabled = true;
       btnSubmit.textContent = 'Mencoba Masuk...';
@@ -251,17 +253,25 @@
         const response = await fetch('/api/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username, password })
+          credentials: 'same-origin',
+          body: JSON.stringify({ username, password, otp })
         });
 
         const data = await response.json();
 
         if (response.ok && data.success) {
           showAlert('Login berhasil! Mengalihkan...', 'success');
-          localStorage.setItem('token', data.token);
           localStorage.setItem('username', data.username);
           localStorage.setItem('role', data.role);
           setTimeout(() => { window.location.href = '/index.html'; }, 1000);
+        } else if (data.requiresTwoFactor) {
+          const otpGroup = document.getElementById('otpGroup');
+          otpGroup.style.display = 'block';
+          document.getElementById('otp').required = true;
+          document.getElementById('otp').focus();
+          showAlert(data.message || 'Masukkan kode authenticator.');
+          btnSubmit.disabled = false;
+          btnSubmit.textContent = 'Verifikasi & Masuk';
         } else {
           showAlert(data.message || 'Username atau password salah.');
           btnSubmit.disabled = false;

@@ -21,28 +21,6 @@ process.env.FFMPEG_PATH = ffmpegInstaller.path;
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 process.env.YTDL_NO_UPDATE = 'true';
 
-async function fetchFromCobalt(url) {
-  try {
-    const res = await axios.post('https://api.cobalt.tools/api/json',
-      JSON.stringify({ url, vQuality: '720', filenamePattern: 'basic' }),
-      {
-        httpsAgent, timeout: 15000,
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'User-Agent': 'Mozilla/5.0'
-        }
-      }
-    );
-    if (res.data?.status === 'stream' || res.data?.status === 'redirect' || res.data?.status === 'tunnel') {
-      return res.data.url;
-    }
-  } catch (err) {
-    console.log('[MEDIA_HANDLER] Cobalt API failed:', err.message);
-  }
-  return null;
-}
-
 /**
  * Download media via yt-dlp CLI — method paling andal untuk Instagram (selalu diupdate komunitas)
  * Returns { videoUrl, title } or null on failure
@@ -51,50 +29,82 @@ async function downloadWithYtdlp(url) {
   return new Promise((resolve) => {
     const cookiesPath = path.join(process.cwd(), 'ig_cookies.txt');
     const hasCookies = fs.existsSync(cookiesPath);
+    const tmpDir = path.join(process.cwd(), 'tmp');
+    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+    const tmpFile = path.join(tmpDir, `ytdlp_${Date.now()}_${Math.floor(Math.random()*1000)}.mp4`);
 
-    const args = [
+    // Tier 1: Direct MP4 File Download via yt-dlp (Bypass 403 Forbidden on WhatsApp)
+    const fileArgs = [
       '-m', 'yt_dlp',
-      '--get-url',
-      '--get-title',
       '--no-warnings',
       '--no-playlist',
-      '-f', 'best[ext=mp4]/best',
+      '--geo-bypass',
+      '--extractor-args', 'youtube:player_client=android,web',
+      '-f', 'b[filesize<48M]/bestvideo[filesize<38M]+bestaudio/b[ext=mp4]/best',
+      '--print', 'title',
+      '-o', tmpFile,
       ...(hasCookies ? ['--cookies', cookiesPath] : []),
       url
     ];
 
     let stdout = '';
     let stderr = '';
-    const proc = spawn('python', args, { timeout: 28000 });
+    const proc = spawn('python', fileArgs, { timeout: 45000 });
 
     proc.stdout.on('data', (d) => { stdout += d.toString(); });
     proc.stderr.on('data', (d) => { stderr += d.toString(); });
 
     proc.on('close', (code) => {
-      if (code === 0 && stdout.trim()) {
-        const lines = stdout.trim().split('\n').map(l => l.trim()).filter(Boolean);
-        // yt-dlp --get-title --get-url: interleaves title then url per format
-        // Find the first http URL from the end
-        const urlLine = [...lines].reverse().find(l => l.startsWith('http'));
-        const titleLine = lines.find(l => !l.startsWith('http'));
-        if (urlLine) {
-          resolve({ videoUrl: urlLine, title: titleLine || 'Instagram Media' });
-        } else {
-          console.log('[MEDIA_HANDLER] yt-dlp: no url in stdout:', stdout.slice(0, 200));
-          resolve(null);
+      const title = stdout.trim().split('\n')[0] || 'Media Video';
+
+      if (code === 0 && fs.existsSync(tmpFile)) {
+        const stats = fs.statSync(tmpFile);
+        if (stats.size > 5000) {
+          try {
+            const buffer = fs.readFileSync(tmpFile);
+            fs.unlinkSync(tmpFile);
+            resolve({ success: true, buffer, title });
+            return;
+          } catch (e) {}
         }
-      } else {
-        if (!hasCookies && stderr.includes('empty media response')) {
-          console.log('[MEDIA_HANDLER] yt-dlp: IG login required, no ig_cookies.txt found.');
-        } else {
-          console.log('[MEDIA_HANDLER] yt-dlp exit code:', code, '| stderr:', stderr.slice(0, 200));
+        if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
+      }
+
+      // Tier 2 Fallback: Get Direct URL stream if direct file download failed
+      console.log('[MEDIA_HANDLER] yt-dlp direct file download fallback to URL mode:', stderr.slice(0, 150));
+      const urlArgs = [
+        '-m', 'yt_dlp',
+        '--get-url',
+        '--get-title',
+        '--no-warnings',
+        '--no-playlist',
+        '--geo-bypass',
+        '-f', 'best[ext=mp4]/best',
+        ...(hasCookies ? ['--cookies', cookiesPath] : []),
+        url
+      ];
+
+      let stdout2 = '';
+      const proc2 = spawn('python', urlArgs, { timeout: 20000 });
+      proc2.stdout.on('data', (d) => { stdout2 += d.toString(); });
+      proc2.on('close', (code2) => {
+        if (code2 === 0 && stdout2.trim()) {
+          const lines = stdout2.trim().split('\n').map(l => l.trim()).filter(Boolean);
+          const urlLine = [...lines].reverse().find(l => l.startsWith('http'));
+          const titleLine = lines.find(l => !l.startsWith('http'));
+          if (urlLine) {
+            resolve({ success: true, videoUrl: urlLine, title: titleLine || title });
+            return;
+          }
         }
         resolve(null);
-      }
+      });
+      proc2.on('error', () => resolve(null));
     });
 
     proc.on('error', (err) => {
       console.log('[MEDIA_HANDLER] yt-dlp spawn error:', err.message);
+      if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
       resolve(null);
     });
   });
@@ -104,7 +114,28 @@ async function downloadWithYtdlp(url) {
  * Download TikTok Video tanpa watermark via multi-tier API
  */
 export async function downloadTikTok(url) {
-  // Method 1: TikWM API (no watermark, most reliable)
+  // Method 1: SSSTik API (Direct Watermark-free MP4)
+  try {
+    const res = await axios.post('https://ssstik.io/abc?url=dl', `id=${encodeURIComponent(url)}&locale=en&tt=1`, {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Origin': 'https://ssstik.io',
+        'Referer': 'https://ssstik.io/en'
+      },
+      timeout: 10000
+    });
+    if (res.data) {
+      const match = res.data.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/i) || res.data.match(/href="(https:\/\/[^"]+tik-tok[^"]*)"/i);
+      if (match) {
+        return { success: true, videoUrl: match[1], title: 'TikTok Video' };
+      }
+    }
+  } catch (err) {
+    console.log('[MEDIA_HANDLER] TikTok Method 1 (SSSTik) failed:', err.message);
+  }
+
+  // Method 2: TikWM API (no watermark)
   try {
     const apiUrl = `https://www.tikwm.com/api/?url=${encodeURIComponent(url)}`;
     const res = await fetch(apiUrl, {
@@ -122,52 +153,13 @@ export async function downloadTikTok(url) {
       }
     }
   } catch (err) {
-    console.log('[MEDIA_HANDLER] TikTok Method 1 (TikWM) failed:', err.message);
+    console.log('[MEDIA_HANDLER] TikTok Method 2 (TikWM) failed:', err.message);
   }
 
-  // Method 2: Cobalt API (Universal modern scraper)
-  const cobaltUrl = await fetchFromCobalt(url);
-  if (cobaltUrl) return { success: true, videoUrl: cobaltUrl, title: 'TikTok Video' };
-
-  // Method 3: SSSTikTok API
-  try {
-    const res = await axios.post('https://ssssave.app/sstik/index.php',
-      `id=${encodeURIComponent(url)}&locale=en&tt=&ts=&tcc=`,
-      {
-        httpsAgent,
-        timeout: 10000,
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Referer': 'https://ssssave.app/'
-        }
-      }
-    );
-    if (res.data) {
-      const match = res.data.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/i);
-      if (match) {
-        return { success: true, videoUrl: match[1], title: 'TikTok Video' };
-      }
-    }
-  } catch (err) {
-    console.log('[MEDIA_HANDLER] TikTok Method 2 (SSSTikTok) failed:', err.message);
-  }
-
-  // Method 3: SnapTik API fallback
-  try {
-    const res = await axios.post('https://snaptik.app/abc2.php',
-      `url=${encodeURIComponent(url)}`,
-      {
-        httpsAgent, timeout: 10000,
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Referer': 'https://snaptik.app/' }
-      }
-    );
-    if (res.data) {
-      const match = res.data.match(/href="(https:\/\/[^"]+)"/i);
-      if (match) return { success: true, videoUrl: match[1], title: 'TikTok Video' };
-    }
-  } catch (err) {
-    console.log('[MEDIA_HANDLER] TikTok Method 3 (SnapTik) failed:', err.message);
+  // Method 3: yt-dlp CLI fallback
+  const ytdlpResult = await downloadWithYtdlp(url);
+  if (ytdlpResult?.buffer || ytdlpResult?.videoUrl) {
+    return { success: true, buffer: ytdlpResult.buffer, videoUrl: ytdlpResult.videoUrl, title: ytdlpResult.title || 'TikTok Video' };
   }
 
   return { success: false, message: '❌ Gagal mengunduh video TikTok. Pastikan link valid dan akun tidak privat.' };
@@ -175,7 +167,7 @@ export async function downloadTikTok(url) {
 
 
 /**
- * Download Instagram Reels / Posts — 5 metode fallback
+ * Download Instagram Reels / Posts — 4 metode fallback aktif
  */
 export async function downloadInstagram(url) {
   // Method 1: yt-dlp CLI — paling andal karena diupdate komunitas secara aktif mengikuti perubahan Instagram
@@ -184,7 +176,7 @@ export async function downloadInstagram(url) {
     return { success: true, videoUrl: ytdlpResult.videoUrl, title: ytdlpResult.title };
   }
 
-  // Method 2: SSSInstagram API
+  // Method 2: SSSInstagram API (200 OK)
   try {
     const res = await axios.post('https://sssinstagram.com/api/convert',
       JSON.stringify({ url }),
@@ -203,14 +195,10 @@ export async function downloadInstagram(url) {
       return { success: true, videoUrl: mediaUrl, title: 'Instagram Media' };
     }
   } catch (err) {
-    console.log('[MEDIA_HANDLER] IG Method 1 (SSSInstagram) failed:', err.message);
+    console.log('[MEDIA_HANDLER] IG Method 2 (SSSInstagram) failed:', err.message);
   }
 
-  // Method 2: Cobalt API
-  const cobaltUrl = await fetchFromCobalt(url);
-  if (cobaltUrl) return { success: true, videoUrl: cobaltUrl, title: 'Instagram Media' };
-
-  // Method 3: SnapSave — regex scrape (VM approach dihapus karena JS response terlalu dinamis)
+  // Method 3: SnapSave (200 OK)
   try {
     const res = await axios.post('https://snapsave.app/action.php', `url=${encodeURIComponent(url)}`, {
       httpsAgent,
@@ -222,7 +210,6 @@ export async function downloadInstagram(url) {
         'Origin': 'https://snapsave.app'
       }
     });
-    // Try extracting media URLs directly from raw response string
     const raw = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
     const urlMatches = raw.match(/https?:\\?\/\\?\/[^\s"'\\]+\.mp4[^\s"'\\]*/gi) || 
                        raw.match(/https?:\\?\/\\?\/[^\s"'\\]+cdninstagram[^\s"'\\]*/gi);
@@ -234,7 +221,7 @@ export async function downloadInstagram(url) {
     console.log('[MEDIA_HANDLER] IG Method 3 (SnapSave) failed:', err.message);
   }
 
-  // Method 3: Direct Embed Scraper
+  // Method 4: Direct Embed Scraper
   try {
     const code = url.match(/(?:p|reel|reels|stories)\/([A-Za-z0-9_-]+)/)?.[1];
     if (code) {
@@ -259,18 +246,7 @@ export async function downloadInstagram(url) {
       }
     }
   } catch (err) {
-    console.log('[MEDIA_HANDLER] IG Method 3 (Embed) failed:', err.message);
-  }
-
-  // Method 4: VKR Downloader API
-  try {
-    const res = await axios.get(`https://api.vkrdown.site/v1/igdownloader?url=${encodeURIComponent(url)}`, { httpsAgent, timeout: 8000 });
-    const videoUrl = res.data?.data?.url || res.data?.data?.video || res.data?.data?.medias?.[0]?.url;
-    if (videoUrl) {
-      return { success: true, videoUrl, title: 'Instagram Video' };
-    }
-  } catch (err) {
-    console.log('[MEDIA_HANDLER] IG Method 4 (VKR) failed:', err.message);
+    console.log('[MEDIA_HANDLER] IG Method 4 (Embed) failed:', err.message);
   }
 
   // Method 5: instagram-url-direct package
@@ -291,13 +267,45 @@ export async function downloadInstagram(url) {
 }
 
 
+export async function fetchBuffer(url) {
+  if (!url) return null;
+  try {
+    const res = await axios.get(url, {
+      httpsAgent,
+      responseType: 'arraybuffer',
+      timeout: 25000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+        'Accept': '*/*'
+      }
+    });
+    if (res.data) {
+      const buf = Buffer.from(res.data);
+      if (buf.length > 5000) return buf;
+    }
+  } catch (err) {
+    console.log('[MEDIA_HANDLER] fetchBuffer error:', err.message);
+  }
+  return null;
+}
+
+
 /**
- * Download YouTube Shorts / Videos — 4 metode fallback
+ * Download YouTube Shorts / Videos — metode fallback aktif
  */
 export async function downloadYouTube(url) {
-  // Method 1: Cobalt API (Fastest and most reliable for YT)
-  const cobaltUrl = await fetchFromCobalt(url);
-  if (cobaltUrl) return { success: true, videoUrl: cobaltUrl, title: 'YouTube Video' };
+  // Method 1: yt-dlp CLI (Paling stabil & diupdate terus)
+  const ytdlpResult = await downloadWithYtdlp(url);
+  if (ytdlpResult?.buffer) {
+    return { success: true, buffer: ytdlpResult.buffer, title: ytdlpResult.title || 'YouTube Video' };
+  }
+  if (ytdlpResult?.videoUrl) {
+    const buf = await fetchBuffer(ytdlpResult.videoUrl);
+    if (buf) {
+      return { success: true, buffer: buf, title: ytdlpResult.title || 'YouTube Video' };
+    }
+    return { success: true, videoUrl: ytdlpResult.videoUrl, title: ytdlpResult.title || 'YouTube Video' };
+  }
 
   // Method 2: @distube/ytdl-core (langsung dari YouTube CDN)
   try {
@@ -305,8 +313,10 @@ export async function downloadYouTube(url) {
     const format = ytdl.chooseFormat(info.formats, { quality: 'highestvideo', filter: 'videoandaudio' }) ||
                    ytdl.chooseFormat(info.formats, { quality: 'highest' });
     if (format && format.url) {
+      const buf = await fetchBuffer(format.url);
       return { 
         success: true, 
+        buffer: buf || undefined,
         videoUrl: format.url, 
         title: info.videoDetails?.title || 'YouTube Video' 
       };
@@ -315,65 +325,26 @@ export async function downloadYouTube(url) {
     console.log('[MEDIA_HANDLER] YT Method 2 (ytdl-core) failed:', err.message);
   }
 
-  // Method 3: Y2Mate API
-  try {
-    const analyzeRes = await axios.post('https://www.y2mate.com/mates/analyzeV2/ajax',
-      `k_query=${encodeURIComponent(url)}&k_page=Youtube&hl=en&q_auto=0`,
-      {
-        httpsAgent, timeout: 12000,
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': 'Mozilla/5.0',
-          'Referer': 'https://www.y2mate.com/'
-        }
-      }
-    );
-    const vid = analyzeRes.data?.vid;
-    const dlinks = analyzeRes.data?.links?.mp4;
-    if (vid && dlinks) {
-      // Ambil key resolusi terbaik tersedia
-      const qualityKey = Object.keys(dlinks).find(k => ['720p','480p','360p'].includes(k)) || Object.keys(dlinks)[0];
-      if (qualityKey) {
-        const k = dlinks[qualityKey].k;
-        const convRes = await axios.post('https://www.y2mate.com/mates/convertV2/index',
-          `vid=${vid}&k=${encodeURIComponent(k)}`,
-          { httpsAgent, timeout: 15000, headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Referer': 'https://www.y2mate.com/' } }
-        );
-        const dlink = convRes.data?.dlink;
-        if (dlink) return { success: true, videoUrl: dlink, title: analyzeRes.data?.title || 'YouTube Video' };
-      }
-    }
-  } catch (err) {
-    console.log('[MEDIA_HANDLER] YT Method 3 (Y2Mate) failed:', err.message);
-  }
-
-  // Method 4: Tiklydown API (original fallback)
-  try {
-    const res = await fetch(`https://api.tiklydown.eu.org/api/download?url=${encodeURIComponent(url)}`);
-    if (res.ok) {
-      const json = await res.json();
-      if (json.url) {
-        return { success: true, videoUrl: json.url, title: json.title || 'YouTube Video' };
-      }
-    }
-  } catch (err) {
-    console.log('[MEDIA_HANDLER] YT Method 4 (Tiklydown) failed:', err.message);
-  }
-
   return { 
     success: false, 
-    message: '❌ Gagal mengunduh video YouTube. Kemungkinan penyebab:\n• Video dibatasi/age-restricted\n• Video privat atau sudah dihapus\n• Link tidak valid\n\nPastikan link YouTube valid dan video dapat diakses publik.' 
+    message: '❌ Gagal mengunduh video YouTube. Pastikan link YouTube valid dan video dapat diakses publik.' 
   };
 }
 
 
 /**
- * Download Facebook Video / Reels
+ * Download Facebook Video / Reels — 3 metode fallback aktif
  */
 export async function downloadFacebook(url) {
-  // Method 1: Cobalt API
-  const cobaltUrl = await fetchFromCobalt(url);
-  if (cobaltUrl) return { success: true, videoUrl: cobaltUrl, title: 'Facebook Video' };
+  // Method 1: yt-dlp CLI (Paling stabil)
+  const ytdlpResult = await downloadWithYtdlp(url);
+  if (ytdlpResult?.buffer) {
+    return { success: true, buffer: ytdlpResult.buffer, title: ytdlpResult.title || 'Facebook Video' };
+  }
+  if (ytdlpResult?.videoUrl) {
+    const buf = await fetchBuffer(ytdlpResult.videoUrl);
+    return { success: true, buffer: buf || undefined, videoUrl: ytdlpResult.videoUrl, title: ytdlpResult.title || 'Facebook Video' };
+  }
 
   // Method 2: @renpwn/fb-downloader library
   try {
@@ -381,17 +352,19 @@ export async function downloadFacebook(url) {
     const res = await fn(url);
     const videoUrl = res?.hd || res?.sd || res?.url || res?.stream;
     if (videoUrl) {
+      const buf = await fetchBuffer(videoUrl);
       return { 
         success: true, 
+        buffer: buf || undefined,
         videoUrl: videoUrl, 
         title: res?.title || 'Facebook Video' 
       };
     }
   } catch (err) {
-    console.log('[MEDIA_HANDLER] FB Method 1 failed:', err.message);
+    console.log('[MEDIA_HANDLER] FB Method 2 failed:', err.message);
   }
 
-  // Method 2: Direct Open Graph / HTML Metadata Scraper
+  // Method 3: Direct Open Graph / HTML Metadata Scraper
   try {
     const headers = {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -408,21 +381,8 @@ export async function downloadFacebook(url) {
 
       const videoUrl = cleanUrl(hdMatch?.[1]) || cleanUrl(sdMatch?.[1]) || cleanUrl(ogMatch?.[1]);
       if (videoUrl) {
-        return { success: true, videoUrl, title: 'Facebook Video' };
-      }
-    }
-  } catch (err) {
-    console.log('[MEDIA_HANDLER] FB Method 2 failed:', err.message);
-  }
-
-  // Method 3: Fallback Public Scraper API
-  try {
-    const res = await fetch(`https://api.vkrdown.site/v1/fbdownloader?url=${encodeURIComponent(url)}`);
-    if (res.ok) {
-      const json = await res.json();
-      const videoUrl = json.data?.url || json.data?.hd || json.data?.sd || json.data?.medias?.[0]?.url;
-      if (videoUrl) {
-        return { success: true, videoUrl, title: 'Facebook Video' };
+        const buf = await fetchBuffer(videoUrl);
+        return { success: true, buffer: buf || undefined, videoUrl, title: 'Facebook Video' };
       }
     }
   } catch (err) {

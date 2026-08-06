@@ -1288,12 +1288,12 @@
           <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
             <select id="orderStatusFilter" onchange="filterOrders()" class="form-select" style="max-width: 220px;">
               <option value="ALL">Semua Status</option>
-              <option value="CART">🛒 Cart</option>
-              <option value="WAITING_PAYMENT">🟡 Waiting Payment</option>
-              <option value="WAITING_CONFIRMATION">🟠 Waiting Confirmation</option>
-              <option value="PAID">🟢 Paid</option>
-              <option value="COMPLETED">🔵 Completed</option>
-              <option value="CANCELLED">🔴 Cancelled</option>
+              <option value="CART">🛒 Keranjang</option>
+              <option value="WAITING_PAYMENT">🟡 Menunggu Pembayaran</option>
+              <option value="WAITING_CONFIRMATION">🟠 Menunggu Verifikasi</option>
+              <option value="PAID">🟢 Sudah Dibayar</option>
+              <option value="COMPLETED">🔵 Selesai</option>
+              <option value="CANCELLED">🔴 Dibatalkan</option>
             </select>
             <button onclick="openClearHistoryModal()" class="btn-ghost" style="color: var(--color-rose); border-color: rgba(244, 63, 94, 0.3); padding: 8px 14px; font-size: 0.75rem;">
               🧹 Bersihkan Riwayat
@@ -1343,6 +1343,8 @@
                   <th style="text-align:center;">Total Belanja</th>
                   <th style="text-align:right;">Total Transaksi Selesai</th>
                   <th style="text-align:center;">Tier</th>
+                  <th style="text-align:center;">Role</th>
+                  <th style="text-align:center;">Status</th>
                   <th style="text-align:center;">Detail</th>
                 </tr>
               </thead>
@@ -1666,7 +1668,7 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
                 <button onclick="setTimelinePeriod(30)" id="period-30" class="btn-accent" style="padding:4px 12px;font-size:0.75rem;">30H</button>
                 <button onclick="setTimelinePeriod(90)" id="period-90" class="btn-ghost" style="padding:4px 12px;font-size:0.75rem;">90H</button>
               </div>
-              <a id="exportCsvBtn" href="/api/analytics/export?days=90" class="btn-ghost" style="padding:4px 14px;font-size:0.75rem;text-decoration:none;" download>⬇️ Export CSV</a>
+              <a id="exportCsvBtn" href="/api/analytics/export?days=90" onclick="downloadAnalyticsCsv(event)" class="btn-ghost" style="padding:4px 14px;font-size:0.75rem;text-decoration:none;" download>⬇️ Export CSV</a>
             </div>
           </div>
           <div style="height:300px;width:100%;"><canvas id="revenueTimelineChart"></canvas></div>
@@ -2015,6 +2017,22 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
               🔄 Reset Sesi WhatsApp (Scan Ulang)
             </button>
           </div>
+          <div class="glass-card" style="padding: 24px;">
+            <h3 class="section-title">Keamanan Owner (2FA)</h3>
+            <p id="twoFactorStatus" style="font-size:0.8125rem;color:var(--text-muted);margin-bottom:16px;">Memuat status 2FA...</p>
+            <button id="twoFactorSetupBtn" onclick="setupTwoFactor()" class="btn-ghost" style="width:100%;padding:10px;">Siapkan 2FA</button>
+            <div id="twoFactorSetupArea" style="display:none;margin-top:14px;">
+              <label class="form-label">Secret untuk Authenticator</label>
+              <input id="twoFactorSecret" class="form-input" readonly>
+              <small id="twoFactorUri" style="display:block;word-break:break-all;color:var(--text-muted);margin:8px 0 12px;"></small>
+              <input id="twoFactorCode" class="form-input" inputmode="numeric" maxlength="6" placeholder="Kode 6 digit">
+              <button onclick="enableTwoFactor()" class="btn-accent" style="width:100%;padding:10px;margin-top:8px;">Aktifkan 2FA</button>
+            </div>
+            <div id="twoFactorDisableArea" style="display:none;margin-top:14px;">
+              <input id="twoFactorDisableCode" class="form-input" inputmode="numeric" maxlength="6" placeholder="Kode untuk menonaktifkan">
+              <button onclick="disableTwoFactor()" class="btn-danger" style="width:100%;padding:10px;margin-top:8px;">Nonaktifkan 2FA</button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -2198,12 +2216,6 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
   <!-- ==================== JAVASCRIPT ==================== -->
   <script src="/socket.io/socket.io.js"></script>
   <script>
-    // --- AUTH CHECK ---
-    const token = localStorage.getItem('token');
-    if (!token) {
-      window.location.href = '/login.html';
-    }
-
     document.getElementById('adminUserDisplay').textContent = localStorage.getItem('username') || 'Admin';
 
     // Global chart instances
@@ -2272,8 +2284,11 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
 
     // --- LOGOUT ---
     function handleLogout() {
-      localStorage.clear();
-      window.location.href = '/login.html';
+      fetch('/api/logout', { method: 'POST', credentials: 'same-origin' })
+        .finally(() => {
+          localStorage.clear();
+          window.location.href = '/login.html';
+        });
     }
 
     // --- MOBILE SIDEBAR ---
@@ -2294,7 +2309,11 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
       else if (type === 'error') icon = '❌';
       else if (type === 'warning') icon = '⚠️';
 
-      toast.innerHTML = `<span>${icon}</span> <span>${message}</span>`;
+      const iconElement = document.createElement('span');
+      iconElement.textContent = icon;
+      const messageElement = document.createElement('span');
+      messageElement.textContent = message;
+      toast.replaceChildren(iconElement, document.createTextNode(' '), messageElement);
       document.getElementById('toastBox').appendChild(toast);
 
       setTimeout(() => toast.classList.add('visible'), 50);
@@ -2306,9 +2325,7 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
 
     // --- API HELPER ---
     async function apiRequest(url, options = {}) {
-      const headers = options.headers || {};
-      headers['Authorization'] = `Bearer ${localStorage.getItem('token')}`;
-      options.headers = headers;
+      options.credentials = 'same-origin';
 
       try {
         const response = await fetch(url, options);
@@ -2473,6 +2490,7 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
           document.getElementById('ownerSettingsPanel').classList.remove('hidden');
           document.getElementById('backupSettingsPanel').classList.remove('hidden');
           loadUsersData();
+          loadTwoFactorStatus();
         } else {
           document.getElementById('ownerSettingsPanel').classList.add('hidden');
           document.getElementById('backupSettingsPanel').classList.add('hidden');
@@ -2550,14 +2568,14 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
 
     function getStatusBadge(status) {
       const map = {
-        'CART': { cls: 'badge-default', txt: '🛒 Cart' },
-        'WAITING_PAYMENT': { cls: 'badge-amber', txt: '🟡 Waiting Payment' },
-        'WAITING_CONFIRMATION': { cls: 'badge-orange', txt: '🟠 Waiting Confirmation' },
-        'PAID': { cls: 'badge-emerald', txt: '🟢 Paid' },
-        'COMPLETED': { cls: 'badge-indigo', txt: '🔵 Completed' },
-        'CANCELLED': { cls: 'badge-rose', txt: '🔴 Cancelled' }
+        'CART': { cls: 'badge-default', txt: '🛒 Keranjang' },
+        'WAITING_PAYMENT': { cls: 'badge-amber', txt: '🟡 Menunggu Pembayaran' },
+        'WAITING_CONFIRMATION': { cls: 'badge-orange', txt: '🟠 Menunggu Verifikasi' },
+        'PAID': { cls: 'badge-emerald', txt: '🟢 Sudah Dibayar' },
+        'COMPLETED': { cls: 'badge-indigo', txt: '🔵 Selesai' },
+        'CANCELLED': { cls: 'badge-rose', txt: '🔴 Dibatalkan' }
       };
-      return map[status] || { cls: 'badge-default', txt: status };
+      return map[status] || { cls: 'badge-default', txt: escapeHtml(status) };
     }
 
     function renderOrders(orders) {
@@ -2572,14 +2590,14 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
       orders.forEach(order => {
         const badge = getStatusBadge(order.status);
         const dateStr = new Date(order.created_at).toLocaleString('id-ID', { dateStyle: 'short', timeStyle: 'short' });
-        const itemsText = order.items.map(item => `${item.produk_nama} (x${item.qty})`).join(', ');
+        const itemsText = order.items.map(item => `${escapeHtml(item.produk_nama)} (x${item.qty})`).join(', ');
 
         const tr = document.createElement('tr');
         tr.innerHTML = `
-          <td style="font-family:monospace;font-size:0.6875rem;font-weight:700;color:var(--text-secondary);">${order.order_id}</td>
+          <td style="font-family:monospace;font-size:0.6875rem;font-weight:700;color:var(--text-secondary);">${escapeHtml(order.order_id)}</td>
           <td>
-            <div style="font-weight:600;color:var(--text-primary);">${order.customer_nama}</div>
-            <div style="font-size:0.6875rem;color:var(--text-muted);">wa.me/${order.customer_nomor.split('@')[0]}</div>
+            <div style="font-weight:600;color:var(--text-primary);">${escapeHtml(order.customer_nama)}</div>
+            <div style="font-size:0.6875rem;color:var(--text-muted);">wa.me/${escapeHtml(order.customer_nomor.split('@')[0])}</div>
           </td>
           <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${itemsText}">${itemsText || '-'}</td>
           <td style="text-align:right;font-weight:700;color:var(--text-secondary);">Rp${order.total.toLocaleString('id-ID')}</td>
@@ -2640,7 +2658,9 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
         if (p.stok === 0) { stockColor = 'var(--color-rose)'; stockBadge = 'Habis'; }
         else if (p.stok <= 3) { stockColor = 'var(--color-amber)'; stockBadge = 'Tipis'; }
 
-        const imgUrl = p.gambar || 'https://placehold.co/400x300?text=Produk+Digital';
+        const imgUrl = /^\/uploads\/products\/[a-zA-Z0-9_.-]+$/.test(p.gambar || '')
+          ? p.gambar
+          : 'https://placehold.co/400x300?text=Produk+Digital';
 
         let voucherBtn = '';
         if (p.delivery_type === 'AUTO' && role !== 'CS') {
@@ -2652,13 +2672,13 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
         card.innerHTML = `
           <div>
             <div class="img-wrap">
-              <img src="${imgUrl}">
-              <span class="img-badge left">${p.delivery_type || 'MANUAL'}</span>
-              <span class="img-badge right">${p.kode}</span>
+              <img src="${escapeHtml(imgUrl)}" alt="${escapeHtml(p.nama)}" loading="lazy">
+              <span class="img-badge left">${escapeHtml(p.delivery_type || 'MANUAL')}</span>
+              <span class="img-badge right">${escapeHtml(p.kode)}</span>
             </div>
             <div class="card-body">
-              <h4 title="${p.nama}">${p.nama}</h4>
-              <p class="desc">${p.deskripsi || 'Tidak ada deskripsi.'}</p>
+              <h4 title="${escapeHtml(p.nama)}">${escapeHtml(p.nama)}</h4>
+              <p class="desc">${escapeHtml(p.deskripsi || 'Tidak ada deskripsi.')}</p>
               <div class="product-stat-row">
                 <div>
                   <div class="product-stat-label">Harga</div>
@@ -2706,6 +2726,10 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
     function getTierBadge(tier) {
       const map = {
         'VIP': 'badge-rose',
+        'PLATINUM': 'badge-rose',
+        'GOLD': 'badge-amber',
+        'SILVER': 'badge-blue',
+        'BRONZE': 'badge-default',
         'Gold': 'badge-amber',
         'Silver': 'badge-blue',
         'Normal': 'badge-default'
@@ -2718,7 +2742,7 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
       tbody.innerHTML = '';
 
       if (customers.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="6" style="padding:32px;text-align:center;color:var(--text-muted);">Tidak ada pelanggan terdaftar.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="8" style="padding:32px;text-align:center;color:var(--text-muted);">Tidak ada pelanggan terdaftar.</td></tr>`;
         return;
       }
 
@@ -2730,6 +2754,8 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
           <td style="text-align:center;font-weight:700;color:var(--accent-light);">Rp${c.total_spend.toLocaleString('id-ID')}</td>
           <td style="text-align:right;font-weight:600;color:var(--text-muted);">${c.total_orders} order</td>
           <td style="text-align:center;"><span class="status-badge ${getTierBadge(c.tier)}">${c.tier}</span></td>
+          <td style="text-align:center;"><span class="status-badge badge-default">${c.role || 'MEMBER'}</span></td>
+          <td style="text-align:center;"><span class="status-badge ${c.account_status === 'BANNED' ? 'badge-rose' : 'badge-emerald'}">${c.account_status || 'ACTIVE'}</span></td>
           <td style="text-align:center;"><button onclick="openCustomerModal('${c.nomor}')" class="btn-ghost" style="font-size:0.6875rem;">Lihat Riwayat</button></td>
         `;
         tbody.appendChild(tr);
@@ -2789,6 +2815,28 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
       const expBtn = document.getElementById('exportCsvBtn');
       if (expBtn) expBtn.href = `/api/analytics/export?days=${days}`;
       await loadTimelineChart(days);
+    }
+
+    async function downloadAnalyticsCsv(event) {
+      event.preventDefault();
+      const days = currentTimelineDays || 90;
+      const response = await fetch(`/api/analytics/export?days=${days}`, { credentials: 'same-origin' });
+      if (response.status === 401 || response.status === 403) {
+        localStorage.clear();
+        window.location.href = '/login.html';
+        return;
+      }
+      if (!response.ok) {
+        showToast('Gagal mengunduh laporan.', 'error');
+        return;
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `laporan-penjualan-${new Date().toISOString().slice(0, 10)}.csv`;
+      link.click();
+      URL.revokeObjectURL(url);
     }
 
     async function loadTimelineChart(days) {
@@ -3016,7 +3064,10 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
 
           const line = document.createElement('div');
           line.style.color = color;
-          line.innerHTML = `<span style="color:var(--text-muted);">${prefix}</span> ${log.message}`;
+          const prefixEl = document.createElement('span');
+          prefixEl.style.color = 'var(--text-muted)';
+          prefixEl.textContent = prefix;
+          line.append(prefixEl, document.createTextNode(` ${log.message}`));
           terminal.appendChild(line);
         });
         terminal.scrollTop = terminal.scrollHeight;
@@ -3058,6 +3109,63 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
 
         document.getElementById('qrisImagePreview').src = `/uploads/qris.png?t=${Date.now()}`;
       }
+    }
+
+    async function loadTwoFactorStatus() {
+      const data = await apiRequest('/api/2fa/status');
+      if (!data || !data.success) return;
+      const status = document.getElementById('twoFactorStatus');
+      const setupButton = document.getElementById('twoFactorSetupBtn');
+      const disableArea = document.getElementById('twoFactorDisableArea');
+      status.textContent = data.enabled ? '2FA aktif. Login Owner memerlukan kode authenticator.' : '2FA belum aktif. Disarankan mengaktifkannya.';
+      setupButton.style.display = data.enabled ? 'none' : 'block';
+      disableArea.style.display = data.enabled ? 'block' : 'none';
+    }
+
+    async function setupTwoFactor() {
+      const data = await apiRequest('/api/2fa/setup', { method: 'POST' });
+      if (!data || !data.success) {
+        showToast(data?.message || 'Gagal menyiapkan 2FA.', 'error');
+        return;
+      }
+      document.getElementById('twoFactorSecret').value = data.secret;
+      document.getElementById('twoFactorUri').textContent = `URI untuk aplikasi authenticator: ${data.otpauthUri}`;
+      document.getElementById('twoFactorSetupArea').style.display = 'block';
+      showToast('Secret 2FA dibuat. Tambahkan ke authenticator lalu masukkan kodenya.', 'info');
+    }
+
+    async function enableTwoFactor() {
+      const code = document.getElementById('twoFactorCode').value.trim();
+      const data = await apiRequest('/api/2fa/enable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code })
+      });
+      if (!data || !data.success) {
+        showToast(data?.message || 'Kode 2FA tidak valid.', 'error');
+        return;
+      }
+      document.getElementById('twoFactorSetupArea').style.display = 'none';
+      document.getElementById('twoFactorCode').value = '';
+      await loadTwoFactorStatus();
+      showToast(data.message, 'success');
+    }
+
+    async function disableTwoFactor() {
+      const code = document.getElementById('twoFactorDisableCode').value.trim();
+      if (!confirm('Nonaktifkan 2FA untuk akun Owner?')) return;
+      const data = await apiRequest('/api/2fa/disable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code })
+      });
+      if (!data || !data.success) {
+        showToast(data?.message || 'Kode 2FA tidak valid.', 'error');
+        return;
+      }
+      document.getElementById('twoFactorDisableCode').value = '';
+      await loadTwoFactorStatus();
+      showToast(data.message, 'success');
     }
 
     async function handleSaveSettings(e) {
@@ -3138,9 +3246,8 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
       const formData = new FormData();
       formData.append('qris', fileInput.files[0]);
 
-      const headers = { 'Authorization': `Bearer ${localStorage.getItem('token')}` };
       try {
-        const res = await fetch('/api/settings/qris', { method: 'POST', headers, body: formData });
+        const res = await fetch('/api/settings/qris', { method: 'POST', credentials: 'same-origin', body: formData });
         const data = await res.json();
         if (res.ok && data.success) {
           showToast('Gambar QRIS baru berhasil diunggah!', 'success');
@@ -3243,9 +3350,8 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
       const fileInput = document.getElementById('prodFile');
       if (fileInput.files.length > 0) formData.append('gambar', fileInput.files[0]);
 
-      const headers = { 'Authorization': `Bearer ${localStorage.getItem('token')}` };
       try {
-        const res = await fetch('/api/products', { method: 'POST', headers, body: formData });
+        const res = await fetch('/api/products', { method: 'POST', credentials: 'same-origin', body: formData });
         const data = await res.json();
         if (res.ok && data.success) {
           showToast('Produk berhasil disimpan!', 'success');
@@ -3322,7 +3428,6 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
           btnReject.classList.remove('hidden');
         } else if (order.status === 'PAID') {
           btnComplete.classList.remove('hidden');
-          btnReject.classList.remove('hidden');
         } else if (order.status === 'WAITING_PAYMENT') {
           btnReject.classList.remove('hidden');
         }
@@ -3331,7 +3436,7 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
       const date = new Date(order.created_at);
       const year = date.getFullYear();
       const month = (date.getMonth() + 1).toString().padStart(2, '0');
-      document.getElementById('mdReceiptImage').src = `/receipts/${year}/${month}/${order.order_id}.jpg?t=${Date.now()}`;
+      loadProtectedReceipt(`/receipts/${year}/${month}/${order.order_id}.jpg?t=${Date.now()}`);
 
       document.getElementById('orderModal').classList.add('visible');
     }
@@ -3339,6 +3444,19 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
     function closeOrderModal() {
       document.getElementById('orderModal').classList.remove('visible');
       currentSelectedOrderId = null;
+    }
+
+    async function loadProtectedReceipt(url) {
+      const image = document.getElementById('mdReceiptImage');
+      image.removeAttribute('src');
+      try {
+        const response = await fetch(url, { credentials: 'same-origin' });
+        if (!response.ok) throw new Error('Receipt unavailable');
+        const blobUrl = URL.createObjectURL(await response.blob());
+        image.src = blobUrl;
+      } catch (err) {
+        image.src = 'https://placehold.co/400x300?text=Belum+Kirim+Bukti+Bayar';
+      }
     }
 
     async function processOrderAction(action) {
@@ -3555,9 +3673,7 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
     async function downloadDatabaseBackup() {
       try {
         showToast("Menyiapkan file cadangan database...", "info");
-        const res = await fetch('/api/settings/backup', {
-          headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
-        });
+        const res = await fetch('/api/settings/backup', { credentials: 'same-origin' });
         if (!res.ok) throw new Error("Gagal membuat backup database.");
         const blob = await res.blob();
         const url = window.URL.createObjectURL(blob);
@@ -3694,11 +3810,8 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
 
     function initSocket() {
       if (socket) return;
-      const token = localStorage.getItem('token');
-      if (!token) return;
-
       socket = io({
-        auth: { token },
+        withCredentials: true,
         reconnection: true,
         reconnectionAttempts: Infinity,
         reconnectionDelay: 1000,
@@ -3859,7 +3972,7 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
         item.className = `chat-item ${isActive ? 'active' : ''}`;
         item.onclick = () => selectChat(c.customer_jid);
 
-        const initial = (c.customer_nama || 'P').charAt(0).toUpperCase();
+        const initial = escapeHtml((c.customer_nama || 'P').charAt(0).toUpperCase());
         
         let labelBadges = '';
         if (c.labels) {
@@ -3871,20 +3984,20 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
               else if (lbl === 'Pending') color = '#3b82f6';
               else if (lbl === 'Problem') color = '#ec4899';
               
-              labelBadges += `<span style="font-size:0.6rem; padding: 2px 6px; border-radius: 9999px; background: ${color}22; color: ${color}; border: 1px solid ${color}44; margin-right: 4px; font-weight:700;">${lbl}</span>`;
+              labelBadges += `<span style="font-size:0.6rem; padding: 2px 6px; border-radius: 9999px; background: ${color}22; color: ${color}; border: 1px solid ${color}44; margin-right: 4px; font-weight:700;">${escapeHtml(lbl.trim())}</span>`;
             }
           });
         }
 
         const formattedTime = formatTime(c.last_activity);
-        const stateClass = c.conversation_state.toLowerCase();
+        const stateClass = c.conversation_state === 'BOT' ? 'bot' : 'admin';
 
         item.innerHTML = `
           ${c.is_pinned ? '<div class="chat-item-pin">📌</div>' : ''}
           <div class="chat-item-avatar">${initial}</div>
           <div class="chat-item-info">
             <div class="chat-item-header">
-              <span class="chat-item-name">${c.customer_nama || c.customer_jid.split('@')[0]}</span>
+              <span class="chat-item-name">${escapeHtml(c.customer_nama || c.customer_jid.split('@')[0])}</span>
               <span class="chat-item-time">${formattedTime}</span>
             </div>
             <div style="margin-bottom: 4px; display: flex; flex-wrap: wrap; gap: 2px; align-items: center;">
@@ -3892,7 +4005,7 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
               <span class="chat-item-state-badge ${stateClass}">${c.conversation_state === 'BOT' ? '🤖 Bot' : '👤 Admin'}</span>
             </div>
             <div class="chat-item-body">
-              <span class="chat-item-preview">${c.last_message_text || ''}</span>
+              <span class="chat-item-preview">${escapeHtml(c.last_message_text || '')}</span>
               ${c.unread_count > 0 ? `<span class="chat-item-badge">${c.unread_count}</span>` : ''}
             </div>
           </div>
@@ -3957,27 +4070,28 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
       wrapper.setAttribute('data-id', msg.id);
 
       const timeStr = formatTime(msg.timestamp);
+      const protectedMediaPath = escapeHtml(msg.media_path || '');
       
       let contentMarkup = '';
       if (msg.message_type === 'image') {
         contentMarkup = `
           <div class="msg-media">
-            <img src="${msg.media_path}" onclick="zoomImage(this.src)">
+            <img data-protected-media="${protectedMediaPath}" onclick="zoomImage(this.src)">
           </div>
           ${msg.message ? `<div>${escapeHtml(msg.message)}</div>` : ''}
         `;
       } else if (msg.message_type === 'video') {
         contentMarkup = `
           <div class="msg-media">
-            <video src="${msg.media_path}" controls></video>
+            <video data-protected-media="${protectedMediaPath}" controls></video>
           </div>
           ${msg.message ? `<div>${escapeHtml(msg.message)}</div>` : ''}
         `;
       } else if (msg.message_type === 'audio') {
-        contentMarkup = `<audio src="${msg.media_path}" controls style="max-width:240px;"></audio>`;
+        contentMarkup = `<audio data-protected-media="${protectedMediaPath}" controls style="max-width:240px;"></audio>`;
       } else if (msg.message_type === 'file') {
         const filename = msg.media_path.split('/').pop();
-        contentMarkup = `<a href="${msg.media_path}" download class="msg-file-link">📄 ${escapeHtml(filename)}</a>`;
+        contentMarkup = `<a data-protected-media="${protectedMediaPath}" href="#" download class="msg-file-link">📄 ${escapeHtml(filename)}</a>`;
       } else {
         contentMarkup = `<div>${escapeHtml(msg.message)}</div>`;
       }
@@ -4004,9 +4118,30 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
         </div>
       `;
       windowMessages.appendChild(wrapper);
+      hydrateChatMedia(wrapper);
 
       if (scroll) {
         windowMessages.scrollTop = windowMessages.scrollHeight;
+      }
+    }
+
+    async function hydrateChatMedia(wrapper) {
+      const mediaElements = wrapper.querySelectorAll('[data-protected-media]');
+      for (const element of mediaElements) {
+        const mediaPath = element.dataset.protectedMedia || '';
+        const filename = mediaPath.split(/[\\/]/).pop();
+        if (!filename) continue;
+        try {
+          const response = await fetch(`/api/chats/media/${encodeURIComponent(filename)}`, {
+            credentials: 'same-origin'
+          });
+          if (!response.ok) continue;
+          const objectUrl = URL.createObjectURL(await response.blob());
+          element.src = objectUrl;
+          if (element.tagName === 'A') element.href = objectUrl;
+        } catch (err) {
+          console.error('Gagal memuat media chat:', err);
+        }
       }
     }
 
@@ -4068,10 +4203,9 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
       showToast('Mengunggah berkas...', 'info');
 
       try {
-        const headers = { 'Authorization': `Bearer ${localStorage.getItem('token')}` };
         const res = await fetch('/api/chats/media', {
           method: 'POST',
-          headers,
+          credentials: 'same-origin',
           body: formData
         });
         const data = await res.json();
@@ -4265,7 +4399,8 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
     }
 
     function escapeHtml(text) {
-      if (!text) return '';
+      if (text === null || text === undefined) return '';
+      text = String(text);
       const map = {
         '&': '&amp;',
         '<': '&lt;',
@@ -4288,11 +4423,11 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
         const valLabel = c.type === 'percent' ? `${c.value}%` : `Rp${c.value.toLocaleString('id-ID')}`;
         return `
           <tr>
-            <td><strong style="color:var(--accent);">${c.code}</strong></td>
-            <td>${valLabel} (${c.type})</td>
+            <td><strong style="color:var(--accent);">${escapeHtml(c.code)}</strong></td>
+            <td>${escapeHtml(valLabel)} (${escapeHtml(c.type)})</td>
             <td>Rp${c.min_order.toLocaleString('id-ID')}</td>
             <td>${c.used_count} / ${c.max_uses || '∞'}</td>
-            <td><button onclick="handleDeleteCoupon('${c.code}')" class="btn-sm btn-danger">Hapus</button></td>
+            <td><button onclick="handleDeleteCoupon('${escapeHtml(c.code)}')" class="btn-sm btn-danger">Hapus</button></td>
           </tr>
         `;
       }).join('');
@@ -4307,7 +4442,11 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
       const max_uses = document.getElementById('cpMaxUses').value;
       const expires_at = document.getElementById('cpExpiresAt').value;
 
-      const res = await apiRequest('/api/coupons', 'POST', { code, type, value, min_order, max_uses, expires_at });
+      const res = await apiRequest('/api/coupons', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code, type, value, min_order, max_uses, expires_at })
+      });
       if (res && res.success) {
         showToast(res.message, 'success');
         document.getElementById('addCouponForm').reset();
@@ -4319,7 +4458,7 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
 
     async function handleDeleteCoupon(code) {
       if (!confirm(`Yakin ingin menghapus kupon ${code}?`)) return;
-      const res = await apiRequest(`/api/coupons/${code}`, 'DELETE');
+      const res = await apiRequest(`/api/coupons/${code}`, { method: 'DELETE' });
       if (res && res.success) {
         showToast(res.message, 'success');
         loadCouponsData();
@@ -4339,8 +4478,8 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
       tbody.innerHTML = data.faqs.map(f => `
         <tr>
           <td>#${f.id}</td>
-          <td><code>${f.keywords}</code></td>
-          <td style="max-width:300px;white-space:pre-wrap;">${f.answer}</td>
+          <td><code>${escapeHtml(f.keywords)}</code></td>
+          <td style="max-width:300px;white-space:pre-wrap;">${escapeHtml(f.answer)}</td>
           <td><button onclick="handleDeleteFaq(${f.id})" class="btn-sm btn-danger">Hapus</button></td>
         </tr>
       `).join('');
@@ -4351,7 +4490,11 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
       const keywords = document.getElementById('faqKeywords').value.trim();
       const answer = document.getElementById('faqAnswer').value.trim();
 
-      const res = await apiRequest('/api/faqs', 'POST', { keywords, answer });
+      const res = await apiRequest('/api/faqs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keywords, answer })
+      });
       if (res && res.success) {
         showToast(res.message, 'success');
         document.getElementById('addFaqForm').reset();
@@ -4363,7 +4506,7 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
 
     async function handleDeleteFaq(id) {
       if (!confirm(`Yakin ingin menghapus FAQ #${id}?`)) return;
-      const res = await apiRequest(`/api/faqs/${id}`, 'DELETE');
+      const res = await apiRequest(`/api/faqs/${id}`, { method: 'DELETE' });
       if (res && res.success) {
         showToast(res.message, 'success');
         loadFaqsData();
@@ -4382,8 +4525,8 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
       }
       tbody.innerHTML = data.referrals.map(r => `
         <tr>
-          <td><strong>${r.referrer_nama || 'Pelanggan'}</strong><br><span style="font-size:0.7rem;color:var(--text-muted);">${formatPhoneNumber(r.referrer_nomor)}</span></td>
-          <td><strong>${r.referred_nama || 'Pelanggan'}</strong><br><span style="font-size:0.7rem;color:var(--text-muted);">${formatPhoneNumber(r.referred_nomor)}</span></td>
+          <td><strong>${escapeHtml(r.referrer_nama || 'Pelanggan')}</strong><br><span style="font-size:0.7rem;color:var(--text-muted);">${escapeHtml(formatPhoneNumber(r.referrer_nomor))}</span></td>
+          <td><strong>${escapeHtml(r.referred_nama || 'Pelanggan')}</strong><br><span style="font-size:0.7rem;color:var(--text-muted);">${escapeHtml(formatPhoneNumber(r.referred_nomor))}</span></td>
           <td>${r.reward_claimed ? '<span class="status-badge status-completed">Terklaim</span>' : '<span class="status-badge status-waiting">Pending</span>'}</td>
           <td>${new Date(r.created_at).toLocaleDateString('id-ID')}</td>
         </tr>

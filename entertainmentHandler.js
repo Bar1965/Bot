@@ -257,13 +257,74 @@ export async function removeBackground(imageBuffer) {
 /**
  * 9. Database & Game Manager Tebak Gambar (.tebakgambar)
  */
-const TEBAK_GAMBAR_DATABASE = [
-  { image: 'https://i.ibb.co/6N6z5kY/tebak1.jpg', answer: 'TANGAN HAMPUL', hint: 'T... H...' },
-  { image: 'https://i.ibb.co/8Y095Gf/tebak2.jpg', answer: 'OBAT NYAMUK', hint: 'O... N...' },
-  { image: 'https://i.ibb.co/sKq5kZb/tebak3.jpg', answer: 'KOTA BANDUNG', hint: 'K... B...' },
-  { image: 'https://i.ibb.co/4T1X93X/tebak4.jpg', answer: 'MATIKAN LAMPU', hint: 'M... L...' },
-  { image: 'https://i.ibb.co/L5hS0hY/tebak5.jpg', answer: 'KULIT PISANG', hint: 'K... P...' }
-];
+const GAME_IMAGE_DIRECTORY = path.join(process.cwd(), 'public', 'game-images');
+const GAME_IMAGE_HINTS = {
+  anjing: 'Hewan peliharaan yang suka menggonggong.',
+  apel: 'Buah yang sering berwarna merah atau hijau.',
+  air: 'Sesuatu yang mengalir dan menyegarkan.',
+  burung: 'Hewan yang umumnya memiliki sayap.',
+  buah: 'Makanan segar yang tumbuh dari tanaman.',
+  bunga: 'Tanaman yang biasanya memiliki warna dan aroma menarik.',
+  bus: 'Kendaraan umum yang membawa banyak orang.',
+  cokelat: 'Makanan manis berwarna cokelat.',
+  danau: 'Perairan luas yang dikelilingi daratan.',
+  es: 'Makanan atau minuman dingin.',
+  gitar: 'Alat musik berdawai.',
+  gereja: 'Bangunan tempat ibadah.',
+  gunung: 'Daratan tinggi yang menjulang.',
+  jam: 'Benda untuk melihat waktu.',
+  jembatan: 'Bangunan untuk menghubungkan dua tempat.',
+  kamera: 'Dipakai untuk mengambil foto.',
+  kapal: 'Kendaraan yang berjalan di atas air.',
+  kastil: 'Bangunan besar yang sering dikaitkan dengan kerajaan.',
+  kereta: 'Kendaraan yang berjalan di atas rel.',
+  kucing: 'Hewan peliharaan yang suka mengeong.',
+  kuda: 'Hewan yang sering dipakai untuk ditunggangi.',
+  kue: 'Makanan manis yang sering hadir saat perayaan.',
+  kuil: 'Bangunan tempat ibadah atau sejarah.',
+  komputer: 'Perangkat elektronik untuk mengolah data.',
+  kopi: 'Minuman yang sering dinikmati saat pagi.',
+  mobil: 'Kendaraan roda empat.',
+  motor: 'Kendaraan roda dua dengan mesin.',
+  nasi: 'Makanan pokok yang berasal dari beras.',
+  pantai: 'Tempat dengan pasir dan laut.',
+  pesawat: 'Kendaraan yang terbang di udara.',
+  pisang: 'Buah berwarna kuning yang mudah dikupas.',
+  pizza: 'Makanan bundar dengan topping.',
+  radio: 'Perangkat untuk mendengarkan siaran suara.',
+  roti: 'Makanan yang dibuat dari tepung dan dipanggang.',
+  sapi: 'Hewan ternak yang menghasilkan susu.',
+  sayur: 'Bahan makanan yang sering dimasak.',
+  sepeda: 'Kendaraan yang dikayuh.',
+  sungai: 'Aliran air yang bergerak menuju tempat lebih rendah.',
+  telepon: 'Alat untuk berkomunikasi jarak jauh.',
+  truk: 'Kendaraan besar untuk mengangkut barang.',
+  waterfall: 'Aliran air yang jatuh dari tempat tinggi.'
+};
+
+const BASE_TEBAK_GAMBAR_DATABASE = [];
+
+function loadLocalGameImages() {
+  try {
+    return fs.readdirSync(path.join(GAME_IMAGE_DIRECTORY, 'rebus'))
+      .filter(file => /\.(jpe?g|png)$/i.test(file))
+      .map(file => {
+        const slug = file.replace(/\.(jpe?g|png)$/i, '').replace(/-\d+$/, '');
+        const answer = slug.replace(/-/g, ' ').toUpperCase();
+        const hintKey = slug.split('-')[0];
+        return {
+          image: path.join(GAME_IMAGE_DIRECTORY, 'rebus', file),
+          answer,
+          hint: GAME_IMAGE_HINTS[slug] || GAME_IMAGE_HINTS[hintKey] || 'Amati gambar baik-baik.'
+        };
+      });
+  } catch (error) {
+    console.error('[TEBAK_GAMBAR_ASSETS_ERR]', error.message);
+    return [];
+  }
+}
+
+const TEBAK_GAMBAR_DATABASE = [...BASE_TEBAK_GAMBAR_DATABASE, ...loadLocalGameImages()];
 
 export function getTebakGambarQuestion() {
   const q = TEBAK_GAMBAR_DATABASE[Math.floor(Math.random() * TEBAK_GAMBAR_DATABASE.length)];
