@@ -74,9 +74,10 @@ async function send(sock, jid, messageObj, text, options = {}) {
 
 function scheduleRoundExpiry({ sock, jid, messageObj, key, round, duration = ROUND_DURATION_MS }) {
   round.timeout = setTimeout(async () => {
+    if (round.isAnswered || round.cancelled) return;
     if (activeRounds.get(key) !== round) return;
     activeRounds.delete(key);
-    await send(sock, jid, messageObj, `Waktu habis! Jawaban yang benar: *${round.answer || round.lastWord}*\n\nKetik .quiz, .tebakgambar, atau .tebakkata untuk ronde baru.`);
+    await send(sock, jid, messageObj, `⏰ Waktu habis! Jawaban yang benar: *${round.answer || round.lastWord}*\n\nKetik .quiz, .tebakemoji, atau .tebakkata untuk ronde baru.`);
   }, duration);
   round.timeout.unref?.();
 }
@@ -95,7 +96,7 @@ async function handleRoundCommand({ sock, jid, senderNumber, messageObj, args, c
     await send(sock, jid, messageObj, 'Tidak ada game aktif. Ketik `.quiz`, `.tebakemoji`, atau `.tebakkata` terlebih dahulu.');
     return true;
   }
-  if (round.expiresAt < Date.now()) {
+  if (round.isAnswered || round.expiresAt < Date.now()) {
     if (round.timeout) clearTimeout(round.timeout);
     activeRounds.delete(key);
     await send(sock, jid, messageObj, `⏰ Waktu habis. Jawaban yang benar: *${round.answer}*`);
@@ -111,6 +112,7 @@ async function handleRoundCommand({ sock, jid, senderNumber, messageObj, args, c
     return true;
   }
   if (submitted === normalizeAnswer(round.answer)) {
+    round.isAnswered = true;
     if (round.timeout) clearTimeout(round.timeout);
     activeRounds.delete(key);
     const profile = await db.awardGamePoints(senderNumber, 20, true);

@@ -1413,14 +1413,15 @@ _${khodamRes.desc}_`;
         answer: q.answer.toUpperCase(),
         hint: q.hint,
         points: 50,
+        isAnswered: false,
         timeout: setTimeout(async () => {
           const activeGame = ent.activeGames.get(jid);
-          if (!activeGame) return;
+          if (!activeGame || activeGame.isAnswered) return;
           ent.activeGames.delete(jid);
           await sock.sendMessage(jid, {
             text: `WAKTU TEBAK GAMBAR HABIS!\n\nJawaban yang benar: *${activeGame.answer}*\nKetik .tebakgambar untuk bermain lagi.`
           });
-        }, 90 * 1000).unref()
+        }, 90 * 1000)
       });
 
       const pointsGameCaption = `TEBAK GAMBAR\n\nPetunjuk: ${q.hint}\nHadiah: +50 poin game\nWaktu menjawab: 90 detik\n\nGabungkan arti gambar lalu ketik jawabannya langsung di chat.`;
@@ -1718,6 +1719,7 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
         if (ent.activeGames.has(jid)) {
           const game = ent.activeGames.get(jid);
           if (msgText.toUpperCase().trim() === game.answer) {
+            game.isAnswered = true;
             if (game.timeout) clearTimeout(game.timeout);
             ent.activeGames.delete(jid);
             const pointsProfile = await db.awardGamePoints(senderNormalized, game.points || 50, true);
