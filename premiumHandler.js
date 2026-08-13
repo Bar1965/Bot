@@ -106,16 +106,34 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
     const isFromGroup = jid.endsWith('@g.us');
     const groupSettings = isFromGroup ? await db.getGroupSettings(jid) : {};
     if (isFromGroup && groupSettings.features_config && groupSettings.features_config.ai === false) return false;
-    if (['ai', 'gemini', 'tanyaai', 'askai'].includes(cmd)) {
+    if (['ocr', 'ai', 'gemini', 'tanyaai', 'askai'].includes(cmd)) {
 
+    const isOcr = cmd === 'ocr';
     const promptText = args.slice(1).join(' ').trim();
-    const quotedMedia = messageObj?.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage;
-    const directMedia = messageObj?.message?.imageMessage;
+    const quotedMedia = messageObj?.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage || messageObj?.message?.extendedTextMessage?.contextInfo?.quotedMessage?.documentMessage;
+    const directMedia = messageObj?.message?.imageMessage || messageObj?.message?.documentMessage;
     const hasImage = !!(quotedMedia || directMedia);
 
-    if (!promptText && !hasImage) {
+    if (isOcr) {
+      if (!hasImage) {
+        await sock.sendMessage(jid, {
+          text: '💡 *CARA PAKAI OCR (Premium)* 💡\n\nReply gambar atau dokumen PDF dengan perintah `.ocr` untuk mengekstrak teks di dalamnya.'
+        }, { quoted: messageObj });
+        return true;
+      }
+      
+      const premiumTier = await db.getPremiumTier(senderNumber);
+      if (premiumTier === 'Free') {
+        await sock.sendMessage(jid, {
+          text: '🚫 *FITUR KHUSUS PREMIUM*\n\nFitur `.ocr` untuk ekstrak teks dari gambar/PDF hanya tersedia bagi pengguna *Silver, Gold, dan Diamond*.\n\n💸 Ketik `.premium` untuk melihat info paket.'
+        }, { quoted: messageObj });
+        return true;
+      }
+    }
+
+    if (!isOcr && !promptText && !hasImage) {
       await sock.sendMessage(jid, {
-        text: `🤖 *AI ASSISTANT GEMINI* 🤖\n\n📌 *Cara Pakai:*\n• Ketik \`.ai [pertanyaan]\` untuk tanya AI.\n• Reply foto dengan \`.ai [instruksi]\` untuk analisis gambar.\n\n*Contoh:* \`.ai jelaskan hukum newton secara ringkas\``
+        text: '🤖 *AI ASSISTANT GEMINI* 🤖\n\n💡 *Cara Pakai:*\n• Ketik `.ai [pertanyaan]` untuk tanya AI.\n• Reply foto/PDF dengan `.ai [instruksi]` untuk analisis.\n\n*Contoh:* `.ai jelaskan hukum newton secara ringkas`'
       }, { quoted: messageObj });
       return true;
     }
@@ -127,27 +145,39 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
 
     if (usedCount >= benefits.aiDailyLimit) {
       await sock.sendMessage(jid, {
-        text: `⚠️ *KUOTA AI HARIAN HABIS* (${usedCount}/${benefits.aiDailyLimit})\n\nKuotamu untuk tier *${premiumTier}* telah terpakai semua hari ini.\n\n👑 Upgrade ke *Gold* / *Diamond* untuk kuota AI lebih banyak!\nKetik *.premium* untuk info paket.`
+        text: `⚠️ *KUOTA AI HARIAN HABIS* (${usedCount}/${benefits.aiDailyLimit})\n\nKuotamu untuk tier *${premiumTier}* telah terpakai semua hari ini.\n\n💸 Upgrade ke *Gold* / *Diamond* untuk kuota AI lebih banyak!\nKetik *.premium* untuk info paket.`
       }, { quoted: messageObj });
       return true;
     }
 
-    await sock.sendMessage(jid, { text: `🤖 _Sedang berpikir..._` }, { quoted: messageObj });
+    await sock.sendMessage(jid, { text: isOcr ? '💡 _Sedang mengekstrak teks (OCR)..._' : '🤖 _Sedang berpikir..._' }, { quoted: messageObj });
 
     try {
-      const { askGeminiText, askGeminiVision } = await import('./src/ai/geminiService.js');
+      const { askGeminiText, askGeminiVision, askGeminiOCR } = await import('./src/ai/geminiService.js');
       let aiResponse = '';
 
       if (hasImage) {
-        // Download image buffer from WA socket
         const { downloadMediaMessage } = await import('@whiskeysockets/baileys');
-        const mediaMsg = quotedMedia ? { message: { imageMessage: quotedMedia } } : messageObj;
+        let mediaMsg = messageObj;
+        if (quotedMedia) {
+          if (messageObj?.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage) {
+             mediaMsg = { message: { imageMessage: quotedMedia } };
+          } else if (messageObj?.message?.extendedTextMessage?.contextInfo?.quotedMessage?.documentMessage) {
+             mediaMsg = { message: { documentMessage: quotedMedia } };
+          }
+        }
         const imgBuffer = await downloadMediaMessage(mediaMsg, 'buffer', {});
-        aiResponse = await askGeminiVision({
-          prompt: promptText || 'Analisis dan jelaskan isi gambar ini dengan jelas dan ringkas.',
-          imageBuffer: imgBuffer,
-          mimeType: (quotedMedia || directMedia).mimetype || 'image/jpeg'
-        });
+        const mimeType = (quotedMedia || directMedia).mimetype || 'image/jpeg';
+        
+        if (isOcr) {
+           aiResponse = await askGeminiOCR({ imageBuffer: imgBuffer, mimeType });
+        } else {
+           aiResponse = await askGeminiVision({
+             prompt: promptText || 'Analisis dan jelaskan isi dokumen/gambar ini dengan jelas dan ringkas.',
+             imageBuffer: imgBuffer,
+             mimeType
+           });
+        }
       } else {
         // Conversational AI context
         if (!aiContextMap.has(senderNumber)) {

@@ -161,3 +161,76 @@ export async function askGeminiVision({ prompt = 'Jelaskan atau analisis gambar 
     req.end();
   });
 }
+
+
+export async function askGeminiOCR({ imageBuffer, mimeType = 'image/jpeg' }) {
+  const apiKey = getApiKey();
+  if (!apiKey) {
+    throw new Error('GEMINI_API_KEY belum dikonfigurasi di file .env');
+  }
+
+  const base64Data = imageBuffer.toString('base64');
+  const systemPrompt = 'Kamu adalah bot OCR murni. Tugasmu hanya menyalin semua teks persis seperti yang tertulis di dalam dokumen atau gambar yang diberikan. JANGAN memberikan kata pembuka, penutup, atau komentar apa pun. HANYA teks mentahnya saja.';
+
+  const requestBody = {
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          {
+            inlineData: {
+              mimeType,
+              data: base64Data
+            }
+          },
+          { text: 'Ekstrak seluruh teks dari dokumen/gambar ini tanpa menambahkan komentar.' }
+        ]
+      }
+    ],
+    systemInstruction: {
+      parts: [{ text: systemPrompt }]
+    },
+    generationConfig: {
+      temperature: 0.1,
+      maxOutputTokens: 2000
+    }
+  };
+
+  const payload = JSON.stringify(requestBody);
+
+  return new Promise((resolve, reject) => {
+    // Menggunakan gemini-1.5-pro untuk hasil bacaan dokumen yang jauh lebih baik (Premium Feature)
+    const req = https.request({
+      hostname: 'generativelanguage.googleapis.com',
+      path: `/v1beta/models/gemini-1.5-pro:generateContent?key=${apiKey}`,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload)
+      }
+    }, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(data);
+          if (res.statusCode !== 200) {
+            const errDetails = parsed.error?.message || JSON.stringify(parsed);
+            return reject(new Error(`Gemini OCR API Error (${res.statusCode}): ${errDetails}`));
+          }
+          const replyText = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (!replyText) {
+            return reject(new Error('Gemini OCR tidak menemukan teks apa pun.'));
+          }
+          resolve(replyText.trim());
+        } catch (e) {
+          reject(new Error(`Gagal memproses JSON Gemini OCR: ${e.message}`));
+        }
+      });
+    });
+
+    req.on('error', reject);
+    req.write(payload);
+    req.end();
+  });
+}
