@@ -46,4 +46,4 @@ Berdasarkan instruksi langsung dari Owner, **setiap kali ada update, perbaikan, 
 4. **Verifikasi Jalur Routing:** Tanyakan dan pastikan kepada Owner bahwa bot dapat menerima *command* secara normal baik di **Chat Pribadi** maupun di **Grup**. Jangan anggap tugas selesai sebelum mendapat konfirmasi bahwa bot benar-benar merespons tanpa *error*.
 5. **Kebijakan Toggle Per-Grup:** Jika ada fitur yang bisa di-ON atau OFF-kan (Switch Toggle), pengaturannya **wajib** berlaku pada tingkat grup (Per-Grup), BUKAN global (kecuali fitur tersebut adalah fitur owner). Gunakan tabel `group_settings` untuk menyimpan konfigurasinya.
 
-6. **Git / Repository Push:** Jika perbaikan atau fitur baru telah dikonfirmasi selesai dan **TIDAK ADA BUG** oleh Owner, agen AI diwajibkan untuk langsung melakukan push/update perubahan kode tersebut ke repository resmi: https://github.com/Bar1965/Bot_whatsapp.git.
+6. **Git / Repository Push:** Jika perbaikan atau fitur baru telah dikonfirmasi selesai dan **TIDAK ADA BUG** oleh Owner, agen AI diwajibkan untuk langsung melakukan push/update perubahan kode tersebut ke repository resmi: https://github.com/Bar1965/Bot.git.
