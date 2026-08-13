@@ -78,6 +78,30 @@ Setelah transfer, harap kirim BUKTI TRANSFER (berupa gambar/screenshot) langsung
 
     // Persyaratan Wajib Join Grup Sebelum Beli
     requireGroupJoin: "true",
-    groupInviteLink: ""
+    groupInviteLink: "",
+
+    // Fitur Kuis Otomatis Terjadwal (Spam Preventer)
+    autoQuizEnabled: "false",
+
+    // Fitur Jadwal Sholat & Adzan Otomatis Grup
+    autoSholatEnabled: "true",
+    sholatCity: "Jakarta"
+  },
+
+  // ============================================================
+  // CASAKU PAYMENT GATEWAY (QRIS Otomatis via Android Helper)
+  // Set nilai-nilai ini di file .env (jangan di-commit ke Git):
+  //   CASAKU_LICENSE_KEY=xxx
+  //   CASAKU_WEBHOOK_SECRET=xxx
+  //   CASAKU_QRIS_ID=xxx
+  //   CASAKU_PACKAGE_IDS=id.dana        (pisah koma jika lebih dari satu)
+  //   CASAKU_QR_EXPIRY_MINUTES=15
+  // ============================================================
+  casaku: {
+    licenseKey: process.env.CASAKU_LICENSE_KEY || '',
+    webhookSecret: process.env.CASAKU_WEBHOOK_SECRET || '',
+    qrisId: process.env.CASAKU_QRIS_ID || '',
+    packageIds: process.env.CASAKU_PACKAGE_IDS || 'id.dana',
+    expiryMinutes: parseInt(process.env.CASAKU_QR_EXPIRY_MINUTES || '15', 10),
   }
 };

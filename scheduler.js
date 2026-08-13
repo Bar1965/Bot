@@ -6,6 +6,10 @@ import { botState } from './server.js';
 let lastBackupTime = 0;
 let schedulerSock = null;
 let schedulerStarted = false;
+let cachedPrayerTimes = null;
+let cachedPrayerDate = "";
+let cachedTimezone = "Asia/Jakarta";
+let lastAlertedPrayer = "";
 const backupRetentionDays = Math.max(1, Number.parseInt(process.env.BACKUP_RETENTION_DAYS || '14', 10) || 14);
 
 function removeExpiredBackups(backupsDir) {
@@ -71,7 +75,23 @@ async function processOrderAutomation(sock) {
   console.log("[SCHEDULER] Menjalankan pengecekan pengingat & kedaluwarsa transaksi...");
 
   try {
+    // 0. CASAKU AUTOMATED PAYMENT RECONCILIATION & EXPIRY
+    try {
+      const expiredCount = await db.expireStaleOrders(15);
+      if (expiredCount > 0) {
+        console.log(`[SCHEDULER] Casaku: ${expiredCount} order PENDING kedaluwarsa (15 menit) & stok dikembalikan.`);
+      }
+      const { reconcileStaleOrders } = await import('./src/payment/paymentService.js');
+      const recoveredCount = await reconcileStaleOrders();
+      if (recoveredCount > 0) {
+        console.log(`[SCHEDULER] Casaku: ${recoveredCount} order PENDING berhasil dipulihkan via reconciliation.`);
+      }
+    } catch (casakuErr) {
+      console.error('[SCHEDULER] Casaku automation error:', casakuErr.message);
+    }
+
     // 1. PROSES AUTO-REMINDER PEMBAYARAN (30 Menit)
+
     const pendingReminders = await db.getPendingReminders();
     for (const order of pendingReminders) {
       try {
@@ -187,21 +207,43 @@ async function sendDailySalesReport(sock) {
 }
 
 // Memory set untuk melacak ID game gratis yang sudah pernah dikirim notifikasinya
+let isFirstFreeGamesCheck = true;
 const notifiedFreeGameIds = new Set();
 
 async function checkFreeGamesAlerts(sock) {
-  if (!sock) return;
+  if (!sock || !botState.whatsappConnected) return;
   try {
     const { fetchFreeGames } = await import('./entertainmentHandler.js');
     const res = await fetchFreeGames('pc');
     if (!res.success || !res.games || res.games.length === 0) return;
 
-    // Filter game gratis baru yang bernilai tinggi (misal dari Steam, Epic, GOG)
-    const newFreeGames = res.games.filter(g => !notifiedFreeGameIds.has(g.id));
-    if (newFreeGames.length === 0) return;
+    // Saat startup bot pertama kali, tandai game lama yang ada agar tidak di-spam
+    if (isFirstFreeGamesCheck) {
+      isFirstFreeGamesCheck = false;
+      res.games.forEach(g => notifiedFreeGameIds.add(g.id));
+      console.log(`[SCHEDULER] Auto Free Games Alert diinisialisasi (${res.games.length} game terdaftar, cek otomatis tiap 6 jam).`);
+      return;
+    }
 
-    const targetJid = process.env.NOTIFICATION_JID || process.env.ADMIN_JID;
-    if (!targetJid) return;
+    // Filter game gratis yang benar-benar BARU rilis
+    const newFreeGames = res.games.filter(g => !notifiedFreeGameIds.has(g.id));
+    if (newFreeGames.length === 0) {
+      console.log('[SCHEDULER] Pengecekan 6 Jam Free Games: Tidak ada game baru yang gratis.');
+      return;
+    }
+
+    // Ambil daftar seluruh grup WhatsApp aktif
+    let targetGroupJids = [];
+    try {
+      const participatingGroups = await sock.groupFetchAllParticipating();
+      targetGroupJids = Object.keys(participatingGroups || {});
+    } catch (fetchErr) {
+      const dbGroups = await db.allQuery("SELECT jid FROM group_settings");
+      targetGroupJids = dbGroups.map(g => g.jid);
+    }
+    targetGroupJids = Array.from(new Set(targetGroupJids));
+
+    if (targetGroupJids.length === 0) return;
 
     for (const game of newFreeGames.slice(0, 3)) {
       notifiedFreeGameIds.add(game.id);
@@ -212,37 +254,169 @@ async function checkFreeGamesAlerts(sock) {
       const worthStr = game.worth && game.worth !== 'N/A' ? `~${game.worth}~ ➡️ *GRATIS (Rp0)*` : '*GRATIS (Rp0)*';
       const endDateStr = game.end_date && game.end_date !== 'N/A' ? game.end_date.split(' ')[0] : 'Selama persediaan ada';
 
-      let alertMsg = `📢 *PERINGATAN GAME GRATIS (FREE GAME ALERT)* 📢\n`;
-      alertMsg += `_Ada game PC keren yang lagi GRATIS 100%! Klaim & simpan selamanya!_\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+      let alertMsg = `📢 *PERINGATAN GAME GRATIS BARU (FREE GAME ALERT)* 📢\n`;
+      alertMsg += `_Ada game PC keren yang baru saja GRATIS 100%! Klaim & simpan selamanya!_\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
       alertMsg += `${platformIcon} *${game.title}*\n`;
       alertMsg += `💰 Harga Normal: ${worthStr}\n`;
       alertMsg += `🕹️ Platform: *${game.platforms || 'PC'}*\n`;
       alertMsg += `⏳ Batas Klaim: *${endDateStr}*\n\n`;
       alertMsg += `🔗 *Klaim Sekarang:* ${game.open_giveaway_url || game.gamerpower_url}\n\n`;
-
-      if (targetJid.endsWith('@g.us')) {
-        try {
-          const meta = await sock.groupMetadata(targetJid);
-          const mentions = meta.participants.map(p => p.id);
-          alertMsg += `👥 *PANGGILAN SEMUA MEMBER (TAGALL):*\n`;
-          mentions.forEach(m => {
-            alertMsg += `@${m.split('@')[0]} `;
-          });
-          alertMsg += `\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n💡 _Dapatkan terus update game gratis dari Akbar Store Bot!_`;
-          await sock.sendMessage(targetJid, { text: alertMsg, mentions });
-          console.log(`[SCHEDULER] Free Game Alert + TagAll terkirim ke grup ${targetJid}: ${game.title}`);
-          continue;
-        } catch (groupErr) {
-          console.error('[SCHEDULER] Gagal TagAll di grup target:', groupErr.message);
-        }
-      }
-
       alertMsg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n💡 _Dapatkan terus update game gratis dari Akbar Store Bot!_`;
-      await sock.sendMessage(targetJid, { text: alertMsg });
-      console.log(`[SCHEDULER] Free Game Alert terkirim: ${game.title}`);
+
+      for (const groupJid of targetGroupJids) {
+          try {
+            // Check group settings toggle
+            const gSettings = await db.getGroupSettings(groupJid);
+            const features = gSettings.features_config || {};
+            if (features.freegames !== true) {
+               continue; // Default OFF if not enabled by admin
+            }
+
+            // Fetch metadata to tag all
+            let mentions = [];
+            let tagAllBlock = '';
+            try {
+               const metadata = await sock.groupMetadata(groupJid);
+               mentions = metadata.participants.map(p => p.id);
+               tagAllBlock = '\n\n' + mentions.map(m => `@${m.split('@')[0]}`).join(' ');
+            } catch (e) {
+               // Ignore if bot is not admin or metadata fails
+            }
+
+            await sock.sendMessage(groupJid, { text: alertMsg + tagAllBlock, mentions: mentions });
+            console.log(`[SCHEDULER] Auto Free Game Alert terkirim ke grup ${groupJid}: ${game.title}`);
+          } catch (gErr) {
+            console.error(`[SCHEDULER] Gagal kirim free game alert ke ${groupJid}:`, gErr.message);
+          }
+        }
     }
   } catch (err) {
     console.error('[SCHEDULER ERROR] Gagal periksa free games alert:', err.message);
+  }
+}
+
+// Fungsi Pemicu Kuis Otomatis Grup Terjadwal
+async function processAutoQuiz(sock) {
+  if (!sock || !botState.whatsappConnected) return;
+  try {
+    const settings = await db.getSettings();
+    if (settings.autoQuizEnabled !== "true") {
+      console.log("[SCHEDULER] Auto-Quiz dilewati karena dinonaktifkan di pengaturan.");
+      return;
+    }
+
+    const groups = await db.allQuery("SELECT jid FROM group_settings WHERE bot_mode = 'all'");
+    if (groups.length === 0) return;
+
+    const { triggerAutoQuiz } = await import('./funHandler.js');
+    for (const group of groups) {
+      await triggerAutoQuiz(sock, group.jid);
+      console.log(`[SCHEDULER] Auto-Quiz terkirim ke grup: ${group.jid}`);
+    }
+  } catch (err) {
+    console.error('[SCHEDULER AUTO QUIZ ERROR]', err.message);
+  }
+}
+
+async function processAutoSholat(sock) {
+  if (!sock || !botState.whatsappConnected) return;
+
+  try {
+    const settings = await db.getSettings();
+    if (settings.autoSholatEnabled !== "true") {
+      return;
+    }
+
+    const city = settings.sholatCity || "Jakarta";
+    const now = new Date();
+
+    // Dapatkan tanggal hari ini dalam zona waktu target
+    const todayStr = new Intl.DateTimeFormat('sv-SE', { timeZone: cachedTimezone }).format(now);
+
+    // Jika ganti hari atau cache kosong, ambil jadwal sholat harian
+    if (cachedPrayerDate !== todayStr || !cachedPrayerTimes) {
+      const { getPrayerTimes } = await import('./mediaHandler.js');
+      const res = await getPrayerTimes(city);
+      if (res.success && res.timings) {
+        cachedPrayerTimes = res.timings;
+        cachedPrayerDate = todayStr;
+        cachedTimezone = res.meta?.timezone || "Asia/Jakarta";
+        console.log(`[SCHEDULER] Berhasil memuat jadwal sholat harian untuk kota ${city} (${cachedTimezone}) tanggal ${todayStr}`);
+      } else {
+        console.error('[SCHEDULER] Gagal mengambil jadwal sholat:', res.message);
+        return;
+      }
+    }
+
+    // Hitung ulang waktu sekarang menggunakan zona waktu target yang valid dari API
+    const currentHourMin = new Intl.DateTimeFormat('en-GB', { 
+      timeZone: cachedTimezone, 
+      hour: '2-digit', 
+      minute: '2-digit', 
+      hour12: false 
+    }).format(now);
+
+    const obligatoryPrayers = ['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'];
+
+    for (const prayer of obligatoryPrayers) {
+      let prayerTime = cachedPrayerTimes[prayer];
+      if (!prayerTime) continue;
+
+      prayerTime = prayerTime.split(' ')[0].trim();
+
+      if (currentHourMin === prayerTime) {
+        const alertKey = `${todayStr}:${prayer}`;
+        if (lastAlertedPrayer === alertKey) {
+          continue;
+        }
+
+        lastAlertedPrayer = alertKey;
+
+        const friendlyName = {
+          'Fajr': 'Subuh',
+          'Dhuhr': 'Dzuhur',
+          'Asr': 'Ashar',
+          'Maghrib': 'Maghrib',
+          'Isha': 'Isya'
+        }[prayer];
+
+        let msg = `🕌 *PENGINGAT ADZAN & JADWAL SHOLAT* 🕌\n`;
+        msg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+        msg += `Telah memasuki waktu sholat *${friendlyName}* untuk wilayah *${city.toUpperCase()}* dan sekitarnya.\n`;
+        msg += `🕒 Waktu: *${prayerTime}*\n\n`;
+        msg += `_“Sesungguhnya shalat itu adalah kewajiban yang ditentukan waktunya atas orang-orang yang beriman.” (QS. An-Nisa: 103)_\n\n`;
+        msg += `Mari sejenak menghentikan aktivitas, bersuci, dan menunaikan ibadah sholat. 🙏`;
+
+        // Kirim notifikasi ke SEMUA grup tempat bot bergabung (yang fiturnya aktif)
+        let targetGroupJids = [];
+        try {
+          const participatingGroups = await sock.groupFetchAllParticipating();
+          targetGroupJids = Object.keys(participatingGroups || {});
+        } catch (fetchErr) {
+          console.error('[SCHEDULER] Gagal fetch grup aktif, menggunakan fallback database:', fetchErr.message);
+          const dbGroups = await db.allQuery("SELECT jid FROM group_settings");
+          targetGroupJids = dbGroups.map(g => g.jid);
+        }
+
+        targetGroupJids = Array.from(new Set(targetGroupJids));
+
+        for (const targetJid of targetGroupJids) {
+          try {
+            // Cek pengaturan grup
+            const gSettings = await db.getGroupSettings(targetJid);
+            if (gSettings.auto_sholat === 0 || gSettings.auto_sholat === false) {
+              continue; // Skip jika fitur dimatikan di grup ini
+            }
+            await sock.sendMessage(targetJid, { text: msg });
+            console.log(`[SCHEDULER] Notifikasi Adzan ${friendlyName} terkirim ke grup ${targetJid}`);
+          } catch (gErr) {
+            console.error(`[SCHEDULER] Gagal mengirim adzan ke grup ${targetJid}:`, gErr.message);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[SCHEDULER AUTO SHOLAT ERROR]', err.message);
   }
 }
 
@@ -258,6 +432,9 @@ export function startScheduler(sock) {
 
   // Jalankan pengecekan Free Games pertama kali setelah 20 detik bot online
   setTimeout(() => checkFreeGamesAlerts(schedulerSock), 20000);
+
+  // Jalankan pengecekan jadwal sholat pertama kali setelah 15 detik
+  setTimeout(() => processAutoSholat(schedulerSock), 15000);
 
   // Set interval pengecekan order setiap 5 menit
   setInterval(() => {
@@ -286,6 +463,16 @@ export function startScheduler(sock) {
       sendDailySalesReport(schedulerSock);
     }
   }, 5 * 60 * 1000);
+
+  // Set interval kuis otomatis grup setiap 1 jam
+  setInterval(() => {
+    processAutoQuiz(schedulerSock);
+  }, 1 * 60 * 60 * 1000);
+
+  // Set interval pengecekan waktu sholat otomatis setiap 1 menit (60 detik)
+  setInterval(() => {
+    processAutoSholat(schedulerSock);
+  }, 60 * 1000);
 
   // Jalankan backup database pertama kali saat scheduler mulai
   backupDatabase();

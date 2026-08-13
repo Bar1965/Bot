@@ -3,206 +3,307 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Login Admin - WhatsApp Sales Bot</title>
+  <title>Login Admin — WhatsApp Sales Bot</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
-      --bg-primary: #060a13;
-      --bg-card: rgba(15, 23, 42, 0.65);
-      --bg-input: rgba(15, 23, 42, 0.7);
-      --border-card: rgba(148, 163, 184, 0.08);
-      --border-input: rgba(100, 116, 139, 0.3);
-      --border-focus: #10b981;
-      --text-primary: #e2e8f0;
-      --text-secondary: #94a3b8;
-      --text-muted: #64748b;
-      --accent-from: #10b981;
-      --accent-to: #14b8a6;
-      --accent-glow: rgba(16, 185, 129, 0.15);
-      --danger-bg: rgba(244, 63, 94, 0.08);
-      --danger-border: rgba(244, 63, 94, 0.2);
-      --danger-text: #fb7185;
-      --success-bg: rgba(16, 185, 129, 0.08);
-      --success-border: rgba(16, 185, 129, 0.2);
-      --success-text: #34d399;
+      --bg-dark: #070b14;
+      --card-bg: rgba(15, 23, 42, 0.65);
+      --card-border: rgba(255, 255, 255, 0.08);
+      --input-bg: rgba(10, 15, 29, 0.7);
+      --input-border: rgba(148, 163, 184, 0.15);
+      --input-focus: #10b981;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --text-sub: #64748b;
+      --primary-emerald: #10b981;
+      --primary-teal: #14b8a6;
+      --accent-indigo: #6366f1;
+      --accent-violet: #8b5cf6;
+      --glow-emerald: rgba(16, 185, 129, 0.2);
+      --danger-bg: rgba(244, 63, 94, 0.12);
+      --danger-border: rgba(244, 63, 94, 0.3);
+      --danger-text: #fda4af;
+      --success-bg: rgba(16, 185, 129, 0.12);
+      --success-border: rgba(16, 185, 129, 0.3);
+      --success-text: #6ee7b7;
     }
 
     body {
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-      background: var(--bg-primary);
-      color: var(--text-primary);
+      font-family: 'Plus Jakarta Sans', 'Inter', -apple-system, sans-serif;
+      background-color: var(--bg-dark);
+      color: var(--text-main);
       min-height: 100vh;
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 1rem;
+      padding: 1.5rem;
       position: relative;
       overflow: hidden;
     }
 
-    body::before {
-      content: '';
+    /* Ambient Background Orbs */
+    .ambient-bg {
       position: fixed;
       inset: 0;
-      background:
-        radial-gradient(ellipse 80% 60% at 70% 20%, rgba(99, 102, 241, 0.12), transparent),
-        radial-gradient(ellipse 70% 50% at 20% 80%, rgba(16, 185, 129, 0.08), transparent),
-        radial-gradient(ellipse 50% 40% at 50% 50%, rgba(139, 92, 246, 0.05), transparent);
       z-index: 0;
-      animation: bgPulse 12s ease-in-out infinite alternate;
+      pointer-events: none;
+      overflow: hidden;
     }
 
-    @keyframes bgPulse {
-      0% { opacity: 0.8; transform: scale(1); }
-      100% { opacity: 1; transform: scale(1.05); }
+    .orb {
+      position: absolute;
+      border-radius: 50%;
+      filter: blur(90px);
+      opacity: 0.5;
+      animation: floatOrb 18s ease-in-out infinite alternate;
     }
 
-    .login-wrapper {
+    .orb-1 {
+      width: 450px;
+      height: 450px;
+      background: radial-gradient(circle, rgba(16, 185, 129, 0.35), transparent 70%);
+      top: -10%;
+      left: 15%;
+    }
+
+    .orb-2 {
+      width: 500px;
+      height: 500px;
+      background: radial-gradient(circle, rgba(99, 102, 241, 0.3), transparent 70%);
+      bottom: -15%;
+      right: 10%;
+      animation-delay: -6s;
+    }
+
+    .orb-3 {
+      width: 350px;
+      height: 350px;
+      background: radial-gradient(circle, rgba(139, 92, 246, 0.25), transparent 70%);
+      top: 40%;
+      left: -5%;
+      animation-delay: -12s;
+    }
+
+    @keyframes floatOrb {
+      0% { transform: translate(0, 0) scale(1); }
+      50% { transform: translate(30px, -40px) scale(1.08); }
+      100% { transform: translate(-20px, 30px) scale(0.95); }
+    }
+
+    .login-container {
       width: 100%;
-      max-width: 420px;
+      max-width: 440px;
       position: relative;
       z-index: 1;
+      animation: fadeInUp 0.6s cubic-bezier(0.16, 1, 0.3, 1);
     }
 
-    .logo-header {
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(24px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .header-branding {
       text-align: center;
-      margin-bottom: 2rem;
+      margin-bottom: 2.25rem;
     }
 
-    .logo-icon {
+    .brand-icon-wrapper {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      width: 64px;
-      height: 64px;
-      border-radius: 18px;
-      background: linear-gradient(135deg, var(--accent-from), var(--accent-to));
-      color: #0f172a;
-      font-size: 28px;
-      font-weight: 800;
-      box-shadow: 0 8px 32px var(--accent-glow), 0 0 0 1px rgba(16, 185, 129, 0.1);
-      margin-bottom: 16px;
-      animation: logoPulse 3s ease-in-out infinite;
+      width: 72px;
+      height: 72px;
+      border-radius: 22px;
+      background: linear-gradient(135deg, rgba(16, 185, 129, 0.2), rgba(99, 102, 241, 0.2));
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      backdrop-filter: blur(12px);
+      box-shadow: 0 12px 32px var(--glow-emerald), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+      margin-bottom: 1.25rem;
+      position: relative;
     }
 
-    @keyframes logoPulse {
-      0%, 100% { box-shadow: 0 8px 32px var(--accent-glow), 0 0 0 1px rgba(16, 185, 129, 0.1); }
-      50% { box-shadow: 0 8px 48px rgba(16, 185, 129, 0.25), 0 0 0 1px rgba(16, 185, 129, 0.2); }
-    }
-
-    .logo-title {
-      font-size: 1.75rem;
-      font-weight: 800;
-      background: linear-gradient(135deg, #34d399, #2dd4bf, #a78bfa);
+    .brand-icon-inner {
+      font-size: 32px;
+      background: linear-gradient(135deg, #34d399, #818cf8);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
-      background-clip: text;
-      letter-spacing: -0.025em;
+      filter: drop-shadow(0 2px 8px rgba(16, 185, 129, 0.4));
     }
 
-    .logo-subtitle {
-      font-size: 0.875rem;
+    .brand-title {
+      font-size: 1.875rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      background: linear-gradient(135deg, #ffffff 30%, #cbd5e1 70%, #94a3b8 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .brand-subtitle {
+      font-size: 0.9375rem;
       color: var(--text-muted);
-      margin-top: 8px;
+      margin-top: 6px;
+      font-weight: 400;
     }
 
     .glass-card {
-      background: var(--bg-card);
-      backdrop-filter: blur(24px);
-      -webkit-backdrop-filter: blur(24px);
-      border: 1px solid var(--border-card);
-      border-radius: 24px;
-      padding: 2rem;
+      background: var(--card-bg);
+      backdrop-filter: blur(28px);
+      -webkit-backdrop-filter: blur(28px);
+      border: 1px solid var(--card-border);
+      border-radius: 28px;
+      padding: 2.25rem;
       box-shadow:
-        0 24px 48px -12px rgba(0, 0, 0, 0.4),
-        inset 0 1px 0 rgba(255, 255, 255, 0.03);
+        0 30px 60px -12px rgba(0, 0, 0, 0.56),
+        inset 0 1px 0 rgba(255, 255, 255, 0.08);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .glass-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, var(--primary-emerald), var(--accent-indigo), transparent);
+      opacity: 0.8;
     }
 
     .alert-box {
       display: none;
-      padding: 12px 16px;
-      border-radius: 12px;
+      padding: 14px 18px;
+      border-radius: 14px;
       font-size: 0.875rem;
+      font-weight: 500;
       margin-bottom: 1.5rem;
       border: 1px solid;
+      line-height: 1.4;
+      animation: alertSlide 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    @keyframes alertSlide {
+      from { opacity: 0; transform: translateY(-8px); }
+      to { opacity: 1; transform: translateY(0); }
     }
 
     .alert-box.error { background: var(--danger-bg); border-color: var(--danger-border); color: var(--danger-text); }
     .alert-box.success { background: var(--success-bg); border-color: var(--success-border); color: var(--success-text); }
     .alert-box.visible { display: block; }
 
-    .form-group { margin-bottom: 1.25rem; }
+    .form-group {
+      margin-bottom: 1.35rem;
+    }
 
     .form-label {
-      display: block;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
       font-size: 0.8125rem;
       font-weight: 600;
-      color: var(--text-secondary);
+      color: #cbd5e1;
       margin-bottom: 8px;
+      letter-spacing: 0.01em;
+    }
+
+    .input-wrapper {
+      position: relative;
     }
 
     .form-input {
       width: 100%;
-      background: var(--bg-input);
-      border: 1px solid var(--border-input);
-      border-radius: 12px;
-      padding: 12px 16px;
-      color: var(--text-primary);
-      font-size: 0.875rem;
+      background: var(--input-bg);
+      border: 1px solid var(--input-border);
+      border-radius: 14px;
+      padding: 14px 16px;
+      color: var(--text-main);
+      font-size: 0.9375rem;
       font-family: inherit;
       outline: none;
-      transition: border-color 0.2s, box-shadow 0.2s;
+      transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.2);
     }
 
-    .form-input::placeholder { color: var(--text-muted); }
+    .form-input::placeholder { color: var(--text-sub); }
 
     .form-input:focus {
-      border-color: var(--border-focus);
-      box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.1);
+      border-color: var(--input-focus);
+      background: rgba(15, 23, 42, 0.85);
+      box-shadow:
+        0 0 0 4px var(--glow-emerald),
+        inset 0 2px 4px rgba(0, 0, 0, 0.1);
     }
 
     .btn-submit {
       width: 100%;
-      padding: 14px;
+      padding: 15px;
       border: none;
-      border-radius: 12px;
-      background: linear-gradient(135deg, var(--accent-from), var(--accent-to));
-      color: #0f172a;
+      border-radius: 14px;
+      background: linear-gradient(135deg, var(--primary-emerald), #059669);
+      color: #042f2e;
       font-size: 0.9375rem;
       font-weight: 700;
       font-family: inherit;
       cursor: pointer;
-      margin-top: 0.5rem;
-      transition: all 0.2s;
-      box-shadow: 0 4px 16px var(--accent-glow);
+      margin-top: 0.75rem;
+      transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      box-shadow: 0 6px 20px var(--glow-emerald);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
     }
 
     .btn-submit:hover {
-      box-shadow: 0 8px 24px rgba(16, 185, 129, 0.25);
-      transform: translateY(-1px);
+      box-shadow: 0 10px 28px rgba(16, 185, 129, 0.35);
+      transform: translateY(-2px);
+      background: linear-gradient(135deg, #34d399, #10b981);
     }
 
-    .btn-submit:active { transform: scale(0.98); }
-    .btn-submit:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+    .btn-submit:active { transform: translateY(0) scale(0.98); }
+    .btn-submit:disabled { opacity: 0.6; cursor: not-allowed; transform: none; box-shadow: none; }
 
-    .footer-text {
-      text-align: center;
-      margin-top: 2rem;
+    .help-hint {
       font-size: 0.75rem;
-      color: var(--text-muted);
+      color: var(--text-sub);
+      margin-top: 6px;
+      display: block;
+    }
+
+    .footer-credits {
+      text-align: center;
+      margin-top: 2.25rem;
+      font-size: 0.8125rem;
+      color: var(--text-sub);
+    }
+
+    .footer-credits span {
+      color: var(--primary-emerald);
+      font-weight: 600;
     }
   </style>
 </head>
 <body>
-  <div class="login-wrapper">
-    <div class="logo-header">
-      <div class="logo-icon">💬</div>
-      <h1 class="logo-title">Akbar Store Admin</h1>
-      <p class="logo-subtitle">Masuk untuk mengelola produk, order, dan broadcast</p>
+  <div class="ambient-bg">
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+    <div class="orb orb-3"></div>
+  </div>
+
+  <div class="login-container">
+    <div class="header-branding">
+      <div class="brand-icon-wrapper">
+        <div class="brand-icon-inner">⚡</div>
+      </div>
+      <h1 class="brand-title">Akbar Store Admin</h1>
+      <p class="brand-subtitle">Portal Manajemen WhatsApp Sales & Automation Bot</p>
     </div>
 
     <div class="glass-card">
@@ -210,23 +311,37 @@
 
       <form id="loginForm">
         <div class="form-group">
-          <label for="username" class="form-label">Username</label>
-          <input type="text" id="username" name="username" required autocomplete="username" class="form-input" placeholder="Masukkan username admin">
+          <label for="username" class="form-label">Username Admin</label>
+          <div class="input-wrapper">
+            <input type="text" id="username" name="username" required autocomplete="username" class="form-input" placeholder="Masukkan username admin">
+          </div>
         </div>
+
         <div class="form-group">
-          <label for="password" class="form-label">Password</label>
-          <input type="password" id="password" name="password" required autocomplete="current-password" class="form-input" placeholder="••••••••">
+          <label for="password" class="form-label">Kata Sandi</label>
+          <div class="input-wrapper">
+            <input type="password" id="password" name="password" required autocomplete="current-password" class="form-input" placeholder="••••••••">
+          </div>
         </div>
+
         <div class="form-group" id="otpGroup" style="display:none;">
-          <label for="otp" class="form-label">Kode Authenticator</label>
-          <input type="text" id="otp" name="otp" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" class="form-input" placeholder="123456">
-          <small style="color:var(--text-muted);">Masukkan kode 6 digit dari aplikasi authenticator.</small>
+          <label for="otp" class="form-label">Kode Authenticator (2FA)</label>
+          <div class="input-wrapper">
+            <input type="text" id="otp" name="otp" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" class="form-input" placeholder="123456">
+          </div>
+          <span class="help-hint">Masukkan kode 6-digit dari Google Authenticator / Authy.</span>
         </div>
-        <button type="submit" id="btnSubmit" class="btn-submit">Masuk Sekarang</button>
+
+        <button type="submit" id="btnSubmit" class="btn-submit">
+          <span>Masuk Dashboard</span>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>
+        </button>
       </form>
     </div>
 
-    <div class="footer-text">&copy; 2026 Akbar Store. All rights reserved.</div>
+    <div class="footer-credits">
+      &copy; 2026 <span>Akbar Store</span>. All rights reserved.
+    </div>
   </div>
 
   <script>
@@ -246,7 +361,7 @@
       const otp = document.getElementById('otp').value.trim();
 
       btnSubmit.disabled = true;
-      btnSubmit.textContent = 'Mencoba Masuk...';
+      btnSubmit.innerHTML = '<span>Memverifikasi...</span>';
       alertBox.className = 'alert-box';
 
       try {
@@ -260,27 +375,27 @@
         const data = await response.json();
 
         if (response.ok && data.success) {
-          showAlert('Login berhasil! Mengalihkan...', 'success');
+          showAlert('✅ Login berhasil! Mengalihkan ke dashboard...', 'success');
           localStorage.setItem('username', data.username);
           localStorage.setItem('role', data.role);
-          setTimeout(() => { window.location.href = '/index.html'; }, 1000);
+          setTimeout(() => { window.location.href = '/index.html'; }, 800);
         } else if (data.requiresTwoFactor) {
           const otpGroup = document.getElementById('otpGroup');
           otpGroup.style.display = 'block';
           document.getElementById('otp').required = true;
           document.getElementById('otp').focus();
-          showAlert(data.message || 'Masukkan kode authenticator.');
+          showAlert(data.message || 'Masukkan kode 2FA authenticator.');
           btnSubmit.disabled = false;
-          btnSubmit.textContent = 'Verifikasi & Masuk';
+          btnSubmit.innerHTML = '<span>Verifikasi & Masuk</span>';
         } else {
           showAlert(data.message || 'Username atau password salah.');
           btnSubmit.disabled = false;
-          btnSubmit.textContent = 'Masuk Sekarang';
+          btnSubmit.innerHTML = '<span>Masuk Dashboard</span>';
         }
       } catch (err) {
-        showAlert('Terjadi kesalahan koneksi ke server.');
+        showAlert('❌ Terjadi kesalahan koneksi ke server.');
         btnSubmit.disabled = false;
-        btnSubmit.textContent = 'Masuk Sekarang';
+        btnSubmit.innerHTML = '<span>Masuk Dashboard</span>';
         console.error(err);
       }
     });

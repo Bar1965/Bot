@@ -324,7 +324,24 @@ function loadLocalGameImages() {
   }
 }
 
-const TEBAK_GAMBAR_DATABASE = [...BASE_TEBAK_GAMBAR_DATABASE, ...loadLocalGameImages()];
+function loadApiGameImages() {
+  try {
+    const filePath = path.join(process.cwd(), 'public', 'tebakgambar.json');
+    if (fs.existsSync(filePath)) {
+      const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      return data.map(item => ({
+        image: item.img,
+        answer: item.jawaban,
+        hint: item.deskripsi || 'Amati gambar baik-baik.'
+      }));
+    }
+  } catch (error) {
+    console.error('[TEBAK_GAMBAR_API_ERR]', error.message);
+  }
+  return [];
+}
+
+const TEBAK_GAMBAR_DATABASE = [...BASE_TEBAK_GAMBAR_DATABASE, ...loadLocalGameImages(), ...loadApiGameImages()];
 
 export function getTebakGambarQuestion() {
   const q = TEBAK_GAMBAR_DATABASE[Math.floor(Math.random() * TEBAK_GAMBAR_DATABASE.length)];

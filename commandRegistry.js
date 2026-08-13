@@ -5,6 +5,8 @@ const categories = {
     commands: [
       ['.produk', 'Lihat katalog dan stok'],
       ['.beli <kode> <jumlah>', 'Tambah produk ke keranjang'],
+      ['.lapak', 'Lihat / buka lapak reseller komunitas'],
+      ['.lapak add <nama> <harga> <stok> <isi>', 'Buka lapak (Premium)'],
       ['.cari <kata kunci>', 'Cari produk toko'],
       ['.bundle', 'Lihat paket hemat']
     ]
@@ -13,6 +15,7 @@ const categories = {
     title: '🛒 TRANSAKSI & PEMBAYARAN',
     aliases: ['2', 'transaksi', 'bayar'],
     commands: [
+      ['.pay / .qris', 'Tampilkan QRIS pembayaran langsung'],
       ['.keranjang', 'Lihat keranjang belanja'],
       ['.checkout', 'Buat tagihan pembayaran'],
       ['.status', 'Cek status pesanan terakhir'],
@@ -20,6 +23,19 @@ const categories = {
       ['.batal', 'Batalkan pesanan aktif']
     ]
   },
+  premium2: {
+    title: '👑 PREMIUM MEMBERSHIP 2.0',
+    aliases: ['premium', 'vip', 'ai'],
+    commands: [
+      ['.premium', 'Daftar paket & benefit Premium 2.0'],
+      ['.upgradepremium <tier>', 'Upgrade ke Silver/Gold/Diamond'],
+      ['.ai <pertanyaan>', 'Tanya AI Gemini (atau reply foto)'],
+      ['.claimvoucher', 'Klaim voucher bulanan gratis (Diamond)'],
+      ['.wishlist add <kode>', 'DM WhatsApp otomatis saat produk restock']
+    ]
+  },
+
+
   media: {
     title: '📥 MEDIA & CREATIVE',
     aliases: ['3', 'media', 'downloader'],
@@ -31,21 +47,32 @@ const categories = {
       ['.meme teks atas | teks bawah', 'Buat meme dari foto'],
       ['.brat <teks>', 'Buat stiker Brat'],
       ['.draw <prompt>', 'Buat gambar AI'],
-      ['.tts <teks>', 'Ubah teks menjadi voice note']
+      ['.tts <teks>', 'Ubah teks menjadi voice note'],
+      ['.song / .play <judul>', 'Download musik MP3 dari YouTube'],
+      ['.tomp3 / .tovn', 'Ekstrak audio dari video (reply video)'],
+      ['.tr / .translate <lang> <teks>', 'Terjemahkan teks (atau reply pesan)'],
+      ['.sholat <kota>', 'Cek jadwal sholat wilayah setempat'],
+      ['.menfess <nomor> | <teks>', 'Kirim pesan anonim rahasia ke nomor target'],
+      ['.hd / .remini', 'Tingkatkan kualitas foto buram jadi HD']
     ]
   },
   hiburan: {
     title: '🎮 HIBURAN & GAME',
     aliases: ['hiburan', 'game', 'games', 'fun'],
     commands: [
-      ['.freegames', 'Daftar semua game PC gratis 100% (Steam, Epic, GOG, dll)'],
+      ['.freegames', 'Daftar semua game PC gratis 100%'],
+      ['.ww / .werewolf', 'Mainkan game Werewolf/Mafia multiplayer'],
+      ['.afk <alasan>', 'Set status AFK (Auto-reply saat di-mention)'],
       ['.slot [taruhan]', 'Spin judi slot machine virtual'],
-      ['.zodiak <zodiak>', 'Ramalan harian zodiak'],
-      ['.jodoh <nama1> & <nama2>', 'Tes kecocokan pasangan'],
+
+      ['.suit @member [poin]', 'Tantang suit (Gunting-Batu-Kertas) multiplayer'],
+      ['.spin [taruhan]', 'Putar Roda Keberuntungan (Lucky Spin)'],
+      ['.tebakangka', 'Mulai game tebak angka Pot Progresif grup'],
+      ['.tebak [angka]', 'Tebak angka rahasia aktif'],
+      ['.cancelsuit', 'Batalkan tantangan suit aktif'],
       ['.quiz / .trivia', 'Kuis pilihan ganda'],
       ['.tebakemoji', 'Tebak arti emoji'],
       ['.tebakkata', 'Tebak kata dari petunjuk'],
-      ['.tebakgambar', 'Tebak gambar dengan batas waktu'],
       ['.jawab <jawaban>', 'Jawab game yang aktif'],
       ['.hint', 'Minta petunjuk game'],
       ['.sambungkata', 'Game sambung kata grup'],
@@ -61,13 +88,13 @@ const categories = {
     commands: [
       ['.daily', 'Klaim hadiah harian'],
       ['.poin / .profile', 'Lihat XP, level, dan poin'],
+      ['.tukar [nomor]', 'Tukar poin dengan kupon belanja/premium'],
       ['.rank / .leaderboard', 'Lihat peringkat pemain'],
       ['.badge', 'Lihat pencapaian game'],
       ['.rekomendasi', 'Dapatkan rekomendasi produk'],
       ['.misi', 'Lihat misi harian'],
       ['.kupon <kode>', 'Gunakan kupon diskon'],
-      ['.referral', 'Program ajak teman'],
-      ['.favorit', 'Lihat wishlist produk']
+      ['.referral', 'Program ajak teman']
     ]
   },
   favorit: {

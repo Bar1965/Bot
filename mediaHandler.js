@@ -10,11 +10,12 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import axios from 'axios';
-import vm from 'vm';
 import https from 'https';
-import { execFile, spawn } from 'child_process';
+import { spawn } from 'child_process';
 
 const httpsAgent = new https.Agent({ rejectUnauthorized: false, family: 4 });
+
+import { isApiHealthy, reportApiSuccess, reportApiFailure, executeWithSelfHealing } from './src/utils/circuitBreaker.js';
 
 // Set FFMPEG Path global agar wa-sticker-formatter & ffmpeg menggunakan binary asli
 process.env.FFMPEG_PATH = ffmpegInstaller.path;
@@ -22,104 +23,208 @@ ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 process.env.YTDL_NO_UPDATE = 'true';
 
 /**
- * Download media via yt-dlp CLI — method paling andal untuk Instagram (selalu diupdate komunitas)
- * Returns { videoUrl, title } or null on failure
+ * Auto-Update Engine untuk yt-dlp
+ * Menjalankan background update python -m pip install -U yt-dlp secara mandiri.
  */
-async function downloadWithYtdlp(url) {
-  return new Promise((resolve) => {
-    const cookiesPath = path.join(process.cwd(), 'ig_cookies.txt');
-    const hasCookies = fs.existsSync(cookiesPath);
-    const tmpDir = path.join(process.cwd(), 'tmp');
-    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
-    const tmpFile = path.join(tmpDir, `ytdlp_${Date.now()}_${Math.floor(Math.random()*1000)}.mp4`);
+export async function autoUpdateYtdlp() {
+  console.log('[AUTO_UPDATE] 🔄 Memeriksa & memperbarui dependensi yt-dlp di background...');
+  runPythonProc(['-m', 'pip', 'install', '-U', 'yt-dlp'], 120000).then(res => {
+    if (res && res.code === 0) {
+      console.log('[AUTO_UPDATE] ✅ Engine yt-dlp berhasil diperbarui ke versi paling baru!');
+    }
+  }).catch(() => {});
+}
 
-    // Tier 1: Direct MP4 File Download via yt-dlp (Bypass 403 Forbidden on WhatsApp)
-    const fileArgs = [
-      '-m', 'yt_dlp',
-      '--no-warnings',
-      '--no-playlist',
-      '--geo-bypass',
-      '--extractor-args', 'youtube:player_client=android,web',
-      '-f', 'b[filesize<48M]/bestvideo[filesize<38M]+bestaudio/b[ext=mp4]/best',
-      '--print', 'title',
-      '-o', tmpFile,
-      ...(hasCookies ? ['--cookies', cookiesPath] : []),
-      url
-    ];
+// Jalankan pembaruan otomatis saat startup
+autoUpdateYtdlp();
 
-    let stdout = '';
-    let stderr = '';
-    const proc = spawn('python', fileArgs, { timeout: 45000 });
 
-    proc.stdout.on('data', (d) => { stdout += d.toString(); });
-    proc.stderr.on('data', (d) => { stderr += d.toString(); });
+const DEFAULT_USER_AGENTS = [
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+];
 
-    proc.on('close', (code) => {
-      const title = stdout.trim().split('\n')[0] || 'Media Video';
-
-      if (code === 0 && fs.existsSync(tmpFile)) {
-        const stats = fs.statSync(tmpFile);
-        if (stats.size > 5000) {
-          try {
-            const buffer = fs.readFileSync(tmpFile);
-            fs.unlinkSync(tmpFile);
-            resolve({ success: true, buffer, title });
-            return;
-          } catch (e) {}
-        }
-        if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
-      }
-
-      // Tier 2 Fallback: Get Direct URL stream if direct file download failed
-      console.log('[MEDIA_HANDLER] yt-dlp direct file download fallback to URL mode:', stderr.slice(0, 150));
-      const urlArgs = [
-        '-m', 'yt_dlp',
-        '--get-url',
-        '--get-title',
-        '--no-warnings',
-        '--no-playlist',
-        '--geo-bypass',
-        '-f', 'best[ext=mp4]/best',
-        ...(hasCookies ? ['--cookies', cookiesPath] : []),
-        url
-      ];
-
-      let stdout2 = '';
-      const proc2 = spawn('python', urlArgs, { timeout: 20000 });
-      proc2.stdout.on('data', (d) => { stdout2 += d.toString(); });
-      proc2.on('close', (code2) => {
-        if (code2 === 0 && stdout2.trim()) {
-          const lines = stdout2.trim().split('\n').map(l => l.trim()).filter(Boolean);
-          const urlLine = [...lines].reverse().find(l => l.startsWith('http'));
-          const titleLine = lines.find(l => !l.startsWith('http'));
-          if (urlLine) {
-            resolve({ success: true, videoUrl: urlLine, title: titleLine || title });
-            return;
-          }
-        }
-        resolve(null);
-      });
-      proc2.on('error', () => resolve(null));
-    });
-
-    proc.on('error', (err) => {
-      console.log('[MEDIA_HANDLER] yt-dlp spawn error:', err.message);
-      if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
-      resolve(null);
-    });
-  });
+function getRandomUserAgent() {
+  return DEFAULT_USER_AGENTS[Math.floor(Math.random() * DEFAULT_USER_AGENTS.length)];
 }
 
 /**
- * Download TikTok Video tanpa watermark via multi-tier API
+ * Helper eksekusi runner Python (Mencoba python -> py -> python3 secara fleksibel)
+ */
+async function runPythonProc(args, timeout = 45000) {
+  const runners = ['python', 'py', 'python3'];
+  for (const runner of runners) {
+    const result = await new Promise((resolve) => {
+      let stdout = '';
+      let stderr = '';
+      let proc;
+      try {
+        proc = spawn(runner, args, { timeout });
+      } catch (err) {
+        resolve(null);
+        return;
+      }
+
+      proc.stdout?.on('data', (d) => { stdout += d.toString(); });
+      proc.stderr?.on('data', (d) => { stderr += d.toString(); });
+
+      proc.on('close', (code) => {
+        resolve({ code, stdout, stderr });
+      });
+
+      proc.on('error', () => {
+        resolve(null);
+      });
+    });
+
+    if (result && result.code === 0) {
+      return result;
+    }
+  }
+  return null;
+}
+
+/**
+ * Universal Fetch Buffer — Menghindari 403 Forbidden pada CDN WhatsApp
+ */
+export async function fetchBuffer(url) {
+  if (!url) return null;
+  try {
+    const res = await axios.get(url, {
+      httpsAgent,
+      responseType: 'arraybuffer',
+      timeout: 30000,
+      maxRedirects: 10,
+      headers: {
+        'User-Agent': getRandomUserAgent(),
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9,id;q=0.8',
+        'Referer': 'https://www.google.com/'
+      }
+    });
+    if (res.data) {
+      const buf = Buffer.from(res.data);
+      if (buf.length > 3000) return buf;
+    }
+  } catch (err) {
+    console.log('[MEDIA_HANDLER] fetchBuffer error:', err.message);
+  }
+  return null;
+}
+
+/**
+ * Download media via yt-dlp CLI — metode paling andal (disuntikkan FFmpeg location & format gabungan)
+ */
+async function downloadWithYtdlp(url) {
+  const cookiesPath = path.join(process.cwd(), 'ig_cookies.txt');
+  const hasCookies = fs.existsSync(cookiesPath);
+  const tmpDir = path.join(process.cwd(), 'tmp');
+  if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+  const tmpFile = path.join(tmpDir, `ytdlp_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp4`);
+
+  const fileArgs = [
+    '-m', 'yt_dlp',
+    '--no-warnings',
+    '--no-playlist',
+    '--geo-bypass',
+    '--ffmpeg-location', ffmpegInstaller.path,
+    '--extractor-args', 'youtube:player_client=android,web',
+    '-f', 'b/best[ext=mp4]/18/bestvideo[filesize<38M]+bestaudio/best',
+    '--print', 'title',
+    '-o', tmpFile,
+    ...(hasCookies ? ['--cookies', cookiesPath] : []),
+    url
+  ];
+
+  const procRes = await runPythonProc(fileArgs, 45000);
+  if (procRes && fs.existsSync(tmpFile)) {
+    const title = procRes.stdout.trim().split('\n')[0] || 'Media Video';
+    const stats = fs.statSync(tmpFile);
+    if (stats.size > 5000) {
+      try {
+        const buffer = fs.readFileSync(tmpFile);
+        fs.unlinkSync(tmpFile);
+        return { success: true, buffer, title };
+      } catch (e) {}
+    }
+    if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
+  }
+
+  // Tier 2 Fallback: Direct Stream URL
+  const urlArgs = [
+    '-m', 'yt_dlp',
+    '--get-url',
+    '--get-title',
+    '--no-warnings',
+    '--no-playlist',
+    '--geo-bypass',
+    '--ffmpeg-location', ffmpegInstaller.path,
+    '-f', 'b/best[ext=mp4]/18/best',
+    ...(hasCookies ? ['--cookies', cookiesPath] : []),
+    url
+  ];
+
+  const procRes2 = await runPythonProc(urlArgs, 25000);
+  if (procRes2 && procRes2.stdout.trim()) {
+    const lines = procRes2.stdout.trim().split('\n').map(l => l.trim()).filter(Boolean);
+    const urlLine = [...lines].reverse().find(l => l.startsWith('http'));
+    const titleLine = lines.find(l => !l.startsWith('http'));
+    if (urlLine) {
+      const buf = await fetchBuffer(urlLine);
+      return { success: true, buffer: buf || undefined, videoUrl: urlLine, title: titleLine || 'Media Video' };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Download TikTok Video tanpa watermark — Multi-Tier Failover (TikWM -> SSSTik -> Siputzx -> yt-dlp)
  */
 export async function downloadTikTok(url) {
-  // Method 1: SSSTik API (Direct Watermark-free MP4)
+  // Method 1: TikWM API dengan penanganan Rate Limit (1 req/sec) & retry otomatis
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const res = await axios.post('https://www.tikwm.com/api/', new URLSearchParams({ url, hd: '1' }).toString(), {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'User-Agent': getRandomUserAgent(),
+        },
+        timeout: 10000
+      });
+
+      if (res.data) {
+        if (res.data.code === 0 && res.data.data) {
+          const streamUrl = res.data.data.play || res.data.data.wmplay;
+          const title = res.data.data.title || 'TikTok Video';
+          const author = res.data.data.author?.nickname || 'TikTok Creator';
+
+          const buf = await fetchBuffer(streamUrl);
+          return {
+            success: true,
+            buffer: buf || undefined,
+            videoUrl: streamUrl,
+            title,
+            author
+          };
+        } else if (res.data.code === -1 && attempt === 1) {
+          // Jeda 1.2 detik untuk melewati rate-limit 1 req/sec
+          await new Promise(r => setTimeout(r, 1200));
+          continue;
+        }
+      }
+    } catch (err) {
+      console.log(`[MEDIA_HANDLER] TikTok TikWM attempt ${attempt} failed:`, err.message);
+    }
+  }
+
+  // Method 2: SSSTik API
   try {
     const res = await axios.post('https://ssstik.io/abc?url=dl', `id=${encodeURIComponent(url)}&locale=en&tt=1`, {
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'User-Agent': getRandomUserAgent(),
         'Origin': 'https://ssstik.io',
         'Referer': 'https://ssstik.io/en'
       },
@@ -128,55 +233,52 @@ export async function downloadTikTok(url) {
     if (res.data) {
       const match = res.data.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/i) || res.data.match(/href="(https:\/\/[^"]+tik-tok[^"]*)"/i);
       if (match) {
-        return { success: true, videoUrl: match[1], title: 'TikTok Video' };
+        const streamUrl = match[1];
+        const buf = await fetchBuffer(streamUrl);
+        return { success: true, buffer: buf || undefined, videoUrl: streamUrl, title: 'TikTok Video' };
       }
     }
   } catch (err) {
-    console.log('[MEDIA_HANDLER] TikTok Method 1 (SSSTik) failed:', err.message);
+    console.log('[MEDIA_HANDLER] TikTok Method 2 (SSSTik) failed:', err.message);
   }
 
-  // Method 2: TikWM API (no watermark)
+  // Method 3: Siputzx TikTok API
   try {
-    const apiUrl = `https://www.tikwm.com/api/?url=${encodeURIComponent(url)}`;
-    const res = await fetch(apiUrl, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36' }
+    const res = await axios.get(`https://api.siputzx.my.id/api/d/tiktok?url=${encodeURIComponent(url)}`, {
+      headers: { 'User-Agent': getRandomUserAgent() },
+      timeout: 10000
     });
-    if (res.ok) {
-      const json = await res.json();
-      if (json.code === 0 && json.data) {
-        return {
-          success: true,
-          videoUrl: json.data.play || json.data.wmplay,
-          title: json.data.title || 'TikTok Video',
-          author: json.data.author?.nickname || 'TikTok Creator',
-        };
+    if (res.data && res.data.data) {
+      const streamUrl = res.data.data.urls?.[0] || res.data.data.video;
+      if (streamUrl) {
+        const buf = await fetchBuffer(streamUrl);
+        return { success: true, buffer: buf || undefined, videoUrl: streamUrl, title: 'TikTok Video' };
       }
     }
   } catch (err) {
-    console.log('[MEDIA_HANDLER] TikTok Method 2 (TikWM) failed:', err.message);
+    console.log('[MEDIA_HANDLER] TikTok Method 3 (Siputzx) failed:', err.message);
   }
 
-  // Method 3: yt-dlp CLI fallback
+  // Method 4: yt-dlp CLI fallback
   const ytdlpResult = await downloadWithYtdlp(url);
   if (ytdlpResult?.buffer || ytdlpResult?.videoUrl) {
     return { success: true, buffer: ytdlpResult.buffer, videoUrl: ytdlpResult.videoUrl, title: ytdlpResult.title || 'TikTok Video' };
   }
 
-  return { success: false, message: '❌ Gagal mengunduh video TikTok. Pastikan link valid dan akun tidak privat.' };
+  return { success: false, message: '❌ Gagal mengunduh video TikTok. Pastikan link valid dan akun/video bersifat publik.' };
 }
 
-
 /**
- * Download Instagram Reels / Posts — 4 metode fallback aktif
+ * Download Instagram Reels / Posts / Photos — Multi-Tier Failover
  */
 export async function downloadInstagram(url) {
-  // Method 1: yt-dlp CLI — paling andal karena diupdate komunitas secara aktif mengikuti perubahan Instagram
+  // Method 1: yt-dlp CLI (Paling stabil & diupdate komunitas aktif)
   const ytdlpResult = await downloadWithYtdlp(url);
-  if (ytdlpResult?.videoUrl) {
-    return { success: true, videoUrl: ytdlpResult.videoUrl, title: ytdlpResult.title };
+  if (ytdlpResult?.buffer || ytdlpResult?.videoUrl) {
+    return { success: true, buffer: ytdlpResult.buffer, videoUrl: ytdlpResult.videoUrl, title: ytdlpResult.title || 'Instagram Media' };
   }
 
-  // Method 2: SSSInstagram API (200 OK)
+  // Method 2: SSSInstagram API
   try {
     const res = await axios.post('https://sssinstagram.com/api/convert',
       JSON.stringify({ url }),
@@ -184,7 +286,7 @@ export async function downloadInstagram(url) {
         httpsAgent, timeout: 12000,
         headers: {
           'Content-Type': 'application/json',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'User-Agent': getRandomUserAgent(),
           'Referer': 'https://sssinstagram.com/',
           'Origin': 'https://sssinstagram.com'
         }
@@ -192,20 +294,21 @@ export async function downloadInstagram(url) {
     );
     const mediaUrl = res.data?.url || res.data?.data?.[0]?.url || res.data?.media?.[0]?.url;
     if (mediaUrl) {
-      return { success: true, videoUrl: mediaUrl, title: 'Instagram Media' };
+      const buf = await fetchBuffer(mediaUrl);
+      return { success: true, buffer: buf || undefined, videoUrl: mediaUrl, title: 'Instagram Media' };
     }
   } catch (err) {
     console.log('[MEDIA_HANDLER] IG Method 2 (SSSInstagram) failed:', err.message);
   }
 
-  // Method 3: SnapSave (200 OK)
+  // Method 3: SnapSave API
   try {
     const res = await axios.post('https://snapsave.app/action.php', `url=${encodeURIComponent(url)}`, {
       httpsAgent,
       timeout: 10000,
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'User-Agent': getRandomUserAgent(),
         'Referer': 'https://snapsave.app/',
         'Origin': 'https://snapsave.app'
       }
@@ -215,99 +318,47 @@ export async function downloadInstagram(url) {
                        raw.match(/https?:\\?\/\\?\/[^\s"'\\]+cdninstagram[^\s"'\\]*/gi);
     if (urlMatches && urlMatches.length > 0) {
       const cleanUrl = urlMatches[0].replace(/\\+\//g, '/').replace(/\\u0026/g, '&');
-      return { success: true, videoUrl: cleanUrl, title: 'Instagram Media' };
+      const buf = await fetchBuffer(cleanUrl);
+      return { success: true, buffer: buf || undefined, videoUrl: cleanUrl, title: 'Instagram Media' };
     }
   } catch (err) {
     console.log('[MEDIA_HANDLER] IG Method 3 (SnapSave) failed:', err.message);
   }
 
-  // Method 4: Direct Embed Scraper
-  try {
-    const code = url.match(/(?:p|reel|reels|stories)\/([A-Za-z0-9_-]+)/)?.[1];
-    if (code) {
-      const embedUrl = `https://www.instagram.com/p/${code}/embed/captioned/`;
-      const res = await axios.get(embedUrl, {
-        httpsAgent, timeout: 10000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-        }
-      });
-      const html = res.data;
-      const videoMatch = html.match(/"video_url":"([^"]+)"/) || html.match(/src="([^"]+\.mp4[^"]*)"/);
-      const imgMatch = html.match(/"display_url":"([^"]+)"/) || html.match(/class="EmbeddedMediaImage"\s+src="([^"]+)"/);
-
-      if (videoMatch) {
-        const cleanVideo = videoMatch[1].replace(/\\u0026/g, '&').replace(/\\\//g, '/');
-        return { success: true, videoUrl: cleanVideo, title: 'Instagram Video' };
-      } else if (imgMatch) {
-        const cleanImg = imgMatch[1].replace(/\\u0026/g, '&').replace(/\\\//g, '/');
-        return { success: true, videoUrl: cleanImg, title: 'Instagram Photo' };
-      }
-    }
-  } catch (err) {
-    console.log('[MEDIA_HANDLER] IG Method 4 (Embed) failed:', err.message);
-  }
-
-  // Method 5: instagram-url-direct package
+  // Method 4: direct igdl package
   try {
     const fn = igdl.instagramGetUrl || igdl.default || igdl;
     const res = await fn(url);
     if (res && res.url_list && res.url_list.length > 0) {
-      return { success: true, videoUrl: res.url_list[0], title: 'Instagram Video' };
+      const mediaUrl = res.url_list[0];
+      const buf = await fetchBuffer(mediaUrl);
+      return { success: true, buffer: buf || undefined, videoUrl: mediaUrl, title: 'Instagram Media' };
     }
   } catch (err) {
-    console.log('[MEDIA_HANDLER] IG Method 5 (igdl) failed:', err.message);
+    console.log('[MEDIA_HANDLER] IG Method 4 (igdl) failed:', err.message);
   }
 
   return { 
     success: false, 
-    message: '❌ Gagal mengunduh dari Instagram. Kemungkinan penyebab:\n• Akun atau postingan diprivat\n• Link sudah tidak valid\n• Instagram sedang melakukan pembatasan akses\n\nCoba lagi beberapa menit kemudian atau pastikan postingan bersifat publik.' 
+    message: '❌ Gagal mengunduh dari Instagram. Pastikan postingan bersifat publik dan link valid.' 
   };
 }
 
-
-export async function fetchBuffer(url) {
-  if (!url) return null;
-  try {
-    const res = await axios.get(url, {
-      httpsAgent,
-      responseType: 'arraybuffer',
-      timeout: 25000,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-        'Accept': '*/*'
-      }
-    });
-    if (res.data) {
-      const buf = Buffer.from(res.data);
-      if (buf.length > 5000) return buf;
-    }
-  } catch (err) {
-    console.log('[MEDIA_HANDLER] fetchBuffer error:', err.message);
-  }
-  return null;
-}
-
-
 /**
- * Download YouTube Shorts / Videos — metode fallback aktif
+ * Download YouTube Videos / Shorts — Multi-Tier Failover
  */
 export async function downloadYouTube(url) {
-  // Method 1: yt-dlp CLI (Paling stabil & diupdate terus)
+  // Method 1: yt-dlp CLI
   const ytdlpResult = await downloadWithYtdlp(url);
   if (ytdlpResult?.buffer) {
     return { success: true, buffer: ytdlpResult.buffer, title: ytdlpResult.title || 'YouTube Video' };
   }
   if (ytdlpResult?.videoUrl) {
     const buf = await fetchBuffer(ytdlpResult.videoUrl);
-    if (buf) {
-      return { success: true, buffer: buf, title: ytdlpResult.title || 'YouTube Video' };
-    }
-    return { success: true, videoUrl: ytdlpResult.videoUrl, title: ytdlpResult.title || 'YouTube Video' };
+    return { success: true, buffer: buf || undefined, videoUrl: ytdlpResult.videoUrl, title: ytdlpResult.title || 'YouTube Video' };
   }
 
-  // Method 2: @distube/ytdl-core (langsung dari YouTube CDN)
+  // Method 2: @distube/ytdl-core
   try {
     const info = await ytdl.getInfo(url);
     const format = ytdl.chooseFormat(info.formats, { quality: 'highestvideo', filter: 'videoandaudio' }) ||
@@ -327,16 +378,15 @@ export async function downloadYouTube(url) {
 
   return { 
     success: false, 
-    message: '❌ Gagal mengunduh video YouTube. Pastikan link YouTube valid dan video dapat diakses publik.' 
+    message: '❌ Gagal mengunduh video YouTube. Pastikan link publik dan dapat diakses.' 
   };
 }
 
-
 /**
- * Download Facebook Video / Reels — 3 metode fallback aktif
+ * Download Facebook Video / Reels — Multi-Tier Failover
  */
 export async function downloadFacebook(url) {
-  // Method 1: yt-dlp CLI (Paling stabil)
+  // Method 1: yt-dlp CLI
   const ytdlpResult = await downloadWithYtdlp(url);
   if (ytdlpResult?.buffer) {
     return { success: true, buffer: ytdlpResult.buffer, title: ytdlpResult.title || 'Facebook Video' };
@@ -350,13 +400,13 @@ export async function downloadFacebook(url) {
   try {
     const fn = fbDownloader.default || fbDownloader;
     const res = await fn(url);
-    const videoUrl = res?.hd || res?.sd || res?.url || res?.stream;
-    if (videoUrl) {
-      const buf = await fetchBuffer(videoUrl);
+    const streamUrl = res?.hd || res?.sd || res?.url || res?.stream;
+    if (streamUrl) {
+      const buf = await fetchBuffer(streamUrl);
       return { 
         success: true, 
         buffer: buf || undefined,
-        videoUrl: videoUrl, 
+        videoUrl: streamUrl, 
         title: res?.title || 'Facebook Video' 
       };
     }
@@ -366,10 +416,7 @@ export async function downloadFacebook(url) {
 
   // Method 3: Direct Open Graph / HTML Metadata Scraper
   try {
-    const headers = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Accept-Language': 'en-US,en;q=0.9'
-    };
+    const headers = { 'User-Agent': getRandomUserAgent() };
     const res = await fetch(url, { headers });
     if (res.ok) {
       const html = await res.text();
@@ -379,10 +426,10 @@ export async function downloadFacebook(url) {
       const sdMatch = html.match(/"playable_url"\s*:\s*"([^"]+)"/) || html.match(/sd_src\s*:\s*"([^"]+)"/);
       const ogMatch = html.match(/<meta\s+property="og:video"\s+content="([^"]+)"/) || html.match(/<meta\s+property="og:video:secure_url"\s+content="([^"]+)"/);
 
-      const videoUrl = cleanUrl(hdMatch?.[1]) || cleanUrl(sdMatch?.[1]) || cleanUrl(ogMatch?.[1]);
-      if (videoUrl) {
-        const buf = await fetchBuffer(videoUrl);
-        return { success: true, buffer: buf || undefined, videoUrl, title: 'Facebook Video' };
+      const streamUrl = cleanUrl(hdMatch?.[1]) || cleanUrl(sdMatch?.[1]) || cleanUrl(ogMatch?.[1]);
+      if (streamUrl) {
+        const buf = await fetchBuffer(streamUrl);
+        return { success: true, buffer: buf || undefined, videoUrl: streamUrl, title: 'Facebook Video' };
       }
     }
   } catch (err) {
@@ -391,7 +438,7 @@ export async function downloadFacebook(url) {
 
   return { 
     success: false, 
-    message: 'Gagal mengunduh video Facebook. Pastikan link publik & dapat diakses tanpa login.' 
+    message: 'Gagal mengunduh video Facebook. Pastikan postingan publik & dapat diakses.' 
   };
 }
 
@@ -413,7 +460,6 @@ export async function downloadUniversalMedia(url) {
 export async function createSticker(imageOrVideoBuffer, pack = 'Akbar Store Bot', author = 'Sales System', isVideo = false) {
   try {
     if (isVideo) {
-      // Pembuatan Stiker Animasi via FFmpeg native + Exif metadata chunk langsung (Mencegah double encoding & file size > 500KB)
       const tmpDir = path.join(process.cwd(), 'tmp');
       if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
 
@@ -424,13 +470,13 @@ export async function createSticker(imageOrVideoBuffer, pack = 'Akbar Store Bot'
 
       await new Promise((resolve, reject) => {
         ffmpeg(inputPath)
-          .inputOptions(['-t 5']) // Maksimal 5 detik standar WhatsApp
+          .inputOptions(['-t 4'])
           .outputOptions([
             '-vcodec libwebp',
-            '-vf scale=512:512:flags=lanczos:force_original_aspect_ratio=decrease,fps=12,format=rgba,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000',
+            '-vf scale=512:512:flags=lanczos:force_original_aspect_ratio=decrease,fps=10,format=rgba,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000',
             '-lossless 0',
             '-compression_level 6',
-            '-q:v 50',
+            '-q:v 35',
             '-loop 0',
             '-an',
             '-vsync 0'
@@ -443,25 +489,21 @@ export async function createSticker(imageOrVideoBuffer, pack = 'Akbar Store Bot'
 
       const rawWebpBuffer = fs.readFileSync(outputPath);
 
-      // Bersihkan file sementara
       try {
         if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
         if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
       } catch (e) {}
 
-      // Injeksikan Exif Metadata tanpa melakukan re-encode (Ukuran file tetap < 500KB, jernih & dapat diunduh di HP)
       const exif = new Exif({ pack, author });
       const finalBuffer = await exif.add(rawWebpBuffer);
-
       return { success: true, buffer: finalBuffer };
     }
 
-    // Pembuatan Stiker Statis (Gambar)
     const sticker = new Sticker(imageOrVideoBuffer, {
       pack: pack,
       author: author,
-      type: StickerTypes.FULL,
-      quality: 85
+      type: StickerTypes.CROPPED,
+      quality: 70
     });
 
     const stickerBuffer = await sticker.toBuffer();
@@ -472,8 +514,8 @@ export async function createSticker(imageOrVideoBuffer, pack = 'Akbar Store Bot'
       const sticker = new Sticker(imageOrVideoBuffer, {
         pack: pack,
         author: author,
-        type: StickerTypes.FULL,
-        quality: 40
+        type: StickerTypes.CROPPED,
+        quality: 35
       });
       const stickerBuffer = await sticker.toBuffer();
       return { success: true, buffer: stickerBuffer };
@@ -484,7 +526,7 @@ export async function createSticker(imageOrVideoBuffer, pack = 'Akbar Store Bot'
 }
 
 /**
- * Konversi Stiker WebP ke Gambar (JPG/PNG) menggunakan Sharp
+ * Konversi Stiker WebP ke Gambar (JPG/PNG)
  */
 export async function stickerToImage(webpBuffer) {
   try {
@@ -499,7 +541,7 @@ export async function stickerToImage(webpBuffer) {
 }
 
 /**
- * Konversi Stiker WebP (Statis / Animasi) ke Video MP4 menggunakan FFmpeg
+ * Konversi Stiker WebP ke Video MP4
  */
 export async function stickerToVideo(webpBuffer) {
   const tmpDir = path.join(process.cwd(), 'tmp');
@@ -539,27 +581,7 @@ export async function stickerToVideo(webpBuffer) {
 }
 
 /**
- * Helper pembagi baris teks (Multiline Wrapping)
- */
-function wrapText(text, maxCharsPerLine = 30) {
-  const words = (text || '').trim().split(/\s+/);
-  const lines = [];
-  let currentLine = '';
-
-  for (const word of words) {
-    if ((currentLine + ' ' + word).trim().length <= maxCharsPerLine) {
-      currentLine = (currentLine + ' ' + word).trim();
-    } else {
-      if (currentLine) lines.push(currentLine);
-      currentLine = word;
-    }
-  }
-  if (currentLine) lines.push(currentLine);
-  return lines.length > 0 ? lines : [' '];
-}
-
-/**
- * Helper menggambar rounded rectangle di Canvas 2D
+ * Helper Canvas Rounded Rect
  */
 function drawRoundedRect(ctx, x, y, width, height, radius, fillStyle) {
   ctx.beginPath();
@@ -578,10 +600,7 @@ function drawRoundedRect(ctx, x, y, width, height, radius, fillStyle) {
 }
 
 /**
- * Buat Stiker Quote Chat WhatsApp (QC / Quote Sticker) via Skia 2D Canvas Engine
- */
-/**
- * Buat Stiker Quote Chat WhatsApp (QC / Quote Sticker) via Skia 2D Canvas Engine
+ * Buat Stiker Quote Chat WhatsApp (QC)
  */
 export async function generateQuoteSticker(name, text) {
   try {
@@ -592,11 +611,9 @@ export async function generateQuoteSticker(name, text) {
 
     ctx.clearRect(0, 0, canvasWidth, canvasHeight);
 
-    // Font setup (Ukuran Besar & Jernih)
     ctx.font = '24px sans-serif';
     const maxTextWidth = 450;
     
-    // Line wrapping calculation
     const words = (text || '').trim().split(/\s+/);
     const lines = [];
     let currentLine = '';
@@ -621,7 +638,6 @@ export async function generateQuoteSticker(name, text) {
     const startX = 65;
     const startY = Math.floor((canvasHeight - bubbleHeight) / 2);
 
-    // 1. Draw Avatar Icon Circle
     ctx.save();
     ctx.fillStyle = '#00a884';
     ctx.beginPath();
@@ -636,10 +652,8 @@ export async function generateQuoteSticker(name, text) {
     ctx.fillText(initial, startX - 30, startY + 35);
     ctx.restore();
 
-    // 2. Draw Chat Bubble Background (#202c33)
     drawRoundedRect(ctx, startX, startY, bubbleWidth, bubbleHeight, 20, '#202c33');
 
-    // Draw Tail Triangle
     ctx.fillStyle = '#202c33';
     ctx.beginPath();
     ctx.moveTo(startX, startY + 20);
@@ -648,14 +662,12 @@ export async function generateQuoteSticker(name, text) {
     ctx.closePath();
     ctx.fill();
 
-    // 3. Draw Sender Name (#00a884)
     ctx.fillStyle = '#00a884';
     ctx.font = 'bold 25px sans-serif';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
     ctx.fillText(name || 'Pelanggan', startX + 28, startY + 22);
 
-    // 4. Draw Message Text (#e9edef)
     ctx.fillStyle = '#e9edef';
     ctx.font = '23px sans-serif';
     lines.forEach((line, index) => {
@@ -663,10 +675,7 @@ export async function generateQuoteSticker(name, text) {
     });
 
     const rawPng = await canvas.encode('png');
-
-    // Pangkas margin transparan agar stiker memenuhi bingkai & berukuran besar di WA
     const trimmedBuffer = await sharp(rawPng).trim().toBuffer();
-
     return await createSticker(trimmedBuffer, 'Akbar Store Quote', name || 'Pelanggan', false);
   } catch (err) {
     console.error('[MEDIA_HANDLER] Quote Canvas Error:', err.message);
@@ -675,7 +684,7 @@ export async function generateQuoteSticker(name, text) {
 }
 
 /**
- * Buat Gambar Meme dengan Teks Atas & Teks Bawah via Skia 2D Canvas Engine
+ * Buat Gambar Meme
  */
 export async function generateMeme(imageBuffer, topText = '', bottomText = '') {
   try {
@@ -686,7 +695,6 @@ export async function generateMeme(imageBuffer, topText = '', bottomText = '') {
     const canvas = createCanvas(width, height);
     const ctx = canvas.getContext('2d');
 
-    // Draw original image
     ctx.drawImage(baseImage, 0, 0, width, height);
 
     const top = (topText || '').toUpperCase().trim();
@@ -723,7 +731,6 @@ export async function generateMeme(imageBuffer, topText = '', bottomText = '') {
 export async function screenshotWeb(url) {
   const cleanUrl = url.startsWith('http') ? url : `https://${url}`;
 
-  // Provider 1: Thum.io
   try {
     const ssUrl = `https://image.thum.io/get/width/1000/crop/800/${cleanUrl}`;
     const res = await fetch(ssUrl);
@@ -735,7 +742,6 @@ export async function screenshotWeb(url) {
     console.log('[MEDIA_HANDLER] SSWeb Provider 1 failed:', err.message);
   }
 
-  // Provider 2: s-shot.ru
   try {
     const res2 = await fetch(`https://mini.s-shot.ru/1024x768/JPEG/1024/Z100/?${encodeURIComponent(cleanUrl)}`);
     if (res2.ok) {
@@ -750,7 +756,7 @@ export async function screenshotWeb(url) {
 }
 
 /**
- * Buat Stiker Brat Generator (Autentik Arial Narrow Regular & Low-Res Blur)
+ * Buat Stiker Brat Generator
  */
 export async function generateBratSticker(text) {
   try {
@@ -759,11 +765,9 @@ export async function generateBratSticker(text) {
     const canvas = createCanvas(canvasWidth, canvasHeight);
     const ctx = canvas.getContext('2d');
 
-    // 1. Fill Solid White Background (#FFFFFF)
     ctx.fillStyle = '#FFFFFF';
     ctx.fillRect(0, 0, canvasWidth, canvasHeight);
 
-    // 2. Text Processing (lowercase, Arial Narrow Regular font style)
     const cleanText = (text || 'brat').toLowerCase().trim();
     
     let fontSize = 90;
@@ -796,7 +800,6 @@ export async function generateBratSticker(text) {
     const startX = 35;
     const startY = lines.length === 1 ? Math.floor(fontSize * 1.1) : Math.floor((canvasHeight - totalHeight) / 2) + Math.floor(fontSize * 0.75);
 
-    // 3. Draw Black Text Left-Aligned (Regular Weight)
     ctx.fillStyle = '#000000';
     ctx.textAlign = 'left';
 
@@ -806,7 +809,6 @@ export async function generateBratSticker(text) {
 
     const rawPng = await canvas.encode('png');
 
-    // 4. Low-resolution upscale (150px -> 512px) with blur for authentic Brat low-res aesthetic
     const finalBuffer = await sharp(rawPng)
       .resize(150, 150, { kernel: 'nearest' })
       .blur(1.4)
@@ -818,5 +820,172 @@ export async function generateBratSticker(text) {
   } catch (err) {
     console.error('[MEDIA_HANDLER] Brat Error:', err.message);
     return { success: false, message: err.message };
+  }
+}
+
+/**
+ * Download Lagu MP3 dari Judul / Kata Kunci Search
+ */
+export async function downloadSongBySearch(query) {
+  const tmpDir = path.join(process.cwd(), 'tmp');
+  if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+  
+  const uniquePrefix = `song_${Date.now()}_${Math.floor(Math.random() * 1000)}_`;
+  const outputTemplate = path.join(tmpDir, `${uniquePrefix}%(title)s.%(ext)s`);
+
+  const fileArgs = [
+    '-m', 'yt_dlp',
+    '--no-warnings',
+    '--no-playlist',
+    '--geo-bypass',
+    '--ffmpeg-location', ffmpegInstaller.path,
+    '--extractor-args', 'youtube:player_client=android,web',
+    '-f', 'ba[filesize<15M]/bestaudio/best',
+    '--extract-audio',
+    '--audio-format', 'mp3',
+    '-o', outputTemplate,
+    `ytsearch1:${query}`
+  ];
+
+  const procRes = await runPythonProc(fileArgs, 60000);
+  if (procRes && procRes.code === 0) {
+    try {
+      const files = fs.readdirSync(tmpDir);
+      const matchedFile = files.find(f => f.startsWith(uniquePrefix) && f.endsWith('.mp3'));
+      if (matchedFile) {
+        const filePath = path.join(tmpDir, matchedFile);
+        const buffer = fs.readFileSync(filePath);
+        fs.unlinkSync(filePath);
+        
+        const title = matchedFile.substring(uniquePrefix.length, matchedFile.length - 4);
+        return { success: true, buffer, title };
+      }
+    } catch (e) {
+      return { success: false, message: e.message };
+    }
+  }
+
+  return { success: false, message: 'Gagal mendownload lagu. Pastikan judul lagu benar atau coba beberapa saat lagi.' };
+}
+
+/**
+ * Konversi Video Buffer ke MP3 / Voice Note Audio
+ */
+export async function convertVideoToAudio(inputBuffer, outputFormat = 'mp3') {
+  return new Promise((resolve, reject) => {
+    const tmpDir = path.join(process.cwd(), 'tmp');
+    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+    
+    const inputPath = path.join(tmpDir, `input_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp4`);
+    const outputPath = path.join(tmpDir, `output_${Date.now()}_${Math.floor(Math.random() * 1000)}.${outputFormat === 'vn' ? 'ogg' : outputFormat}`);
+    
+    fs.writeFileSync(inputPath, inputBuffer);
+    
+    let ff = ffmpeg(inputPath);
+    if (outputFormat === 'vn' || outputFormat === 'ogg') {
+      ff = ff.toFormat('ogg').audioCodec('libopus');
+    } else {
+      ff = ff.toFormat('mp3');
+    }
+    
+    ff.on('end', () => {
+      try {
+        const outBuffer = fs.readFileSync(outputPath);
+        if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
+        if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+        resolve(outBuffer);
+      } catch (e) {
+        reject(e);
+      }
+    })
+    .on('error', (err) => {
+      if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
+      if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+      reject(err);
+    })
+    .save(outputPath);
+  });
+}
+
+/**
+ * Terjemah Teks via Google Translate
+ */
+export async function translateText(text, targetLang = 'id') {
+  try {
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${targetLang}&dt=t&q=${encodeURIComponent(text)}`;
+    const res = await axios.get(url, {
+      headers: { 'User-Agent': getRandomUserAgent() }
+    });
+    if (res.data && res.data[0]) {
+      const translatedParts = res.data[0].map(part => part[0]).filter(Boolean);
+      return translatedParts.join('');
+    }
+    throw new Error('Format respon tidak valid.');
+  } catch (err) {
+    console.error('[TRANSLATE ERROR]', err.message);
+    return null;
+  }
+}
+
+/**
+ * Jadwal Sholat per Kota
+ */
+export async function getPrayerTimes(city) {
+  try {
+    const url = `https://api.aladhan.com/v1/timingsByCity?city=${encodeURIComponent(city)}&country=Indonesia`;
+    const res = await axios.get(url);
+    if (res.data && res.data.data && res.data.data.timings) {
+      return {
+        success: true,
+        timings: res.data.data.timings,
+        meta: res.data.data.meta
+      };
+    }
+    return { success: false, message: 'Kota tidak ditemukan.' };
+  } catch (err) {
+    console.error('[PRAYER_TIMES_ERR]', err.message);
+    return { success: false, message: err.message };
+  }
+}
+
+/**
+ * Peningkatan Kualitas Foto HD (.hd / .remini)
+ */
+export async function enhanceImageHd(imageBuffer) {
+  try {
+    try {
+      const base64Str = imageBuffer.toString('base64');
+      const apiRes = await axios.post('https://api.siputzx.my.id/api/tools/remini', {
+        image: `data:image/jpeg;base64,${base64Str}`
+      }, { timeout: 12000 });
+
+      if (apiRes.data && apiRes.data.status && apiRes.data.data) {
+        const imgUrl = apiRes.data.data;
+        const downloaded = await axios.get(imgUrl, { responseType: 'arraybuffer' });
+        return { success: true, buffer: Buffer.from(downloaded.data), provider: 'AI Remini' };
+      }
+    } catch (e) {
+      console.warn('[REMINI_API] Primary online API bypass to local sharp pipeline:', e.message);
+    }
+
+    const meta = await sharp(imageBuffer).metadata();
+    const origW = meta.width || 800;
+    const origH = meta.height || 600;
+
+    const scale = origW < 1200 ? 2.5 : 1.8;
+    const targetW = Math.min(3200, Math.round(origW * scale));
+    const targetH = Math.min(3200, Math.round(origH * scale));
+
+    const processedBuffer = await sharp(imageBuffer)
+      .resize(targetW, targetH, { kernel: 'lanczos3' })
+      .sharpen({ sigma: 1.8, m1: 1.2, m2: 2.5 })
+      .linear(1.12, -10)
+      .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
+      .toBuffer();
+
+    return { success: true, buffer: processedBuffer, provider: 'Sharp HD Engine' };
+  } catch (err) {
+    console.error('[ENHANCE_HD_ERR]', err.message);
+    return { success: false, message: 'Gagal memproses peningkatan kualitas gambar: ' + err.message };
   }
 }

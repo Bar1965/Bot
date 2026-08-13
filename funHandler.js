@@ -1,9 +1,14 @@
 import * as db from './database.js';
 import * as entertainment from './entertainmentHandler.js';
 import { sendInteractiveButtons } from './bot.js';
+import { getPremiumBenefits } from './premiumHandler.js';
+
 
 const activeRounds = new Map();
 const cooldowns = new Map();
+const tebakAngkaGames = new Map();
+const rampokCooldowns = new Map();
+const victimImmunity = new Map();
 const ROUND_DURATION_MS = 2 * 60 * 1000;
 
 const quizQuestions = [
@@ -82,11 +87,18 @@ function scheduleRoundExpiry({ sock, jid, messageObj, key, round, duration = ROU
   round.timeout.unref?.();
 }
 
-function profileText(profile, name) {
-  const winRate = profile.games_played > 0
-    ? Math.round((profile.games_won / profile.games_played) * 100)
+function profileText(profile, name, premiumTier) {
+  const safePlayed = Math.max(0, Math.floor(Number(profile?.games_played) || 0));
+  const safeWon = Math.max(0, Math.floor(Number(profile?.games_won) || 0));
+  const winRate = safePlayed > 0
+    ? Math.round((safeWon / safePlayed) * 100)
     : 0;
-  return `🏆 *PROFILE GAME*\n\n👤 ${name || 'Pelanggan'}\n💰 Poin: *${profile.points}*\n⭐ Level: *${profile.level}* (${profile.xp} XP)\n🎮 Game dimainkan: *${profile.games_played}*\n🥇 Menang: *${profile.games_won}* (${winRate}%)\n🔥 Streak harian: *${profile.daily_streak || 0}*`;
+  const safePoints = Math.max(0, Math.floor(Number(profile?.points) || 0));
+  const safeXp = Math.max(0, Math.floor(Number(profile?.xp) || 0));
+  const safeLevel = Math.max(1, Math.floor(Number(profile?.level) || 1));
+  const safeStreak = Math.max(0, Math.floor(Number(profile?.daily_streak) || 0));
+  const premBadge = { Free: '🎮', Silver: '🥈 Silver', Gold: '🥇 Gold', Diamond: '💎 Diamond' }[premiumTier || 'Free'] || '🎮';
+  return `🏆 *PROFILE GAME*\n\n👤 ${name || 'Pelanggan'} [${premBadge}]\n💰 Poin: *${safePoints}*\n⭐ Level: *${safeLevel}* (${safeXp} XP)\n🎮 Game dimainkan: *${safePlayed}*\n🥇 Menang: *${safeWon}* (${winRate}%)\n🔥 Streak harian: *${safeStreak}*`;
 }
 
 async function handleRoundCommand({ sock, jid, senderNumber, messageObj, args, cleanCmd, isFromGroup }) {
@@ -138,15 +150,115 @@ async function startRound({ sock, jid, senderNumber, messageObj, isFromGroup, ty
   return true;
 }
 
-export async function handleFunCommand({ sock, jid, senderNumber, messageObj, text, args, cleanCmd, isFromGroup = false }) {
+export async function handleFunCommand({ sock, jid, senderNumber, messageObj, text, args, cleanCmd, isFromGroup = false, isAdmin = false, isOwner = false }) {
   const command = String(cleanCmd || '').toLowerCase();
   const scope = scopeKey(jid, senderNumber, isFromGroup);
+  
+  // AFK System
+  if (['afk'].includes(command)) {
+    const reason = args.slice(1).join(' ').trim() || 'Tanpa alasan';
+    await db.setAfk(senderNumber, reason);
+
+    let displayName = messageObj.pushName;
+    if (!displayName || displayName === 'Pelanggan') {
+      const cust = await db.getQuery("SELECT nama FROM customers WHERE nomor = ?", [senderNumber]);
+      displayName = cust?.nama && cust.nama !== 'Pelanggan' ? cust.nama : `@${senderNumber.split('@')[0]}`;
+    }
+
+    await send(sock, jid, messageObj, `😴 *${displayName}* (@${senderNumber.split('@')[0]}) sekarang sedang **AFK**!\n📝 *Alasan:* ${reason}\n\n_Bot akan memberi tahu jika ada yang mention kamu, dan status AFK akan otomatis dicabut saat kamu mengirim pesan._`, [senderNumber]);
+    return true;
+  }
+
+  // Heist / Rampok System
+  if (['rampok', 'curi'].includes(command)) {
+    let targetNumber = '';
+    const mentionRegex = /@([0-9]{10,15})/g;
+    const mentions = [...text.matchAll(mentionRegex)].map(m => m[1] + '@s.whatsapp.net');
+    
+    if (mentions.length > 0) {
+      targetNumber = mentions[0];
+    } else if (messageObj?.message?.extendedTextMessage?.contextInfo?.participant) {
+      targetNumber = messageObj.message.extendedTextMessage.contextInfo.participant;
+    } else if (args[1]) {
+      targetNumber = args[1].replace(/[^0-9]/g, '') + '@s.whatsapp.net';
+    }
+
+    await handleRampok(sock, jid, messageObj, senderNumber, targetNumber);
+    return true;
+  }
+
+
+  // Werewolf System
+  if (['ww', 'werewolf'].includes(command)) {
+    const subCmd = (args[1] || 'help').toLowerCase();
+    const targetArg = args.slice(2).join(' ') || args[1] || '';
+
+    if (!isFromGroup && ['kill', 'inspect', 'protect'].includes(subCmd)) {
+      const res = await ww.handleNightAction(sock, senderNumber, subCmd, targetArg);
+      await send(sock, jid, messageObj, res.message, res.mentions || []);
+      return true;
+    }
+
+    if (!isFromGroup) {
+      await send(sock, jid, messageObj, `🐺 *WEREWOLF NIGHT ACTION*\n\nGunakan perintah berikut via PM:\n• \`.ww kill <nomor/mention>\` (Werewolf)\n• \`.ww inspect <nomor/mention>\` (Seer)\n• \`.ww protect <nomor/mention>\` (Guardian)`);
+      return true;
+    }
+
+    if (['start', 'create', 'lobby'].includes(subCmd)) {
+      const senderName = messageObj.pushName || senderNumber.split('@')[0];
+      const res = await ww.startWwLobby(sock, jid, senderNumber, senderName);
+      await send(sock, jid, messageObj, res.message, res.mentions || []);
+      return true;
+    }
+
+    if (['join'].includes(subCmd)) {
+      const senderName = messageObj.pushName || senderNumber.split('@')[0];
+      const res = await ww.joinWwLobby(sock, jid, senderNumber, senderName);
+      await send(sock, jid, messageObj, res.message, res.mentions || []);
+      return true;
+    }
+
+    if (['startgame', 'mulai'].includes(subCmd)) {
+      const res = await ww.startGameWw(sock, jid, senderNumber);
+      if (res.message) await send(sock, jid, messageObj, res.message);
+      return true;
+    }
+
+    if (['vote'].includes(subCmd)) {
+      const res = await ww.handleDayVote(sock, jid, senderNumber, targetArg);
+      await send(sock, jid, messageObj, res.message, res.mentions || []);
+      return true;
+    }
+
+    if (['cancel', 'batal'].includes(subCmd)) {
+      const res = ww.cancelWwGame(jid, senderNumber);
+      await send(sock, jid, messageObj, res.message);
+      return true;
+    }
+
+    const helpText = `🐺 *GAME WEREWOLF / MAFIA MULTIPLAYER* 🐺\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+      `*Perintah di Grup:*\n` +
+      `• \`.ww start\` — Buka lobby game di grup\n` +
+      `• \`.ww join\` — Bergabung ke lobby\n` +
+      `• \`.ww startgame\` — Memulai game (Min 4 Pemain)\n` +
+      `• \`.ww vote @user\` — Voting eksekusi warga di siang hari\n` +
+      `• \`.ww cancel\` — Batalkan game\n\n` +
+      `*Perintah di PM Bot (Malam Hari):*\n` +
+      `• \`.ww kill <nomor>\` — Memangsa target (Werewolf)\n` +
+      `• \`.ww inspect <nomor>\` — Menerawang peran (Seer)\n` +
+      `• \`.ww protect <nomor>\` — Melindungi target (Guardian)`;
+    await send(sock, jid, messageObj, helpText);
+    return true;
+  }
+
+
   const roundCommands = ['jawab', 'answer', 'hint'];
   if (roundCommands.includes(command)) {
     return await handleRoundCommand({ sock, jid, senderNumber, messageObj, args, cleanCmd: command, isFromGroup });
   }
 
-  if (isFromGroup && ['quiz', 'trivia', 'tebakquiz', 'tebakemoji', 'emoji', 'tebakkata', 'hangman', 'kata', 'sambungkata', 'wordchain', 'truth', 'dare', 'tod', 'dadu', 'dice', 'coinflip', 'koin', 'coin', 'poll', 'voting', 'vote', 'love', 'jodoh', 'compatibility'].includes(command)) {
+  if (isFromGroup && ['quiz', 'trivia', 'tebakquiz', 'tebakemoji', 'emoji', 'tebakkata', 'hangman', 'kata', 'sambungkata', 'wordchain', 'truth', 'dare', 'tod', 'dadu', 'dice', 'coinflip', 'koin', 'coin', 'poll', 'voting', 'vote', 'love', 'jodoh', 'compatibility', 'slot', 'daily', 'spin', 'luckyspin', 'suit', 'pilihsuit', 'cancelsuit', 'batalsuit', 'tebakangka', 'tebak', 'tukar', 'pointshop', 'penukaran'].includes(command)) {
     const groupSettings = await db.getGroupSettings(jid);
     if (groupSettings.bot_mode === 'sales') return false;
   }
@@ -162,18 +274,166 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
   }
 
   if (['dadu', 'dice'].includes(command)) {
-    if (isOnCooldown(`${scope}:dice`)) return true;
-    const value = Math.floor(Math.random() * 6) + 1;
-    const profile = await db.awardGamePoints(senderNumber, 2);
-    await send(sock, jid, messageObj, `🎲 Dadu jatuh di angka *${value}*. Kamu mendapat 2 poin. Total: *${profile.points}*`);
+    if (isOnCooldown(`${scope}:dice`, 3000)) return true;
+
+    const premiumTier = await db.getPremiumTier(senderNumber);
+    const benefits = getPremiumBenefits(premiumTier);
+    const maxBet = (isOwner || isAdmin) ? 1_000_000 : benefits.slotMaxBet;
+
+    const prediction = args[1]?.toLowerCase();
+    const rawBet = args[2]?.toLowerCase();
+
+    const isSpecificNumber = ['1', '2', '3', '4', '5', '6'].includes(prediction);
+    const isEvenOdd = ['ganjil', 'genap', 'odd', 'even'].includes(prediction);
+    const isUnderOver = ['kecil', 'besar', 'under', 'over'].includes(prediction);
+
+    if (!prediction || (!isSpecificNumber && !isEvenOdd && !isUnderOver)) {
+      await send(sock, jid, messageObj, `🎲 *TARUHAN DADU* 🎲\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n*Format Perintah:* \`.dadu [pilihan] [taruhan/all]\`\n\n*Pilihan Yang Tersedia:*\n▫️ Angka: *1* s/d *6* (Hadiah 5x lipat 💥)\n▫️ Genap / Ganjil (Hadiah 2x lipat 💰)\n▫️ Besar (4-6) / Kecil (1-3) (Hadiah 2x lipat 💰)\n\n*Contoh:* \`.dadu besar 50\` atau \`.dadu 4 all\``);
+      return true;
+    }
+
+    const profile = await db.getGameProfile(senderNumber);
+    const currentPoints = profile.points || 0;
+
+    let bet = 10;
+    if (rawBet === 'all' || rawBet === 'allin') {
+      bet = Math.max(1, currentPoints);
+    } else {
+      const parsedBet = rawBet ? Number.parseInt(rawBet, 10) : 10;
+      if (rawBet && (isNaN(parsedBet) || !isFinite(parsedBet))) {
+        await send(sock, jid, messageObj, `❌ Jumlah taruhan tidak valid: *${rawBet}*\n\nGunakan angka atau 'all'. Contoh: \`.dadu besar 50\` atau \`.dadu besar all\``);
+        return true;
+      }
+      bet = Math.max(1, Math.min(maxBet, Math.abs(parsedBet || 10)));
+    }
+
+    const deductRes = await db.deductGamePoints(senderNumber, bet);
+    if (!deductRes.success) {
+      await send(sock, jid, messageObj, `❌ Poin kamu tidak cukup! Kamu butuh *${bet} poin*, tapi sisa poinmu hanya *${deductRes.currentPoints || currentPoints} poin*.\n\nKetik \`.daily\` untuk mengambil poin gratis harian!`);
+      return true;
+    }
+
+    const roll = Math.floor(Math.random() * 6) + 1;
+    let isWin = false;
+    let multiplier = 1;
+
+    if (isSpecificNumber) {
+      isWin = parseInt(prediction, 10) === roll;
+      multiplier = 5; // Payout 5x lipat net profit 4x
+    } else if (isEvenOdd) {
+      const isRollEven = roll % 2 === 0;
+      if (prediction === 'genap' || prediction === 'even') {
+        isWin = isRollEven;
+      } else {
+        isWin = !isRollEven;
+      }
+      multiplier = 2; // Payout 2x lipat net profit 1x
+    } else if (isUnderOver) {
+      const isRollKecil = roll <= 3;
+      if (prediction === 'kecil' || prediction === 'under') {
+        isWin = isRollKecil;
+      } else {
+        isWin = !isRollKecil;
+      }
+      multiplier = 2; // Payout 2x lipat net profit 1x
+    }
+
+    let newPoints = deductRes.newPoints;
+    if (isWin) {
+      const winPayout = bet * multiplier;
+      const updatedProf = await db.addGamePoints(senderNumber, winPayout);
+      newPoints = updatedProf.points;
+    }
+
+    let msg = `🎲 *DICE ROLL BETTING* 🎲\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    msg += `Taruhan: *${bet} poin* pada *${prediction.toUpperCase()}*\n`;
+    msg += `Hasil Dadu: *${roll}*\n\n`;
+    msg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+    if (isWin) {
+      msg += `🎉 *MENANG!* Pilihan kamu benar.\n`;
+      msg += `🎁 Hadiah: *+${bet * (multiplier - 1)} poin* (${multiplier}x total payout)\n`;
+    } else {
+      msg += `💸 *RUNGKAD!* Pilihan kamu meleset.\n`;
+      msg += `💰 Kerugian: *-${bet} poin*\n`;
+    }
+    msg += `💳 Sisa Poin: *${newPoints} poin*`;
+
+    await send(sock, jid, messageObj, msg, {
+      buttons: [
+        { type: 'reply', text: `🎲 Main Lagi (${prediction} ${bet})`, id: `.dadu ${prediction} ${bet}` }
+      ]
+    });
     return true;
   }
 
   if (['coinflip', 'koin', 'coin'].includes(command)) {
-    if (isOnCooldown(`${scope}:coin`)) return true;
-    const result = Math.random() < 0.5 ? 'HEADS 🪙' : 'TAILS 🪙';
-    const profile = await db.awardGamePoints(senderNumber, 2);
-    await send(sock, jid, messageObj, `🪙 Hasil lempar koin: *${result}*\n+2 poin untukmu. Total: *${profile.points}*`);
+    if (isOnCooldown(`${scope}:coin`, 3000)) return true;
+
+    const premiumTier = await db.getPremiumTier(senderNumber);
+    const benefits = getPremiumBenefits(premiumTier);
+    // Owner/Admin bebas limit max bet
+    const maxBet = (isOwner || isAdmin) ? 1_000_000 : benefits.slotMaxBet;
+
+    const choice = args[1]?.toLowerCase();
+    const rawBet = args[2]?.toLowerCase();
+
+    if (!choice || !['heads', 'tails', 'angka', 'gambar', 'h', 't'].includes(choice)) {
+      await send(sock, jid, messageObj, `🪙 *TARUHAN LEMPAR KOIN* 🪙\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n*Format Perintah:* \`.coinflip [heads/tails/angka/gambar] [taruhan/all]\`\n\n*Contoh:* \`.coinflip heads 50\` atau \`.coinflip tails all\``);
+      return true;
+    }
+
+    const playerChoice = ['heads', 'angka', 'h'].includes(choice) ? 'HEADS 🪙' : 'TAILS 🪙';
+
+    const profile = await db.getGameProfile(senderNumber);
+    const currentPoints = profile.points || 0;
+
+    let bet = 10;
+    if (rawBet === 'all' || rawBet === 'allin') {
+      bet = Math.max(1, currentPoints);
+    } else {
+      const parsedBet = rawBet ? Number.parseInt(rawBet, 10) : 10;
+      if (rawBet && (isNaN(parsedBet) || !isFinite(parsedBet))) {
+        await send(sock, jid, messageObj, `❌ Jumlah taruhan tidak valid: *${rawBet}*\n\nGunakan angka atau 'all'. Contoh: \`.coinflip heads 50\` atau \`.coinflip heads all\``);
+        return true;
+      }
+      bet = Math.max(1, Math.min(maxBet, Math.abs(parsedBet || 10)));
+    }
+
+    const deductRes = await db.deductGamePoints(senderNumber, bet);
+    if (!deductRes.success) {
+      await send(sock, jid, messageObj, `❌ Poin kamu tidak cukup! Kamu butuh *${bet} poin*, tapi sisa poinmu hanya *${deductRes.currentPoints || currentPoints} poin*.\n\nKetik \`.daily\` untuk mengambil poin gratis harian!`);
+      return true;
+    }
+
+    const roll = Math.random() < 0.5 ? 'HEADS 🪙' : 'TAILS 🪙';
+    const isWin = playerChoice === roll;
+    let newPoints = deductRes.newPoints;
+
+    if (isWin) {
+      const winPayout = bet * 2;
+      const updatedProf = await db.addGamePoints(senderNumber, winPayout);
+      newPoints = updatedProf.points;
+    }
+
+    let msg = `🪙 *LEMPAR KOIN BETTING* 🪙\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    msg += `Pilihan Kamu: *${playerChoice}*\n`;
+    msg += `Hasil Koin: *${roll}*\n\n`;
+    msg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+    if (isWin) {
+      msg += `🎉 *MENANG DOUBLE!* Tebakanmu tepat.\n`;
+      msg += `🎁 Hadiah: *+${bet} poin*\n`;
+    } else {
+      msg += `💸 *RUNGKAD!* Tebakanmu salah.\n`;
+      msg += `💰 Kerugian: *-${bet} poin*\n`;
+    }
+    msg += `💳 Sisa Poin: *${newPoints} poin*`;
+
+    await send(sock, jid, messageObj, msg, {
+      buttons: [
+        { type: 'reply', text: `🪙 Heads (${bet} Poin)`, id: `.coinflip heads ${bet}` },
+        { type: 'reply', text: `🪙 Tails (${bet} Poin)`, id: `.coinflip tails ${bet}` }
+      ]
+    });
     return true;
   }
 
@@ -208,7 +468,12 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
 
   if (['daily', 'hadian', 'reward'].includes(command)) {
     const today = new Date().toISOString().slice(0, 10);
-    const result = await db.claimGameDaily(senderNumber, today);
+    // Cek premium multiplier
+    const premiumTier = await db.getPremiumTier(senderNumber);
+    const benefits = getPremiumBenefits(premiumTier);
+    const baseReward = 25;
+    const finalReward = Math.floor(baseReward * benefits.dailyRewardMult);
+    const result = await db.claimGameDaily(senderNumber, today, finalReward);
     if (!result.success) {
       await send(sock, jid, messageObj, `⏳ ${result.message}`, {
         title: '⏳ KLAIM DAILY HARIAN',
@@ -220,7 +485,9 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
       });
       return true;
     }
-    await send(sock, jid, messageObj, `🎁 Hadiah harian berhasil diklaim: *+${result.reward} poin*\n🔥 Streak: *${result.streak} hari*\n💰 Total poin: *${result.profile.points}*`, {
+    const bonusLabel = benefits.dailyRewardMult > 1 ? ` (${premiumTier} Bonus ${benefits.dailyRewardMult}x 🚀)` : '';
+    const safeDailyPoints = Math.max(0, Math.floor(Number(result.profile?.points) || 0));
+    await send(sock, jid, messageObj, `🎁 Hadiah harian berhasil diklaim: *+${result.reward} poin*${bonusLabel}\n🔥 Streak: *${result.streak} hari*\n💰 Total poin: *${safeDailyPoints}*`, {
       title: '🎁 HADIAH HARIAN TERKLAIM',
       buttons: [
         { type: 'reply', text: '🏆 Leaderboard', id: '.rank' },
@@ -231,15 +498,75 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     return true;
   }
 
+  if (['addpoint', 'addpoints', 'tambahpoin'].includes(command)) {
+    if (!isAdmin && !isOwner) {
+      await send(sock, jid, messageObj, "❌ Perintah ini hanya dapat dijalankan oleh Admin atau Owner.");
+      return true;
+    }
+    const mentions = messageObj?.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
+    let targetJid = mentions[0];
+    let amount = NaN;
+
+    if (mentions.length > 0) {
+      amount = parseInt(args[2], 10);
+    } else {
+      const arg1 = args[1]?.toLowerCase();
+      const arg2 = args[2];
+
+      if (arg1 === 'me' || arg1 === 'self' || arg1 === 'saya') {
+        targetJid = senderNumber;
+        amount = parseInt(arg2, 10);
+      } else if (arg1 && arg2) {
+        // Format: .addpoint nomor jumlah
+        const cleanNum = arg1.replace(/[^0-9]/g, '');
+        if (cleanNum.length > 5) {
+          targetJid = `${cleanNum}@s.whatsapp.net`;
+        }
+        amount = parseInt(arg2, 10);
+      } else if (arg1 && !arg2) {
+        // Format: .addpoint jumlah (auto-target diri sendiri)
+        targetJid = senderNumber;
+        amount = parseInt(arg1, 10);
+      }
+    }
+
+    if (!targetJid || isNaN(amount)) {
+      await send(sock, jid, messageObj, "⚠️ *Format Perintah Salah!* Gunakan:\n▫️ `.addpoint [jumlah]` (untuk diri sendiri)\n▫️ `.addpoint @member [jumlah]` (tag orang)\n▫️ `.addpoint [nomor] [jumlah]` (ketik nomor)\n\n*Contoh:* `.addpoint 500` atau `.addpoint @628123456789 500`");
+      return true;
+    }
+
+    try {
+      const profile = await db.addGamePoints(targetJid, amount);
+      const targetPhone = targetJid.split('@')[0];
+      await send(sock, jid, messageObj, `✅ Berhasil menambahkan *${amount} poin* ke @${targetPhone}.\n💰 Total Poin Sekarang: *${profile.points} poin*`, {
+        mentions: [targetJid]
+      });
+    } catch (err) {
+      await send(sock, jid, messageObj, `❌ Gagal menambahkan poin: ${err.message}`);
+    }
+    return true;
+  }
+
   if (['poin', 'point', 'profile', 'level', 'me'].includes(command)) {
-    const profile = await db.getGameProfile(senderNumber);
-    await send(sock, jid, messageObj, profileText(profile, messageObj?.pushName), {
+    const mentions = messageObj?.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
+    let targetJid = mentions[0];
+    if (!targetJid && args[1]) {
+      const cleanNum = args[1].replace(/[^0-9]/g, '');
+      if (cleanNum.length > 5) targetJid = `${cleanNum}@s.whatsapp.net`;
+    }
+    const target = targetJid || senderNumber;
+    const profile = await db.getGameProfile(target);
+    const premiumTier = await db.getPremiumTier(target);
+    const targetPhone = target.split('@')[0];
+    const nameStr = target === senderNumber ? messageObj?.pushName : `@${targetPhone}`;
+    await send(sock, jid, messageObj, profileText(profile, nameStr, premiumTier), {
       title: '👤 PROFIL & POIN GAME',
       buttons: [
         { type: 'reply', text: '🎁 Klaim Daily', id: '.daily' },
         { type: 'reply', text: '🏆 Leaderboard', id: '.rank' },
         { type: 'reply', text: '🛍️ Katalog Produk', id: '.produk' }
-      ]
+      ],
+      mentions: targetJid ? [targetJid] : []
     });
     return true;
   }
@@ -280,6 +607,98 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     });
     return true;
   }
+
+  // ─── GIVEAWAY / SETPOINTS ALL ─────────────────────────────────
+  if (['giveaway', 'setpoints', 'bagipoin', 'kompensasi'].includes(command)) {
+    if (!isAdmin && !isOwner) {
+      await send(sock, jid, messageObj, '❌ Perintah ini hanya untuk *Admin* atau *Owner*.');
+      return true;
+    }
+
+    const subCmd = args[1]?.toLowerCase(); // 'all' | angka | undefined
+    const rawAmount = subCmd === 'all' ? args[2] : args[1];
+    const amount = parseInt(rawAmount, 10);
+
+    // Tampilkan help jika tidak ada argumen
+    if (!rawAmount || isNaN(amount) || amount <= 0) {
+      await send(sock, jid, messageObj,
+        `🎁 *GIVEAWAY POIN — PANDUAN PENGGUNAAN*\n` +
+        `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+        `*Format:*\n` +
+        `▫️ \`.giveaway all [jumlah]\` — Bagikan poin ke *semua member terdaftar*\n` +
+        `▫️ \`.giveaway [jumlah]\` — Sama seperti di atas\n\n` +
+        `*Contoh:*\n` +
+        `▫️ \`.giveaway all 100\` → Semua member +100 poin\n` +
+        `▫️ \`.giveaway 500\` → Semua member +500 poin\n\n` +
+        `_Perintah ini memberikan poin tambahan ke semua member yang punya akun game._`
+      );
+      return true;
+    }
+
+    if (amount > 50000) {
+      await send(sock, jid, messageObj, `⚠️ Maksimal giveaway adalah *50.000 poin* per eksekusi untuk mencegah kesalahan.\n\nJika kamu yakin, pecah menjadi beberapa batch.`);
+      return true;
+    }
+
+    // Kirim pesan loading dulu
+    await send(sock, jid, messageObj,
+      `⏳ *Sedang memproses giveaway...*\n` +
+      `💰 Jumlah: *${amount} poin* per member\n\n` +
+      `_Mohon tunggu sebentar..._`
+    );
+
+    try {
+      // Ambil semua member yang punya game_profile
+      const allMembers = await db.allQuery(
+        `SELECT DISTINCT gp.customer_jid, COALESCE(c.nama, 'Member') as nama
+         FROM game_profiles gp
+         LEFT JOIN customers c ON c.nomor = gp.customer_jid
+         ORDER BY gp.customer_jid`
+      );
+
+      if (!allMembers || allMembers.length === 0) {
+        await send(sock, jid, messageObj, '❌ Tidak ada member yang ditemukan di database.');
+        return true;
+      }
+
+      let successCount = 0;
+      let failCount = 0;
+
+      for (const member of allMembers) {
+        try {
+          await db.addGamePoints(member.customer_jid, amount);
+          successCount++;
+        } catch (_err) {
+          failCount++;
+        }
+      }
+
+      const resultMsg =
+        `🎁 *GIVEAWAY POIN SELESAI!*\n` +
+        `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+        `💰 Poin dibagikan: *+${amount} poin*\n` +
+        `👥 Member berhasil: *${successCount} orang*\n` +
+        (failCount > 0 ? `⚠️ Member gagal: *${failCount} orang*\n` : '') +
+        `\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+        `✅ Semua member sudah menerima poin kompensasi!\n` +
+        `_Ketik .rank untuk melihat leaderboard terbaru._`;
+
+      await send(sock, jid, messageObj, resultMsg, {
+        title: '🎁 GIVEAWAY POIN',
+        buttons: [
+          { type: 'reply', text: '🏆 Lihat Leaderboard', id: '.rank' },
+          { type: 'reply', text: '👤 Profil Saya', id: '.poin' }
+        ]
+      });
+
+    } catch (err) {
+      await send(sock, jid, messageObj, `❌ Giveaway gagal: ${err.message}`);
+    }
+    return true;
+  }
+  // ────────────────────────────────────────────────────────────────
+
+
 
   if (['badge', 'badges', 'achievement', 'achievements'].includes(command)) {
     const profile = await db.getGameProfile(senderNumber);
@@ -349,6 +768,26 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
 
   if (['freegames', 'freegame', 'gamegratis', 'freegamestag'].includes(command)) {
     if (isOnCooldown(`${scope}:freegames`, 5000)) return true;
+
+    // Shortcut: .freegames on / off
+    if (args[1] === 'on' || args[1] === 'off') {
+       if (!isFromGroup) {
+          await send(sock, jid, messageObj, '❌ Pengaturan fitur hanya bisa dilakukan di dalam grup.');
+          return true;
+       }
+       if (!isAdmin && !isOwner) {
+          await send(sock, jid, messageObj, '❌ Hanya Admin/Owner yang bisa mengatur fitur grup!');
+          return true;
+       }
+       const action = args[1];
+       const currentSettings = await db.getGroupSettings(jid);
+       const featuresConfig = currentSettings.features_config || {};
+       featuresConfig['freegames'] = (action === 'on');
+       await db.updateGroupSettings(jid, { features_config: featuresConfig });
+       await sock.sendMessage(jid, { text: `✅ Fitur *FREEGAMES ALERT* berhasil di-${action.toUpperCase()}-kan untuk grup ini.` });
+       return true;
+    }
+
     const isTagAllRequested = command === 'freegamestag' || args[1] === 'tag' || args[1] === 'tagall';
 
     const res = await entertainment.fetchFreeGames();
@@ -379,19 +818,44 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
 
   if (['slot', 'slots', 'judi'].includes(command)) {
     if (isOnCooldown(`${scope}:slot`, 4000)) return true;
-    const bet = Math.max(1, Math.min(1000, Number.parseInt(args[1] || '10', 10)));
-    const profile = await db.getGameProfile(senderNumber);
 
-    if (profile.points < bet) {
-      await send(sock, jid, messageObj, `❌ Poin kamu tidak cukup! Kamu butuh *${bet} poin*, tapi sisa poinmu hanya *${profile.points} poin*.\n\nKetik \`.daily\` untuk mengambil poin gratis harian!`);
+    // Cek premium slot limit
+    const premiumTier = await db.getPremiumTier(senderNumber);
+    const benefits = getPremiumBenefits(premiumTier);
+    // Owner/Admin bebas limit max bet
+    const maxBet = (isOwner || isAdmin) ? 1_000_000 : benefits.slotMaxBet;
+
+    // Ambil profil & pastikan points tidak null/NaN
+    const profile = await db.getGameProfile(senderNumber);
+    const currentPoints = profile.points || 0;
+
+    // Validasi input bet — mendukung input 'all' atau 'allin'
+    const rawBetArg = args[1]?.toLowerCase();
+    let bet = 10;
+    if (rawBetArg === 'all' || rawBetArg === 'allin') {
+      bet = Math.max(1, currentPoints);
+    } else {
+      const parsedBet = rawBetArg ? Number.parseInt(rawBetArg, 10) : 10;
+      if (rawBetArg && (isNaN(parsedBet) || !isFinite(parsedBet))) {
+        const displayMax = isFinite(maxBet) ? `${maxBet} poin` : 'Tanpa Batas';
+        await send(sock, jid, messageObj, `❌ Format taruhan tidak valid: *${rawBetArg}*\n\nGunakan angka atau 'all'. Contoh: \`.slot 10\` atau \`.slot all\`\nMaksimal taruhan: *${displayMax}*`);
+        return true;
+      }
+      bet = Math.max(1, Math.min(maxBet, Math.abs(parsedBet || 10)));
+    }
+
+    const deductRes = await db.deductGamePoints(senderNumber, bet);
+    if (!deductRes.success) {
+      await send(sock, jid, messageObj, `❌ Poin kamu tidak cukup! Kamu butuh *${bet} poin*, tapi sisa poinmu hanya *${deductRes.currentPoints || currentPoints} poin*.\n\nKetik \`.daily\` untuk mengambil poin gratis harian!`);
       return true;
     }
 
     const spin = entertainment.playSlotMachine(bet);
-    const pointDelta = spin.winAmount - bet;
-    const newPoints = Math.max(0, profile.points + pointDelta);
-
-    await db.updateGameProfile(senderNumber, { points: newPoints });
+    let newPoints = deductRes.newPoints;
+    if (spin.isWin && spin.winAmount > 0) {
+      const updatedProf = await db.addGamePoints(senderNumber, spin.winAmount);
+      newPoints = updatedProf.points;
+    }
 
     let msg = `🎰 *CASINO SLOT MACHINE* 🎰\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
     msg += `   [ ${spin.reels.join(' | ')} ]\n\n`;
@@ -450,10 +914,565 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     return true;
   }
 
+  // --- GAME: Tebak Angka Progresif ---
+  if (command === 'tebakangka') {
+    if (!isFromGroup) {
+      await send(sock, jid, messageObj, "⚠️ Game Tebak Angka hanya dapat dimainkan di dalam Grup WhatsApp!");
+      return true;
+    }
+    let game = tebakAngkaGames.get(jid);
+    if (!game) {
+      const secret = Math.floor(Math.random() * 100) + 1;
+      game = { secret, pot: 200, guesses: 0 };
+      tebakAngkaGames.set(jid, game);
+      await send(sock, jid, messageObj, `🎮 *GAME TEBAK ANGKA DIMULAI!* 🎮\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nBot telah menentukan angka rahasia antara *1 s/d 100*.\n\n💰 Pot Jackpot Awal: *200 Poin*\n💸 Biaya Menebak: *10 Poin* per tebakan (akan ditambahkan langsung ke Pot Jackpot)\n\n👉 Ketik *.tebak [angka]* untuk mulai menebak!`);
+    } else {
+      await send(sock, jid, messageObj, `🎮 *GAME TEBAK ANGKA AKTIF* 🎮\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n💰 Pot Jackpot Saat Ini: *${game.pot} Poin*\n👥 Jumlah Tebakan: *${game.guesses} kali*\n\n👉 Ketik *.tebak [angka]* untuk menebak!`);
+    }
+    return true;
+  }
+
+  if (command === 'tebak') {
+    if (!isFromGroup) {
+      await send(sock, jid, messageObj, "⚠️ Game Tebak Angka hanya dapat dimainkan di dalam Grup WhatsApp!");
+      return true;
+    }
+    const game = tebakAngkaGames.get(jid);
+    if (!game) {
+      await send(sock, jid, messageObj, "❌ Tidak ada game Tebak Angka yang sedang aktif di grup ini. Ketik *.tebakangka* untuk memulainya!");
+      return true;
+    }
+
+    const guess = parseInt(args[1], 10);
+    if (isNaN(guess) || guess < 1 || guess > 100) {
+      await send(sock, jid, messageObj, "⚠️ Tebakan tidak valid! Masukkan angka antara *1 s/d 100*.\n\n*Contoh:* `.tebak 45`");
+      return true;
+    }
+
+    const deductRes = await db.deductGamePoints(senderNumber, 10);
+    if (!deductRes.success) {
+      await send(sock, jid, messageObj, `❌ Poin kamu tidak cukup! Kamu membutuhkan minimal *10 poin* untuk menebak (Poin kamu: *${deductRes.currentPoints || 0} poin*).`);
+      return true;
+    }
+
+    game.pot += 10;
+    game.guesses += 1;
+
+    if (guess === game.secret) {
+      const winPot = game.pot;
+      const winnerProfile = await db.addGamePoints(senderNumber, winPot);
+      const finalPoints = winnerProfile.points;
+      tebakAngkaGames.delete(jid);
+      
+      const winnerName = messageObj.pushName || 'Player';
+      await send(sock, jid, messageObj, `🎉 *JACKPOT!!! BENAR SEKALI!* 🎉\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n👤 Pemenang: *@${senderNumber.split('@')[0]}* (${winnerName})\n🔢 Angka Rahasia: *${game.secret}*\n💰 Hadiah Jackpot: *+${winPot} Poin*\n📉 Total Tebakan Grup: *${game.guesses} kali*\n\nTotal poin kamu sekarang: *${finalPoints} poin* 🏆`, {
+        mentions: [senderNumber]
+      });
+    } else {
+      const diff = guess < game.secret ? "terlalu KECIL 📉" : "terlalu BESAR 📈";
+      await send(sock, jid, messageObj, `❌ Tebakan *@${senderNumber.split('@')[0]}* (${guess}) *${diff}*!\n\n💰 Pot Jackpot bertambah menjadi: *${game.pot} Poin*`, {
+        mentions: [senderNumber]
+      });
+    }
+    return true;
+  }
+
+  // --- GAME: Lucky Spin ---
+  if (command === 'spin' || command === 'luckyspin') {
+    const rawBet = args[1]?.toLowerCase();
+    const profile = await db.getGameProfile(senderNumber);
+    const currentPoints = profile.points || 0;
+
+    let bet = 100;
+    if (rawBet === 'all' || rawBet === 'allin') {
+      bet = Math.max(1, currentPoints);
+    } else if (rawBet) {
+      const parsedBet = parseInt(rawBet, 10);
+      if (isNaN(parsedBet) || !isFinite(parsedBet) || parsedBet <= 0) {
+        await send(sock, jid, messageObj, "⚠️ Taruhan tidak valid! Gunakan angka atau 'all'.\n\n*Contoh:* `.spin 100` atau `.spin all`");
+        return true;
+      }
+      bet = Math.min(1_000_000, parsedBet);
+    }
+
+    const deductRes = await db.deductGamePoints(senderNumber, bet);
+    if (!deductRes.success) {
+      await send(sock, jid, messageObj, `❌ Poin kamu tidak mencukupi untuk melakukan spin sebesar *${bet} Poin* (Poin kamu: *${deductRes.currentPoints || currentPoints} Poin*).`);
+      return true;
+    }
+
+    const animFrames = [
+      "🎡 *WHEEL OF FORTUNE* 🎡\n\n[ 🕒 | 🕒 | 🕒 ]\n\n_Sedang memutar roda keberuntungan..._",
+      "🎡 *WHEEL OF FORTUNE* 🎡\n\n[ 🕕 | 🕕 | 🕕 ]\n\n_Sedang memutar roda keberuntungan..._",
+      "🎡 *WHEEL OF FORTUNE* 🎡\n\n[ 🕘 | 🕘 | 🕘 ]\n\n_Sedang memutar roda keberuntungan..._"
+    ];
+
+    const spinMsg = await sock.sendMessage(jid, { text: animFrames[0] }, { quoted: messageObj });
+
+    setTimeout(async () => {
+      await sock.sendMessage(jid, { text: animFrames[1], edit: spinMsg.key });
+    }, 600);
+
+    setTimeout(async () => {
+      await sock.sendMessage(jid, { text: animFrames[2], edit: spinMsg.key });
+    }, 1200);
+
+    setTimeout(async () => {
+      const roll = Math.random() * 100;
+      let outcome = "";
+      let winAmount = 0;
+      let isCoupon = false;
+      let couponCode = "";
+
+      if (roll < 45) {
+        outcome = "💥 *ZONK!* Poin taruhanmu hangus. Tetap semangat, coba lagi! 💪";
+        winAmount = 0;
+      } else if (roll < 65) {
+        outcome = "💵 *Kembali Setengah!* Kamu mendapat kembali 0.5x taruhan.";
+        winAmount = Math.floor(bet * 0.5);
+      } else if (roll < 85) {
+        outcome = "💰 *Menang Kecil!* Kamu memenangkan 1.5x taruhan.";
+        winAmount = Math.floor(bet * 1.5);
+      } else if (roll < 95) {
+        outcome = "🔥 *DOUBLE WIN!* Kamu memenangkan 2x taruhan!";
+        winAmount = Math.floor(bet * 2);
+      } else if (roll < 99) {
+        outcome = "👑 *JACKPOT 10X!!!* Selamat, kamu memenangkan 10x lipat taruhan! 🎉🎉";
+        winAmount = Math.floor(bet * 10);
+      } else {
+        isCoupon = true;
+        winAmount = bet;
+        outcome = "🎟️ *GRAND PRIZE: VOUCHER BELANJA!!!* 🎟️\n\nSelamat! Kamu memenangkan *Voucher Diskon Belanja 10%* secara GRATIS! Kode voucher belanja unik telah dikirimkan ke DM kamu. Silakan cek chat pribadi bot!";
+      }
+
+      if (winAmount > 0) {
+        await db.addGamePoints(senderNumber, winAmount);
+      }
+      const finalProf = await db.getGameProfile(senderNumber);
+      const newPoints = finalProf.points;
+
+      let resultText = `🎡 *WHEEL OF FORTUNE* 🎡\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+      resultText += `👤 Player: *@${senderNumber.split('@')[0]}*\n`;
+      resultText += `💸 Taruhan: *${bet} Poin*\n\n`;
+      resultText += `${outcome}\n\n`;
+      if (!isCoupon) {
+        resultText += `💰 Perubahan Poin: *${winAmount >= bet ? '+' : ''}${winAmount - bet} Poin*\n`;
+        resultText += `🏆 Sisa Poin Sekarang: *${newPoints} Poin*`;
+      } else {
+        resultText += `🏆 Poin Kamu Dikembalikan: *+${bet} Poin*`;
+      }
+
+      await sock.sendMessage(jid, { text: resultText, edit: spinMsg.key, mentions: [senderNumber] });
+
+      if (isCoupon) {
+        try {
+          const rand = Math.floor(1000 + Math.random() * 9000);
+          couponCode = `SPIN10-${rand}`;
+          const expires = new Date();
+          expires.setDate(expires.getDate() + 3); // 3 hari
+          await db.addCoupon(couponCode, 'percent', 10, 20000, 1, expires.toISOString());
+
+          const dmText = `🎟️ *VOUCHER DISKON WHEEL OF FORTUNE AKBAR STORE* 🎟️
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Selamat! Kamu mendapatkan kupon diskon eksklusif dari memutar Lucky Spin:
+
+👉 Kode Kupon: *${couponCode}*
+📈 Diskon: *10%*
+🛡️ Minimal Belanja: *Rp20.000*
+⏳ Masa Berlaku: *3 Hari* (s/d ${expires.toLocaleDateString('id-ID')})
+
+Gunakan kupon ini saat checkout belanja di bot dengan mengetik:
+*.kupon ${couponCode}* sebelum melakukan tagihan pembayaran!`;
+
+          await sock.sendMessage(senderNumber, { text: dmText });
+        } catch (couponErr) {
+          console.error("Gagal membuat kupon spin:", couponErr);
+        }
+      }
+    }, 1800);
+
+    return true;
+  }
+
+  // --- GAME: Multiplayer Suit ---
+  if (command === 'suit') {
+    if (!isFromGroup) {
+      await send(sock, jid, messageObj, "⚠️ Perintah suit hanya dapat dilakukan di dalam Grup WhatsApp!");
+      return true;
+    }
+
+    const mentions = messageObj?.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
+    const challengedJid = mentions[0];
+    const rawBet = args[2] || args[1];
+
+    let targetJid = challengedJid;
+    let betStr = "";
+
+    if (args[1] && !args[1].startsWith('@') && isNaN(parseInt(args[1], 10)) === false) {
+      betStr = args[1];
+    } else if (args[2] && !args[2].startsWith('@') && isNaN(parseInt(args[2], 10)) === false) {
+      betStr = args[2];
+    } else if (args[1] === 'all' || args[2] === 'all') {
+      betStr = 'all';
+    }
+
+    if (!targetJid) {
+      const argUser = args.find(a => a.startsWith('@'));
+      if (argUser) {
+        const cleanNum = argUser.replace(/[^0-9]/g, '');
+        targetJid = `${cleanNum}@s.whatsapp.net`;
+      }
+    }
+
+    if (!targetJid || targetJid === senderNumber) {
+      await send(sock, jid, messageObj, "⚠️ *Format Perintah Salah!* Gunakan:\n▫️ `.suit @member [taruhan]`\n\n*Contoh:* `.suit @628123456789 100` atau `.suit @628123456789 all`");
+      return true;
+    }
+
+    if (targetJid === jidNormalizedUser(sock.user.id)) {
+      await send(sock, jid, messageObj, "❌ Kamu tidak bisa menantang bot! Untuk bermain melawan bot gunakan game lain.");
+      return true;
+    }
+
+    const challengerProfile = await db.getGameProfile(senderNumber);
+    const challengedProfile = await db.getGameProfile(targetJid);
+
+    let bet = 50;
+    if (betStr === 'all' || betStr === 'allin') {
+      bet = Math.min(challengerProfile.points || 0, challengedProfile.points || 0);
+      bet = Math.max(10, bet);
+    } else if (betStr) {
+      bet = parseInt(betStr, 10);
+    }
+
+    if (isNaN(bet) || bet <= 0) {
+      await send(sock, jid, messageObj, "⚠️ Poin taruhan tidak valid! Harus berupa angka di atas 0.");
+      return true;
+    }
+
+    if (challengerProfile.points < bet) {
+      await send(sock, jid, messageObj, `❌ Poin kamu tidak mencukupi! Poin kamu: *${challengerProfile.points} Poin* (Taruhan: *${bet} Poin*).`);
+      return true;
+    }
+
+    if (challengedProfile.points < bet) {
+      const name = `@${targetJid.split('@')[0]}`;
+      await send(sock, jid, messageObj, `❌ Poin ${name} tidak mencukupi untuk menerima taruhan sebesar *${bet} Poin* (Poin lawan: *${challengedProfile.points} Poin*).`, {
+        mentions: [targetJid]
+      });
+      return true;
+    }
+
+    try {
+      const challengeId = await db.createSuitChallenge(senderNumber, targetJid, jid, bet);
+      const oppPhone = targetJid.split('@')[0];
+
+      let startMsg = `⚔️ *TANTANGAN SUIT MULTIPLAYER* ⚔️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+      startMsg += `👤 Penantang: *@${senderNumber.split('@')[0]}*\n`;
+      startMsg += `🎯 Ditantang: *@${oppPhone}*\n`;
+      startMsg += `💰 Poin Taruhan: *${bet} Poin*\n\n`;
+      startMsg += `*CARA BERMAIN:* Kedua pemain harus mengirimkan pilihan secara RAHASIA lewat pesan pribadi (DM) ke Bot.\n\n`;
+      startMsg += `👉 *Silakan kedua pemain buka DM Bot sekarang dan ketik:*\n`;
+      startMsg += `▫️ *.pilihsuit gunting*\n`;
+      startMsg += `▫️ *.pilihsuit batu*\n`;
+      startMsg += `▫️ *.pilihsuit kertas*\n\n`;
+      startMsg += `_Taruhan ${bet} poin telah dikunci dari masing-masing akun._`;
+
+      await send(sock, jid, messageObj, startMsg, { mentions: [senderNumber, targetJid] });
+
+      await sock.sendMessage(senderNumber, { text: `⚔️ Kamu menantang @${oppPhone} bermain Suit sebesar *${bet} poin*.\n\nKetik *.pilihsuit gunting/batu/kertas* di sini untuk mengirim pilihanmu!` });
+      await sock.sendMessage(targetJid, { text: `⚔️ Kamu ditantang oleh @${senderNumber.split('@')[0]} bermain Suit sebesar *${bet} poin* di grup.\n\nKetik *.pilihsuit gunting/batu/kertas* di sini untuk menerima taruhan & mengirim pilihanmu!` });
+    } catch (err) {
+      await send(sock, jid, messageObj, `❌ Gagal memulai tantangan suit: ${err.message}`);
+    }
+    return true;
+  }
+
+  if (command === 'pilihsuit') {
+    if (isFromGroup) {
+      await send(sock, jid, messageObj, "❌ Pilihan suit harus dikirimkan secara rahasia via DM ke Bot agar lawan tidak tahu!");
+      return true;
+    }
+
+    const choice = args[1]?.toLowerCase();
+    if (!['gunting', 'batu', 'kertas', 'scissors', 'rock', 'paper'].includes(choice)) {
+      await send(sock, jid, messageObj, "⚠️ Pilihan tidak valid! Gunakan: `.pilihsuit gunting`, `.pilihsuit batu`, atau `.pilihsuit kertas`.");
+      return true;
+    }
+
+    const normalizedChoice = ['scissors', 'gunting'].includes(choice) ? 'gunting' :
+                               ['rock', 'batu'].includes(choice) ? 'batu' : 'kertas';
+
+    const challenge = await db.getPendingSuitChallenge(senderNumber);
+    if (!challenge) {
+      await send(sock, jid, messageObj, "❌ Kamu tidak memiliki tantangan suit aktif yang menunggumu saat ini.");
+      return true;
+    }
+
+    try {
+      const updated = await db.saveSuitChoice(challenge.id, senderNumber, normalizedChoice);
+      await send(sock, jid, messageObj, `✅ Pilihanmu (*${normalizedChoice.toUpperCase()}*) berhasil dikirim secara rahasia! Menunggu lawan menentukan pilihan...`);
+
+      const isChallenger = challenge.challenger_jid === senderNumber;
+      const opponentJid = isChallenger ? challenge.challenged_jid : challenge.challenger_jid;
+
+      await sock.sendMessage(opponentJid, { text: `🔔 Lawanmu (@${senderNumber.split('@')[0]}) sudah menentukan pilihannya! Ayo kirim pilihanmu sekarang.` });
+
+      if (updated && updated.challenger_choice && updated.challenged_choice) {
+        const choiceA = updated.challenger_choice;
+        const choiceB = updated.challenged_choice;
+        const playerA = updated.challenger_jid;
+        const playerB = updated.challenged_jid;
+        const bet = updated.bet;
+
+        let winner = null;
+        if (choiceA === choiceB) {
+          winner = null;
+        } else if (
+          (choiceA === 'batu' && choiceB === 'gunting') ||
+          (choiceA === 'gunting' && choiceB === 'kertas') ||
+          (choiceA === 'kertas' && choiceB === 'batu')
+        ) {
+          winner = 'A';
+        } else {
+          winner = 'B';
+        }
+
+        let resultText = `🏁 *HASIL SUIT MULTIPLAYER* 🏁\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+        resultText += `💰 Taruhan: *${bet} Poin*\n\n`;
+
+        const choiceEmojis = { batu: '✊ BATU', gunting: '✌️ GUNTING', kertas: '✋ KERTAS' };
+        resultText += `👤 Penantang (@${playerA.split('@')[0]}): ${choiceEmojis[choiceA]}\n`;
+        resultText += `🎯 Lawan (@${playerB.split('@')[0]}): ${choiceEmojis[choiceB]}\n\n`;
+
+        if (winner === null) {
+          await db.refundSuitChallenge(challenge.id, true, true);
+          resultText += `🤝 *HASIL SERI (DRAW)!* 🤝\nTaruhan poin dikembalikan ke masing-masing akun.`;
+        } else if (winner === 'A') {
+          const profileA = await db.addGamePoints(playerA, bet * 2);
+          await db.completeSuitChallenge(challenge.id, 'CHALLENGER_WON');
+          resultText += `🏆 *PEMENANG:* *@${playerA.split('@')[0]}* 🎉\n💰 Hadiah: *+${bet * 2} Poin*`;
+        } else {
+          const profileB = await db.addGamePoints(playerB, bet * 2);
+          await db.completeSuitChallenge(challenge.id, 'CHALLENGED_WON');
+          resultText += `🏆 *PEMENANG:* *@${playerB.split('@')[0]}* 🎉\n💰 Hadiah: *+${bet * 2} Poin*`;
+        }
+
+        await sock.sendMessage(updated.group_jid, { text: resultText, mentions: [playerA, playerB] });
+
+        const endDmText = `🏁 Permainan Suit selesai!\n\nHasil pertandingan diumumkan di grup. Silakan cek grup WhatsApp!`;
+        await sock.sendMessage(playerA, { text: endDmText });
+        await sock.sendMessage(playerB, { text: endDmText });
+      }
+    } catch (err) {
+      await send(sock, jid, messageObj, `❌ Gagal menyimpan pilihan: ${err.message}`);
+    }
+    return true;
+  }
+
+  if (command === 'cancelsuit' || command === 'batalsuit') {
+    const challenge = await db.getPendingSuitChallenge(senderNumber);
+    if (!challenge) {
+      await send(sock, jid, messageObj, "❌ Kamu tidak memiliki tantangan suit aktif yang menunggumu saat ini.");
+      return true;
+    }
+
+    try {
+      await db.refundSuitChallenge(challenge.id, true, true);
+      await send(sock, jid, messageObj, `✅ Tantangan suit berhasil dibatalkan. Poin taruhan dikembalikan ke pemiliknya.`);
+      
+      const opponentJid = challenge.challenger_jid === senderNumber ? challenge.challenged_jid : challenge.challenger_jid;
+      await sock.sendMessage(opponentJid, { text: `🔔 Tantangan suit dengan @${senderNumber.split('@')[0]} telah dibatalkan.` });
+      
+      await sock.sendMessage(challenge.group_jid, { text: `🔔 Tantangan suit antara @${challenge.challenger_jid.split('@')[0]} dan @${challenge.challenged_jid.split('@')[0]} telah dibatalkan. Poin direfund.`, mentions: [challenge.challenger_jid, challenge.challenged_jid] });
+    } catch (err) {
+      await send(sock, jid, messageObj, `❌ Gagal membatalkan tantangan suit: ${err.message}`);
+    }
+    return true;
+  }
+
+  // --- REWARD SHOP: Point Exchange ---
+  if (command === 'tukar' || command === 'pointshop' || command === 'penukaran') {
+    const option = parseInt(args[1], 10);
+    const profile = await db.getGameProfile(senderNumber);
+    const currentPoints = profile.points || 0;
+
+    const exchangeRates = [
+      { id: 1, name: "🎟️ Kupon Diskon Belanja 10%", cost: 2000, desc: "Potongan diskon 10% untuk transaksi produk (Min Belanja Rp20k, Maks Potongan Rp10k)." },
+      { id: 2, name: "🥈 Status Premium Silver (3 Hari)", cost: 3000, desc: "Meningkatkan limit all-in game & bonus harian." },
+      { id: 3, name: "🥇 Status Premium Gold (7 Hari)", cost: 6000, desc: "Meningkatkan bonus harian dan benefit premium lebih tinggi." },
+      { id: 4, name: "💎 Status Premium Diamond (30 Hari)", cost: 20000, desc: "Akses premium benefit paling tinggi." }
+    ];
+
+    if (isNaN(option) || option < 1 || option > exchangeRates.length) {
+      let shopText = `🛒 *POINT EXCHANGE / PENUKARAN REWARD* 🛒\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+      shopText += `👤 Akun Kamu: *@${senderNumber.split('@')[0]}*\n`;
+      shopText += `💰 Saldo Poin: *${currentPoints} Poin*\n\n`;
+      shopText += `*Daftar Hadiah Yang Tersedia:*\n`;
+      
+      exchangeRates.forEach(r => {
+        shopText += `*${r.id}. ${r.name}*\n`;
+        shopText += `▫️ Harga: *${r.cost} Poin*\n`;
+        shopText += `▫️ Deskripsi: ${r.desc}\n\n`;
+      });
+
+      shopText += `💡 *Cara Menukar:* Ketik \`.tukar [nomor]\`\n*Contoh:* \`.tukar 1\` untuk menukarkan kupon diskon.`;
+
+      await send(sock, jid, messageObj, shopText, { mentions: [senderNumber] });
+      return true;
+    }
+
+    const selected = exchangeRates[option - 1];
+    const deductRes = await db.deductCustomerPoints(senderNumber, selected.cost, `TUKAR_REWARD_${selected.id}`);
+    if (!deductRes.success) {
+      await send(sock, jid, messageObj, `❌ Poin kamu tidak mencukupi untuk menukar *${selected.name}* (Poin kamu: *${currentPoints} Poin*, Dibutuhkan: *${selected.cost} Poin*).`);
+      return true;
+    }
+
+    try {
+
+
+      if (option === 1) {
+        const rand = Math.floor(10000 + Math.random() * 90000);
+        const code = `SHOP10-${rand}`;
+        const expires = new Date();
+        expires.setDate(expires.getDate() + 7); // 7 hari
+        await db.addCoupon(code, 'percent', 10, 20000, 1, expires.toISOString());
+
+        const dmText = `🎟️ *KUPON BELANJA PENUKARAN POIN* 🎟️
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Selamat! Kamu berhasil menukarkan ${selected.cost} poin dengan kupon belanja:
+
+👉 Kode Kupon: *${code}*
+📈 Diskon: *10%*
+🛡️ Minimal Belanja: *Rp20.000*
+⏳ Masa Berlaku: *7 Hari* (s/d ${expires.toLocaleDateString('id-ID')})
+
+Gunakan kupon ini saat checkout belanja di bot dengan mengetik:
+*.kupon ${code}* sebelum melakukan tagihan pembayaran!`;
+
+        await sock.sendMessage(senderNumber, { text: dmText });
+        await send(sock, jid, messageObj, `✅ Penukaran berhasil! Kode Kupon Belanja unik diskon 10% telah dikirimkan secara pribadi ke DM kamu. Silakan periksa!`);
+
+      } else {
+        let tier = "Silver";
+        let days = 3;
+        if (option === 3) {
+          tier = "Gold";
+          days = 7;
+        } else if (option === 4) {
+          tier = "Diamond";
+          days = 30;
+        }
+
+        const res = await db.grantPremium(senderNumber, tier, days, 'POINT_SHOP');
+        await send(sock, jid, messageObj, `✅ *PENUKARAN BERHASIL!* 🎉\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nSelamat, akun kamu berhasil ditingkatkan menjadi *Premium ${tier}* selama *${days} hari*!\n\n📅 Berlaku s/d: *${new Date(res.expiresAt).toLocaleDateString('id-ID')}*\n💰 Sisa Poin Sekarang: *${currentPoints - selected.cost} Poin*`);
+      }
+    } catch (err) {
+      await send(sock, jid, messageObj, `❌ Terjadi kesalahan saat melakukan penukaran: ${err.message}`);
+    }
+    return true;
+  }
+
   if (['fun', 'game', 'games', 'hiburan'].includes(command) && args.length === 1) {
     await send(sock, jid, messageObj, '🎮 *MENU HIBURAN*\n\n.freegames · .slot · .zodiak · .jodoh\n.quiz · .tebakemoji · .tebakkata\n.jawab · .hint · .sambungkata\n.truth · .dare · .dadu · .coinflip\n.torebot · .tochipmunk · .todeep\n.daily · .poin · .rank · .misi\n.poll · .love\n\nKetik `.menu hiburan` untuk panduan lengkap.');
     return true;
   }
 
   return false;
+}
+
+export async function triggerAutoQuiz(sock, jid) {
+  const types = ['quiz', 'tebakemoji', 'word'];
+  const type = types[Math.floor(Math.random() * types.length)];
+  return startRound({ sock, jid, senderNumber: 'SYSTEM', messageObj: null, isFromGroup: true, type });
+}
+
+export async function handleRampok(sock, jid, m, senderNumber, targetNumber) {
+  if (!targetNumber) {
+    await send(sock, jid, m, "⚠️ *Format Salah*\nBalas (reply) pesan target atau tag orangnya!\n_Contoh: .rampok @user_");
+    return true;
+  }
+
+  if (senderNumber === targetNumber) {
+    await send(sock, jid, m, "⚠️ Kamu tidak bisa merampok dirimu sendiri!");
+    return true;
+  }
+
+  const isTargetReg = await db.isCustomerRegistered(targetNumber);
+  if (!isTargetReg) {
+    await send(sock, jid, m, "❌ Target belum terdaftar di database (guest).");
+    return true;
+  }
+
+  const now = Date.now();
+  const immExpires = victimImmunity.get(targetNumber) || 0;
+  if (now < immExpires) {
+    const sisaMenit = Math.ceil((immExpires - now) / 60000);
+    await send(sock, jid, m, `🛡️ *GAGAL!*\nTarget sedang dilindungi oleh Polisi (Immunity) selama ${sisaMenit} menit ke depan.`);
+    return true;
+  }
+
+  const cdExpires = rampokCooldowns.get(senderNumber) || 0;
+  if (now < cdExpires) {
+    const sisaMenit = Math.ceil((cdExpires - now) / 60000);
+    await send(sock, jid, m, `🚨 *BURONAN!*\nKamu sedang dalam masa buron. Sembunyi dulu selama ${sisaMenit} menit sebelum merampok lagi.`);
+    return true;
+  }
+
+  const profilePerampok = await db.getGameProfile(senderNumber);
+  const profileKorban = await db.getGameProfile(targetNumber);
+
+  if (!profilePerampok || profilePerampok.points < 500) {
+    await send(sock, jid, m, "❌ Modal kamu kurang! Kamu butuh minimal *500 Poin* sebagai modal jaminan penalti jika tertangkap.");
+    return true;
+  }
+
+  if (!profileKorban || profileKorban.points < 1000) {
+    await send(sock, jid, m, "❌ Gagal merampok! Target terlalu miskin (Poin < 1000). Jangan mem-bully rakyat jelata!");
+    return true;
+  }
+
+  // 40% chance of success
+  const isSuccess = Math.random() < 0.40;
+
+  // Set Cooldown (2 hours) & Immunity (4 hours)
+  rampokCooldowns.set(senderNumber, now + (2 * 60 * 60 * 1000));
+  victimImmunity.set(targetNumber, now + (4 * 60 * 60 * 1000));
+
+  if (isSuccess) {
+    const percentStolen = Math.floor(Math.random() * 11) + 10; // 10% to 20%
+    const amountStolen = Math.floor((profileKorban.points * percentStolen) / 100);
+
+    const deductRes = await db.deductGamePoints(targetNumber, amountStolen);
+    if (!deductRes.success) {
+       await send(sock, jid, m, "❌ Terjadi kesalahan pada brankas target (Transaksi gagal).");
+       return true;
+    }
+    await db.addGamePoints(senderNumber, amountStolen);
+
+    await sock.sendMessage(jid, {
+        text: `🥷 *PERAMPOKAN BERHASIL!*\n\nKamu berhasil menyelinap dan mencuri *${amountStolen} Poin* (${percentStolen}%) dari brankas @${targetNumber.split('@')[0]}!\n\n💰 Saldo kamu sekarang: *${profilePerampok.points + amountStolen} Poin*\n⏳ Kamu buron selama 2 jam.`,
+        mentions: [targetNumber]
+    }, { quoted: m });
+  } else {
+    // Failed: 30% penalty
+    const denda = Math.floor((profilePerampok.points * 30) / 100);
+    const kompensasi = Math.floor(denda / 2);
+
+    const deductRes = await db.deductGamePoints(senderNumber, denda);
+    if (!deductRes.success) {
+        await send(sock, jid, m, "❌ Terjadi kesalahan sistem saat menjatuhkan denda.");
+        return true;
+    }
+    await db.addGamePoints(targetNumber, kompensasi);
+
+    await sock.sendMessage(jid, {
+        text: `🚨 *TERTANGKAP POLISI!*\n\nAksi kamu ketahuan! Polisi menyita *${denda} Poin* (30%) dari dompetmu sebagai denda.\n\nSebagai kompensasi kaget, @${targetNumber.split('@')[0]} mendapatkan perlindungan polisi selama 4 jam dan *${kompensasi} Poin* dari uang dendamu.\n\n💸 Saldo kamu sekarang: *${profilePerampok.points - denda} Poin*`,
+        mentions: [targetNumber]
+    }, { quoted: m });
+  }
+  return true;
 }

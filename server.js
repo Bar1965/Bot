@@ -14,8 +14,22 @@ import { reloadBotSettings, checkAndNotifySubscribers, startBot } from './bot.js
 import { backupDatabase, startScheduler } from './scheduler.js';
 import { initWebSocket, broadcastToAdmins } from './websocket.js';
 import * as chatManager from './chatManager.js';
+import { handleCasakuWebhook } from './src/payment/webhookHandler.js';
 
 const app = express();
+
+// ====================================================================
+// CASAKU PAYMENT WEBHOOK — MUST be registered BEFORE express.json()
+// express.raw() preserves the raw Buffer body needed for HMAC-SHA256
+// verification. If express.json() processes this route first, the
+// signature check will always fail.
+// ====================================================================
+app.post(
+  '/api/payment/webhook',
+  express.raw({ type: 'application/json' }),
+  handleCasakuWebhook
+);
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
