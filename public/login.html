@@ -59,9 +59,10 @@
     .orb {
       position: absolute;
       border-radius: 50%;
-      filter: blur(100px);
-      opacity: 0.45;
+      pointer-events: none;
+      opacity: 0.6;
       animation: floatOrb 20s ease-in-out infinite alternate;
+      will-change: transform;
     }
 
     .orb-1 {
