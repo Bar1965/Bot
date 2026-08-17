@@ -34,7 +34,17 @@ const categories = {
       ['.wishlist add <kode>', 'DM WhatsApp otomatis saat produk restock']
     ]
   },
-
+  pdf: {
+    title: '📄 PDF TOOLS (Premium)',
+    aliases: ['pdf', 'dokumen'],
+    commands: [
+      ['.pdfmerge', 'Gabungkan beberapa file PDF'],
+      ['.pdfsplit <halaman>', 'Ambil/potong halaman PDF tertentu'],
+      ['.img2pdf', 'Ubah gambar menjadi dokumen PDF'],
+      ['.pdf2txt', 'Ekstrak teks dari PDF asli'],
+      ['.ocr', 'Ekstrak teks dari gambar / foto']
+    ]
+  },
 
   media: {
     title: '📥 MEDIA & CREATIVE',
@@ -53,6 +63,8 @@ const categories = {
       ['.tr / .translate <lang> <teks>', 'Terjemahkan teks (atau reply pesan)'],
       ['.sholat <kota>', 'Cek jadwal sholat wilayah setempat'],
       ['.menfess <nomor> | <teks>', 'Kirim pesan anonim rahasia ke nomor target'],
+      ['.balasmenfess <ID> <pesan>', 'Balas pesan rahasia anonim secara 2-arah'],
+      ['.stopmenfess <ID>', 'Akhiri sesi percakapan anonim'],
       ['.hd / .remini', 'Tingkatkan kualitas foto buram jadi HD']
     ]
   },
@@ -62,6 +74,7 @@ const categories = {
     commands: [
       ['.freegames', 'Daftar semua game PC gratis 100%'],
       ['.ww / .werewolf', 'Mainkan game Werewolf/Mafia multiplayer'],
+      ['.tebaklagu', 'Game kuis tebak judul lagu dari potongan musik audio'],
       ['.afk <alasan>', 'Set status AFK (Auto-reply saat di-mention)'],
       ['.slot [taruhan]', 'Spin judi slot machine virtual'],
 
@@ -79,6 +92,7 @@ const categories = {
       ['.truth / .dare', 'Truth or Dare'],
       ['.dadu / .coinflip', 'Lempar dadu atau koin'],
       ['.khodam <nama>', 'Cek khodam lucu'],
+      ['.karbit', 'Easter egg detektor fans karbit'],
       ['.poll pertanyaan | opsi 1 | opsi 2', 'Buat voting WhatsApp']
     ]
   },
@@ -113,6 +127,9 @@ const categories = {
     commands: [
       ['.owner', 'Kontak resmi Owner'],
       ['.ping', 'Cek status dan kecepatan bot'],
+      ['.listfitur / .fiturgrup', 'Lihat daftar & status fitur grup yang bisa diatur'],
+      ['.autodl <on/off>', 'Aktif/nonaktifkan auto-download video TikTok & IG'],
+      ['.levelup <on/off>', 'Aktif/nonaktifkan notif naik level di grup'],
       ['.mode <jualan/all>', 'Atur mode grup'],
       ['.tagall <pesan>', 'Mention anggota grup'],
       ['.daftar <nama>', 'Daftar profil member'],

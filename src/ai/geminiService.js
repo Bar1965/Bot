@@ -51,7 +51,7 @@ export async function askGeminiText({ prompt, systemPrompt = DEFAULT_SYSTEM_PROM
   return new Promise((resolve, reject) => {
     const req = https.request({
       hostname: 'generativelanguage.googleapis.com',
-      path: `/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
+      path: `/v1beta/models/gemini-3.5-flash:generateContent?key=${apiKey}`,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -129,7 +129,7 @@ export async function askGeminiVision({ prompt = 'Jelaskan atau analisis gambar 
   return new Promise((resolve, reject) => {
     const req = https.request({
       hostname: 'generativelanguage.googleapis.com',
-      path: `/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
+      path: `/v1beta/models/gemini-3.5-flash:generateContent?key=${apiKey}`,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -199,10 +199,10 @@ export async function askGeminiOCR({ imageBuffer, mimeType = 'image/jpeg' }) {
   const payload = JSON.stringify(requestBody);
 
   return new Promise((resolve, reject) => {
-    // Menggunakan gemini-1.5-pro untuk hasil bacaan dokumen yang jauh lebih baik (Premium Feature)
+    // Menggunakan gemini-1.5-flash untuk hasil bacaan dokumen yang akurat dan didukung (Premium Feature)
     const req = https.request({
       hostname: 'generativelanguage.googleapis.com',
-      path: `/v1beta/models/gemini-1.5-pro:generateContent?key=${apiKey}`,
+      path: `/v1beta/models/gemini-3.5-flash:generateContent?key=${apiKey}`,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

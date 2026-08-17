@@ -9,6 +9,7 @@ const cooldowns = new Map();
 const tebakAngkaGames = new Map();
 const rampokCooldowns = new Map();
 const victimImmunity = new Map();
+const easterEggCooldowns = new Map();
 const ROUND_DURATION_MS = 2 * 60 * 1000;
 
 const quizQuestions = [
@@ -34,6 +35,107 @@ const wordQuestions = [
   { question: 'Hewan yang menghasilkan susu', answer: 'SAPI', hint: 'Sering tinggal di peternakan.' },
   { question: 'Alat untuk memotret', answer: 'KAMERA', hint: 'Bisa berupa ponsel atau DSLR.' }
 ];
+const tebakLaguQuestions = [
+  {
+    artist: 'Sheila On 7',
+    answer: 'DAN',
+    hint: 'Lagu hits 1999 dengan lirik "Dan bila esok datang kembali..."',
+    audioUrl: 'https://cdn.jsdelivr.net/gh/Bar1965/assets@main/audio/sheila_on_7_dan.mp3'
+  },
+  {
+    artist: 'Dewa 19',
+    answer: 'KANGEN',
+    hint: 'Lagu legendaris ciptaan Ahmad Dhani rilisan tahun 1992',
+    audioUrl: 'https://cdn.jsdelivr.net/gh/Bar1965/assets@main/audio/dewa19_kangen.mp3'
+  },
+  {
+    artist: 'Tulus',
+    answer: 'HATI HATI DI JALAN',
+    hint: 'Lagu viral 2022 dari album Manusia tentang perpisahan baik-baik',
+    audioUrl: 'https://cdn.jsdelivr.net/gh/Bar1965/assets@main/audio/tulus_hati_hati_di_jalan.mp3'
+  },
+  {
+    artist: 'Mahalini',
+    answer: 'SIAL',
+    hint: 'Lagu galau dengan lirik "Sial-sialnya ku bertemu dengan cinta seperti ini"',
+    audioUrl: 'https://cdn.jsdelivr.net/gh/Bar1965/assets@main/audio/mahalini_sial.mp3'
+  },
+  {
+    artist: 'Hindia',
+    answer: 'EVALUASI',
+    hint: 'Lagu motivasi Baskara Putra: "Bilas muka, gosok gigi, evaluasi..."',
+    audioUrl: 'https://cdn.jsdelivr.net/gh/Bar1965/assets@main/audio/hindia_evaluasi.mp3'
+  },
+  {
+    artist: 'Denny Caknan',
+    answer: 'KARTONYONO MEDOT JANJI',
+    hint: 'Lagu pop Jawa mega-hits yang menceritakan patah hati di Kartonyono Ngawi',
+    audioUrl: 'https://cdn.jsdelivr.net/gh/Bar1965/assets@main/audio/denny_caknan_kartonyono.mp3'
+  },
+  {
+    artist: 'Juicy Luicy',
+    answer: 'LANTAS',
+    hint: 'Lagu tentang menjadi orang ketiga: "Lantas mengapa ku masih menaruh hati..."',
+    audioUrl: 'https://cdn.jsdelivr.net/gh/Bar1965/assets@main/audio/juicy_luicy_lantas.mp3'
+  },
+  {
+    artist: 'Noah / Peterpan',
+    answer: 'SEPARUH AKU',
+    hint: 'Single pertama setelah Peterpan resmi berganti nama jadi NOAH',
+    audioUrl: 'https://cdn.jsdelivr.net/gh/Bar1965/assets@main/audio/noah_separuh_aku.mp3'
+  },
+  {
+    artist: 'Peterpan',
+    answer: 'MENGHAPUS JEJAKMU',
+    hint: 'Lagu ikonik dengan video klip legendaris Ariel dan Dian Sastro',
+    audioUrl: 'https://cdn.jsdelivr.net/gh/Bar1965/assets@main/audio/peterpan_menghapus_jejakmu.mp3'
+  },
+  {
+    artist: 'Vierra',
+    answer: 'RASA INI',
+    hint: 'Lagu pop band Kevin Aprilio & Widy dengan lirik "Ku tak bisa jauh, jauh darimu..."',
+    audioUrl: 'https://cdn.jsdelivr.net/gh/Bar1965/assets@main/audio/vierra_rasa_ini.mp3'
+  },
+  {
+    artist: 'YOASOBI',
+    answer: 'IDOL',
+    hint: 'Opening anime Oshi no Ko yang memecahkan rekor Billboard Global',
+    audioUrl: 'https://cdn.jsdelivr.net/gh/Bar1965/assets@main/audio/yoasobi_idol.mp3'
+  },
+  {
+    artist: 'LiSA',
+    answer: 'GURENGE',
+    hint: 'Opening Anime Kimetsu no Yaiba (Demon Slayer) Season 1',
+    audioUrl: 'https://cdn.jsdelivr.net/gh/Bar1965/assets@main/audio/lisa_gurenge.mp3'
+  },
+  {
+    artist: 'Kenshi Yonezu',
+    answer: 'KICK BACK',
+    hint: 'Opening anime Chainsaw Man yang sangat energetik',
+    audioUrl: 'https://cdn.jsdelivr.net/gh/Bar1965/assets@main/audio/kenshi_yonezu_kickback.mp3'
+  },
+  {
+    artist: 'Bruno Mars',
+    answer: 'THAT S WHAT I LIKE',
+    hint: 'Lagu R&B Funk Bruno Mars dengan lirik "Gold jewelry shining so bright..."',
+    audioUrl: 'https://cdn.jsdelivr.net/gh/Bar1965/assets@main/audio/bruno_mars_thats_what_i_like.mp3'
+  },
+  {
+    artist: 'Coldplay',
+    answer: 'VIVA LA VIDA',
+    hint: 'Lagu legendaris Coldplay bernuansa orkestra tentang kejatuhan seorang raja',
+    audioUrl: 'https://cdn.jsdelivr.net/gh/Bar1965/assets@main/audio/coldplay_viva_la_vida.mp3'
+  }
+];
+
+function maskSongTitle(title) {
+  return String(title || '').split('').map(char => {
+    if (char === ' ') return '  ';
+    if (/[A-Z0-9]/i.test(char)) return '_';
+    return char;
+  }).join(' ');
+}
+
 
 const missionList = [
   'Menangkan 1 quiz hari ini untuk mendapat bonus XP.',
@@ -127,8 +229,19 @@ async function handleRoundCommand({ sock, jid, senderNumber, messageObj, args, c
     round.isAnswered = true;
     if (round.timeout) clearTimeout(round.timeout);
     activeRounds.delete(key);
-    const profile = await db.awardGamePoints(senderNumber, 20, true);
-    await send(sock, jid, messageObj, `🎉 *Jawaban benar!*\n+20 poin untuk kamu. Total poin: *${profile.points}*\n\nKetik .quiz untuk ronde berikutnya.`);
+    
+    const pointsReward = round.type === 'tebaklagu' ? 25 : 20;
+    const xpReward = round.type === 'tebaklagu' ? 50 : 30;
+    
+    const profile = await db.awardGamePoints(senderNumber, pointsReward, true);
+    await db.addMessageXp(senderNumber, xpReward);
+    
+    const userTag = `@${senderNumber.split('@')[0]}`;
+    const congratsMsg = round.type === 'tebaklagu'
+      ? `🎉 *TEBAKAN LAGU TEPAT SEKALI!* 🎵\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nSelamat ${userTag}! Jawaban yang benar adalah: *${round.answer}* (${round.artist})\n\n🎁 *Hadiah:* +${pointsReward} Poin Game & +${xpReward} XP!\n💰 Total Poin Kamu: *${profile.points}*\n\nKetik \`.tebaklagu\` untuk ronde musik selanjutnya!`
+      : `🎉 *Jawaban benar!*\nSelamat ${userTag}, +${pointsReward} poin & +${xpReward} XP untuk kamu. Total poin: *${profile.points}*\n\nKetik .quiz untuk ronde berikutnya.`;
+      
+    await sock.sendMessage(jid, { text: congratsMsg, mentions: [senderNumber] }, { quoted: messageObj });
   } else {
     await send(sock, jid, messageObj, '❌ Belum tepat. Coba lagi atau ketik `.hint`.');
   }
@@ -141,6 +254,50 @@ async function startRound({ sock, jid, senderNumber, messageObj, isFromGroup, ty
     await send(sock, jid, messageObj, 'Masih ada game aktif. Jawab dulu dengan `.jawab <jawaban>` atau ketik `.hint`.');
     return true;
   }
+
+  if (type === 'tebaklagu') {
+    const song = randomItem(tebakLaguQuestions);
+    const round = { 
+      type: 'tebaklagu',
+      artist: song.artist,
+      answer: song.answer,
+      hint: song.hint,
+      audioUrl: song.audioUrl,
+      expiresAt: Date.now() + ROUND_DURATION_MS 
+    };
+    activeRounds.set(key, round);
+    scheduleRoundExpiry({ sock, jid, messageObj, key, round });
+
+    const masked = maskSongTitle(song.answer);
+    const promptText = 
+`🎵 *GAME TEBAK LAGU (MUSIC QUIZ)* 🎵
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Dengarkan potongan musik audio di atas dan tebak judul lagunya!
+
+🎤 *Artis/Penyanyi:* ${song.artist}
+💡 *Pola Judul:* \`${masked}\` (${song.answer.replace(/[^A-Z0-9]/gi, '').length} huruf)
+⏳ *Waktu:* 2 Menit
+🎁 *Hadiah:* +50 XP & +25 Poin Game
+
+👉 *Cara Menjawab:* Ketik \`.jawab <judul lagu>\` atau langsung ketik judulnya di grup!
+👉 *Petunjuk Tambahan:* Ketik \`.hint\``;
+
+    try {
+      if (song.audioUrl) {
+        await sock.sendMessage(jid, { 
+          audio: { url: song.audioUrl }, 
+          mimetype: 'audio/mp4', 
+          ptt: true 
+        }, { quoted: messageObj });
+      }
+    } catch (e) {
+      console.error('[TEBAK_LAGU_AUDIO_ERR]', e.message);
+    }
+
+    await send(sock, jid, messageObj, promptText);
+    return true;
+  }
+
   const source = type === 'quiz' ? randomItem(quizQuestions) : type === 'tebakemoji' ? randomItem(emojiQuestions) : randomItem(wordQuestions);
   const round = { ...source, expiresAt: Date.now() + ROUND_DURATION_MS };
   activeRounds.set(key, round);
@@ -150,9 +307,76 @@ async function startRound({ sock, jid, senderNumber, messageObj, isFromGroup, ty
   return true;
 }
 
-export async function handleFunCommand({ sock, jid, senderNumber, messageObj, text, args, cleanCmd, isFromGroup = false, isAdmin = false, isOwner = false }) {
+export async function handleFunCommand({ sock, jid, senderNumber, messageObj, text, args, cleanCmd, isFromGroup = false, isAdmin = false, isOwner = false, isPrefixCmd }) {
   const command = String(cleanCmd || '').toLowerCase();
   const scope = scopeKey(jid, senderNumber, isFromGroup);
+  
+  // --- Easter Egg: Karbit Detector (Boleh trigger tanpa prefix) ---
+  const rawText = String(text || '').trim();
+  const karbitMatch = rawText.match(/^[\.#\/]?(my|karbit|karbitan)$/i) || rawText.match(/\bmy\s*(gueh|gue|gweh|gwe|wife|waifu|husband|husbu|hubby|goat|king|queen|lord|hero|idola|idol|dek|deck|bro|guy|man)\b/i);
+  
+  if (karbitMatch) {
+    const cdKey = `karbit_${scope}`;
+    const now = Date.now();
+    const lastTrigger = easterEggCooldowns.get(cdKey) || 0;
+    
+    if (now - lastTrigger > 5000) {
+      easterEggCooldowns.set(cdKey, now);
+      
+      const matchedPhrase = karbitMatch[0].trim();
+      const senderTag = `@${senderNumber.split('@')[0]}`;
+      
+      const karbitReplies = [
+        `Wkwkwk dasar *FANS KARBIT*! 🦗⚡\nBaru tau kemarin sore aja udah sok-sokan "*${matchedPhrase}*" 🗿`,
+        `hmmm tercium aroma *KARBITAN* yang sangat menyengat 👃🔥\nSi paling "*${matchedPhrase}*" padahal mah maba! 🫵😆`,
+        `Si Paling *KARBIT* 🫵🤣\nNgetik "*${matchedPhrase}*" padahal tau karakternya dari TikTok doang kvndol 🗿`,
+        `Woi *KARBIT* ${senderTag}! Mengaku-ngaku "*${matchedPhrase}*" padahal baru join kemarin 🦗💨`,
+        `Awokwkwk *KARBIT DETECTED!* 🚨⚡\nDia ngetik "*${matchedPhrase}*" guys, padahal sebulan lalu belum kenal 🗿`,
+        `Ciri-ciri *KARBITAN*: Ngetik "*${matchedPhrase}*" seolah-olah puh sepuh 🤏🤣`
+      ];
+      
+      const selectedReply = karbitReplies[Math.floor(Math.random() * karbitReplies.length)];
+      await sock.sendMessage(jid, { 
+        text: selectedReply,
+        mentions: [senderNumber]
+      }, { quoted: messageObj });
+      
+      return true;
+    }
+  }
+
+  // Deteksi Jawaban Langsung Game Aktif (Quiz, Tebak Kata, Tebak Emoji, Tebak Lagu)
+  const activeGameRound = activeRounds.get(scope);
+  if (activeGameRound && !activeGameRound.isAnswered && text) {
+    const rawAnswer = normalizeAnswer(text);
+    if (rawAnswer && rawAnswer === normalizeAnswer(activeGameRound.answer)) {
+      activeGameRound.isAnswered = true;
+      if (activeGameRound.timeout) clearTimeout(activeGameRound.timeout);
+      activeRounds.delete(scope);
+      
+      const pointsReward = activeGameRound.type === 'tebaklagu' ? 25 : 20;
+      const xpReward = activeGameRound.type === 'tebaklagu' ? 50 : 30;
+      
+      const profile = await db.awardGamePoints(senderNumber, pointsReward, true);
+      await db.addMessageXp(senderNumber, xpReward);
+      
+      const userTag = `@${senderNumber.split('@')[0]}`;
+      const congratsMsg = activeGameRound.type === 'tebaklagu'
+        ? `🎉 *TEBAKAN LAGU TEPAT SEKALI!* 🎵\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nSelamat ${userTag}! Jawaban yang benar adalah: *${activeGameRound.answer}* (${activeGameRound.artist})\n\n🎁 *Hadiah:* +${pointsReward} Poin Game & +${xpReward} XP!\n💰 Total Poin Kamu: *${profile.points}*\n\nKetik \`.tebaklagu\` untuk ronde musik selanjutnya!`
+        : `🎉 *Jawaban benar!*\nSelamat ${userTag}, +${pointsReward} poin & +${xpReward} XP untuk kamu. Total poin: *${profile.points}*`;
+        
+      await sock.sendMessage(jid, { text: congratsMsg, mentions: [senderNumber] }, { quoted: messageObj });
+      return true;
+    }
+  }
+
+  // SEMUA COMMAND FUN/GAME LAIN WAJIB MENGGUNAKAN PREFIX
+  const isPrefix = isPrefixCmd !== undefined 
+    ? isPrefixCmd 
+    : (text?.trim().startsWith('.') || text?.trim().startsWith('/') || text?.trim().startsWith('#'));
+  if (!isPrefix) {
+    return false;
+  }
   
   // AFK System
   if (['afk'].includes(command)) {
@@ -258,7 +482,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     return await handleRoundCommand({ sock, jid, senderNumber, messageObj, args, cleanCmd: command, isFromGroup });
   }
 
-  if (isFromGroup && ['quiz', 'trivia', 'tebakquiz', 'tebakemoji', 'emoji', 'tebakkata', 'hangman', 'kata', 'sambungkata', 'wordchain', 'truth', 'dare', 'tod', 'dadu', 'dice', 'coinflip', 'koin', 'coin', 'poll', 'voting', 'vote', 'love', 'jodoh', 'compatibility', 'slot', 'daily', 'spin', 'luckyspin', 'suit', 'pilihsuit', 'cancelsuit', 'batalsuit', 'tebakangka', 'tebak', 'tukar', 'pointshop', 'penukaran'].includes(command)) {
+  if (isFromGroup && ['quiz', 'trivia', 'tebakquiz', 'tebakemoji', 'emoji', 'tebakkata', 'hangman', 'kata', 'tebaklagu', 'sambungkata', 'wordchain', 'truth', 'dare', 'tod', 'dadu', 'dice', 'coinflip', 'koin', 'coin', 'poll', 'voting', 'vote', 'love', 'jodoh', 'compatibility', 'slot', 'daily', 'spin', 'luckyspin', 'suit', 'pilihsuit', 'cancelsuit', 'batalsuit', 'tebakangka', 'tebak', 'tukar', 'pointshop', 'penukaran'].includes(command)) {
     const groupSettings = await db.getGroupSettings(jid);
     if (groupSettings.bot_mode === 'sales') return false;
   }
@@ -266,6 +490,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
   if (['quiz', 'trivia', 'tebakquiz'].includes(command)) return startRound({ sock, jid, senderNumber, messageObj, isFromGroup, type: 'quiz' });
   if (['tebakemoji', 'emoji'].includes(command)) return startRound({ sock, jid, senderNumber, messageObj, isFromGroup, type: 'tebakemoji' });
   if (['tebakkata', 'hangman', 'kata'].includes(command)) return startRound({ sock, jid, senderNumber, messageObj, isFromGroup, type: 'tebakkata' });
+  if (['tebaklagu', 'lagu', 'musicquiz', 'tebakmusik'].includes(command)) return startRound({ sock, jid, senderNumber, messageObj, isFromGroup, type: 'tebaklagu' });
 
   if (['truth', 'dare', 'tod'].includes(command)) {
     if (isOnCooldown(`${scope}:truth`, 5000)) return true;

@@ -8,52 +8,73 @@ import * as ent from '../../entertainmentHandler.js';
 import { sendInteractiveButtons } from '../../bot.js';
 
 export function createCustomerHandler(ctx) {
-    const { sock, botSettings, userPushNamesMap, messageCache, formatPhoneNumber, react, sendInteractiveButtons } = ctx;
+  const { sock, botSettings, userPushNamesMap, messageCache, formatPhoneNumber, react, sendInteractiveButtons } = ctx;
 
-    return async function handleCustomerMessage(jid, senderNumber, messageObj, text, isFromGroup = false, actor = {}) {
-  const textLower = text.toLowerCase();
-  const cleanTextLower = textLower.replace(/^[./#]/, '').trim();
-  const args = text.trim().split(/\s+/);
-  const rawCmd = args[0].toLowerCase();
-  const cleanCmd = rawCmd.replace(/^[./#]/, '');
+  return async function handleCustomerMessage(jid, senderNumber, messageObj, text, isFromGroup = false, actor = {}) {
+    const textLower = (text || '').toLowerCase();
+    const cleanTextLower = textLower.replace(/^[./#]/, '').trim();
+    const args = (text || '').trim().split(/\s+/);
+    const rawCmd = args[0]?.toLowerCase() || '';
+    const cleanCmd = rawCmd.replace(/^[./#]/, '');
 
-  const customerName = messageObj.pushName || "Pelanggan";
-  await db.getOrCreateCustomer(senderNumber, customerName);
+    const customerName = messageObj?.pushName || "Pelanggan";
+    await db.getOrCreateCustomer(senderNumber, customerName);
 
-  const memberProfile = await db.getCustomerMembershipProfile(senderNumber);
-  const isPrivateCommand =
-    ['beli', 'buy'].includes(cleanCmd) ||
-    ['cart', 'keranjang', 'checkout', 'bayar', 'cancel', 'batal', 'status', 'riwayat', 'history'].includes(cleanCmd);
-  const responseJid = (isFromGroup && isPrivateCommand) ? senderNumber : jid;
-
-  if (memberProfile?.account_status === 'BANNED' && !actor.isAdmin) {
-    await sock.sendMessage(jid, { text: '⛔ Akun kamu sedang diblokir dari layanan bot. Hubungi Owner jika merasa ini kesalahan.' });
-    return true;
-  }
-
-  if (['daftar', 'register', 'registrasi'].includes(cleanCmd)) {
-    const requestedName = args.slice(1).join(' ').trim();
-    if (!requestedName) {
-      await sock.sendMessage(responseJid, { text: 'Format: `.daftar Nama Kamu`\nContoh: `.daftar Budi Santoso`' });
+    // 🥚 EASTER EGG MEME: "Kapan Kapan yh sayang" (Boleh trigger tanpa prefix)
+    const cleanMemeText = (text || '').toLowerCase().trim().replace(/[?!.,~_*-]+/g, '');
+    const kapanMemeRegex = /^(?:kapan|kpn|wen|wnn|kpnn+|kpann+|(?:kapan|kpn)[-\s]?2|kapankapan)\s*(?:yah+|ya+|y+|yh+|nih+|tuh+|dong+|dng+|dek+)?$/i;
+    if (kapanMemeRegex.test(cleanMemeText)) {
+      try {
+        await sock.sendMessage(jid, { react: { text: '😜', key: messageObj.key } });
+      } catch (e) {}
+      await sock.sendMessage(jid, { 
+        text: "✨ *Kapan Kapan yh sayang...* 🤪💖\n\n_~ Basa-basi dulu, keputusannya nanti-nanti aja deh! 🙈✨_" 
+      }, { quoted: messageObj });
       return true;
     }
-    try {
-      const profile = await db.registerCustomer(senderNumber, requestedName);
-      await sock.sendMessage(responseJid, { text: `✅ *Registrasi berhasil!*\n\nNama: *${profile.nama}*\nStatus: *${profile.account_status}*\nRole: *${actor.isOwner ? 'OWNER' : profile.role}*\nTier: *${profile.tier}*\n\nKetik *.profil* untuk melihat profil lengkap.` });
-    } catch (error) {
-      await sock.sendMessage(responseJid, { text: `❌ Registrasi gagal: ${error.message}` });
-    }
-    return true;
-  }
 
-  const extractTargetMember = () => {
-    const mentioned = messageObj.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0];
-    const rawTarget = mentioned || args[1];
-    if (!rawTarget) return null;
-    if (rawTarget.includes('@')) return jidNormalizedUser(rawTarget);
-    const digits = rawTarget.replace(/\D/g, '');
-    return digits ? `${digits}@s.whatsapp.net` : null;
-  };
+    // SEMUA COMMAND CUSTOMER WAJIB MENGGUNAKAN PREFIX (. / #)
+    const isPrefix = actor?.isPrefixCmd !== undefined 
+      ? actor.isPrefixCmd 
+      : ((text || '').trim().startsWith('.') || (text || '').trim().startsWith('/') || (text || '').trim().startsWith('#'));
+    if (!isPrefix) {
+      return false;
+    }
+
+    const memberProfile = await db.getCustomerMembershipProfile(senderNumber);
+    const isPrivateCommand =
+      ['beli', 'buy'].includes(cleanCmd) ||
+      ['cart', 'keranjang', 'checkout', 'bayar', 'cancel', 'batal', 'status', 'riwayat', 'history'].includes(cleanCmd);
+    const responseJid = (isFromGroup && isPrivateCommand) ? senderNumber : jid;
+
+    if (memberProfile?.account_status === 'BANNED' && !actor.isAdmin) {
+      await sock.sendMessage(jid, { text: '⛔ Akun kamu sedang diblokir dari layanan bot. Hubungi Owner jika merasa ini kesalahan.' });
+      return true;
+    }
+
+    if (['daftar', 'register', 'registrasi'].includes(cleanCmd)) {
+      const requestedName = args.slice(1).join(' ').trim();
+      if (!requestedName) {
+        await sock.sendMessage(responseJid, { text: 'Format: `.daftar Nama Kamu`\nContoh: `.daftar Budi Santoso`' });
+        return true;
+      }
+      try {
+        const profile = await db.registerCustomer(senderNumber, requestedName);
+        await sock.sendMessage(responseJid, { text: `✅ *Registrasi berhasil!*\n\nNama: *${profile.nama}*\nStatus: *${profile.account_status}*\nRole: *${actor.isOwner ? 'OWNER' : profile.role}*\nTier: *${profile.tier}*\n\nKetik *.profil* untuk melihat profil lengkap.` });
+      } catch (error) {
+        await sock.sendMessage(responseJid, { text: `❌ Registrasi gagal: ${error.message}` });
+      }
+      return true;
+    }
+
+    const extractTargetMember = () => {
+      const mentioned = messageObj.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0];
+      const rawTarget = mentioned || args[1];
+      if (!rawTarget) return null;
+      if (rawTarget.includes('@')) return jidNormalizedUser(rawTarget);
+      const digits = rawTarget.replace(/\D/g, '');
+      return digits ? `${digits}@s.whatsapp.net` : null;
+    };
 
   if (['profil', 'akun', 'member', 'statusakun'].includes(cleanCmd)) {
     const targetJid = extractTargetMember() || senderNumber;
@@ -177,18 +198,7 @@ export function createCustomerHandler(ctx) {
     }
   };
 
-  // 🥚 EASTER EGG MEME: "Kapan Kapan yh sayang"
-  const cleanMemeText = text.toLowerCase().trim().replace(/[?!.,~_*-]+/g, '');
-  const kapanMemeRegex = /^(?:kapan|kpn|wen|wnn|kpnn+|kpann+|(?:kapan|kpn)[-\s]?2|kapankapan)\s*(?:yah+|ya+|y+|yh+|nih+|tuh+|dong+|dng+|dek+)?$/i;
-  if (kapanMemeRegex.test(cleanMemeText)) {
-    try {
-      await sock.sendMessage(jid, { react: { text: '😜', key: messageObj.key } });
-    } catch (e) {}
-    await sock.sendMessage(jid, { 
-      text: "✨ *Kapan Kapan yh sayang...* 🤪💖\n\n_~ Basa-basi dulu, keputusannya nanti-nanti aja deh! 🙈✨_" 
-    }, { quoted: messageObj });
-    return true;
-  }
+
 
   // ==========================================
   // LOGIKA NAVIGASI MENU TERKATEGORI (ASCII ART DESIGN)

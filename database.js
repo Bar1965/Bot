@@ -73,8 +73,9 @@ export function allQuery(query, params = []) {
 
 // Inisialisasi skema tabel database
 export async function initDb() {
-  if (db) return;
-  await openDb();
+  if (!db) {
+    await openDb();
+  }
 
   // 1. Tabel Settings (Dinamis)
   await runQuery(`
@@ -333,7 +334,9 @@ export async function initDb() {
 
   // 12. Tabel Pengaturan Moderasi Per-Grup
   await runQuery(`
-    CREATE TABLE IF NOT EXISTS group_chat_stats (group_jid TEXT, participant_jid TEXT, msg_count INTEGER DEFAULT 0, PRIMARY KEY (group_jid, participant_jid));
+    CREATE TABLE IF NOT EXISTS group_chat_stats (group_jid TEXT, participant_jid TEXT, msg_count INTEGER DEFAULT 0, PRIMARY KEY (group_jid, participant_jid))
+  `);
+  await runQuery(`
     CREATE TABLE IF NOT EXISTS group_settings (
       jid TEXT PRIMARY KEY,
       welcome_enabled INTEGER DEFAULT 1,
@@ -342,7 +345,19 @@ export async function initDb() {
       goodbye_msg TEXT,
       anti_link INTEGER DEFAULT 0,
       bot_mode TEXT DEFAULT 'all',
-      auto_sholat INTEGER DEFAULT 1
+      auto_sholat INTEGER DEFAULT 1,
+      levelup_enabled INTEGER DEFAULT 1,
+      auto_dl_enabled INTEGER DEFAULT 1
+    )
+  `);
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS menfess_sessions (
+      id TEXT PRIMARY KEY,
+      sender_jid TEXT NOT NULL,
+      target_jid TEXT NOT NULL,
+      status TEXT DEFAULT 'ACTIVE',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      last_reply_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
   try {
@@ -353,6 +368,12 @@ export async function initDb() {
   } catch (e) {}
   try {
     await runQuery(`ALTER TABLE group_settings ADD COLUMN auto_sholat INTEGER DEFAULT 1`);
+  } catch (e) {}
+  try {
+    await runQuery(`ALTER TABLE group_settings ADD COLUMN levelup_enabled INTEGER DEFAULT 1`);
+  } catch (e) {}
+  try {
+    await runQuery(`ALTER TABLE group_settings ADD COLUMN auto_dl_enabled INTEGER DEFAULT 1`);
   } catch (e) {}
 
   // 13. Tabel coupons
@@ -2299,18 +2320,37 @@ export async function getGroupSettings(jid) {
       goodbye_msg: defaults.goodbyeMessage,
       anti_link: 0,
       bot_mode: 'all',
-      auto_sholat: 1
+      auto_sholat: 1,
+      levelup_enabled: 1,
+      auto_dl_enabled: 1
     };
   }
-  return { ...row, bot_mode: row.bot_mode || 'all', auto_sholat: row.auto_sholat !== undefined ? row.auto_sholat : 1 };
+  return { 
+    ...row, 
+    bot_mode: row.bot_mode || 'all', 
+    auto_sholat: row.auto_sholat !== undefined ? row.auto_sholat : 1,
+    levelup_enabled: row.levelup_enabled !== undefined ? row.levelup_enabled : 1,
+    auto_dl_enabled: row.auto_dl_enabled !== undefined ? row.auto_dl_enabled : 1
+  };
 }
 
 export async function updateGroupSettings(jid, settingsObj) {
   const current = await getGroupSettings(jid);
   const updated = { ...current, ...settingsObj };
   await runQuery(
-    "INSERT OR REPLACE INTO group_settings (jid, welcome_enabled, welcome_msg, goodbye_enabled, goodbye_msg, anti_link, bot_mode, auto_sholat) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    [jid, updated.welcome_enabled ? 1 : 0, updated.welcome_msg, updated.goodbye_enabled ? 1 : 0, updated.goodbye_msg, updated.anti_link ? 1 : 0, updated.bot_mode || 'all', updated.auto_sholat !== undefined ? updated.auto_sholat : 1]
+    "INSERT OR REPLACE INTO group_settings (jid, welcome_enabled, welcome_msg, goodbye_enabled, goodbye_msg, anti_link, bot_mode, auto_sholat, levelup_enabled, auto_dl_enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    [
+      jid, 
+      updated.welcome_enabled ? 1 : 0, 
+      updated.welcome_msg, 
+      updated.goodbye_enabled ? 1 : 0, 
+      updated.goodbye_msg, 
+      updated.anti_link ? 1 : 0, 
+      updated.bot_mode || 'all', 
+      updated.auto_sholat !== undefined ? updated.auto_sholat : 1,
+      updated.levelup_enabled !== undefined ? (updated.levelup_enabled ? 1 : 0) : 1,
+      updated.auto_dl_enabled !== undefined ? (updated.auto_dl_enabled ? 1 : 0) : 1
+    ]
   );
   await addLog("SYSTEM", `Pengaturan grup ${jid} diperbarui dari Web Dashboard/Bot.`);
 }
@@ -4103,4 +4143,40 @@ export async function incrementGroupChatStats(groupJid, participantJid) {
 
 export async function getTopGroupChatStats(groupJid, limit = 10) {
   return await allQuery("SELECT participant_jid, msg_count FROM group_chat_stats WHERE group_jid = ? ORDER BY msg_count DESC LIMIT ?", [groupJid, limit]);
+}
+
+
+// --- FUNGSI SESI MENFESS 2-ARAH (ANONYMOUS CHAT) ---
+
+export async function createMenfessSession(sessionId, senderJid, targetJid) {
+  await runQuery(
+    "INSERT INTO menfess_sessions (id, sender_jid, target_jid, status) VALUES (?, ?, ?, 'ACTIVE')",
+    [sessionId, senderJid, targetJid]
+  );
+  return { id: sessionId, sender_jid: senderJid, target_jid: targetJid, status: 'ACTIVE' };
+}
+
+export async function getMenfessSession(sessionId) {
+  return await getQuery("SELECT * FROM menfess_sessions WHERE id = ?", [sessionId]);
+}
+
+export async function getActiveMenfessByParticipant(userJid) {
+  return await getQuery(
+    "SELECT * FROM menfess_sessions WHERE (sender_jid = ? OR target_jid = ?) AND status = 'ACTIVE' ORDER BY last_reply_at DESC LIMIT 1",
+    [userJid, userJid]
+  );
+}
+
+export async function updateMenfessLastReply(sessionId) {
+  return await runQuery(
+    "UPDATE menfess_sessions SET last_reply_at = CURRENT_TIMESTAMP WHERE id = ?",
+    [sessionId]
+  );
+}
+
+export async function closeMenfessSession(sessionId) {
+  return await runQuery(
+    "UPDATE menfess_sessions SET status = 'CLOSED' WHERE id = ?",
+    [sessionId]
+  );
 }

@@ -99,7 +99,12 @@ function daysLeft(expiresAt) {
 // ============================================================
 // COMMAND HANDLER
 // ============================================================
-export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj, args, cleanCmd, isAdmin, isOwner }) {
+export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj, args, cleanCmd, isAdmin, isOwner, isPrefixCmd }) {
+  const isPrefix = isPrefixCmd !== undefined 
+    ? isPrefixCmd 
+    : (args?.[0]?.startsWith('.') || args?.[0]?.startsWith('/') || args?.[0]?.startsWith('#'));
+  if (!isPrefix) return false;
+
   const cmd = String(cleanCmd || '').toLowerCase();
 
   // ─── .ai / .gemini / .tanyaai — AI Assistant & Vision ───────
@@ -157,20 +162,72 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
       let aiResponse = '';
 
       if (hasImage) {
-        const { downloadMediaMessage } = await import('@whiskeysockets/baileys');
-        let mediaMsg = messageObj;
-        if (quotedMedia) {
-          if (messageObj?.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage) {
-             mediaMsg = { message: { imageMessage: quotedMedia } };
-          } else if (messageObj?.message?.extendedTextMessage?.contextInfo?.quotedMessage?.documentMessage) {
-             mediaMsg = { message: { documentMessage: quotedMedia } };
+        const { downloadContentFromMessage } = await import('@whiskeysockets/baileys');
+        const mediaObj = quotedMedia || directMedia;
+        
+        let imgBuffer;
+        try {
+          const type = mediaObj.mimetype?.includes('pdf') || mediaObj.mimetype?.includes('document') ? 'document' : 'image';
+          const stream = await downloadContentFromMessage(mediaObj, type);
+          let buffer = Buffer.from([]);
+          for await (const chunk of stream) {
+            buffer = Buffer.concat([buffer, chunk]);
           }
+          imgBuffer = buffer;
+        } catch (e) {
+          console.error('[AI_ERR_DL]', e);
+          throw new Error('Gambar/PDF tidak ditemukan atau tidak dapat diunduh oleh sistem. (Log: ' + e.message + ')');
         }
-        const imgBuffer = await downloadMediaMessage(mediaMsg, 'buffer', {});
-        const mimeType = (quotedMedia || directMedia).mimetype || 'image/jpeg';
+
+        const mimeType = mediaObj.mimetype || 'image/jpeg';
         
         if (isOcr) {
-           aiResponse = await askGeminiOCR({ imageBuffer: imgBuffer, mimeType });
+           const isPdf = mimeType.includes('pdf') || imgBuffer.toString('utf8', 0, 4) === '%PDF';
+           if (isPdf) {
+              const { createRequire } = await import('module');
+              const require = createRequire(import.meta.url);
+              const { PDFParse } = require('pdf-parse');
+              
+              let extractedText = '';
+              try {
+                const parser = new PDFParse({ data: imgBuffer });
+                const res = await parser.getText();
+                extractedText = (res.text || '').replace(/-- \d+ of \d+ --/g, '').trim();
+              } catch (pdfErr) {
+                console.error('[PDF_PARSE_ERR]', pdfErr);
+              }
+
+              if (extractedText.length > 5) {
+                aiResponse = extractedText;
+              } else {
+                try {
+                  const parser = new PDFParse({ data: imgBuffer });
+                  const shotRes = await parser.getScreenshot({ imageBuffer: true });
+                  if (shotRes.pages && shotRes.pages.length > 0 && shotRes.pages[0].data) {
+                    const Tesseract = require('tesseract.js');
+                    const worker = await Tesseract.createWorker('eng');
+                    const { data: { text } } = await worker.recognize(Buffer.from(shotRes.pages[0].data));
+                    await worker.terminate();
+                    aiResponse = text;
+                  }
+                } catch (shotErr) {
+                  console.error('[PDF_SHOT_ERR]', shotErr);
+                }
+              }
+
+              if (!aiResponse || !aiResponse.trim()) {
+                aiResponse = "❌ *Gagal Mengunduh / Membaca Teks PDF*\n\nPDF tidak memuat teks yang dapat dibaca atau proteksi file aktif. Silakan kirimkan berupa tangkapan layar (screenshot) gambar.";
+              }
+           } else {
+              const { createRequire } = await import('module');
+              const require = createRequire(import.meta.url);
+              const Tesseract = require('tesseract.js');
+              
+              const worker = await Tesseract.createWorker('eng');
+              const { data: { text } } = await worker.recognize(imgBuffer);
+              await worker.terminate();
+              aiResponse = text;
+           }
         } else {
            aiResponse = await askGeminiVision({
              prompt: promptText || 'Analisis dan jelaskan isi dokumen/gambar ini dengan jelas dan ringkas.',
@@ -212,10 +269,16 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
       const formattedReply = `🤖 *GEMINI AI RESPONSE*\n━━━━━━━━━━━━━━━━━━━━\n\n${aiResponse}\n\n━━━━━━━━━━━━━━━━━━━━\n💡 _Sisa kuota AI hari ini: ${remaining}/${benefits.aiDailyLimit}_`;
       await sock.sendMessage(jid, { text: formattedReply }, { quoted: messageObj });
     } catch (err) {
-      console.error('[AI_ERR]', err.message);
-      await sock.sendMessage(jid, {
-        text: `❌ *Gagal menghubungi AI:* ${err.message}\n\n_Pastikan GEMINI_API_KEY sudah terpasang di .env._`
-      }, { quoted: messageObj });
+      console.error('[AI_ERR]', err.stack);
+      if (isOcr) {
+        await sock.sendMessage(jid, {
+          text: `❌ *Gagal mengekstrak teks (OCR lokal):* ${err.message}`
+        }, { quoted: messageObj });
+      } else {
+        await sock.sendMessage(jid, {
+          text: `❌ *Gagal menghubungi AI:* ${err.message}\n\n_Pastikan GEMINI_API_KEY sudah terpasang di .env._`
+        }, { quoted: messageObj });
+      }
     }
     return true;
   }

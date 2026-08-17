@@ -10,7 +10,12 @@ import { sendInteractiveButtons } from '../../bot.js';
 export function createGroupAdminHandler(ctx) {
     const { sock, botSettings, userPushNamesMap, messageCache, formatPhoneNumber, react, sendInteractiveButtons } = ctx;
 
-    return async function handleGroupMessage(jid, senderNumber, messageObj, text, isGroupAdminParam) {
+    return async function handleGroupMessage(jid, senderNumber, messageObj, text, isGroupAdminParam, isPrefixCmd) {
+  const isPrefix = isPrefixCmd !== undefined 
+    ? isPrefixCmd 
+    : (text?.trim().startsWith('.') || text?.trim().startsWith('/') || text?.trim().startsWith('#'));
+  if (!isPrefix) return false;
+
   const isGroup = jid.endsWith('@g.us');
   const m = messageObj;
   const senderNormalized = senderNumber;
@@ -28,12 +33,12 @@ export function createGroupAdminHandler(ctx) {
   const groupModerationCommands = [
     'add', 'kick', 'promote', 'demote', 'group', 'link', 'tagall', 'hidetag', 
     'everyone', 'admins', 'mode', 'setmode', 'botmode', 'antilink', 'welcome', 
-    'autowelcomeswitch', 'setwelcome', 'setupdategroup', 'autosholat'
+    'autowelcomeswitch', 'setwelcome', 'setupdategroup', 'autosholat', 'levelup', 'autolevelup',
+    'autodl', 'autodownload', 'listfitur', 'fiturgrup', 'groupfeatures'
   ];
 
   const banCommands = ['ban', 'unban', 'addmod', 'delmod', 'listmod', 'setownerid', 'join', 'antidelete'];
 
-  // Jika bukan perintah admin/moderasi, lewati agar ditangani handler lain
   if (!adminStoreCommands.includes(cleanCmd) && !groupModerationCommands.includes(cleanCmd) && !banCommands.includes(cleanCmd) && cleanCmd !== 'getjid' && cleanCmd !== 'owner') {
     return false;
   }
@@ -484,6 +489,108 @@ Moderataor dapat menggunakan \`.ban\` dan \`.unban\`.` });
       await sock.sendMessage(jid, { text: `✅ Pengingat sholat di grup ini berhasil diubah menjadi: *${state.toUpperCase()}*` });
       return true;
     }
+
+    if (['levelup', 'autolevelup'].includes(cleanCmd)) {
+      const isGroup = jid.endsWith('@g.us');
+      if (!isGroup) {
+        await sock.sendMessage(jid, { text: "⚠️ Perintah pengaturan notifikasi level up hanya dapat dijalankan di dalam Grup WhatsApp!" });
+        return true;
+      }
+      const state = args[1]?.toLowerCase();
+      if (!state || !['on', 'off'].includes(state)) {
+        const currentSettings = await db.getGroupSettings(jid);
+        const status = (currentSettings.levelup_enabled === 1 || currentSettings.levelup_enabled === undefined) ? 'ON (Aktif)' : 'OFF (Mati)';
+        await sock.sendMessage(jid, { text: `📈 *NOTIFIKASI LEVEL UP GRUP*\nStatus saat ini: *${status}*\n\nGunakan perintah:\n\`.levelup on\` - Mengaktifkan notifikasi naik level\n\`.levelup off\` - Mematikan notifikasi naik level (mencegah spam/berisik)` });
+        return true;
+      }
+
+      const isEnabled = state === 'on' ? 1 : 0;
+      await db.updateGroupSettings(jid, { levelup_enabled: isEnabled });
+      await sock.sendMessage(jid, { text: `✅ Notifikasi naik level di grup ini berhasil diubah menjadi: *${state.toUpperCase()}*` });
+      return true;
+    }
+
+    if (['autodl', 'autodownload'].includes(cleanCmd)) {
+      const isGroup = jid.endsWith('@g.us');
+      if (!isGroup) {
+        await sock.sendMessage(jid, { text: "⚠️ Perintah pengaturan Auto-Downloader hanya dapat dijalankan di dalam Grup WhatsApp!" });
+        return true;
+      }
+      const state = args[1]?.toLowerCase();
+      if (!state || !['on', 'off'].includes(state)) {
+        const currentSettings = await db.getGroupSettings(jid);
+        const status = (currentSettings.auto_dl_enabled === 1 || currentSettings.auto_dl_enabled === undefined) ? 'ON (Aktif)' : 'OFF (Mati)';
+        await sock.sendMessage(jid, { text: `⚡ *AUTO-DOWNLOADER SOSMED (TIKTOK & IG)*\nStatus saat ini: *${status}*\n\nGunakan perintah:\n\`.autodl on\` - Mengaktifkan auto-download link TikTok & IG tanpa command\n\`.autodl off\` - Mematikan auto-download link di grup ini` });
+        return true;
+      }
+
+      const isEnabled = state === 'on' ? 1 : 0;
+      await db.updateGroupSettings(jid, { auto_dl_enabled: isEnabled });
+      await sock.sendMessage(jid, { text: `✅ Fitur Auto-Downloader di grup ini berhasil diubah menjadi: *${state.toUpperCase()}*` });
+      return true;
+    }
+
+    if (['listfitur', 'fiturgrup', 'groupfeatures'].includes(cleanCmd)) {
+      const isGroup = jid.endsWith('@g.us');
+      if (!isGroup) {
+        await sock.sendMessage(jid, { text: "⚠️ Perintah daftar fitur grup hanya dapat dijalankan di dalam Grup WhatsApp!" });
+        return true;
+      }
+
+      const g = await db.getGroupSettings(jid);
+      let groupName = "Grup Ini";
+      try {
+        const metadata = await sock.groupMetadata(jid);
+        if (metadata && metadata.subject) groupName = metadata.subject;
+      } catch (e) {}
+
+      const autoDlStatus = (g.auto_dl_enabled !== 0) ? "🟢 *AKTIF (ON)*" : "🔴 *NONAKTIF (OFF)*";
+      const levelUpStatus = (g.levelup_enabled !== 0) ? "🟢 *AKTIF (ON)*" : "🔴 *NONAKTIF (OFF)*";
+      const antiLinkStatus = (g.anti_link === 1) ? "🟢 *AKTIF (ON)*" : "🔴 *NONAKTIF (OFF)*";
+      const welcomeStatus = (g.welcome_enabled === 1) ? "🟢 *AKTIF (ON)*" : "🔴 *NONAKTIF (OFF)*";
+      const autoSholatStatus = (g.auto_sholat !== 0) ? "🟢 *AKTIF (ON)*" : "🔴 *NONAKTIF (OFF)*";
+      
+      let modeStatus = "🟢 *MODE ALL (Semua Fitur)*";
+      if (g.bot_mode === 'sales') modeStatus = "🟡 *MODE SALES (Khusus Toko)*";
+      else if (g.bot_mode === 'off') modeStatus = "🔴 *MODE OFF (Muted)*";
+
+      const textOutput = 
+`⚙️ *PENGATURAN FITUR GRUP* ⚙️
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📌 *Grup:* ${groupName}
+
+Berikut adalah daftar fitur bot yang dapat diaktifkan / dimatikan oleh Admin grup:
+
+1. ⚡ *Auto-Downloader (TikTok & IG)*
+   ├ Status: ${autoDlStatus}
+   └ Ubah: \`.autodl on\` / \`.autodl off\`
+
+2. 📈 *Notifikasi Naik Level (Level Up)*
+   ├ Status: ${levelUpStatus}
+   └ Ubah: \`.levelup on\` / \`.levelup off\`
+
+3. 🛡️ *Anti-Link Protection*
+   ├ Status: ${antiLinkStatus}
+   └ Ubah: \`.antilink on\` / \`.antilink off\`
+
+4. 👋 *Pesan Sambutan (Welcome Message)*
+   ├ Status: ${welcomeStatus}
+   └ Ubah: \`.welcome on\` / \`.welcome off\`
+
+5. 🕌 *Pengingat Jadwal Sholat Otomatis*
+   ├ Status: ${autoSholatStatus}
+   └ Ubah: \`.autosholat on\` / \`.autosholat off\`
+
+6. 🛍️ *Mode Respon Bot*
+   ├ Status: ${modeStatus}
+   └ Ubah: \`.mode all\` / \`.mode sales\` / \`.mode off\`
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 _Gunakan perintah di atas untuk mengaktifkan atau menonaktifkan fitur sesuai kebutuhan grup._`;
+
+      await sock.sendMessage(jid, { text: textOutput });
+      return true;
+    }
     if (['mode', 'setmode', 'botmode'].includes(cleanCmd)) {
       const isGroup = jid.endsWith('@g.us');
       if (!isGroup) {
@@ -739,117 +846,6 @@ Mode Saat Ini: *${modeLabel}*
           text: `❌ Gagal menjalankan ${cleanCmd}: ${err.message}.\n\n💡 *PENTING:* Pastikan **nomor WhatsApp Bot sudah dijadikan ADMIN GRUP** di WhatsApp agar fitur moderasi (${cleanCmd}) dapat mengeksekusi tindakan.` 
         });
       }
-if (!['on', 'off', '1', '0', 'aktif', 'matikan'].includes(param)) {
-        await sock.sendMessage(jid, { text: "⚠️ Gunakan: `.antilink on` atau `.antilink off`" });
-        return true;
-      }
-      const isEnable = ['on', '1', 'aktif'].includes(param);
-      await db.updateGroupSettings(jid, { anti_link: isEnable ? 1 : 0 });
-      await sock.sendMessage(jid, { text: `🛡️ Proteksi Anti-Link Grup berhasil *${isEnable ? 'DIAKTIFKAN 🟢' : 'DINONAKTIFKAN 🔴'}* di grup ini!` });
-      return true;
-    }
-
-    // MODERASI GRUP: Sakelar Auto-Welcome Member Baru (.welcome, .autowelcomeswitch)
-    if (['welcome', 'autowelcomeswitch'].includes(cleanCmd)) {
-      const param = args[1]?.toLowerCase();
-      if (!['on', 'off', '1', '0', 'aktif', 'matikan'].includes(param)) {
-        await sock.sendMessage(jid, { text: "⚠️ Gunakan: `.welcome on` atau `.welcome off`" });
-        return true;
-      }
-      const isEnable = ['on', '1', 'aktif'].includes(param);
-      await db.updateGroupSettings(jid, { welcome_enabled: isEnable ? 1 : 0 });
-      await sock.sendMessage(jid, { text: `👋 Ucapan Auto-Welcome Member Baru berhasil *${isEnable ? 'DIAKTIFKAN 🟢' : 'DINONAKTIFKAN 🔴'}* di grup ini!` });
-      return true;
-    }
-
-    // MODERASI GRUP: Kustomisasi Pesan Auto-Welcome (.setwelcome)
-    if (cleanCmd === 'setwelcome') {
-      const welcomeMsg = args.slice(1).join(' ');
-      if (!welcomeMsg) {
-        await sock.sendMessage(jid, { text: "⚠️ Gunakan: `.setwelcome [TEKS_UCAPAN]`" });
-        return true;
-      }
-      await db.updateGroupSettings(jid, { welcome_msg: welcomeMsg, welcome_enabled: 1 });
-      await sock.sendMessage(jid, { text: `✅ Teks Auto-Welcome grup berhasil diperbarui!` });
-      return true;
-    }
-
-    // OWNER SUITE: Evaluasi Kode JavaScript Direct (.eval)
-    if (cleanCmd === 'eval') {
-      if (!isOwner) {
-        await sock.sendMessage(jid, { text: "❌ Perintah ini hanya dapat dijalankan oleh Pemilik (Owner) bot." });
-        return true;
-      }
-      const code = args.slice(1).join(' ');
-      if (!code) {
-        await sock.sendMessage(jid, { text: "⚠️ Gunakan: `.eval [KODE_JAVASCRIPT]`" });
-        return true;
-      }
-      try {
-        let result = eval(code);
-        if (typeof result !== 'string') {
-          result = await import('util').then(u => u.inspect(result));
-        }
-        await sock.sendMessage(jid, { text: `💻 *EVAL RESULT:*\n\`\`\`javascript\n${result}\n\`\`\`` });
-      } catch (err) {
-        await sock.sendMessage(jid, { text: `❌ *EVAL ERROR:*\n\`\`\`\n${err.message}\n\`\`\`` });
-      }
-      return true;
-    }
-
-    // OWNER SUITE: Eksekusi Terminal Shell Direct (.exec)
-    if (cleanCmd === 'exec') {
-      if (!isOwner) {
-        await sock.sendMessage(jid, { text: "❌ Perintah ini hanya dapat dijalankan oleh Pemilik (Owner) bot." });
-        return true;
-      }
-      const execCmd = args.slice(1).join(' ');
-      if (!execCmd) {
-        await sock.sendMessage(jid, { text: "⚠️ Gunakan: `.exec [PERINTAH_TERMINAL]`" });
-        return true;
-      }
-      exec(execCmd, (err, stdout, stderr) => {
-        if (err) {
-          sock.sendMessage(jid, { text: `❌ *EXEC ERROR:*\n\`\`\`\n${err.message}\n\`\`\`` });
-          return;
-        }
-        if (stderr) {
-          sock.sendMessage(jid, { text: `⚠️ *EXEC STDERR:*\n\`\`\`\n${stderr}\n\`\`\`` });
-          return;
-        }
-        sock.sendMessage(jid, { text: `💻 *EXEC STDOUT:*\n\`\`\`\n${stdout || 'Done (no output)'}\n\`\`\`` });
-      });
-      return true;
-    }
-
-    // PERINTAH ADMIN: .flashsale <KODE_PRODUK> <HARGA_FLASH> <DURASI_JAM>
-    if (cleanCmd === 'flashsale') {
-      const pKode = args[1]?.toUpperCase();
-      const hFlash = parseInt(args[2]);
-      const dur = parseInt(args[3]) || 2;
-
-      if (!pKode || isNaN(hFlash)) {
-        await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Gunakan `.flashsale <KODE_PRODUK> <HARGA_FLASH> [DURASI_JAM]`\n\n_Contoh:_ `.flashsale NET01 15000 2`" });
-        return true;
-      }
-
-      const p = await db.getProductByKode(pKode);
-      if (!p) {
-        await sock.sendMessage(jid, { text: `❌ Produk dengan kode *${pKode}* tidak ditemukan.` });
-        return true;
-      }
-
-      const endTime = await db.setFlashSale(pKode, hFlash, dur);
-      const endStr = new Date(endTime).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
-
-      await sock.sendMessage(jid, { 
-        text: `⚡ *FLASH SALE BERHASIL DIAKTIFKAN!* ⚡
-
-📦 Produk: *${p.nama}* (\`${pKode}\`)
-💰 Harga Asli: ~Rp${p.harga.toLocaleString('id-ID')}~
-🔥 Harga Flash Sale: *Rp${hFlash.toLocaleString('id-ID')}*
-⏱️ Berlaku Hingga: *${endStr} WIB* (${dur} Jam)` 
-      });
       return true;
     }
 

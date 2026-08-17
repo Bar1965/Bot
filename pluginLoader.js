@@ -33,6 +33,11 @@ export async function loadPlugins() {
 }
 
 export async function executePlugin(cleanCmd, context) {
+  const isPrefix = context?.isPrefixCmd !== undefined 
+    ? context.isPrefixCmd 
+    : (context?.msgText?.startsWith('.') || context?.msgText?.startsWith('/') || context?.msgText?.startsWith('#'));
+  if (!isPrefix) return false;
+
   for (const [name, plugin] of pluginsMap.entries()) {
     if (plugin.commands && plugin.commands.includes(cleanCmd)) {
       try {

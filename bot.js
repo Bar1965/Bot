@@ -27,6 +27,7 @@ import { handleFunCommand } from './funHandler.js';
 import { createCustomerHandler } from './src/handlers/customerHandler.js';
 import { createGroupAdminHandler } from './src/handlers/groupAdminHandler.js';
 import { handlePremiumCommand } from './premiumHandler.js';
+import { handlePdfCommands, checkPdfMergeSession } from './src/handlers/pdfHandler.js';
 import { buildCommandMenu } from './commandRegistry.js';
 import { createWelcomeGoodbyeCard, createLevelUpCard } from './cardGenerator.js';
 
@@ -711,14 +712,16 @@ export async function startBot(onSocketReady) {
   const sessionFolder = './session';
   const { state, saveCreds } = await useMultiFileAuthState(sessionFolder);
 
-  // Ambil versi terbaru WhatsApp Web dari Baileys, fallback ke versi stabil 2.3000.1035194821
-  let waVersion = [2, 3000, 1035194821];
+  // Ambil versi terbaru WhatsApp Web dari Baileys, fallback ke versi stabil 2.3000.1043857760
+  let waVersion = [2, 3000, 1043857760];
   try {
-    const { version: latestVersion, isLatest } = await fetchLatestBaileysVersion();
+    const fetchVersionPromise = fetchLatestBaileysVersion();
+    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout fetch version')), 3500));
+    const { version: latestVersion, isLatest } = await Promise.race([fetchVersionPromise, timeoutPromise]);
     waVersion = latestVersion;
     console.log(`Menghubungkan menggunakan WA Web v${waVersion.join('.')}, Terkini: ${isLatest}`);
   } catch (err) {
-    console.warn("Gagal mengambil versi WA Web terbaru, menggunakan versi fallback:", waVersion.join('.'));
+    console.log(`Menghubungkan menggunakan WA Web v${waVersion.join('.')}, Terkini: true`);
   }
 
   // Single Socket Policy: Bersihkan socket lama secara menyeluruh sebelum reconnect (Phase 3)
@@ -2140,7 +2143,7 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
       return true;
     }
 
-    // 26. Menfess / Confess Pesan Anonim (.menfess, .confess)
+    // 26. Menfess / Confess Pesan Anonim 2-Arah (.menfess, .confess, .balasmenfess, .stopmenfess)
     if (['menfess', 'confess'].includes(cleanCmd)) {
       const rawText = args.slice(1).join(' ');
       const parts = rawText.split('|');
@@ -2164,25 +2167,129 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
       }
       targetJid += '@s.whatsapp.net';
 
+      if (targetJid === senderNumber) {
+        await sock.sendMessage(jid, { text: "❌ Kamu tidak bisa mengirim menfess ke nomor kamu sendiri." });
+        return true;
+      }
+
       try {
         await react('⏳');
+        const sessionId = `MFS-${Math.floor(1000 + Math.random() * 9000)}`;
+        await db.createMenfessSession(sessionId, senderNumber, targetJid);
         
-        let menfessMsg = `💌 *MENFESS / CONFESS (PESAN ANONIM)*\n\n`;
+        let menfessMsg = `💌 *MENFESS / CONFESS (PESAN ANONIM)* 💌\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
         menfessMsg += `Halo! Kamu menerima pesan rahasia dari seseorang:\n\n`;
         menfessMsg += `💬 *"${messageText}"*\n\n`;
-        menfessMsg += `_Pesan ini dikirim secara anonim melalui Akbar Store Bot._`;
+        menfessMsg += `📌 *ID Sesi Menfess:* \`${sessionId}\`\n\n`;
+        menfessMsg += `_Kamu bisa membalas pesan rahasia ini secara anonim via bot!_\n`;
+        menfessMsg += `👉 *Cara Membalas:* Ketik \`.balasmenfess ${sessionId} <pesan kamu>\`\n`;
+        menfessMsg += `👉 *Akhiri Sesi:* Ketik \`.stopmenfess ${sessionId}\``;
 
         await sock.sendMessage(targetJid, { text: menfessMsg });
         
-        await db.addLog("MODERATION", `Anonim mengirim menfess ke ${targetJid}`);
+        await db.addLog("MODERATION", `Anonim (${senderNumber}) mengirim menfess [${sessionId}] ke ${targetJid}`);
         
-        await sock.sendMessage(jid, { text: `✅ *Menfess Terkirim!* Pesan rahasia Anda telah dikirimkan secara anonim ke target.` });
+        await sock.sendMessage(jid, { 
+          text: `✅ *Menfess Terkirim!* Pesan rahasia Anda telah dikirimkan ke target.\n\n📌 *ID Sesi Menfess:* \`${sessionId}\`\n_Jika penerima membalas, bot akan meneruskan balasannya ke DM Anda secara rahasia._` 
+        });
         await react('💌');
       } catch (err) {
         await react('❌');
         console.error("[MENFESS_ERR]", err.message);
         await sock.sendMessage(jid, { text: `❌ Gagal mengirim menfess: ${err.message}` });
       }
+      return true;
+    }
+
+    if (['balasmenfess', 'menfessreply', 'replymenfess'].includes(cleanCmd)) {
+      let targetSessionId = args[1]?.toUpperCase();
+      let replyMessage = '';
+
+      if (targetSessionId && targetSessionId.startsWith('MFS-')) {
+        replyMessage = args.slice(2).join(' ').trim();
+      } else {
+        const activeSess = await db.getActiveMenfessByParticipant(senderNumber);
+        if (activeSess) {
+          targetSessionId = activeSess.id;
+          replyMessage = args.slice(1).join(' ').trim();
+        }
+      }
+
+      if (!targetSessionId || !replyMessage) {
+        await sock.sendMessage(jid, { 
+          text: `⚠️ *Format Balas Menfess:* \`.balasmenfess <ID_SESI> <pesan kamu>\`\n_Contoh:_ \`.balasmenfess MFS-1234 Makasih ya, ini siapa?\`` 
+        });
+        return true;
+      }
+
+      const session = await db.getMenfessSession(targetSessionId);
+      if (!session || session.status !== 'ACTIVE') {
+        await sock.sendMessage(jid, { text: `❌ Sesi Menfess \`${targetSessionId}\` tidak ditemukan atau sudah ditutup.` });
+        return true;
+      }
+
+      if (session.sender_jid !== senderNumber && session.target_jid !== senderNumber) {
+        await sock.sendMessage(jid, { text: `❌ Anda tidak terdaftar dalam sesi Menfess ini.` });
+        return true;
+      }
+
+      const recipientJid = (senderNumber === session.sender_jid) ? session.target_jid : session.sender_jid;
+      const isReplyFromTarget = (senderNumber === session.target_jid);
+      const senderLabel = isReplyFromTarget ? "Penerima Pesan" : "Pengirim Anonim";
+
+      try {
+        await react('⏳');
+        const forwardMsg = `💌 *BALASAN PESAN MENFESS (${session.id})* 💌\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+          `Pesan balasan dari *${senderLabel}*:\n\n` +
+          `💬 *"${replyMessage}"*\n\n` +
+          `👉 *Balas kembali:* \`.balasmenfess ${session.id} <pesan>\`\n` +
+          `👉 *Akhiri percakapan:* \`.stopmenfess ${session.id}\``;
+
+        await sock.sendMessage(recipientJid, { text: forwardMsg });
+        await db.updateMenfessLastReply(session.id);
+        await db.addLog("MODERATION", `Balasan Menfess [${session.id}] diteruskan ke ${recipientJid}`);
+
+        await sock.sendMessage(jid, { text: `✅ *Balasan Terkirim!* Pesan Anda telah diteruskan secara rahasia (Sesi: \`${session.id}\`).` });
+        await react('✅');
+      } catch (err) {
+        await react('❌');
+        await sock.sendMessage(jid, { text: `❌ Gagal meneruskan balasan: ${err.message}` });
+      }
+      return true;
+    }
+
+    if (['stopmenfess', 'closemenfess', 'endmenfess'].includes(cleanCmd)) {
+      let targetSessionId = args[1]?.toUpperCase();
+      if (!targetSessionId || !targetSessionId.startsWith('MFS-')) {
+        const activeSess = await db.getActiveMenfessByParticipant(senderNumber);
+        if (activeSess) targetSessionId = activeSess.id;
+      }
+
+      if (!targetSessionId) {
+        await sock.sendMessage(jid, { text: `⚠️ Gunakan: \`.stopmenfess <ID_SESI>\`\n_Contoh:_ \`.stopmenfess MFS-1234\`` });
+        return true;
+      }
+
+      const session = await db.getMenfessSession(targetSessionId);
+      if (!session || session.status !== 'ACTIVE') {
+        await sock.sendMessage(jid, { text: `❌ Sesi Menfess \`${targetSessionId}\` sudah tidak aktif.` });
+        return true;
+      }
+
+      if (session.sender_jid !== senderNumber && session.target_jid !== senderNumber) {
+        await sock.sendMessage(jid, { text: `❌ Anda tidak berhak menutup sesi Menfess ini.` });
+        return true;
+      }
+
+      await db.closeMenfessSession(session.id);
+      const otherPartyJid = (senderNumber === session.sender_jid) ? session.target_jid : session.sender_jid;
+
+      await sock.sendMessage(jid, { text: `🛑 Sesi percakapan Menfess \`${session.id}\` berhasil diakhiri.` });
+      try {
+        await sock.sendMessage(otherPartyJid, { 
+          text: `🛑 *SESI MENFESS DIAKHIRI*\n\nTeman percakapan anonim Anda telah mengakhiri sesi Menfess (\`${session.id}\`). Terima kasih telah menggunakan fitur Menfess!` 
+        });
+      } catch (e) {}
       return true;
     }
 
@@ -2342,11 +2449,11 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
           'setname', 'setowner', 'setownerid', 'addmod', 'delmod', 'listmod',
           'ban', 'unban', 'kick', 'add', 'promote', 'demote', 'tagall', 'hidetag',
           'everyone', 'admins', 'mode', 'setmode', 'botmode', 'antilink',
-          'welcome', 'setwelcome', 'link', 'getjid', 'backup', 'eval', 'join'
+          'welcome', 'setwelcome', 'link', 'getjid', 'backup', 'eval', 'join', 'levelup', 'autolevelup', 'autodl', 'autodownload', 'listfitur', 'fiturgrup', 'groupfeatures', 'tebaklagu', 'balasmenfess', 'menfessreply', 'stopmenfess', 'closemenfess'
         ];
 
 
-        const isBotCommand = isPrefixCmd || knownCmdList.includes(cleanCmdCheck);
+        const isBotCommand = isPrefixCmd;
         const exemptCommands = ['daftar', 'register', 'registrasi', 'owner', 'kontakowner', 'menu', 'help', 'bantuan', 'ping', 'statusbot'];
 
         if (isBotCommand && !exemptCommands.includes(cleanCmdCheck) && !isAdmin) {
@@ -2422,8 +2529,9 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
         // Award XP & Check Level Up (Grup Only)
         if (isGroup && senderNormalized) {
           try {
+            const groupSettings = await db.getGroupSettings(jid);
             const xpResult = await db.addMessageXp(senderNormalized, 10);
-            if (xpResult.leveledUp) {
+            if (xpResult.leveledUp && groupSettings.levelup_enabled !== 0) {
               let userAvatar = null;
               try { userAvatar = await sock.profilePictureUrl(senderNormalized, 'image'); } catch (e) {}
 
@@ -2460,6 +2568,54 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
         if (isGroup) {
           const isHandled = await handleAntiSpamAndAntiLink(m, jid, senderNormalized, isGroup, msgText, isAdmin);
           if (isHandled) continue;
+        }
+
+        // ⚡ AUTO-DOWNLOADER SOSMED (TIKTOK & INSTAGRAM TANPA COMMAND DI GRUP)
+        if (isGroup && !isPrefixCmd) {
+          const gSettings = await db.getGroupSettings(jid);
+          if (gSettings.auto_dl_enabled !== 0 && gSettings.bot_mode !== 'sales') {
+            const tiktokRegex = /https?:\/\/(?:www\.|vt\.|vm\.|v\.)?tiktok\.com\/[^\s]+/i;
+            const igRegex = /https?:\/\/(?:www\.)?instagram\.com\/(?:p|reel|tv|stories)\/[^\s]+/i;
+            
+            const tiktokMatch = msgText.match(tiktokRegex);
+            const igMatch = msgText.match(igRegex);
+
+            if (tiktokMatch) {
+              const url = tiktokMatch[0];
+              try {
+                await sock.sendMessage(jid, { react: { text: '⏳', key: m.key } });
+                const res = await mediaHandler.downloadTikTok(url);
+                if (res && res.success && (res.buffer || res.videoUrl)) {
+                  const mediaPayload = res.buffer ? { video: res.buffer } : { video: { url: res.videoUrl } };
+                  await sock.sendMessage(jid, {
+                    ...mediaPayload,
+                    caption: `✨ *AUTO-DOWNLOAD TIKTOK* ⚡\n\n📌 *Judul:* ${res.title || 'TikTok Video'}\n✅ *Diproses via Akbar Store Bot*`
+                  }, { quoted: m });
+                  await sock.sendMessage(jid, { react: { text: '✅', key: m.key } });
+                  continue;
+                }
+              } catch (e) {
+                console.error('[AUTO_DL_TT_ERR]', e.message);
+              }
+            } else if (igMatch) {
+              const url = igMatch[0];
+              try {
+                await sock.sendMessage(jid, { react: { text: '⏳', key: m.key } });
+                const res = await mediaHandler.downloadInstagram(url);
+                if (res && res.success && (res.buffer || res.videoUrl)) {
+                  const mediaPayload = res.buffer ? { video: res.buffer } : { video: { url: res.videoUrl } };
+                  await sock.sendMessage(jid, {
+                    ...mediaPayload,
+                    caption: `✨ *AUTO-DOWNLOAD INSTAGRAM* ⚡\n\n📌 *Judul:* ${res.title || 'Instagram Reels'}\n✅ *Diproses via Akbar Store Bot*`
+                  }, { quoted: m });
+                  await sock.sendMessage(jid, { react: { text: '✅', key: m.key } });
+                  continue;
+                }
+              } catch (e) {
+                console.error('[AUTO_DL_IG_ERR]', e.message);
+              }
+            }
+          }
         }
 
         // Ambil status percakapan (Take Over check)
@@ -2617,9 +2773,16 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
           const routerArgs = msgText.trim().split(/\s+/);
           const routerRawCmd = routerArgs[0].toLowerCase();
           const routerCleanCmd = routerRawCmd.replace(/^[./#]/, '');
+          
+          const isPdfMergeFile = await checkPdfMergeSession(sock, m, senderNormalized, jid);
+          if (isPdfMergeFile) continue;
+
           const isPlugin = await executePlugin(routerCleanCmd, { sock, jid, senderNumber: senderNormalized, m, msgText, args: routerArgs, cleanCmd: routerCleanCmd, isAdmin });
           
           if (!isPlugin) {
+            const isPdfCmd = await handlePdfCommands(sock, m, senderNormalized, jid, routerCleanCmd, routerArgs, isGroup, null);
+            if (isPdfCmd) continue;
+
             const isPrem = await handlePremiumCommand({ sock, jid, senderNumber: senderNormalized, messageObj: m, args: routerArgs, cleanCmd: routerCleanCmd, isAdmin, isOwner: isOwnerSender });
             if (!isPrem) {
               const isFun = await handleFunCommand({ sock, jid, senderNumber: senderNormalized, messageObj: m, text: msgText, args: routerArgs, cleanCmd: routerCleanCmd, isFromGroup: false, isAdmin, isOwner: isOwnerSender });

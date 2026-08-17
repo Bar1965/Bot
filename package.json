@@ -26,6 +26,8 @@
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.2.0",
     "nayan-media-downloader": "^0.0.1-security",
+    "pdf-lib": "^1.17.1",
+    "pdf-parse": "^2.4.5",
     "pino": "^9.0.0",
     "pino-pretty": "^11.0.0",
     "qrcode": "^1.5.4",
@@ -34,6 +36,7 @@
     "snapsave-media-downloader": "^2.4.0",
     "socket.io": "^4.8.3",
     "sqlite3": "^5.1.7",
+    "tesseract.js": "^7.0.0",
     "wa-sticker-formatter": "^4.4.4"
   }
 }
