@@ -2430,7 +2430,7 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
         const isPrefixCmd = msgText.startsWith('.') || msgText.startsWith('/') || msgText.startsWith('#');
         const knownCmdList = [
           'daftar', 'register', 'registrasi', 'owner', 'kontakowner', 'menu', 'help', 'bantuan', 
-          'produk', 'beli', 'checkout', 'keranjang', 'cart', 'status', 'riwayat', 'batal', 'cancel',
+          'produk', 'list', 'katalog', 'listproduk', 'beli', 'checkout', 'keranjang', 'cart', 'status', 'riwayat', 'batal', 'cancel',
           'freegames', 'freegame', 'gamegratis', 'slot', 'slots', 'stiker', 'sticker', 's', 'gif',
           'tt', 'tiktok', 'ig', 'instagram', 'yt', 'youtube', 'fb', 'facebook', 'quiz', 'trivia',
           'tebakemoji', 'tebakkata', 'tebakgambar', 'zodiak', 'jodoh', 'khodam', 'truth', 'dare',
@@ -2454,7 +2454,7 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
 
 
         const isBotCommand = isPrefixCmd;
-        const exemptCommands = ['daftar', 'register', 'registrasi', 'owner', 'kontakowner', 'menu', 'help', 'bantuan', 'ping', 'statusbot'];
+        const exemptCommands = ['daftar', 'register', 'registrasi', 'owner', 'kontakowner', 'menu', 'help', 'bantuan', 'ping', 'statusbot', 'list', 'produk', 'katalog', 'listproduk'];
 
         if (isBotCommand && !exemptCommands.includes(cleanCmdCheck) && !isAdmin) {
           const isRegistered = await db.isCustomerRegistered(senderNormalized);

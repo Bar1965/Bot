@@ -12,6 +12,7 @@ export function createCustomerHandler(ctx) {
 
   return async function handleCustomerMessage(jid, senderNumber, messageObj, text, isFromGroup = false, actor = {}) {
     const textLower = (text || '').toLowerCase();
+    const cleanText = (text || '').replace(/^[./#]/, '').trim();
     const cleanTextLower = textLower.replace(/^[./#]/, '').trim();
     const args = (text || '').trim().split(/\s+/);
     const rawCmd = args[0]?.toLowerCase() || '';
@@ -248,21 +249,21 @@ export function createCustomerHandler(ctx) {
 ━━━━━━━━━━━━━━━━━━━\n\n`;
 
     // Sub-Menu 1: Jualan & Produk
-    if (['1', 'jualan', 'produk'].includes(subCat)) {
+    if (['1', 'jualan', 'produk', 'list'].includes(subCat)) {
       const msg = headerCard + `🛍️ *PRODUK & JUALAN*
-▫️ \`.produk\` — Katalog & sisa stok produk
+▫️ \`.list\` / \`.produk\` — Katalog & sisa stok produk
 ▫️ \`.beli <kode> <qty>\` — Beli produk digital
 ▫️ \`.cari <kata kunci>\` — Cari produk toko
 ▫️ \`.bundle\` — Lihat paket hemat bundling
 
 ━━━━━━━━━━━━━━━━━━━
-💡 _Contoh penggunaan: .produk atau .beli NET01 1_`;
+💡 _Contoh penggunaan: .list atau .beli NET01 1_`;
       await sendInteractiveButtons(sock, responseJid, {
         text: msg,
         title: '🛍️ PRODUK & JUALAN',
         footer: 'Pilih aksi di bawah atau ketik perintah langsung',
         buttons: [
-          { type: 'reply', text: '🛍️ Katalog Produk', id: '.produk' },
+          { type: 'reply', text: '🛍️ Katalog Produk', id: '.list' },
           { type: 'reply', text: '🛒 Keranjang Saya', id: '.keranjang' },
           { type: 'reply', text: '📋 Menu Utama', id: '.menu' }
         ]
@@ -452,7 +453,7 @@ export function createCustomerHandler(ctx) {
 
     if (isSalesModeGroup) {
       const salesMenu = headerCard + `🛍️ *PRODUK & JUALAN*
-▫️ \`.produk\` — Katalog & sisa stok produk
+▫️ \`.list\` / \`.produk\` — Katalog & sisa stok produk
 ▫️ \`.beli <kode> <qty>\` — Beli produk digital
 ▫️ \`.cari <kata kunci>\` — Cari produk toko
 ▫️ \`.bundle\` — Lihat paket hemat bundling
@@ -486,7 +487,7 @@ export function createCustomerHandler(ctx) {
 
     // TAMPILAN MENU UTAMA FULL (MODE ALL)
     const fullMenu = headerCard + `🛍️ *PRODUK & JUALAN*
-▫️ \`.produk\` — Katalog & sisa stok produk
+▫️ \`.list\` / \`.produk\` — Katalog & sisa stok produk
 ▫️ \`.beli <kode> <qty>\` — Beli produk digital
 ▫️ \`.cari <kata kunci>\` — Cari produk toko
 ▫️ \`.bundle\` — Lihat paket hemat bundling
@@ -553,7 +554,20 @@ export function createCustomerHandler(ctx) {
   }
 
   // 2. LIST / PRODUK
-  if (cleanTextLower === 'list' || cleanTextLower === 'produk') {
+  if (
+    cleanCmd === 'list' || 
+    cleanCmd === 'produk' || 
+    cleanCmd === 'katalog' || 
+    cleanCmd === 'catalog' || 
+    cleanCmd === 'listproduk' || 
+    cleanCmd === 'daftarproduk' ||
+    cleanTextLower === 'list' || 
+    cleanTextLower === 'produk' || 
+    cleanTextLower === 'katalog' ||
+    cleanTextLower === 'list produk' || 
+    cleanTextLower === 'list all' ||
+    cleanTextLower === 'list barang'
+  ) {
     const products = await db.getProducts();
     if (products.length === 0) {
       await sock.sendMessage(responseJid, { text: "Saat ini belum ada produk yang terdaftar di toko kami." });
@@ -582,10 +596,11 @@ export function createCustomerHandler(ctx) {
 • Deskripsi   : ${p.deskripsi || '-'}\n\n`;
     }
 
+    const sampleCode = products[0]?.kode || 'NET01';
     msg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 💡 *CARA MEMBELI:*
-Ketik: *beli [KODE] [JUMLAH]*
-_(Contoh: \`beli NET01 1\`)_
+Ketik: *.beli [KODE] [JUMLAH]*
+_(Contoh: \`.beli ${sampleCode} 1\`)_
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
 
     await sendInteractiveButtons(sock, responseJid, {
@@ -602,9 +617,9 @@ _(Contoh: \`beli NET01 1\`)_
   }
 
   // 3. BELI [KODE] [JUMLAH]
-  const buyRegex = /^(beli|buy)\s+(\w+)(?:\s+(\d+))?$/i;
-  if (buyRegex.test(text)) {
-    const match = text.match(buyRegex);
+  const buyRegex = /^(?:beli|buy)\s+(\w+)(?:\s+(\d+))?$/i;
+  if (buyRegex.test(cleanText)) {
+    const match = cleanText.match(buyRegex);
     const code = match[2].toUpperCase();
 
     // Cek apakah kode produk benar-benar terdaftar di database toko
@@ -1080,9 +1095,9 @@ Status: *${statusTranslate}*
   }
 
   // 8. NOTIFY [KODE] (BERLANGGANAN NOTIFIKASI STOK)
-  const notifyRegex = /^(notify|notif|hubungi)\s+(\w+)$/i;
-  if (notifyRegex.test(text)) {
-    const match = text.match(notifyRegex);
+  const notifyRegex = /^(?:notify|notif|hubungi)\s+(\w+)$/i;
+  if (notifyRegex.test(cleanText)) {
+    const match = cleanText.match(notifyRegex);
     const code = match[2].toUpperCase();
     const p = await db.getProductByKode(code);
     if (!p) {
@@ -1135,8 +1150,8 @@ Kami akan otomatis mengirimkan pesan WhatsApp ke nomor ini begitu produk *${p.na
 
   // 10. CARI PRODUK
   const cariRegex = /^cari\s+(.+)$/i;
-  if (cariRegex.test(text)) {
-    const keyword = text.match(cariRegex)[1];
+  if (cariRegex.test(cleanText)) {
+    const keyword = cleanText.match(cariRegex)[1];
     const results = await db.searchProducts(keyword);
     if (results.length === 0) {
       await sock.sendMessage(responseJid, { text: `🔎 Tidak ditemukan produk dengan kata kunci "*${keyword}*".\nKetik *produk* untuk melihat semua katalog.` });
@@ -1154,8 +1169,8 @@ Kami akan otomatis mengirimkan pesan WhatsApp ke nomor ini begitu produk *${p.na
 
   // 11. KUPON
   const kuponRegex = /^kupon\s+(\w+)$/i;
-  if (kuponRegex.test(text)) {
-    const code = text.match(kuponRegex)[1].toUpperCase();
+  if (kuponRegex.test(cleanText)) {
+    const code = cleanText.match(kuponRegex)[1].toUpperCase();
     const coupon = await db.getCoupon(code);
     if (!coupon) {
       await sock.sendMessage(responseJid, { text: `❌ Kupon *${code}* tidak ditemukan atau sudah tidak berlaku.` });
@@ -1204,8 +1219,8 @@ Kami akan otomatis mengirimkan pesan WhatsApp ke nomor ini begitu produk *${p.na
 
   // 12. REFERRAL (Ajak 3 Teman = Kupon Diskon 10%)
   const refUseRegex = /^(?:referral|ref)\s+(REF-[\w]+)$/i;
-  if (refUseRegex.test(text)) {
-    const targetCode = text.match(refUseRegex)[1].toUpperCase();
+  if (refUseRegex.test(cleanText)) {
+    const targetCode = cleanText.match(refUseRegex)[1].toUpperCase();
     const referrer = await db.getReferralByCode(targetCode);
     if (!referrer) {
       await sock.sendMessage(responseJid, { text: `❌ Kode referral *${targetCode}* tidak ditemukan.` });
@@ -1281,8 +1296,8 @@ Ajak teman Anda untuk mengetik \`ref ${refCode}\` di chat ini. Setiap 3 teman ya
 
   // 16. SIMPAN / ADD TO WISHLIST
   const simpanRegex = /^simpan\s+(\w+)$/i;
-  if (simpanRegex.test(text)) {
-    const code = text.match(simpanRegex)[1].toUpperCase();
+  if (simpanRegex.test(cleanText)) {
+    const code = cleanText.match(simpanRegex)[1].toUpperCase();
     const p = await db.getProductByKode(code);
     if (!p) {
       await sock.sendMessage(responseJid, { text: `❌ Produk dengan kode *${code}* tidak ditemukan.` });
@@ -1434,7 +1449,7 @@ ${casakuPayment.uniqueCode > 0 ? `_(Nominal top-up Rp${amount.toLocaleString('id
     if (!history || history.length === 0) {
       const emptyMsg = `ℹ️ Halo *${customerName}*, Anda belum memiliki riwayat pembelian produk digital yang selesai.
 
-Ketik *.produk* untuk melihat daftar produk toko kami!`;
+Ketik *.list* atau *.produk* untuk melihat daftar produk toko kami!`;
       await sock.sendMessage(responseJid, { text: emptyMsg });
       return;
     }

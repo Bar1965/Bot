@@ -1,9 +1,9 @@
 const categories = {
   jualan: {
     title: '🛍️ PRODUK & JUALAN',
-    aliases: ['1', 'jualan', 'produk'],
+    aliases: ['1', 'jualan', 'produk', 'list', 'katalog'],
     commands: [
-      ['.produk', 'Lihat katalog dan stok'],
+      ['.list / .produk', 'Lihat katalog & sisa stok produk'],
       ['.beli <kode> <jumlah>', 'Tambah produk ke keranjang'],
       ['.lapak', 'Lihat / buka lapak reseller komunitas'],
       ['.lapak add <nama> <harga> <stok> <isi>', 'Buka lapak (Premium)'],
