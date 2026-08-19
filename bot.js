@@ -1053,6 +1053,7 @@ export async function startBot(onSocketReady) {
 
     const knownMediaCmds = [
       'hd', 'remini', 'upscale', 'stiker', 'sticker', 's', 'gif', 'sgif', 'toimg', 'unstick', 'toimage', 'tovideo', 'tovid', 'togif',
+      'getpp', 'colongpp', 'curipp', 'pp', 'ambilpp', 'stikerpp', 'stickerpp', 'spp',
       'qc', 'quote', 'brat', 'meme', 'draw', 'aiimg', 'dalle', 'editfoto', 'removebg', 'nobg',
       'ssweb', 'ss', 'khodam', 'tod', 'truth', 'dare', 'tts', 'shortlink', 'short', 'cuaca', 'invoice', 'struk',
       'tebakgambar', 'tebakangka', 'susunkata', 'bank', 'deposito', 'tarik', 'withdraw', 'transfer', 'rampok', 'rob', 'slot', 'roulette',
@@ -1917,6 +1918,104 @@ _${khodamRes.desc}_`;
       }
 
       return await sock.sendMessage(jid, { text: `🎲 *ROULETTE* 🎲\n\nBola berputar dan berhenti di angka *${roll}* (*${resultColor.toUpperCase()}*)!\n\n${isWin ? `🎉 MENANG! Kamu dapat +${winAmount} poin!` : `💥 KALAH! Kamu kehilangan -${bet} poin.`}` });
+    }
+
+    // 19.3. Colong / Ambil Foto Profil (PP) Target (.getpp, .colongpp, .curipp, .pp, .ambilpp, .stikerpp, .stickerpp, .spp)
+    if (['getpp', 'colongpp', 'curipp', 'pp', 'ambilpp', 'stikerpp', 'stickerpp', 'spp'].includes(cleanCmd)) {
+      let targetJid = null;
+
+      // Prioritas 1: Tag/Mention atau Quote/Reply pesan seseorang
+      targetJid = extractTargetJid(m, args);
+
+      // Prioritas 2: Kata kunci khusus
+      const argTarget = (args[1] || '').toLowerCase().trim();
+      if (argTarget === 'grup' || argTarget === 'group') {
+        targetJid = isGroup ? jid : null;
+      } else if (argTarget === 'bot') {
+        targetJid = sock.user?.id ? (sock.user.id.split(':')[0] + '@s.whatsapp.net') : null;
+      } else if (argTarget === 'me' || argTarget === 'saya') {
+        targetJid = senderNormalized;
+      }
+
+      // Jika di DM dan tidak ada argumen, targetnya adalah diri sendiri atau pengirim
+      if (!targetJid && !isGroup) {
+        targetJid = senderNormalized;
+      }
+
+      if (!targetJid) {
+        await sock.sendMessage(jid, {
+          text: `⚠️ *Format Perintah Kurang Lengkap!*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n📌 *Cara Pakai:*\n• \`.getpp @user\` — Ambil PP orang yang di-tag\n• Reply pesan seseorang lalu ketik \`.getpp\`\n• \`.getpp 628123456789\` — Ambil PP via nomor HP\n• \`.getpp grup\` — Ambil foto profil grup\n• \`.stikerpp @user\` — Colong PP langsung jadi Stiker WA! 🎭`
+        }, { quoted: m });
+        return true;
+      }
+
+      // Normalisasi format JID
+      if (!targetJid.includes('@')) {
+        targetJid = targetJid.replace(/[^0-9]/g, '') + '@s.whatsapp.net';
+      }
+
+      try {
+        await react('⏳');
+        let avatarUrl = null;
+        try {
+          avatarUrl = await sock.profilePictureUrl(targetJid, 'image');
+        } catch (e) {
+          try {
+            avatarUrl = await sock.profilePictureUrl(targetJid, 'preview');
+          } catch (e2) {
+            avatarUrl = null;
+          }
+        }
+
+        if (!avatarUrl) {
+          await react('❌');
+          const isTargetGroup = targetJid.endsWith('@g.us');
+          const errorMsg = isTargetGroup
+            ? `❌ Grup ini tidak memasang foto profil ikon grup.`
+            : `❌ Target @${targetJid.split('@')[0]} tidak memasang foto profil atau menyembunyikan privasi foto profilnya.`;
+          await sock.sendMessage(jid, { text: errorMsg, mentions: [targetJid] }, { quoted: m });
+          return true;
+        }
+
+        const axios = (await import('axios')).default;
+        const imgRes = await axios.get(avatarUrl, { responseType: 'arraybuffer', timeout: 15000 });
+        const imgBuffer = Buffer.from(imgRes.data);
+
+        // Jika perintahnya adalah membuat stiker dari PP target
+        if (['stikerpp', 'stickerpp', 'spp'].includes(cleanCmd)) {
+          const stickerRes = await mediaHandler.createSticker(imgBuffer, 'Colong PP', `@${targetJid.split('@')[0]}`, false);
+          if (stickerRes.success && stickerRes.buffer) {
+            await sock.sendMessage(jid, { sticker: stickerRes.buffer }, { quoted: m });
+            await react('✅');
+          } else {
+            await sock.sendMessage(jid, {
+              image: imgBuffer,
+              caption: `🎭 *STIKER PP TARGET*\n\n_(Stiker gagal di-generate, menampilkan gambar asli)_ @${targetJid.split('@')[0]}`,
+              mentions: [targetJid]
+            }, { quoted: m });
+            await react('✅');
+          }
+          return true;
+        }
+
+        // Tampilkan sebagai foto HD
+        const isTargetGroup = targetJid.endsWith('@g.us');
+        const caption = isTargetGroup
+          ? `📸 *FOTO PROFIL GRUP TERTANGKAP!* 📸\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n👥 *Grup ID:* \`${targetJid}\`\n✨ Resolusi: *High Definition (HD)*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n_Foto ikon grup berhasil diunduh!_ 🕵️‍♂️`
+          : `📸 *FOTO PROFIL TARGET TERTANGKAP!* 📸\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🎯 *Target:* @${targetJid.split('@')[0]}\n🆔 *JID:* \`${targetJid}\`\n✨ Resolusi: *High Definition (HD)*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n_Foto profil berhasil dicolong! Ketik \`.stikerpp @user\` untuk mengubahnya jadi stiker._ 🎭`;
+
+        await sock.sendMessage(jid, {
+          image: imgBuffer,
+          caption,
+          mentions: [targetJid]
+        }, { quoted: m });
+        await react('✅');
+      } catch (err) {
+        await react('❌');
+        console.error('[GETPP_ERR]', err.message);
+        await sock.sendMessage(jid, { text: `❌ Gagal mengambil foto profil: ${err.message}` }, { quoted: m });
+      }
+      return true;
     }
 
     // 19.5. Cek Status & Kecepatan Respon Bot (.ping, .p, .statusbot)

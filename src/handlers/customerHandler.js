@@ -853,6 +853,8 @@ Ketik *bayar* atau klik tombol *Bayar QRIS Langsung* di bawah untuk langsung mem
 ▫️ \`.fb <link>\` — Download video Facebook
 ▫️ \`.tw <link>\` — Download media Twitter/X
 ▫️ \`.yt <link>\` — Download MP3/MP4 YouTube
+▫️ \`.getpp <@user>\` — Ambil foto profil HD
+▫️ \`.stikerpp <@user>\` — Colong PP jadi stiker
 ▫️ \`.stiker\` — Foto/Video ke Stiker WA
 ▫️ \`.toimg\` / \`.tovid\` — Stiker ke Foto/Video
 ▫️ \`.qc <teks>\` — Stiker Quote Chat
