@@ -456,13 +456,16 @@ export function startScheduler(sock) {
     }
   }, 60 * 60 * 1000);
 
-  // Set interval pengecekan laporan harian (setiap jam, kirim saat jam 21:00)
+  // Set interval pengecekan laporan harian (kirim 1x sehari pada jam 21:00)
+  let lastDailyReportDate = '';
   setInterval(() => {
     const now = new Date();
-    if (now.getHours() === 21 && now.getMinutes() < 5) {
+    const today = now.toISOString().slice(0, 10);
+    if (now.getHours() === 21 && now.getMinutes() < 5 && lastDailyReportDate !== today) {
+      lastDailyReportDate = today;
       sendDailySalesReport(schedulerSock);
     }
-  }, 5 * 60 * 1000);
+  }, 60 * 1000);
 
   // Set interval kuis otomatis grup setiap 1 jam
   setInterval(() => {

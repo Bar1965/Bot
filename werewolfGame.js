@@ -81,6 +81,9 @@ export async function joinWwLobby(sock, groupJid, playerJid, playerName) {
 export async function startGameWw(sock, groupJid, senderJid) {
   const session = activeWwGames.get(groupJid);
   if (!session) return { success: false, message: '⚠️ Tidak ada permainan Werewolf yang bisa dimulai.' };
+  if (senderJid && session.hostJid && senderJid !== session.hostJid) {
+    return { success: false, message: '⚠️ Hanya host yang membuat room yang dapat memulai game Werewolf!' };
+  }
   if (session.status !== 'LOBBY') return { success: false, message: '⚠️ Permainan Werewolf sudah dimulai!' };
   if (session.players.length < 4) {
     return { success: false, message: `⚠️ Pemain kurang! Minimal butuh 4 pemain untuk memulai. (Saat ini: ${session.players.length} pemain)` };
@@ -402,9 +405,12 @@ export async function endGame(sock, groupJid, finalMessage) {
 /**
  * Membatalkan Game oleh Host / Admin
  */
-export function cancelWwGame(groupJid, senderJid) {
+export function cancelWwGame(groupJid, senderJid, isAdmin = false) {
   const session = activeWwGames.get(groupJid);
   if (!session) return { success: false, message: '⚠️ Tidak ada game Werewolf yang aktif di grup ini.' };
+  if (senderJid && session.hostJid && senderJid !== session.hostJid && !isAdmin) {
+    return { success: false, message: '⚠️ Hanya host game atau admin grup yang dapat membatalkan permainan.' };
+  }
 
   if (session.timer) clearTimeout(session.timer);
   activeWwGames.delete(groupJid);

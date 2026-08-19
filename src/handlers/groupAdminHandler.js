@@ -5,12 +5,13 @@ import { createMidtransTransaction, botState } from '../../server.js';
 import { buildCommandMenu } from '../../commandRegistry.js';
 import * as mediaHandler from '../../mediaHandler.js';
 import * as ent from '../../entertainmentHandler.js';
-import { sendInteractiveButtons } from '../../bot.js';
+import { sendInteractiveButtons, extractTargetJid } from '../../bot.js';
 
 export function createGroupAdminHandler(ctx) {
     const { sock, botSettings, userPushNamesMap, messageCache, formatPhoneNumber, react, sendInteractiveButtons } = ctx;
 
-    return async function handleGroupMessage(jid, senderNumber, messageObj, text, isGroupAdminParam, isPrefixCmd) {
+    return async function handleGroupMessage(jid, senderNumber, messageObj, text, isGroupAdminParam, isPrefixCmd, actor = {}) {
+  // STRICT RULE: Semua perintah WAJIB diawali prefix . / # (TIDAK ADA perintah tanpa prefix)
   const isPrefix = isPrefixCmd !== undefined 
     ? isPrefixCmd 
     : (text?.trim().startsWith('.') || text?.trim().startsWith('/') || text?.trim().startsWith('#'));
@@ -18,9 +19,10 @@ export function createGroupAdminHandler(ctx) {
 
   const isGroup = jid.endsWith('@g.us');
   const m = messageObj;
-  const senderNormalized = senderNumber;
-  const args = text.trim().split(/\s+/);
-  const rawCmd = args[0].toLowerCase();
+  const senderCleanJid = jidNormalizedUser(senderNumber);
+  const senderNormalized = senderCleanJid;
+  const args = (text || '').trim().split(/\s+/);
+  const rawCmd = (args[0] || '').toLowerCase();
   const cleanCmd = rawCmd.replace(/^[./#]/, '');
 
   const adminStoreCommands = [
@@ -34,6 +36,7 @@ export function createGroupAdminHandler(ctx) {
     'add', 'kick', 'promote', 'demote', 'group', 'link', 'tagall', 'hidetag', 
     'everyone', 'admins', 'mode', 'setmode', 'botmode', 'antilink', 'welcome', 
     'autowelcomeswitch', 'setwelcome', 'setupdategroup', 'autosholat', 'levelup', 'autolevelup',
+    'globallevelup', 'setlevelup',
     'autodl', 'autodownload', 'listfitur', 'fiturgrup', 'groupfeatures'
   ];
 
@@ -95,29 +98,51 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
   // Normalisasi nomor HP untuk verifikasi Owner & Admin yang 100% Presisi
   const cleanDigits = str => (str || '').split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
   const ownerPhoneNum = cleanDigits(botSettings.ownerNumber || config.defaults.ownerNumber);
-  const storedOwnerJid = (botSettings.ownerJid || '').trim();
-  const senderDigits = cleanDigits(senderNumber);
+  const storedOwnerJid = jidNormalizedUser((botSettings.ownerJid || '').trim());
+  const senderDigits = cleanDigits(senderCleanJid);
   const jidDigits = cleanDigits(jid);
 
   // Cek Moderator dari DB
-  const isMod = await db.isModerator(senderNormalized);
+  const isMod = await db.isModerator(senderCleanJid);
 
-  // Cek Owner: via m.key.fromMe, stored JID (handles @lid), phone digit match, atau JID DM match.
-  // PENTING: exact match saja (bukan .includes()) — substring match membuka celah bypass,
-  // contoh nomor "6283170183637000" akan lolos jika ownerPhoneNum "6283170183637" dicek dengan includes().
-  const isOwner = !!m.key?.fromMe ||
-                  !!(storedOwnerJid && senderNormalized === storedOwnerJid) ||
-                  !!(ownerPhoneNum && senderDigits && ownerPhoneNum === senderDigits) ||
-                  !!(!isGroup && ownerPhoneNum && jidDigits && ownerPhoneNum === jidDigits);
+  let isOwner = !!(actor && actor.isOwner) || !!m.key?.fromMe;
+  let isGroupAdmin = !!(actor && actor.isAdmin) || !!isGroupAdminParam;
 
+  if (isGroup && !isOwner) {
+    try {
+      const groupMeta = await sock.groupMetadata(jid);
+      const pMatch = groupMeta.participants.find(p => {
+        const pCleanId = jidNormalizedUser(p.id);
+        const pCleanLid = p.lid ? jidNormalizedUser(p.lid) : null;
+        return pCleanId === senderCleanJid || pCleanLid === senderCleanJid ||
+               (p.id && senderCleanJid.includes(p.id.split('@')[0])) ||
+               (p.lid && senderCleanJid.includes(p.lid.split('@')[0]));
+      });
+      if (pMatch) {
+        if (pMatch.admin === 'admin' || pMatch.admin === 'superadmin') {
+          isGroupAdmin = true;
+        }
+        const pPhone = cleanDigits(pMatch.id);
+        if (ownerPhoneNum && pPhone && (pPhone === ownerPhoneNum || pPhone.endsWith(ownerPhoneNum) || ownerPhoneNum.endsWith(pPhone))) {
+          isOwner = true;
+        }
+      }
+    } catch (e) {}
+  }
+
+  if (!isOwner) {
+    isOwner = !!(storedOwnerJid && (senderCleanJid === storedOwnerJid || senderCleanJid.includes(storedOwnerJid.split('@')[0]) || storedOwnerJid.includes(senderCleanJid.split('@')[0]))) ||
+              !!(ownerPhoneNum && senderDigits && (ownerPhoneNum === senderDigits || senderDigits.endsWith(ownerPhoneNum) || ownerPhoneNum.endsWith(senderDigits))) ||
+              !!(!isGroup && ownerPhoneNum && jidDigits && (ownerPhoneNum === jidDigits || jidDigits.endsWith(ownerPhoneNum)));
+  }
 
   const adminList = (botSettings.adminNumbers || config.defaults.adminNumbers || '').split(',').map(n => cleanDigits(n));
-  const isAdminStore = isOwner || isMod || adminList.includes(senderDigits);
-  const isAdminUser = isAdminStore || isGroupAdminParam;
+  const isAdminStore = isOwner || isMod || adminList.some(adm => adm && (senderDigits === adm || senderDigits.endsWith(adm) || adm.endsWith(senderDigits)));
+  const isAdminUser = isAdminStore || isGroupAdmin;
 
-  // Jika bukan Admin/Owner dan mencoba perintah khusus Admin, diam
-  if (!isAdminUser) {
-    return true;
+  // Jika bukan Admin/Owner, tolak perintah
+  if (!isAdminUser && !isOwner) {
+    return false;
   }
 
   // 🔒 Guard Grup Admin ACC khusus untuk perintah transaksi toko
@@ -493,20 +518,78 @@ Moderataor dapat menggunakan \`.ban\` dan \`.unban\`.` });
     if (['levelup', 'autolevelup'].includes(cleanCmd)) {
       const isGroup = jid.endsWith('@g.us');
       if (!isGroup) {
-        await sock.sendMessage(jid, { text: "⚠️ Perintah pengaturan notifikasi level up hanya dapat dijalankan di dalam Grup WhatsApp!" });
+        await sock.sendMessage(jid, { text: "⚠️ Perintah pengaturan notifikasi level up per-grup hanya dapat dijalankan di dalam Grup WhatsApp!\n\n_Untuk mematikan level up di seluruh grup bot, Owner dapat menggunakan:_ \`.globallevelup off\`" });
         return true;
       }
-      const state = args[1]?.toLowerCase();
-      if (!state || !['on', 'off'].includes(state)) {
+      const rawState = args[1]?.toLowerCase();
+      const isTurnOn = ['on', 'aktif', 'enable', '1', 'hidup', 'start'].includes(rawState);
+      const isTurnOff = ['off', 'mati', 'nonaktif', 'disable', '0', 'stop'].includes(rawState);
+
+      if (!isTurnOn && !isTurnOff) {
         const currentSettings = await db.getGroupSettings(jid);
-        const status = (currentSettings.levelup_enabled === 1 || currentSettings.levelup_enabled === undefined) ? 'ON (Aktif)' : 'OFF (Mati)';
-        await sock.sendMessage(jid, { text: `📈 *NOTIFIKASI LEVEL UP GRUP*\nStatus saat ini: *${status}*\n\nGunakan perintah:\n\`.levelup on\` - Mengaktifkan notifikasi naik level\n\`.levelup off\` - Mematikan notifikasi naik level (mencegah spam/berisik)` });
+        const globalStatus = (botSettings.levelUpEnabled || "true") !== "false";
+        const groupStatus = (currentSettings.levelup_enabled === 1 || currentSettings.levelup_enabled === undefined);
+        const isActuallyActive = groupStatus && globalStatus;
+
+        let statusText = `📈 *PENGATURAN NOTIFIKASI LEVEL UP GRUP*\n`;
+        statusText += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+        statusText += `• Status di grup ini: *${groupStatus ? '🟢 ON (Aktif)' : '🔴 OFF (Mati)'}*\n`;
+        statusText += `• Status Master Bot: *${globalStatus ? '🟢 Aktif' : '🔴 Dimatikan oleh Owner (Global OFF)'}*\n`;
+        statusText += `• Status Efektif: *${isActuallyActive ? '🟢 AKTIF (Kartu dikirim saat naik level)' : '🔴 NONAKTIF (Tidak ada spam kartu level)'}*\n`;
+        statusText += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+        statusText += `💡 *Pilihan Pengaturan:*\n`;
+        statusText += `• Ketik \`.levelup off\` untuk mematikan notifikasi di grup ini.\n`;
+        statusText += `• Ketik \`.levelup on\` untuk mengaktifkan kembali.`;
+
+        await sendInteractiveButtons(sock, jid, {
+          text: statusText,
+          title: '📈 LEVEL UP SETTINGS',
+          footer: 'Moderasi fitur grup Akbar Store',
+          buttons: [
+            { type: 'reply', text: '🔴 Matikan Level Up (OFF)', id: '.levelup off' },
+            { type: 'reply', text: '🟢 Aktifkan Level Up (ON)', id: '.levelup on' }
+          ]
+        });
         return true;
       }
 
-      const isEnabled = state === 'on' ? 1 : 0;
+      const isEnabled = isTurnOn ? 1 : 0;
       await db.updateGroupSettings(jid, { levelup_enabled: isEnabled });
-      await sock.sendMessage(jid, { text: `✅ Notifikasi naik level di grup ini berhasil diubah menjadi: *${state.toUpperCase()}*` });
+      await sock.sendMessage(jid, { 
+        text: `✅ Notifikasi naik level di grup ini berhasil diubah menjadi: *${isTurnOn ? '🟢 ON (Aktif)' : '🔴 OFF (Mati / Hening)'}*` 
+      });
+      return true;
+    }
+
+    if (['globallevelup', 'setlevelup'].includes(cleanCmd)) {
+      if (!isOwner) {
+        await sock.sendMessage(jid, { text: "❌ Perintah ini khusus untuk Pemilik (Owner) bot." });
+        return true;
+      }
+      const rawState = args[1]?.toLowerCase();
+      const isTurnOn = ['on', 'aktif', 'enable', '1', 'hidup'].includes(rawState);
+      const isTurnOff = ['off', 'mati', 'nonaktif', 'disable', '0'].includes(rawState);
+
+      if (!isTurnOn && !isTurnOff) {
+        const globalStatus = (botSettings.levelUpEnabled || "true") !== "false";
+        await sendInteractiveButtons(sock, jid, {
+          text: `🌐 *PENGATURAN MASTER GLOBAL LEVEL UP*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nStatus Master: *${globalStatus ? '🟢 AKTIF DI SEMUA GRUP' : '🔴 DIMATIKAN GLOBAL (Semua grup hening)'}*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n_Pilih aksi di bawah untuk mengatur semua grup sekaligus:_`,
+          title: '🌐 GLOBAL LEVEL UP TOGGLE',
+          footer: 'Pengaturan master bot',
+          buttons: [
+            { type: 'reply', text: '🔴 Matikan di Semua Grup', id: '.globallevelup off' },
+            { type: 'reply', text: '🟢 Aktifkan di Semua Grup', id: '.globallevelup on' }
+          ]
+        });
+        return true;
+      }
+
+      const newVal = isTurnOn ? "true" : "false";
+      await db.updateSettings({ levelUpEnabled: newVal });
+      botSettings.levelUpEnabled = newVal;
+      await sock.sendMessage(jid, { 
+        text: `✅ Notifikasi level up di *SELURUH GRUP BOT* berhasil diubah menjadi: *${isTurnOn ? '🟢 AKTIF GLOBAL' : '🔴 NONAKTIF GLOBAL (Semua grup hening)'}*` 
+      });
       return true;
     }
 
@@ -1115,19 +1198,39 @@ if (isGroup && cleanCmd === 'sponsor') {
       return true;
     }
 
-    if (isGroup && (cleanCmd === 'tagall' || cleanCmd === 'hidetag' || cleanCmd === 'everyone')) {
+    if (isGroup && (cleanCmd === 'tagall' || cleanCmd === 'hidetag' || cleanCmd === 'everyone' || cleanCmd === 'all' || cleanCmd === 'semua' || hasAtMentionAll)) {
       try {
         const groupMeta = await sock.groupMetadata(jid);
-        const participants = groupMeta.participants.map(p => p.id);
-        const extraMsg = args.slice(1).join(' ');
-        
-        let tagMsg = `📢 *PENGUMUMAN GRUP (${groupMeta.subject})*\n${extraMsg ? extraMsg + '\n\n' : ''}`;
-        participants.forEach((pId, idx) => {
-          tagMsg += `${idx + 1}. @${pId.split('@')[0]}\n`;
+        const allMentions = [];
+        groupMeta.participants.forEach(p => {
+          if (p.id) allMentions.push(p.id);
+          if (p.lid) allMentions.push(p.lid);
         });
 
-        await sock.sendMessage(jid, { text: tagMsg, mentions: participants });
+        const isExplicitTagAll = (cleanCmd === 'tagall');
+        const extraMsg = args.slice(1).join(' ').trim();
+        
+        let tagMsg = '';
+        if (isExplicitTagAll) {
+          tagMsg = `📢 *PENGUMUMAN ANGGOTA (${groupMeta.subject})*\n`;
+          if (extraMsg) {
+            tagMsg += `💬 *Pesan:* ${extraMsg}\n\n`;
+          } else {
+            tagMsg += `\n`;
+          }
+          tagMsg += `👥 *Total Anggota (${groupMeta.participants.length}):*\n`;
+          groupMeta.participants.forEach((p, idx) => {
+            const displayId = (p.id || p.lid).split('@')[0];
+            tagMsg += `${idx + 1}. @${displayId}\n`;
+          });
+        } else {
+          // Hidetag / .everyone mode
+          tagMsg = extraMsg || `📢 *PENGUMUMAN GRUP (${groupMeta.subject})*`;
+        }
+
+        await sock.sendMessage(jid, { text: tagMsg, mentions: allMentions });
       } catch (err) {
+        console.error("[TAGALL_ERR]", err.message);
         await sock.sendMessage(jid, { text: `❌ Gagal tagall: ${err.message}` });
       }
       return true;
@@ -1136,16 +1239,27 @@ if (isGroup && cleanCmd === 'sponsor') {
     if (isGroup && cleanCmd === 'admins') {
       try {
         const groupMeta = await sock.groupMetadata(jid);
-        const admins = groupMeta.participants.filter(p => p.admin === 'admin' || p.admin === 'superadmin').map(p => p.id);
-        const extraMsg = args.slice(1).join(' ');
-        
-        let adminMsg = `👑 *PANGGILAN ADMIN GRUP*\n${extraMsg ? extraMsg + '\n\n' : ''}`;
-        admins.forEach((aId, idx) => {
-          adminMsg += `${idx + 1}. @${aId.split('@')[0]}\n`;
+        const adminParticipants = groupMeta.participants.filter(p => p.admin === 'admin' || p.admin === 'superadmin');
+        const adminMentions = [];
+        adminParticipants.forEach(p => {
+          if (p.id) adminMentions.push(p.id);
+          if (p.lid) adminMentions.push(p.lid);
         });
 
-        await sock.sendMessage(jid, { text: adminMsg, mentions: admins });
+        const extraMsg = args.slice(1).join(' ').trim();
+        
+        let adminMsg = `👑 *PANGGILAN ADMIN GRUP (${groupMeta.subject})*\n`;
+        if (extraMsg) adminMsg += `💬 *Pesan:* ${extraMsg}\n\n`;
+        else adminMsg += `\n`;
+        
+        adminParticipants.forEach((a, idx) => {
+          const displayId = (a.id || a.lid).split('@')[0];
+          adminMsg += `${idx + 1}. @${displayId} (${a.admin === 'superadmin' ? 'Pembuat Grup' : 'Admin'})\n`;
+        });
+
+        await sock.sendMessage(jid, { text: adminMsg, mentions: adminMentions });
       } catch (err) {
+        console.error("[ADMINS_TAG_ERR]", err.message);
         await sock.sendMessage(jid, { text: `❌ Gagal panggil admin: ${err.message}` });
       }
       return true;

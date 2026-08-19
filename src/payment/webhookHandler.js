@@ -135,6 +135,16 @@ export async function handleCasakuWebhook(req, res) {
         try { await db.updateWebhookStatus(webhookLogId, 'PROCESSED'); } catch {}
       }
       console.log(`[WEBHOOK] Payment confirmed. Order: ${result.orderId}, fulfillment job queued.`);
+
+      // Broadcast event ke Admin Dashboard secara real-time
+      import('../../websocket.js').then(ws => {
+        ws.broadcastToAdmins('order:paid', {
+          orderId: result.orderId,
+          amount: amount,
+          customerNumber: result.customerNumber,
+          timestamp: Date.now()
+        });
+      }).catch(() => {});
     } catch (err) {
       console.error('[WEBHOOK] Failed to create fulfillment job:', err.message);
       // Still return 200 — payment IS marked PAID in DB. Worker will recover on restart.

@@ -49,10 +49,12 @@ async function processJobs() {
   if (jobs.length === 0) return;
 
   for (const job of jobs) {
-    // Check if this job should be retried yet based on attempts and last update
     if (job.attempts > 0) {
       const delayIndex = Math.min(job.attempts - 1, RETRY_DELAYS.length - 1);
-      const retryAfter = job.updated_at + RETRY_DELAYS[delayIndex];
+      const updatedAtMs = typeof job.updated_at === 'string'
+        ? new Date(job.updated_at).getTime()
+        : (job.updated_at > 1e11 ? job.updated_at : job.updated_at * 1000);
+      const retryAfter = updatedAtMs + RETRY_DELAYS[delayIndex];
       if (Date.now() < retryAfter) continue; // Not yet time to retry
     }
 
@@ -111,24 +113,29 @@ async function processJob(job) {
       : `${job.customer_number.replace(/[^0-9]/g, '')}@s.whatsapp.net`;
 
     // Build delivery message
-    let deliveryMsg = `✅ *PEMBAYARAN BERHASIL DIKONFIRMASI!* ✅\n\n`;
-    deliveryMsg += `📦 *Order ID:* ${job.order_id}\n`;
-    deliveryMsg += `💰 *Jumlah Dibayar:* Rp${(orderDetails?.payment_amount || 0).toLocaleString('id-ID')}\n\n`;
-    deliveryMsg += `━━━━━━━━━━━━━━━━━━━━\n`;
-    deliveryMsg += `🎁 *PRODUK DIGITAL ANDA:*\n`;
-    deliveryMsg += `━━━━━━━━━━━━━━━━━━━━\n\n`;
+    let deliveryMsg = `🎉 *PEMBAYARAN BERHASIL DIKONFIRMASI!* 🎉\n`;
+    deliveryMsg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+    deliveryMsg += `📦 *Order ID:* \`${job.order_id}\`\n`;
+    deliveryMsg += `💰 *Total Dibayar:* *Rp${(orderDetails?.payment_amount || orderDetails?.total || 0).toLocaleString('id-ID')}*\n`;
+    if (deliveryResult.warrantyUntil) {
+      const wDate = new Date(deliveryResult.warrantyUntil).toLocaleDateString('id-ID', { dateStyle: 'full' });
+      deliveryMsg += `🛡️ *Garansi Aktif Hingga:* ${wDate}\n`;
+    }
+    deliveryMsg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    deliveryMsg += `🎁 *RINCIAN KREDENSIAL & AKUN:*\n\n`;
 
     if (deliveryResult.itemsText) {
-      // AUTO delivery type — has digital content
       deliveryMsg += deliveryResult.itemsText;
     } else {
-      // MANUAL delivery type — notify admin will send
-      deliveryMsg += `_Pesanan Anda sedang diproses oleh Admin. Produk akan segera dikirimkan ke chat ini._`;
+      deliveryMsg += `👨‍💼 _Pesanan Anda sedang diproses oleh Tim Admin Toko. Kredensial akan segera dikirimkan ke chat ini._\n\n`;
     }
 
-    deliveryMsg += `\n\n━━━━━━━━━━━━━━━━━━━━\n`;
-    deliveryMsg += `_Terima kasih sudah berbelanja! 🙏_\n`;
-    deliveryMsg += `_Simpan pesan ini sebagai bukti pembelian._`;
+    const appUrl = process.env.APP_URL || `http://localhost:${process.env.PORT || 3000}`;
+    deliveryMsg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+    deliveryMsg += `🌐 *Invoice Online:* ${appUrl}/pay/${job.order_id}\n`;
+    deliveryMsg += `🛡️ *Klaim Kendala / Garansi:* Ketik \`.garansi ${job.order_id}\`\n`;
+    deliveryMsg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+    deliveryMsg += `_Terima kasih telah mempercayakan kebutuhan digital Anda kepada Akbar Store! 🙏_`;
 
     // Send via Baileys
     if (!sockRef) throw new Error('WhatsApp socket not available');

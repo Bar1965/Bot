@@ -19,15 +19,31 @@ import { handleCasakuWebhook } from './src/payment/webhookHandler.js';
 const app = express();
 
 // ====================================================================
-// CASAKU PAYMENT WEBHOOK — MUST be registered BEFORE express.json()
-// express.raw() preserves the raw Buffer body needed for HMAC-SHA256
-// verification. If express.json() processes this route first, the
-// signature check will always fail.
+// CASAKU & MIDTRANS PAYMENT WEBHOOKS
 // ====================================================================
+app.post(
+  '/api/payment/webhook/casaku',
+  express.raw({ type: 'application/json' }),
+  handleCasakuWebhook
+);
+
+// Legacy dispatcher to support existing configured callback URLs
 app.post(
   '/api/payment/webhook',
   express.raw({ type: 'application/json' }),
-  handleCasakuWebhook
+  async (req, res, next) => {
+    // If Casaku signature header is present, dispatch to Casaku handler
+    if (req.headers['x-casaku-signature'] || req.headers['x-signature'] || req.headers['x-callback-signature']) {
+      return handleCasakuWebhook(req, res);
+    }
+    // Otherwise, parse json and process with Midtrans handler
+    try {
+      if (Buffer.isBuffer(req.body)) {
+        req.body = JSON.parse(req.body.toString('utf8'));
+      }
+    } catch (e) {}
+    return processMidtransWebhook(req, res);
+  }
 );
 
 app.use(express.json());
@@ -42,6 +58,20 @@ const authCookieOptions = {
 };
 const loginAttempts = new Map();
 
+// Periodic cleanup of expired login attempts to prevent memory leaks
+setInterval(() => {
+  const now = Date.now();
+  const windowMs = 15 * 60 * 1000;
+  for (const [ip, attempts] of loginAttempts.entries()) {
+    const valid = attempts.filter(ts => now - ts < windowMs);
+    if (valid.length === 0) {
+      loginAttempts.delete(ip);
+    } else {
+      loginAttempts.set(ip, valid);
+    }
+  }
+}, 30 * 60 * 1000);
+
 function getCookieValue(req, name) {
   const cookies = req.headers.cookie?.split(';') || [];
   const prefix = `${name}=`;
@@ -54,7 +84,11 @@ function isLoginAllowed(ip) {
   const windowMs = 15 * 60 * 1000;
   const maxAttempts = 5;
   const recent = (loginAttempts.get(ip) || []).filter(timestamp => now - timestamp < windowMs);
-  loginAttempts.set(ip, recent);
+  if (recent.length === 0) {
+    loginAttempts.delete(ip);
+  } else {
+    loginAttempts.set(ip, recent);
+  }
   return recent.length < maxAttempts;
 }
 
@@ -227,6 +261,23 @@ function authorizeRoles(...roles) {
 app.get('/', (req, res) => res.sendFile(path.resolve('public/index.html')));
 app.get('/index.html', (req, res) => res.sendFile(path.resolve('public/index.html')));
 app.get('/login.html', (req, res) => res.sendFile(path.resolve('public/login.html')));
+app.get('/pay/:orderId', (req, res) => res.sendFile(path.resolve('public/pay.html')));
+app.get('/api/pay/:orderId', async (req, res) => {
+  try {
+    const orderId = req.params.orderId;
+    if (!orderId || !/^[a-zA-Z0-9_-]+$/.test(orderId)) {
+      return res.status(400).json({ success: false, message: "Format Order ID tidak valid." });
+    }
+    const invoice = await db.getOrderPublicInvoice(orderId);
+    if (!invoice) {
+      return res.status(404).json({ success: false, message: "Pesanan tidak ditemukan." });
+    }
+    res.json({ success: true, invoice });
+  } catch (err) {
+    console.error("Error getOrderPublicInvoice:", err);
+    res.status(500).json({ success: false, message: "Terjadi kesalahan pada server." });
+  }
+});
 app.use('/uploads/products', express.static(path.resolve('public/uploads/products')));
 app.get('/uploads/qris.png', (req, res) => res.sendFile(path.resolve('public/uploads/qris.png')));
 app.get('/api/chats/media/:filename', authenticateJWT, (req, res) => {
@@ -555,7 +606,7 @@ app.get('/api/products', authenticateJWT, async (req, res) => {
 // Owner dan Admin bisa menulis/edit produk
 app.post('/api/products', authenticateJWT, authorizeRoles('Owner', 'Admin'), uploadProduct.single('gambar'), async (req, res) => {
   try {
-    const { kode, nama, harga, stok, deskripsi, delivery_type, old_kode, petunjuk } = req.body;
+    const { kode, nama, harga, stok, deskripsi, delivery_type, old_kode, petunjuk, brand_category, variant_type, duration } = req.body;
     if (!kode || !nama || harga === undefined || harga === '' || stok === undefined || stok === '') {
       return res.status(400).json({ success: false, message: "Kolom kode, nama, harga, dan stok wajib diisi." });
     }
@@ -581,12 +632,30 @@ app.post('/api/products', authenticateJWT, authorizeRoles('Owner', 'Admin'), upl
       return res.status(400).json({ success: false, message: "Tipe pengiriman produk tidak valid." });
     }
 
-    let gambarUrl = req.body.gambar_existing || "";
+    let gambarUrl = "";
     if (req.file) {
       gambarUrl = `/uploads/products/${req.file.filename}`;
+    } else if (req.body.gambar_existing) {
+      const existing = String(req.body.gambar_existing).trim();
+      if (/^\/uploads\/products\/[a-zA-Z0-9_.-]+$/.test(existing)) {
+        gambarUrl = existing;
+      }
     }
 
-    await db.addProduct(normalizedKode, normalizedNama, parsedHarga, parsedStok, String(deskripsi || '').slice(0, 5000), gambarUrl, deliveryType, String(old_kode || '').trim(), String(petunjuk || '').slice(0, 5000));
+    await db.addProduct(
+      normalizedKode, 
+      normalizedNama, 
+      parsedHarga, 
+      parsedStok, 
+      String(deskripsi || '').slice(0, 5000), 
+      gambarUrl, 
+      deliveryType, 
+      String(old_kode || '').trim(), 
+      String(petunjuk || '').slice(0, 5000),
+      brand_category ? String(brand_category).trim() : null,
+      variant_type ? String(variant_type).trim() : null,
+      duration ? String(duration).trim() : null
+    );
     await checkAndNotifySubscribers(normalizedKode, parsedStok);
     res.json({ success: true, message: "Produk berhasil disimpan." });
   } catch (err) {
@@ -780,8 +849,9 @@ app.delete('/api/orders/:orderId', authenticateJWT, authorizeRoles('Owner', 'Adm
 // Endpoint pembersihan riwayat order massal (Admin & Owner)
 app.post('/api/orders/clear', authenticateJWT, authorizeRoles('Owner', 'Admin'), async (req, res) => {
   try {
-    const { filter } = req.body;
-    const result = await db.clearOrders(filter || 'ALL');
+    const validFilters = ['ALL', 'CANCELLED_CART', 'COMPLETED'];
+    const filter = validFilters.includes(req.body.filter) ? req.body.filter : 'ALL';
+    const result = await db.clearOrders(filter);
     res.json(result);
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -1470,9 +1540,9 @@ export async function createMidtransTransaction(order) {
 }
 
 // Endpoint Webhook untuk menerima notifikasi dari Midtrans (Public Access)
-app.post('/api/payment/webhook', async (req, res) => {
+async function processMidtransWebhook(req, res) {
   try {
-    const notification = req.body;
+    const notification = req.body || {};
     const { order_id, status_code, gross_amount, signature_key, transaction_status } = notification;
 
     if (!order_id || !status_code || !gross_amount || !signature_key) {
@@ -1488,7 +1558,10 @@ app.post('/api/payment/webhook', async (req, res) => {
     const signatureSource = order_id + status_code + gross_amount + serverKey;
     const calculatedSignature = crypto.createHash('sha512').update(signatureSource).digest('hex');
 
-    if (calculatedSignature !== signature_key) {
+    const calcBuf = Buffer.from(calculatedSignature, 'utf8');
+    const sigBuf = Buffer.from(signature_key, 'utf8');
+
+    if (calcBuf.length !== sigBuf.length || !crypto.timingSafeEqual(calcBuf, sigBuf)) {
       console.warn(`[MIDTRANS WEBHOOK WARNING] Tanda tangan tidak cocok untuk order ${order_id}!`);
       await db.addLog("ERROR", `Peringatan Keamanan: Signature webhook Midtrans tidak cocok untuk Order ID ${order_id}.`);
       return res.status(403).json({ success: false, message: "Signature tidak valid." });
@@ -1536,30 +1609,34 @@ app.post('/api/payment/webhook', async (req, res) => {
         let hasAutoDelivery = false;
 
         // 1. Deliver LOCAL (AUTO)
-        const localClaims = await db.claimAndDeliverItems(order_id);
-        const localCodes = Object.keys(localClaims);
+        const localClaimsRes = await db.claimAndDeliverItems(order_id);
+        const deliveredData = localClaimsRes?.deliveredData || {};
+        const localCodes = Object.keys(deliveredData);
 
         if (localCodes.length > 0) {
           hasAutoDelivery = true;
           deliveredItemsMsg = `🎁 *PENGIRIMAN PRODUK DIGITAL*\n\nTerima kasih! Pembayaran Anda telah kami terima dan terverifikasi otomatis (Midtrans).\n\nBerikut adalah detail pesanan Anda:\n\n`;
           
-          // Format Local Items
-          for (const code of localCodes) {
-            const item = localClaims[code];
-            deliveredItemsMsg += `🔑 *${item.produk_nama}* (\`${code}\`):\n`;
-            if (item.credentials.length > 0) {
-              item.credentials.forEach((cred, i) => { deliveredItemsMsg += `   ${i+1}. ${cred}\n`; });
-            } else {
-              deliveredItemsMsg += `   ⚠️ Stok habis, admin akan mengirimkan manual.\n`;
+          if (localClaimsRes.itemsText) {
+            deliveredItemsMsg += localClaimsRes.itemsText;
+          } else {
+            for (const code of localCodes) {
+              const item = deliveredData[code];
+              deliveredItemsMsg += `🔑 *${item.produk_nama}* (\`${code}\`):\n`;
+              if (item.credentials && item.credentials.length > 0) {
+                item.credentials.forEach((cred, i) => { deliveredItemsMsg += `   ${i+1}. \`\`\`${cred}\`\`\`\n`; });
+              } else {
+                deliveredItemsMsg += `   ⚠️ Stok habis, admin akan mengirimkan manual.\n`;
+              }
+              if (item.petunjuk) deliveredItemsMsg += `\n${item.petunjuk}\n`;
+              deliveredItemsMsg += `\n`;
             }
-            if (item.petunjuk) deliveredItemsMsg += `\n${item.petunjuk}\n`;
-            deliveredItemsMsg += `\n`;
           }
 
-          deliveredItemsMsg += `━━━━━━━━━━━━━━━━━━\n_Simpan detail ini baik-baik. Hubungi CS jika ada kendala._`;
+          deliveredItemsMsg += `\n━━━━━━━━━━━━━━━━━━\n_Simpan detail ini baik-baik. Hubungi CS jika ada kendala._`;
           
           // Cek kelengkapan
-          const localOk = localCodes.every(k => localClaims[k].credentials.length > 0);
+          const localOk = localCodes.every(k => deliveredData[k].credentials && deliveredData[k].credentials.length > 0);
           if (localOk) {
             await db.updateOrderStatus(order_id, 'COMPLETED');
             await db.addLog('ORDER', `✅ Order *${order_id}* auto-completed via Midtrans Webhook.`);
@@ -1569,9 +1646,7 @@ app.post('/api/payment/webhook', async (req, res) => {
           }
         } else {
           // MANUAL
-          deliveredItemsMsg = `🔔 *INFO PESANAN (Order: ${order_id})*
-      
-Pembayaran Anda telah *DITERIMA* dan terverifikasi otomatis. Pesanan Anda sedang diproses manual oleh admin kami. Harap menunggu.`;
+          deliveredItemsMsg = `🔔 *INFO PESANAN (Order: ${order_id})*\n\nPembayaran Anda telah *DITERIMA* dan terverifikasi otomatis. Pesanan Anda sedang diproses manual oleh admin kami. Harap menunggu.`;
         }
 
         // Kirim notifikasi WA ke pelanggan
@@ -1596,11 +1671,7 @@ Pembayaran Anda telah *DITERIMA* dan terverifikasi otomatis. Pesanan Anda sedang
         await db.updateOrderStatus(order_id, 'CANCELLED', transaction_status);
         await db.addLog("ORDER", `Order ID ${order_id} dibatalkan otomatis oleh Webhook Midtrans (Status: ${transaction_status}).`);
 
-        const cancelMsg = `🔔 *PEMBERITAHUAN PEMBATALAN PEMBAYARAN*
-
-Pesanan Anda dengan Order ID *${order_id}* telah dibatalkan karena link pembayaran telah kedaluwarsa atau transaksi ditolak.
-
-Silakan lakukan pemesanan ulang (ketik *menu*) jika Anda masih berminat membeli produk. Terima kasih.`;
+        const cancelMsg = `🔔 *PEMBERITAHUAN PEMBATALAN PEMBAYARAN*\n\nPesanan Anda dengan Order ID *${order_id}* telah dibatalkan karena link pembayaran telah kedaluwarsa atau transaksi ditolak.\n\nSilakan lakukan pemesanan ulang (ketik *menu*) jika Anda masih berminat membeli produk. Terima kasih.`;
 
         if (botState.sock && botState.whatsappConnected) {
           try {
@@ -1620,6 +1691,10 @@ Silakan lakukan pemesanan ulang (ketik *menu*) jika Anda masih berminat membeli 
     console.error("[WEBHOOK ERROR]", err.message);
     res.status(500).json({ success: false, message: err.message });
   }
+}
+
+app.post('/api/payment/webhook/midtrans', async (req, res) => {
+  return processMidtransWebhook(req, res);
 });
 
 // Server global instance

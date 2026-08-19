@@ -144,11 +144,18 @@ async function downloadWithYtdlp(url) {
     if (stats.size > 5000) {
       try {
         const buffer = fs.readFileSync(tmpFile);
-        fs.unlinkSync(tmpFile);
         return { success: true, buffer, title };
-      } catch (e) {}
+      } catch (e) {
+        console.error('[YTDLP_READ_ERR]', e.message);
+      } finally {
+        if (fs.existsSync(tmpFile)) {
+          try { fs.unlinkSync(tmpFile); } catch {}
+        }
+      }
     }
-    if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
+    if (fs.existsSync(tmpFile)) {
+      try { fs.unlinkSync(tmpFile); } catch {}
+    }
   }
 
   // Tier 2 Fallback: Direct Stream URL

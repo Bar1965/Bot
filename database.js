@@ -157,6 +157,17 @@ export async function initDb() {
     await runQuery("ALTER TABLE products ADD COLUMN last_stock_status INTEGER");
   } catch (e) {}
 
+  // Jalankan migrasi kolom brand_category, variant_type, duration (multi-variant support)
+  try {
+    await runQuery("ALTER TABLE products ADD COLUMN brand_category TEXT");
+  } catch (e) {}
+  try {
+    await runQuery("ALTER TABLE products ADD COLUMN variant_type TEXT");
+  } catch (e) {}
+  try {
+    await runQuery("ALTER TABLE products ADD COLUMN duration TEXT");
+  } catch (e) {}
+
   // 5. Tabel product_items (Kredensial Stok Digital Siap Kirim)
   await runQuery(`
     CREATE TABLE IF NOT EXISTS product_items (
@@ -199,14 +210,18 @@ export async function initDb() {
   await runQuery(`
     CREATE TABLE IF NOT EXISTS reviews (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      order_id INTEGER NOT NULL,
+      order_id TEXT NOT NULL,
       customer_nomor TEXT NOT NULL,
       produk_kode TEXT,
       rating INTEGER NOT NULL,
       comment TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      review_reminder_sent INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(order_id)
     )
   `);
+  try { await runQuery("ALTER TABLE reviews ADD COLUMN review_reminder_sent INTEGER DEFAULT 0"); } catch (e) {}
+  try { await runQuery("ALTER TABLE reviews ADD COLUMN produk_kode TEXT"); } catch (e) {}
 
   // 6c. Tabel Flash Sale
   await runQuery(`
@@ -392,19 +407,6 @@ export async function initDb() {
     )
   `);
 
-  // 14. Tabel reviews
-  await runQuery(`
-    CREATE TABLE IF NOT EXISTS reviews (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      order_id TEXT NOT NULL,
-      customer_nomor TEXT NOT NULL,
-      rating INTEGER NOT NULL,
-      comment TEXT,
-      review_reminder_sent INTEGER DEFAULT 0,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(order_id)
-    )
-  `);
 
   // 15. Tabel referrals
   await runQuery(`
@@ -865,6 +867,32 @@ You can now enjoy:
     }
   }
 
+  // Seed / update sample variant products for Netflix & Spotify and enrich existing products
+  try {
+    const netflixCheck = await getQuery("SELECT COUNT(*) as count FROM products WHERE UPPER(brand_category) = 'NETFLIX' OR UPPER(kode) LIKE 'NET%'");
+    if (!netflixCheck || netflixCheck.count === 0) {
+      const defaultVariants = [
+        { kode: 'NET-SH-7D', nama: 'Netflix Sharing 7 Hari', harga: 12000, stok: 15, deskripsi: '1 Profil Privat 4K Ultra HD, Anti-Screen Limit, All Device', gambar: '', delivery_type: 'MANUAL', brand_category: 'Netflix', variant_type: 'Sharing (1 Profil)', duration: '7 Hari' },
+        { kode: 'NET-SH-14D', nama: 'Netflix Sharing 14 Hari', harga: 20000, stok: 8, deskripsi: '1 Profil Privat 4K Ultra HD, Garansi Penuh, All Device', gambar: '', delivery_type: 'MANUAL', brand_category: 'Netflix', variant_type: 'Sharing (1 Profil)', duration: '14 Hari' },
+        { kode: 'NET-SH-30D', nama: 'Netflix Sharing 30 Hari', harga: 35000, stok: 10, deskripsi: '1 Profil Privat 4K Ultra HD, Garansi 30 Hari, All Device', gambar: '', delivery_type: 'MANUAL', brand_category: 'Netflix', variant_type: 'Sharing (1 Profil)', duration: '30 Hari' },
+        { kode: 'NET-PV-30D', nama: 'Netflix Private 30 Hari', harga: 150000, stok: 4, deskripsi: '1 Akun Full Milik Anda (5 Profil), 5 Device Simultan, Bebas Buat Profil & PIN', gambar: '', delivery_type: 'MANUAL', brand_category: 'Netflix', variant_type: 'Private (1 Akun Full)', duration: '30 Hari' }
+      ];
+      for (const v of defaultVariants) {
+        await runQuery(
+          "INSERT OR IGNORE INTO products (kode, nama, harga, stok, deskripsi, gambar, delivery_type, brand_category, variant_type, duration) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          [v.kode, v.nama, v.harga, v.stok, v.deskripsi, v.gambar, v.delivery_type, v.brand_category, v.variant_type, v.duration]
+        );
+      }
+    }
+  } catch (e) {}
+
+  try {
+    await runQuery("UPDATE products SET brand_category = 'Microsoft Office', variant_type = '1 Tahun', duration = '12 Bulan' WHERE kode = 'OFFICE' AND (brand_category IS NULL OR brand_category = '')");
+    await runQuery("UPDATE products SET brand_category = 'Apple Music', variant_type = 'Individual', duration = '6 Bulan' WHERE kode = 'APPLEMUSIC' AND (brand_category IS NULL OR brand_category = '')");
+    await runQuery("UPDATE products SET brand_category = 'Adobe Express', variant_type = 'Premium', duration = '12 Bulan' WHERE kode = 'ADOBE' AND (brand_category IS NULL OR brand_category = '')");
+    await runQuery("UPDATE products SET brand_category = 'Google Gemini', variant_type = 'Gemini Pro + 5TB', duration = '18 Bulan' WHERE kode = 'GEMINI' AND (brand_category IS NULL OR brand_category = '')");
+  } catch (e) {}
+
   // 10. Tabel Conversations (Live Chat State)
   await runQuery(`
     CREATE TABLE IF NOT EXISTS conversations (
@@ -902,12 +930,19 @@ You can now enjoy:
 
   // --- CASAKU PAYMENT SYSTEM MIGRATION ---
 
-  // Migrate orders table: add Casaku payment columns
+  // Migrate orders table: add Casaku payment columns & warranty
   try { await runQuery("ALTER TABLE orders ADD COLUMN payment_amount INTEGER DEFAULT 0"); } catch(e) {}
   try { await runQuery("ALTER TABLE orders ADD COLUMN payment_status TEXT DEFAULT 'PENDING'"); } catch(e) {}
   try { await runQuery("ALTER TABLE orders ADD COLUMN fulfillment_status TEXT DEFAULT 'PENDING'"); } catch(e) {}
   try { await runQuery("ALTER TABLE orders ADD COLUMN expired_at INTEGER"); } catch(e) {}
   try { await runQuery("ALTER TABLE orders ADD COLUMN casaku_transaction_id TEXT"); } catch(e) {}
+  try { await runQuery("ALTER TABLE orders ADD COLUMN qr_string TEXT"); } catch(e) {}
+  try { await runQuery("ALTER TABLE orders ADD COLUMN warranty_until INTEGER"); } catch(e) {}
+  try { await runQuery("ALTER TABLE orders ADD COLUMN updated_at INTEGER"); } catch(e) {}
+  try { await runQuery("ALTER TABLE orders ADD COLUMN review_reminder_sent INTEGER DEFAULT 0"); } catch(e) {}
+  try { await runQuery("ALTER TABLE orders ADD COLUMN coupon_code TEXT"); } catch(e) {}
+  try { await runQuery("ALTER TABLE orders ADD COLUMN discount_amount INTEGER DEFAULT 0"); } catch(e) {}
+  try { await runQuery("ALTER TABLE orders ADD COLUMN coupon_redeemed INTEGER DEFAULT 0"); } catch(e) {}
 
   // payment_transactions table
   await runQuery(`
@@ -919,12 +954,14 @@ You can now enjoy:
       expected_amount INTEGER NOT NULL,
       received_amount INTEGER,
       status TEXT NOT NULL DEFAULT 'PENDING',
+      qr_string TEXT,
       created_at INTEGER NOT NULL,
       paid_at INTEGER,
       FOREIGN KEY(order_id) REFERENCES orders(order_id),
       UNIQUE(provider, provider_transaction_id)
     )
   `);
+  try { await runQuery("ALTER TABLE payment_transactions ADD COLUMN qr_string TEXT"); } catch(e) {}
 
   // payment_webhooks table (full audit trail)
   await runQuery(`
@@ -1016,60 +1053,6 @@ You can now enjoy:
   await runQuery("CREATE INDEX IF NOT EXISTS idx_ai_usage_jid_date ON ai_usage_logs(jid, usage_date)");
   await runQuery("CREATE INDEX IF NOT EXISTS idx_wishlist_produk ON user_wishlists(produk_kode)");
 
-  // --- PREMIUM 2.0 & RESELLER MIGRATION ---
-
-  // Tabel Reseller Products (.lapak)
-  await runQuery(`
-    CREATE TABLE IF NOT EXISTS reseller_products (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      seller_jid TEXT NOT NULL,
-      seller_nama TEXT,
-      nama TEXT NOT NULL,
-      harga INTEGER NOT NULL,
-      stok INTEGER NOT NULL DEFAULT 1,
-      isi_produk TEXT NOT NULL,
-      status TEXT DEFAULT 'ACTIVE',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY(seller_jid) REFERENCES customers(nomor)
-    )
-  `);
-
-  // Tabel AI Usage Logs (.ai daily limit control)
-  await runQuery(`
-    CREATE TABLE IF NOT EXISTS ai_usage_logs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      jid TEXT NOT NULL,
-      usage_date TEXT NOT NULL,
-      count INTEGER DEFAULT 0,
-      UNIQUE(jid, usage_date)
-    )
-  `);
-
-  // Tabel User Wishlists (notifikasi restock otomatis)
-  await runQuery(`
-    CREATE TABLE IF NOT EXISTS user_wishlists (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      jid TEXT NOT NULL,
-      produk_kode TEXT NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(jid, produk_kode)
-    )
-  `);
-
-  // Tabel Premium Monthly Claims (.claimvoucher)
-  await runQuery(`
-    CREATE TABLE IF NOT EXISTS premium_monthly_claims (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      jid TEXT NOT NULL,
-      claim_month TEXT NOT NULL,
-      claimed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(jid, claim_month)
-    )
-  `);
-
-  await runQuery("CREATE INDEX IF NOT EXISTS idx_reseller_status ON reseller_products(status)");
-  await runQuery("CREATE INDEX IF NOT EXISTS idx_ai_usage_jid_date ON ai_usage_logs(jid, usage_date)");
-  await runQuery("CREATE INDEX IF NOT EXISTS idx_wishlist_produk ON user_wishlists(produk_kode)");
 
   // --- FINANCIAL & POINTS SECURITY ENGINE ---
 
@@ -1278,15 +1261,97 @@ export async function updateSettings(settingsObj) {
 
 // --- FUNGSI MANAJEMEN PRODUK & KREDENSIAL ---
 
+export function getBrandEmoji(brand) {
+  const b = (brand || '').toLowerCase();
+  if (b.includes('netflix')) return '🎬';
+  if (b.includes('spotify')) return '🎵';
+  if (b.includes('youtube')) return '📺';
+  if (b.includes('canva')) return '🎨';
+  if (b.includes('disney')) return '🏰';
+  if (b.includes('chatgpt') || b.includes('openai') || b.includes('gemini') || b.includes('ai')) return '🤖';
+  if (b.includes('capcut')) return '✂️';
+  if (b.includes('prime') || b.includes('amazon')) return '📦';
+  if (b.includes('apple')) return '🍎';
+  if (b.includes('adobe')) return '🖌️';
+  if (b.includes('office') || b.includes('microsoft')) return '📑';
+  return '📦';
+}
+
+export async function getGroupedCatalog() {
+  const allProducts = await allQuery("SELECT * FROM products ORDER BY brand_category ASC, harga ASC");
+  if (!allProducts || allProducts.length === 0) return [];
+
+  const groupsMap = new Map();
+
+  for (const p of allProducts) {
+    let brandKey = (p.brand_category || '').trim();
+    if (!brandKey) {
+      const firstWord = (p.nama || '').trim().split(/\s+/)[0];
+      brandKey = firstWord || p.kode;
+    }
+    const normalizedKey = brandKey.toUpperCase();
+
+    if (!groupsMap.has(normalizedKey)) {
+      groupsMap.set(normalizedKey, {
+        brand: brandKey,
+        icon: getBrandEmoji(brandKey),
+        variants: [],
+        min_price: p.harga,
+        max_price: p.harga,
+        total_stock: 0,
+        durations: new Set(),
+        types: new Set()
+      });
+    }
+
+    const group = groupsMap.get(normalizedKey);
+    group.variants.push(p);
+    group.total_stock += (p.stok || 0);
+    if (p.harga < group.min_price) group.min_price = p.harga;
+    if (p.harga > group.max_price) group.max_price = p.harga;
+    if (p.duration) group.durations.add(p.duration);
+    if (p.variant_type) group.types.add(p.variant_type);
+  }
+
+  return Array.from(groupsMap.values()).map(g => ({
+    ...g,
+    durations: Array.from(g.durations),
+    types: Array.from(g.types),
+    is_multi: g.variants.length > 1
+  }));
+}
+
+export async function getProductVariants(query) {
+  const q = String(query || '').trim().toUpperCase();
+  if (!q) return { exactProduct: null, variants: [] };
+
+  // 1. Cek jika query adalah kode produk yang persis
+  const exact = await getQuery("SELECT * FROM products WHERE UPPER(kode) = ?", [q]);
+  
+  // 2. Cari semua produk yang punya brand_category sama atau nama mengandung kata kunci
+  const variants = await allQuery(
+    "SELECT * FROM products WHERE UPPER(brand_category) = ? OR UPPER(brand_category) LIKE ? OR UPPER(nama) LIKE ? OR UPPER(kode) LIKE ? ORDER BY variant_type ASC, harga ASC",
+    [q, `%${q}%`, `%${q}%`, `%${q}%`]
+  );
+
+  return {
+    exactProduct: exact || null,
+    variants: variants || []
+  };
+}
+
 export async function getProducts() {
-  return await allQuery("SELECT * FROM products");
+  return await allQuery("SELECT * FROM products ORDER BY brand_category ASC, harga ASC");
 }
 
 export async function getProductByKode(kode) {
-  return await getQuery("SELECT * FROM products WHERE kode = ?", [kode.toUpperCase()]);
+  return await getQuery("SELECT * FROM products WHERE UPPER(kode) = ?", [kode.toUpperCase()]);
 }
 
-export async function addProduct(kode, nama, harga, stok, deskripsi, gambar = "", delivery_type = "MANUAL", oldKode = "", petunjuk = "") {
+export async function addProduct(
+  kode, nama, harga, stok, deskripsi, gambar = "", delivery_type = "MANUAL", 
+  oldKode = "", petunjuk = "", brand_category = null, variant_type = null, duration = null
+) {
   const normalizedKode = String(kode || '').trim().toUpperCase();
   const normalizedNama = String(nama || '').trim();
   if (!/^[A-Z0-9_-]{2,40}$/.test(normalizedKode)) {
@@ -1323,8 +1388,8 @@ export async function addProduct(kode, nama, harga, stok, deskripsi, gambar = ""
   }
 
   const res = await runQuery(
-    "INSERT OR REPLACE INTO products (kode, nama, harga, stok, deskripsi, gambar, delivery_type, petunjuk) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    [newKodeUpper, normalizedNama, harga, finalStok, deskripsi, gambar, delivery_type, petunjuk]
+    "INSERT OR REPLACE INTO products (kode, nama, harga, stok, deskripsi, gambar, delivery_type, petunjuk, brand_category, variant_type, duration) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    [newKodeUpper, normalizedNama, harga, finalStok, deskripsi, gambar, delivery_type, petunjuk, brand_category, variant_type, duration]
   );
   await addLog("SYSTEM", `Produk diperbarui/ditambahkan: ${newKodeUpper} - ${nama} (Stok: ${finalStok}, Tipe: ${delivery_type})`);
   return res;
@@ -1414,50 +1479,91 @@ export async function claimAndDeliverItems(orderId) {
   return withTransaction(async () => {
     // Ambil rincian produk bertipe otomatis yang dibeli dalam order ini
     const itemsPurchased = await allQuery(`
-    SELECT oi.produk_kode, oi.qty, p.delivery_type, p.nama as produk_nama, p.petunjuk 
-    FROM order_items oi 
-    JOIN products p ON oi.produk_kode = p.kode 
-    WHERE oi.order_id = ?
-  `, [orderId]);
+      SELECT oi.produk_kode, oi.qty, p.delivery_type, p.nama as produk_nama, p.petunjuk, p.duration, p.variant_type 
+      FROM order_items oi 
+      JOIN products p ON oi.produk_kode = p.kode 
+      WHERE oi.order_id = ?
+    `, [orderId]);
 
     const deliveredData = {};
+    let itemsText = '';
+    let manualCount = 0;
+    let maxWarrantyMs = 0;
 
     for (const item of itemsPurchased) {
+      // Hitung masa garansi dari durasi
+      const durStr = (item.duration || '').toLowerCase();
+      let itemWarrantyMs = 30 * 24 * 60 * 60 * 1000; // default 30 hari
+      if (durStr.includes('7')) itemWarrantyMs = 7 * 24 * 60 * 60 * 1000;
+      else if (durStr.includes('14')) itemWarrantyMs = 14 * 24 * 60 * 60 * 1000;
+      else if (durStr.includes('60') || durStr.includes('2 bulan')) itemWarrantyMs = 60 * 24 * 60 * 60 * 1000;
+      else if (durStr.includes('90') || durStr.includes('3 bulan')) itemWarrantyMs = 90 * 24 * 60 * 60 * 1000;
+      else if (durStr.includes('tahun') || durStr.includes('12 bulan')) itemWarrantyMs = 365 * 24 * 60 * 60 * 1000;
+      if (itemWarrantyMs > maxWarrantyMs) maxWarrantyMs = itemWarrantyMs;
+
       if (item.delivery_type === 'AUTO') {
         // Ambil kredensial siap pakai
         let readyItems = await allQuery(
-        "SELECT id, data_content FROM product_items WHERE produk_kode = ? AND status = 'RESERVED' AND order_id = ? LIMIT ?",
-        [item.produk_kode, orderId, item.qty]
-      );
+          "SELECT id, data_content FROM product_items WHERE produk_kode = ? AND status = 'RESERVED' AND order_id = ? LIMIT ?",
+          [item.produk_kode, orderId, item.qty]
+        );
         if (readyItems.length < item.qty) {
           const fallbackItems = await allQuery(
-          "SELECT id, data_content FROM product_items WHERE produk_kode = ? AND status = 'READY' LIMIT ?",
-          [item.produk_kode, item.qty - readyItems.length]
-        );
+            "SELECT id, data_content FROM product_items WHERE produk_kode = ? AND status = 'READY' LIMIT ?",
+            [item.produk_kode, item.qty - readyItems.length]
+          );
           readyItems = readyItems.concat(fallbackItems);
         }
 
+        const creds = readyItems.map(ri => ri.data_content);
         deliveredData[item.produk_kode] = {
           produk_nama: item.produk_nama,
           petunjuk: item.petunjuk || '',
-          credentials: readyItems.map(ri => ri.data_content)
+          duration: item.duration || '',
+          variant_type: item.variant_type || '',
+          credentials: creds
         };
+
+        itemsText += `📦 *${item.produk_nama.toUpperCase()}* (Qty: ${item.qty})\n`;
+        if (item.duration) itemsText += `⏱️ *Masa Aktif:* ${item.duration}\n`;
+        itemsText += `🔑 *Kredensial / Voucher Akun:*\n`;
+        creds.forEach((c, idx) => {
+          itemsText += `   [${idx + 1}] \`\`\`${c}\`\`\`\n`;
+        });
+        if (item.petunjuk && item.petunjuk.trim()) {
+          itemsText += `\n📖 *Panduan Penggunaan:*\n${item.petunjuk.trim()}\n`;
+        }
+        itemsText += `\n`;
 
         // Tandai kredensial sebagai USED
         for (const ri of readyItems) {
           await runQuery(
-          "UPDATE product_items SET status = 'USED', order_id = ?, used_at = datetime('now') WHERE id = ?",
-          [orderId, ri.id]
-        );
+            "UPDATE product_items SET status = 'USED', order_id = ?, used_at = datetime('now') WHERE id = ?",
+            [orderId, ri.id]
+          );
         }
 
         // Sinkronisasi sisa stok produk utama
         const sisaStok = await getAvailableItemsCount(item.produk_kode);
         await runQuery("UPDATE products SET stok = ? WHERE kode = ?", [sisaStok, item.produk_kode]);
+      } else {
+        manualCount++;
+        itemsText += `📦 *${item.produk_nama.toUpperCase()}* (Qty: ${item.qty})\n`;
+        itemsText += `👨‍💼 _Produk bertipe MANUAL — Tim Admin Toko akan segera mengirimkan akun/kredensial ke chat ini._\n\n`;
       }
     }
 
-    return deliveredData;
+    // Update tanggal masa garansi pada pesanan
+    const warrantyUntil = Date.now() + (maxWarrantyMs > 0 ? maxWarrantyMs : 30 * 24 * 60 * 60 * 1000);
+    await runQuery(`UPDATE orders SET warranty_until = ? WHERE order_id = ?`, [warrantyUntil, orderId]);
+
+    return {
+      success: true,
+      deliveredData,
+      itemsText: itemsText.trim(),
+      manualItems: manualCount > 0,
+      warrantyUntil
+    };
   });
 }
 
@@ -1503,8 +1609,21 @@ export async function registerCustomer(nomor, nama) {
 
 export async function isCustomerRegistered(nomor) {
   if (!nomor) return false;
-  const row = await getQuery("SELECT profile_completed FROM customers WHERE nomor = ?", [nomor]);
-  return row && Number(row.profile_completed) === 1;
+  const clean = String(nomor).split(':')[0].replace(/@.*$/, '').trim();
+  const fullClean = String(nomor).replace(/:[0-9]+@/, '@').trim();
+  const digits = clean.replace(/[^0-9]/g, '');
+
+  // 1. Cek exact match full JID (contoh: 59837887057934@lid atau 628123456@s.whatsapp.net)
+  const rowExact = await getQuery("SELECT profile_completed FROM customers WHERE nomor = ? OR nomor = ?", [nomor, fullClean]);
+  if (rowExact && Number(rowExact.profile_completed) === 1) return true;
+
+  // 2. Cek by phone digits jika nomor memiliki setidaknya 7 digit
+  if (digits && digits.length >= 7) {
+    const rowPhone = await getQuery("SELECT profile_completed FROM customers WHERE nomor LIKE ? AND profile_completed = 1", [`%${digits}%`]);
+    if (rowPhone && Number(rowPhone.profile_completed) === 1) return true;
+  }
+
+  return false;
 }
 
 export async function getCustomerMembershipProfile(nomor) {
@@ -2655,22 +2774,16 @@ export async function bankDeposit(customerJid, amount) {
   const safeAmount = Math.max(0, Math.floor(Number(amount)));
   if (safeAmount <= 0) return { success: false, reason: 'INVALID_AMOUNT' };
   
-  const result = await dbAction(async (db) => {
-    return new Promise((resolve, reject) => {
-      db.run("BEGIN TRANSACTION", (err) => { if (err) reject(err); });
-      db.run(`UPDATE game_profiles SET points = points - ?, bank_points = COALESCE(bank_points, 0) + ? WHERE customer_jid = ? AND points >= ?`, 
-        [safeAmount, safeAmount, customerJid, safeAmount], 
-        function (err) {
-          if (err) { db.run("ROLLBACK"); return reject(err); }
-          if (this.changes === 0) {
-            db.run("ROLLBACK");
-            return resolve({ success: false, reason: 'INSUFFICIENT_FUNDS' });
-          }
-          db.run("COMMIT", (err) => { if (err) reject(err); else resolve({ success: true }); });
-      });
-    });
+  return withTransaction(async () => {
+    const res = await runQuery(
+      `UPDATE game_profiles SET points = points - ?, bank_points = COALESCE(bank_points, 0) + ? WHERE customer_jid = ? AND points >= ?`,
+      [safeAmount, safeAmount, customerJid, safeAmount]
+    );
+    if (res.changes === 0) {
+      return { success: false, reason: 'INSUFFICIENT_FUNDS' };
+    }
+    return { success: true };
   });
-  return result;
 }
 
 export async function bankWithdraw(customerJid, amount, taxRate = 0.02) {
@@ -2679,22 +2792,16 @@ export async function bankWithdraw(customerJid, amount, taxRate = 0.02) {
   
   const receivedAmount = Math.floor(safeAmount * (1 - taxRate));
   
-  const result = await dbAction(async (db) => {
-    return new Promise((resolve, reject) => {
-      db.run("BEGIN TRANSACTION", (err) => { if (err) reject(err); });
-      db.run(`UPDATE game_profiles SET bank_points = bank_points - ?, points = COALESCE(points, 0) + ? WHERE customer_jid = ? AND bank_points >= ?`, 
-        [safeAmount, receivedAmount, customerJid, safeAmount], 
-        function (err) {
-          if (err) { db.run("ROLLBACK"); return reject(err); }
-          if (this.changes === 0) {
-            db.run("ROLLBACK");
-            return resolve({ success: false, reason: 'INSUFFICIENT_FUNDS' });
-          }
-          db.run("COMMIT", (err) => { if (err) reject(err); else resolve({ success: true, received: receivedAmount }); });
-      });
-    });
+  return withTransaction(async () => {
+    const res = await runQuery(
+      `UPDATE game_profiles SET bank_points = bank_points - ?, points = COALESCE(points, 0) + ? WHERE customer_jid = ? AND bank_points >= ?`,
+      [safeAmount, receivedAmount, customerJid, safeAmount]
+    );
+    if (res.changes === 0) {
+      return { success: false, reason: 'INSUFFICIENT_FUNDS' };
+    }
+    return { success: true, received: receivedAmount };
   });
-  return result;
 }
 
 export async function transferPoints(senderJid, targetJid, amount, taxRate = 0.01) {
@@ -2706,29 +2813,20 @@ export async function transferPoints(senderJid, targetJid, amount, taxRate = 0.0
   await getGameProfile(senderJid);
   await getGameProfile(targetJid);
 
-  const result = await dbAction(async (db) => {
-    return new Promise((resolve, reject) => {
-      db.run("BEGIN TRANSACTION", (err) => { if (err) reject(err); });
-      
-      db.run(`UPDATE game_profiles SET points = points - ? WHERE customer_jid = ? AND points >= ?`, 
-        [safeAmount, senderJid, safeAmount], 
-        function (err) {
-          if (err) { db.run("ROLLBACK"); return reject(err); }
-          if (this.changes === 0) {
-            db.run("ROLLBACK");
-            return resolve({ success: false, reason: 'INSUFFICIENT_FUNDS' });
-          }
-          
-          db.run(`UPDATE game_profiles SET points = COALESCE(points, 0) + ? WHERE customer_jid = ?`, 
-            [receivedAmount, targetJid], 
-            function (err2) {
-              if (err2) { db.run("ROLLBACK"); return reject(err2); }
-              db.run("COMMIT", (err3) => { if (err3) reject(err3); else resolve({ success: true, received: receivedAmount }); });
-          });
-      });
-    });
+  return withTransaction(async () => {
+    const deductRes = await runQuery(
+      `UPDATE game_profiles SET points = points - ? WHERE customer_jid = ? AND points >= ?`,
+      [safeAmount, senderJid, safeAmount]
+    );
+    if (deductRes.changes === 0) {
+      return { success: false, reason: 'INSUFFICIENT_FUNDS' };
+    }
+    await runQuery(
+      `UPDATE game_profiles SET points = COALESCE(points, 0) + ? WHERE customer_jid = ?`,
+      [receivedAmount, targetJid]
+    );
+    return { success: true, received: receivedAmount };
   });
-  return result;
 }
 
 
@@ -3344,12 +3442,17 @@ export async function cleanExpiredPremium() {
 export async function createSuitChallenge(challengerJid, challengedJid, groupJid, bet) {
   const safeBet = Math.max(0, Math.floor(Number(bet) || 0));
   return withTransaction(async () => {
-    // Kurangi poin penantang
+    // Kurangi poin penantang jika ada taruhan
     await getGameProfile(challengerJid);
-    await runQuery(
-      "UPDATE game_profiles SET points = MAX(0, COALESCE(points, 0) - ?), updated_at = CURRENT_TIMESTAMP WHERE customer_jid = ?",
-      [safeBet, challengerJid]
-    );
+    if (safeBet > 0) {
+      const deductRes = await runQuery(
+        "UPDATE game_profiles SET points = points - ?, updated_at = CURRENT_TIMESTAMP WHERE customer_jid = ? AND points >= ?",
+        [safeBet, challengerJid, safeBet]
+      );
+      if (deductRes.changes === 0) {
+        throw new Error('INSUFFICIENT_POINTS');
+      }
+    }
 
     // Buat data tantangan
     const res = await runQuery(
@@ -3380,25 +3483,32 @@ export async function getPendingSuitChallenge(userJid) {
 }
 
 export async function saveSuitChoice(challengeId, userJid, choice) {
-  const challenge = await getSuitChallengeById(challengeId);
-  if (!challenge || challenge.status !== 'PENDING') return false;
+  return withTransaction(async () => {
+    const challenge = await getSuitChallengeById(challengeId);
+    if (!challenge || challenge.status !== 'PENDING') return false;
 
-  if (challenge.challenger_jid === userJid) {
-    await runQuery("UPDATE suit_challenges SET challenger_choice = ? WHERE id = ?", [choice, challengeId]);
-  } else if (challenge.challenged_jid === userJid) {
-    // Kurangi poin penantang yang ditantang saat mengirim pilihan pertama kali (sebagai tanda menyetujui taruhan)
-    if (challenge.challenged_choice === null) {
-      const safeBet = Math.max(0, Math.floor(Number(challenge.bet) || 0));
-      await runQuery(
-        "UPDATE game_profiles SET points = MAX(0, COALESCE(points, 0) - ?), updated_at = CURRENT_TIMESTAMP WHERE customer_jid = ?",
-        [safeBet, userJid]
-      );
+    if (challenge.challenger_jid === userJid) {
+      await runQuery("UPDATE suit_challenges SET challenger_choice = ? WHERE id = ?", [choice, challengeId]);
+    } else if (challenge.challenged_jid === userJid) {
+      // Kurangi poin penantang yang ditantang saat mengirim pilihan pertama kali (sebagai tanda menyetujui taruhan)
+      if (challenge.challenged_choice === null) {
+        const safeBet = Math.max(0, Math.floor(Number(challenge.bet) || 0));
+        if (safeBet > 0) {
+          const deductRes = await runQuery(
+            "UPDATE game_profiles SET points = points - ?, updated_at = CURRENT_TIMESTAMP WHERE customer_jid = ? AND points >= ?",
+            [safeBet, userJid, safeBet]
+          );
+          if (deductRes.changes === 0) {
+            return { error: 'INSUFFICIENT_POINTS' };
+          }
+        }
+      }
+      await runQuery("UPDATE suit_challenges SET challenged_choice = ? WHERE id = ?", [choice, challengeId]);
+    } else {
+      return false;
     }
-    await runQuery("UPDATE suit_challenges SET challenged_choice = ? WHERE id = ?", [choice, challengeId]);
-  } else {
-    return false;
-  }
-  return await getSuitChallengeById(challengeId);
+    return await getSuitChallengeById(challengeId);
+  });
 }
 
 export async function completeSuitChallenge(challengeId, status) {
@@ -3534,24 +3644,61 @@ export async function getLastOrderByCustomer(customerNomor) {
  * @param {number} expectedAmount - total + unique code
  * @param {number} expiryMinutes
  */
-export async function createCasakuTransaction(orderId, casakuTransactionId, expectedAmount, expiryMinutes = 15) {
+export async function createCasakuTransaction(orderId, casakuTransactionId, expectedAmount, expiryMinutes = 15, qrString = null) {
   const now = Date.now();
   const expiredAt = now + expiryMinutes * 60 * 1000;
   const txId = `PT-${orderId}-${now}`;
 
   await withTransaction(async () => {
     await runQuery(
-      `INSERT INTO payment_transactions (id, order_id, provider, provider_transaction_id, expected_amount, status, created_at)
-       VALUES (?, ?, 'casaku', ?, ?, 'PENDING', ?)`,
-      [txId, orderId, casakuTransactionId, expectedAmount, now]
+      `INSERT INTO payment_transactions (id, order_id, provider, provider_transaction_id, expected_amount, status, created_at, qr_string)
+       VALUES (?, ?, 'casaku', ?, ?, 'PENDING', ?, ?)`,
+      [txId, orderId, casakuTransactionId, expectedAmount, now, qrString]
     );
     await runQuery(
-      `UPDATE orders SET payment_amount = ?, payment_status = 'PENDING', casaku_transaction_id = ?, expired_at = ?, status = 'WAITING_PAYMENT' WHERE order_id = ?`,
-      [expectedAmount, casakuTransactionId, expiredAt, orderId]
+      `UPDATE orders SET payment_amount = ?, payment_status = 'PENDING', casaku_transaction_id = ?, expired_at = ?, status = 'WAITING_PAYMENT', qr_string = ? WHERE order_id = ?`,
+      [expectedAmount, casakuTransactionId, expiredAt, qrString, orderId]
     );
   });
 
   return { txId, expiredAt };
+}
+
+/**
+ * Mendapatkan data invoice publik untuk Web Checkout / Pay Page
+ */
+export async function getOrderPublicInvoice(orderId) {
+  const order = await getOrderDetails(orderId);
+  if (!order) return null;
+
+  const casakuTx = await getQuery(
+    "SELECT * FROM payment_transactions WHERE order_id = ? ORDER BY created_at DESC LIMIT 1",
+    [orderId]
+  );
+
+  return {
+    order_id: order.order_id,
+    customer_nama: order.customer_nama || 'Pelanggan Setia',
+    customer_nomor: order.customer_nomor ? (order.customer_nomor.replace(/[^0-9]/g, '').substring(0, 4) + '****' + order.customer_nomor.slice(-3)) : '',
+    total: order.total,
+    payment_amount: casakuTx ? casakuTx.expected_amount : (order.payment_amount || order.total),
+    unique_code: (order.payment_amount && order.total && order.payment_amount > order.total) ? (order.payment_amount - order.total) : 0,
+    status: order.status,
+    payment_status: order.payment_status,
+    fulfillment_status: order.fulfillment_status,
+    created_at: order.created_at,
+    expired_at: order.expired_at || (casakuTx ? casakuTx.created_at + 15 * 60 * 1000 : null),
+    qr_string: order.qr_string || (casakuTx ? casakuTx.qr_string : null),
+    warranty_until: order.warranty_until,
+    items: (order.items || []).map(i => ({
+      nama: i.produk_nama,
+      kode: i.produk_kode,
+      qty: i.qty || i.jumlah || 1,
+      harga: i.harga_satuan,
+      subtotal: i.subtotal || (i.harga_satuan * (i.qty || i.jumlah || 1)),
+      delivery_type: i.delivery_type
+    }))
+  };
 }
 
 /**
@@ -3724,14 +3871,14 @@ export async function expireStaleOrders(expiryMinutes = 15) {
  * Get stale PENDING orders for reconciliation check (older than thresholdMinutes).
  */
 export async function getStalePendingOrders(thresholdMinutes = 3) {
-  const cutoff = Date.now() - thresholdMinutes * 60 * 1000;
+  const safeMinutes = Math.max(1, Math.floor(Number(thresholdMinutes) || 3));
   return allQuery(
     `SELECT o.order_id, o.casaku_transaction_id, o.customer_nomor, o.payment_amount, o.created_at
      FROM orders o
      WHERE o.payment_status = 'PENDING' AND o.status = 'WAITING_PAYMENT'
      AND o.casaku_transaction_id IS NOT NULL
-     AND o.created_at < ?`,
-    [cutoff]
+     AND o.created_at <= datetime('now', '-' || ? || ' minutes')`,
+    [safeMinutes]
   );
 }
 
@@ -4093,8 +4240,8 @@ export async function redeemPointsForCoupon(customerNomor, couponTier) {
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
   await runQuery(
-    `INSERT INTO coupons (code, discount_percent, min_order_amount, expires_at, is_used)
-     VALUES (?, ?, ?, ?, 0)`,
+    `INSERT INTO coupons (code, type, value, min_order, max_uses, used_count, expires_at, is_active)
+     VALUES (?, 'percent', ?, ?, 1, 0, ?, 1)`,
     [code, couponConfig.discountPct, couponConfig.minOrder, expiresAt]
   );
 

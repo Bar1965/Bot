@@ -739,28 +739,146 @@
     .badge-indigo { background: rgba(99, 102, 241, 0.12); color: #a5b4fc; border: 1px solid rgba(99, 102, 241, 0.25); }
     .badge-default { background: var(--bg-badge); color: var(--text-tertiary); border: 1px solid var(--border-card); }
 
-    /* ========== PRODUCT CARDS GRID ========== */
+    /* ========== PRODUCT CARDS GRID & CARDS STYLING ========== */
     .product-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
-      gap: 1.5rem;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 1.25rem;
+      width: 100%;
     }
 
     .product-card {
       background: var(--bg-card);
       border: 1px solid var(--border-card);
       border-radius: var(--radius-xl);
-      padding: 1.25rem;
+      padding: 1rem;
       display: flex;
       flex-direction: column;
       justify-content: space-between;
-      gap: 1rem;
-      transition: transform 0.2s, border-color 0.2s;
+      gap: 0.75rem;
+      min-width: 0; /* Mencegah grid item blowout akibat image besar */
+      box-sizing: border-box;
+      transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+      overflow: hidden;
     }
 
     .product-card:hover {
-      transform: translateY(-2px);
-      border-color: rgba(16, 185, 129, 0.35);
+      transform: translateY(-3px);
+      border-color: rgba(16, 185, 129, 0.4);
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3), 0 0 15px rgba(16, 185, 129, 0.1);
+    }
+
+    .img-wrap {
+      position: relative;
+      width: 100%;
+      height: 160px;
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      background: #0f172a;
+      flex-shrink: 0;
+    }
+
+    .img-wrap img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      object-position: center;
+      display: block;
+      transition: transform 0.3s ease;
+    }
+
+    .product-card:hover .img-wrap img {
+      transform: scale(1.05);
+    }
+
+    .img-badge {
+      position: absolute;
+      top: 10px;
+      padding: 4px 8px;
+      font-size: 0.6875rem;
+      font-weight: 800;
+      border-radius: var(--radius-sm);
+      letter-spacing: 0.03em;
+      z-index: 2;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+    }
+
+    .img-badge.left {
+      left: 10px;
+      background: rgba(16, 185, 129, 0.9);
+      color: #ffffff;
+      backdrop-filter: blur(4px);
+    }
+
+    .img-badge.right {
+      right: 10px;
+      background: rgba(15, 23, 42, 0.85);
+      color: #34d399;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      font-family: monospace;
+      backdrop-filter: blur(4px);
+    }
+
+    .product-card .card-body {
+      padding: 0.5rem 0.25rem 0.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+
+    .product-card h4 {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .product-card .desc {
+      font-size: 0.8125rem;
+      color: var(--text-muted);
+      margin: 0;
+      line-height: 1.4;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      min-height: 2.25em;
+      max-height: 2.25em;
+    }
+
+    .product-stat-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 0.5rem;
+      padding-top: 0.5rem;
+      border-top: 1px solid var(--border-divider, rgba(255, 255, 255, 0.06));
+    }
+
+    .product-stat-label {
+      font-size: 0.6875rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-weight: 600;
+    }
+
+    .product-stat-value {
+      font-weight: 700;
+      font-size: 0.9375rem;
+      margin-top: 2px;
+    }
+
+    .card-footer {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 0.5rem;
+      padding-top: 0.5rem;
+      border-top: 1px solid var(--border-divider, rgba(255, 255, 255, 0.06));
     }
 
     /* ========== LIVE CHAT WORKSPACE ========== */
@@ -1858,6 +1976,14 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
               </div>
 
               <div>
+                <label class="form-label">Notifikasi Naik Level (Level Up Card)</label>
+                <select id="setLevelUpEnabled" class="form-select">
+                  <option value="true">🟢 Aktif (Kirim Kartu Level Up)</option>
+                  <option value="false">🔴 Non-Aktif (Matikan Level Up)</option>
+                </select>
+              </div>
+
+              <div>
                 <label class="form-label">Fitur Pesan Sambutan (Welcome)</label>
                 <select id="setWelcomeEnabled" class="form-select">
                   <option value="true">🟢 Aktif (Auto-Welcome ON)</option>
@@ -2018,6 +2144,20 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
           <div>
             <label class="form-label">Nama Produk</label>
             <input type="text" id="prodNama" required placeholder="Netflix 1 Bulan" class="form-input">
+          </div>
+        </div>
+        <div class="grid-3">
+          <div>
+            <label class="form-label">Brand / Kategori</label>
+            <input type="text" id="prodBrandCategory" placeholder="Netflix / Spotify" class="form-input">
+          </div>
+          <div>
+            <label class="form-label">Jenis Varian</label>
+            <input type="text" id="prodVariantType" placeholder="Sharing / Private" class="form-input">
+          </div>
+          <div>
+            <label class="form-label">Durasi Masa Aktif</label>
+            <input type="text" id="prodDuration" placeholder="30 Hari / 12 Bulan" class="form-input">
           </div>
         </div>
         <div class="grid-3">
@@ -2695,6 +2835,7 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
           <td style="font-size:0.6875rem;color:var(--text-muted);">${dateStr}</td>
           <td style="text-align:center; white-space:nowrap;">
             <button onclick="openOrderModal('${order.order_id}')" class="btn-ghost" style="font-size:0.6875rem;">Detail / Aksi</button>
+            <a href="/pay/${order.order_id}" target="_blank" class="btn-ghost" style="font-size:0.6875rem; margin-left: 4px; color: var(--accent-light); text-decoration:none;" title="Buka Web Invoice">🔗 Invoice</a>
             <button onclick="openCustomerChatFromOrder('${order.customer_nomor}')" class="btn-ghost" style="font-size:0.6875rem; margin-left: 4px;">💬 Chat</button>
             <button onclick="deleteSingleOrder('${order.order_id}')" class="btn-ghost" title="Hapus Order" style="font-size:0.6875rem; margin-left: 4px; color: var(--color-rose);">🗑️ Hapus</button>
           </td>
@@ -2757,6 +2898,10 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
           voucherBtn = `<button onclick="openVoucherModal('${p.kode}')" class="btn-ghost" style="width:100%;font-size:0.6875rem;color:var(--accent-light);border-color:rgba(16,185,129,0.15);background:rgba(16,185,129,0.05);">🔑 Kelola Stok Voucher</button>`;
         }
 
+        const brandBadge = p.brand_category ? `<span class="badge-indigo" style="font-size:0.6875rem;padding:2px 6px;border-radius:4px;">${escapeHtml(p.brand_category)}</span>` : '';
+        const durBadge = p.duration ? `<span class="badge-amber" style="font-size:0.6875rem;padding:2px 6px;border-radius:4px;">⏱️ ${escapeHtml(p.duration)}</span>` : '';
+        const varBadge = p.variant_type ? `<span class="badge-default" style="font-size:0.6875rem;padding:2px 6px;border-radius:4px;">🏷️ ${escapeHtml(p.variant_type)}</span>` : '';
+
         const card = document.createElement('div');
         card.className = 'glass-card product-card';
         card.innerHTML = `
@@ -2767,6 +2912,7 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
               <span class="img-badge right">${escapeHtml(p.kode)}</span>
             </div>
             <div class="card-body">
+              ${(brandBadge || durBadge || varBadge) ? `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:4px;">${brandBadge} ${durBadge} ${varBadge}</div>` : ''}
               <h4 title="${escapeHtml(p.nama)}">${escapeHtml(p.nama)}</h4>
               <p class="desc">${escapeHtml(p.deskripsi || 'Tidak ada deskripsi.')}</p>
               <div class="product-stat-row">
@@ -3184,6 +3330,7 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
         // Moderasi Grup & Protection Engine (v2)
         document.getElementById('setAntiSpamEnabled').value = s.antiSpamEnabled || 'true';
         document.getElementById('setAntiLinkEnabled').value = s.antiLinkEnabled || 'true';
+        document.getElementById('setLevelUpEnabled').value = s.levelUpEnabled || 'true';
         document.getElementById('setKickAfterWarnings').value = s.kickAfterWarnings || 3;
         document.getElementById('setSpamThreshold').value = s.spamThreshold || 5;
         document.getElementById('setBlockedDomains').value = s.blockedDomains || 'chat.whatsapp.com,bit.ly,tinyurl,t.me,discord.gg';
@@ -3277,6 +3424,7 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
         // Moderasi Grup & Protection Engine (v2)
         antiSpamEnabled: document.getElementById('setAntiSpamEnabled').value,
         antiLinkEnabled: document.getElementById('setAntiLinkEnabled').value,
+        levelUpEnabled: document.getElementById('setLevelUpEnabled').value,
         kickAfterWarnings: parseInt(document.getElementById('setKickAfterWarnings').value),
         spamThreshold: parseInt(document.getElementById('setSpamThreshold').value),
         blockedDomains: document.getElementById('setBlockedDomains').value,
@@ -3405,6 +3553,9 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
         const product = globalProducts.find(p => p.kode === kode);
         if (product) {
           document.getElementById('prodNama').value = product.nama;
+          document.getElementById('prodBrandCategory').value = product.brand_category || '';
+          document.getElementById('prodVariantType').value = product.variant_type || '';
+          document.getElementById('prodDuration').value = product.duration || '';
           document.getElementById('prodHarga').value = product.harga;
           document.getElementById('prodStok').value = product.stok;
           document.getElementById('prodDeskripsi').value = product.deskripsi || '';
@@ -3415,6 +3566,9 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
       } else {
         document.getElementById('productModalTitle').textContent = 'Tambah Produk Baru';
         document.getElementById('prodOldKode').value = '';
+        document.getElementById('prodBrandCategory').value = '';
+        document.getElementById('prodVariantType').value = '';
+        document.getElementById('prodDuration').value = '';
         document.getElementById('prodPetunjuk').value = '';
         document.getElementById('prodExistingImage').value = '';
         document.getElementById('prodDeliveryType').value = 'MANUAL';
@@ -3432,6 +3586,9 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
       formData.append('kode', document.getElementById('prodKode').value);
       formData.append('old_kode', document.getElementById('prodOldKode').value);
       formData.append('nama', document.getElementById('prodNama').value);
+      formData.append('brand_category', document.getElementById('prodBrandCategory').value);
+      formData.append('variant_type', document.getElementById('prodVariantType').value);
+      formData.append('duration', document.getElementById('prodDuration').value);
       formData.append('harga', document.getElementById('prodHarga').value);
       formData.append('stok', document.getElementById('prodStok').value);
       formData.append('deskripsi', document.getElementById('prodDeskripsi').value);
@@ -3916,6 +4073,21 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
         showToast('💬 Live Chat terhubung!', 'success');
         // Reload daftar chat saat reconnect berhasil
         if (activeTab === 'chats') loadChatsList();
+      });
+
+      socket.on('order:paid', (data) => {
+        console.log('[WS] Order Paid:', data);
+        playPaymentChimeSound();
+        showToast(`💰 PEMBAYARAN MASUK! Order #${data.orderId} (Rp${(data.amount || 0).toLocaleString('id-ID')})`, 'success');
+        if (typeof loadOrdersData === 'function') loadOrdersData();
+        if (typeof loadDashboardData === 'function') loadDashboardData();
+        if (typeof loadProductsData === 'function') loadProductsData();
+      });
+
+      socket.on('order:created', (data) => {
+        console.log('[WS] Order Created:', data);
+        showToast(`🛍️ Pesanan baru dibuat: #${data.orderId}`, 'info');
+        if (typeof loadOrdersData === 'function') loadOrdersData();
       });
 
       socket.on('incoming_message', (msg) => {
@@ -4640,6 +4812,27 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
         
         osc.start(audioCtx.currentTime);
         osc.stop(audioCtx.currentTime + 0.35);
+      } catch (e) {}
+    }
+
+    function playPaymentChimeSound() {
+      try {
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const now = audioCtx.currentTime;
+        const notes = [523.25, 659.25, 783.99, 1046.50]; // C5, E5, G5, C6 (Crisp celebratory chime)
+        notes.forEach((freq, i) => {
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(freq, now + i * 0.08);
+          gain.gain.setValueAtTime(0, now + i * 0.08);
+          gain.gain.linearRampToValueAtTime(0.18, now + i * 0.08 + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.08 + 0.6);
+          osc.connect(gain);
+          gain.connect(audioCtx.destination);
+          osc.start(now + i * 0.08);
+          osc.stop(now + i * 0.08 + 0.6);
+        });
       } catch (e) {}
     }
   </script>

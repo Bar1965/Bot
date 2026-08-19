@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Invoice Pembayaran QRIS — Akbar Store</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+  <!-- QRCode.js for client-side dynamic QR rendering -->
+  <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
+  <!-- Canvas Confetti for celebratory payment success -->
+  <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+  <style>
+    :root {
+      --bg-base: #080d1a;
+      --bg-card: #0f172a;
+      --bg-card-alt: #1e293b;
+      --border-card: rgba(255, 255, 255, 0.08);
+      --border-focus: rgba(16, 185, 129, 0.4);
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent-emerald: #10b981;
+      --accent-light: #34d399;
+      --accent-amber: #f59e0b;
+      --accent-rose: #f43f5e;
+      --accent-indigo: #6366f1;
+      --radius-lg: 16px;
+      --radius-md: 12px;
+      --radius-sm: 8px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      background: var(--bg-base);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      padding: 1.5rem 1rem 3rem;
+      background-image: 
+        radial-gradient(circle at 50% 0%, rgba(16, 185, 129, 0.08) 0%, transparent 60%),
+        radial-gradient(circle at 100% 100%, rgba(99, 102, 241, 0.05) 0%, transparent 50%);
+    }
+
+    .container {
+      width: 100%;
+      max-width: 520px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+
+    .header-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.5rem 0.25rem;
+    }
+
+    .logo-brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 1.1rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }
+
+    .logo-icon {
+      width: 38px;
+      height: 38px;
+      border-radius: var(--radius-md);
+      background: linear-gradient(135deg, var(--accent-emerald), var(--accent-indigo));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      font-weight: 800;
+      color: #042f2e;
+      box-shadow: 0 4px 12px rgba(16, 185, 129, 0.25);
+    }
+
+    .secure-badge {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--accent-light);
+      background: rgba(16, 185, 129, 0.1);
+      border: 1px solid rgba(16, 185, 129, 0.2);
+      padding: 4px 10px;
+      border-radius: 999px;
+    }
+
+    .invoice-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-card);
+      border-radius: var(--radius-lg);
+      padding: 1.5rem;
+      box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.5);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .invoice-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 3px;
+      background: linear-gradient(90deg, var(--accent-emerald), var(--accent-indigo));
+    }
+
+    .timer-banner {
+      background: rgba(245, 158, 11, 0.1);
+      border: 1px solid rgba(245, 158, 11, 0.25);
+      border-radius: var(--radius-md);
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 1.25rem;
+    }
+
+    .timer-text {
+      font-size: 0.8125rem;
+      font-weight: 600;
+      color: #fcd34d;
+    }
+
+    .timer-clock {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: #fbbf24;
+    }
+
+    .qris-section {
+      background: #ffffff;
+      border-radius: var(--radius-md);
+      padding: 1.25rem;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+      margin: 1.25rem 0;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+    }
+
+    .qris-header {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 2px solid #e2e8f0;
+      padding-bottom: 8px;
+    }
+
+    .qris-logo {
+      height: 24px;
+      object-fit: contain;
+    }
+
+    .qris-merchant-name {
+      font-size: 0.8125rem;
+      font-weight: 700;
+      color: #0f172a;
+      text-align: right;
+    }
+
+    #qrcodeCanvas {
+      width: 230px !important;
+      height: 230px !important;
+      margin: 4px 0;
+    }
+
+    .qris-footer-text {
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: #64748b;
+      text-align: center;
+      letter-spacing: 0.02em;
+    }
+
+    .amount-box {
+      background: var(--bg-card-alt);
+      border: 1px solid var(--border-card);
+      border-radius: var(--radius-md);
+      padding: 14px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 1.25rem;
+    }
+
+    .amount-label {
+      font-size: 0.8125rem;
+      color: var(--text-muted);
+    }
+
+    .amount-value {
+      font-size: 1.35rem;
+      font-weight: 800;
+      color: var(--accent-light);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .copy-btn {
+      background: rgba(16, 185, 129, 0.15);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      color: var(--accent-light);
+      padding: 6px 12px;
+      border-radius: var(--radius-sm);
+      font-size: 0.75rem;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      transition: all 0.2s;
+    }
+
+    .copy-btn:hover {
+      background: var(--accent-emerald);
+      color: #042f2e;
+    }
+
+    .items-list {
+      border-top: 1px solid var(--border-card);
+      padding-top: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .item-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.875rem;
+    }
+
+    .item-name {
+      font-weight: 600;
+      color: var(--text-main);
+    }
+
+    .item-sub {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .item-price {
+      font-weight: 700;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .apps-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: center;
+      margin-top: 1rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border-card);
+    }
+
+    .app-badge {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-card);
+      border-radius: 999px;
+      padding: 5px 12px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: var(--text-muted);
+    }
+
+    /* SUCCESS STATE */
+    .success-container {
+      display: none;
+      text-align: center;
+      padding: 2.5rem 1rem;
+    }
+
+    .success-icon {
+      width: 72px;
+      height: 72px;
+      border-radius: 50%;
+      background: rgba(16, 185, 129, 0.15);
+      border: 2px solid var(--accent-emerald);
+      color: var(--accent-light);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 36px;
+      margin: 0 auto 1.5rem;
+      box-shadow: 0 0 30px rgba(16, 185, 129, 0.3);
+    }
+
+    .btn-wa {
+      background: #25d366;
+      color: #032d14;
+      font-weight: 800;
+      font-size: 0.95rem;
+      padding: 14px 24px;
+      border-radius: var(--radius-md);
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 1.5rem;
+      box-shadow: 0 4px 15px rgba(37, 211, 102, 0.3);
+      transition: transform 0.2s;
+    }
+
+    .btn-wa:hover {
+      transform: translateY(-2px);
+    }
+
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%) translateY(100px);
+      background: rgba(15, 23, 42, 0.95);
+      border: 1px solid var(--accent-emerald);
+      color: #fff;
+      padding: 10px 20px;
+      border-radius: 999px;
+      font-size: 0.8125rem;
+      font-weight: 600;
+      backdrop-filter: blur(8px);
+      transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      z-index: 1000;
+    }
+
+    .toast.show {
+      transform: translateX(-50%) translateY(0);
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <div class="header-bar">
+      <div class="logo-brand">
+        <div class="logo-icon">⚡</div>
+        <span>AKBAR STORE</span>
+      </div>
+      <div class="secure-badge">
+        🔒 Pembayaran Terverifikasi
+      </div>
+    </div>
+
+    <!-- MAIN INVOICE CARD (PENDING STATE) -->
+    <div id="pendingView" class="invoice-card">
+      <div class="timer-banner">
+        <div class="timer-text">⏳ Selesaikan Pembayaran Dalam:</div>
+        <div class="timer-clock" id="timerClock">15:00</div>
+      </div>
+
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
+        <div>
+          <div style="font-size:0.75rem;color:var(--text-muted);">Nomor Pesanan</div>
+          <div style="font-weight:700;font-size:0.95rem;font-family:'JetBrains Mono',monospace;" id="orderIdText">Memuat...</div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:0.75rem;color:var(--text-muted);">Status</div>
+          <span style="font-size:0.75rem;font-weight:700;color:#fbbf24;background:rgba(245,158,11,0.12);padding:3px 8px;border-radius:4px;border:1px solid rgba(245,158,11,0.25);">MENUNGGU BAYAR</span>
+        </div>
+      </div>
+
+      <!-- QRIS CANVAS CONTAINER -->
+      <div class="qris-section">
+        <div class="qris-header">
+          <span style="font-size:0.8125rem;font-weight:800;letter-spacing:0.05em;color:#0f172a;">QRIS STANDAR NASIONAL</span>
+          <div class="qris-merchant-name">AKBAR STORE</div>
+        </div>
+        
+        <div id="qrcodeBox" style="min-height:230px;display:flex;align-items:center;justify-content:center;">
+          <canvas id="qrcodeCanvas"></canvas>
+        </div>
+
+        <div class="qris-footer-text">
+          Scan menggunakan BCA, Mandiri, BRI, BNI, GoPay, OVO, ShopeePay, DANA, dll.
+        </div>
+      </div>
+
+      <!-- AMOUNT & COPY -->
+      <div class="amount-box">
+        <div>
+          <div class="amount-label">Total yang Harus Dibayar:</div>
+          <div class="amount-value" id="amountDisplay">Rp0</div>
+        </div>
+        <button class="copy-btn" onclick="copyAmount()">
+          📋 Salin Nominal
+        </button>
+      </div>
+
+      <!-- ITEMS SUMMARY -->
+      <div class="items-list" id="itemsList"></div>
+
+      <!-- ACCEPTED APPS -->
+      <div class="apps-row">
+        <span class="app-badge">BCA Mobile</span>
+        <span class="app-badge">Livin' Mandiri</span>
+        <span class="app-badge">BRImo</span>
+        <span class="app-badge">GoPay</span>
+        <span class="app-badge">ShopeePay</span>
+        <span class="app-badge">DANA</span>
+        <span class="app-badge">OVO</span>
+      </div>
+    </div>
+
+    <!-- SUCCESS VIEW (PAID STATE) -->
+    <div id="successView" class="invoice-card success-container">
+      <div class="success-icon">✓</div>
+      <h2 style="font-size:1.4rem;font-weight:800;margin-bottom:6px;color:#34d399;">PEMBAYARAN DITERIMA!</h2>
+      <p style="font-size:0.875rem;color:var(--text-muted);line-height:1.5;">
+        Terima kasih! Pesanan Anda telah terverifikasi secara otomatis oleh sistem.
+      </p>
+
+      <div style="background:var(--bg-card-alt);border:1px solid var(--border-card);border-radius:var(--radius-md);padding:14px;margin-top:1.25rem;text-align:left;">
+        <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:4px;">Detail Pengiriman Akun:</div>
+        <div style="font-size:0.875rem;font-weight:600;color:var(--text-main);" id="deliveryInfo">
+          ⚡ Akun & voucher digital telah dikirimkan ke WhatsApp Anda!
+        </div>
+      </div>
+
+      <a id="waBackBtn" href="https://wa.me/" class="btn-wa">
+        💬 Buka Chat WhatsApp Saya
+      </a>
+    </div>
+  </div>
+
+  <div id="toast" class="toast">Nominal berhasil disalin!</div>
+
+  <script>
+    const pathParts = window.location.pathname.split('/');
+    const orderId = pathParts[pathParts.length - 1] || new URLSearchParams(window.location.search).get('orderId');
+
+    let rawAmount = 0;
+    let pollInterval = null;
+    let expiredTime = 0;
+
+    function showToast(msg) {
+      const toast = document.getElementById('toast');
+      toast.textContent = msg;
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 2500);
+    }
+
+    function copyAmount() {
+      navigator.clipboard.writeText(rawAmount.toString()).then(() => {
+        showToast('✅ Nominal Rp' + rawAmount.toLocaleString('id-ID') + ' berhasil disalin!');
+      });
+    }
+
+    function formatTime(ms) {
+      if (ms <= 0) return '00:00';
+      const totalSeconds = Math.floor(ms / 1000);
+      const minutes = Math.floor(totalSeconds / 60);
+      const seconds = totalSeconds % 60;
+      return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+    }
+
+    function startTimer() {
+      const timerEl = document.getElementById('timerClock');
+      const interval = setInterval(() => {
+        const remaining = expiredTime - Date.now();
+        if (remaining <= 0) {
+          clearInterval(interval);
+          timerEl.textContent = '00:00 (KADALUARSA)';
+          timerEl.style.color = 'var(--accent-rose)';
+        } else {
+          timerEl.textContent = formatTime(remaining);
+        }
+      }, 1000);
+    }
+
+    async function loadInvoiceData() {
+      if (!orderId) {
+        document.getElementById('orderIdText').textContent = 'Order ID tidak ditemukan';
+        return;
+      }
+
+      try {
+        const res = await fetch(`/api/pay/${orderId}`);
+        const data = await res.json();
+
+        if (!data || !data.success) {
+          document.getElementById('orderIdText').textContent = 'Pesanan tidak ditemukan / sudah dihapus';
+          return;
+        }
+
+        const inv = data.invoice;
+        document.getElementById('orderIdText').textContent = inv.order_id;
+        rawAmount = inv.payment_amount || inv.total;
+        document.getElementById('amountDisplay').textContent = 'Rp' + rawAmount.toLocaleString('id-ID');
+
+        // Render Items
+        const itemsContainer = document.getElementById('itemsList');
+        itemsContainer.innerHTML = '';
+        (inv.items || []).forEach(item => {
+          const row = document.createElement('div');
+          row.className = 'item-row';
+          row.innerHTML = `
+            <div>
+              <div class="item-name">${item.nama}</div>
+              <div class="item-sub">Qty: ${item.qty} × Rp${item.harga.toLocaleString('id-ID')}</div>
+            </div>
+            <div class="item-price">Rp${item.subtotal.toLocaleString('id-ID')}</div>
+          `;
+          itemsContainer.appendChild(row);
+        });
+
+        // Set Expiry
+        expiredTime = inv.expired_at ? Number(inv.expired_at) : (Date.now() + 15 * 60 * 1000);
+        startTimer();
+
+        // Render QR Code Canvas
+        const qrString = inv.qr_string;
+        if (qrString) {
+          const canvas = document.getElementById('qrcodeCanvas');
+          QRCode.toCanvas(canvas, qrString, {
+            width: 230,
+            margin: 1,
+            color: { dark: '#000000', light: '#ffffff' }
+          });
+        }
+
+        // Cek jika status sudah PAID / DELIVERED
+        if (inv.payment_status === 'PAID' || inv.status === 'COMPLETED' || inv.status === 'SUCCESS') {
+          showSuccessScreen();
+        } else {
+          startPolling();
+        }
+      } catch (err) {
+        console.error('Gagal memuat invoice:', err);
+      }
+    }
+
+    function showSuccessScreen() {
+      if (pollInterval) clearInterval(pollInterval);
+      document.getElementById('pendingView').style.display = 'none';
+      document.getElementById('successView').style.display = 'block';
+
+      // Confetti celebratory burst
+      try {
+        confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } });
+      } catch (e) {}
+    }
+
+    function startPolling() {
+      if (pollInterval) clearInterval(pollInterval);
+      pollInterval = setInterval(async () => {
+        try {
+          const res = await fetch(`/api/pay/${orderId}`);
+          const data = await res.json();
+          if (data && data.success && (data.invoice.payment_status === 'PAID' || data.invoice.status === 'COMPLETED')) {
+            showSuccessScreen();
+          }
+        } catch (e) {
+          console.warn('Poll error:', e);
+        }
+      }, 3000);
+    }
+
+    loadInvoiceData();
+  </script>
+</body>
+</html>

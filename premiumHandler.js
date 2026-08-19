@@ -1,4 +1,5 @@
 import * as db from './database.js';
+import { sendInteractiveButtons } from './bot.js';
 
 const aiContextMap = new Map();
 
@@ -107,6 +108,30 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
 
   const cmd = String(cleanCmd || '').toLowerCase();
 
+  const knownPremCmds = [
+    'ocr', 'ai', 'gemini', 'tanyaai', 'askai', 'resetai',
+    'lapak', 'jual', 'claimvoucher', 'klaimvoucher', 'vouchergobay',
+    'wishlist', 'ingatkan', 'premium', 'upgradepremium', 'buypremium',
+    'cekpremium', 'checkpremium', 'statuspremium', 'myplan',
+    'premiumbenefit', 'benefits', 'keuntunganpremium',
+    'setpremium', 'revokepremium', 'listpremium'
+  ];
+  if (!knownPremCmds.includes(cmd)) return false;
+
+  // REGISTRATION CHECK
+  const isReg = await db.isCustomerRegistered(senderNumber);
+  if (!isReg && !isAdmin && !isOwner) {
+    const senderMention = senderNumber.split('@')[0];
+    const regNotice = `⚠️ *AKSES DITOLAK — REGISTRASI DIPERLUKAN* ⚠️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nHalo @${senderMention}! Anda harus terdaftar sebagai member terlebih dahulu untuk menggunakan fitur AI & Premium (100% Gratis & Cepat).\n\n📌 *Cara Pendaftaran (Hanya 5 Detik):*\nKetik: \`.daftar Nama Kamu\`\n\n_Contoh:_ \`.daftar Budi Santoso\`\n\nSetelah terdaftar, Anda dapat langsung menikmati semua fitur bot! 🙏`;
+    await sendInteractiveButtons(sock, jid, {
+      text: regNotice,
+      buttons: [
+        { type: 'copy', text: '📋 Salin Format .daftar', copy_code: '.daftar ' }
+      ]
+    });
+    return true;
+  }
+
   // ─── .ai / .gemini / .tanyaai — AI Assistant & Vision ───────
     const isFromGroup = jid.endsWith('@g.us');
     const groupSettings = isFromGroup ? await db.getGroupSettings(jid) : {};
@@ -186,12 +211,11 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
            if (isPdf) {
               const { createRequire } = await import('module');
               const require = createRequire(import.meta.url);
-              const { PDFParse } = require('pdf-parse');
+              const pdfParse = require('pdf-parse');
               
               let extractedText = '';
               try {
-                const parser = new PDFParse({ data: imgBuffer });
-                const res = await parser.getText();
+                const res = await pdfParse(imgBuffer);
                 extractedText = (res.text || '').replace(/-- \d+ of \d+ --/g, '').trim();
               } catch (pdfErr) {
                 console.error('[PDF_PARSE_ERR]', pdfErr);
@@ -199,20 +223,6 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
 
               if (extractedText.length > 5) {
                 aiResponse = extractedText;
-              } else {
-                try {
-                  const parser = new PDFParse({ data: imgBuffer });
-                  const shotRes = await parser.getScreenshot({ imageBuffer: true });
-                  if (shotRes.pages && shotRes.pages.length > 0 && shotRes.pages[0].data) {
-                    const Tesseract = require('tesseract.js');
-                    const worker = await Tesseract.createWorker('eng');
-                    const { data: { text } } = await worker.recognize(Buffer.from(shotRes.pages[0].data));
-                    await worker.terminate();
-                    aiResponse = text;
-                  }
-                } catch (shotErr) {
-                  console.error('[PDF_SHOT_ERR]', shotErr);
-                }
               }
 
               if (!aiResponse || !aiResponse.trim()) {
@@ -543,9 +553,9 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
   // ─── ADMIN: .setpremium @user TIER HARI ───────────────────────
   if (cmd === 'setpremium' && (isAdmin || isOwner)) {
     const mentions = messageObj?.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
-    const targetJid = mentions[0] || args[1]?.replace('@', '') + '@s.whatsapp.net';
-    const tierArg = args[mentions.length > 0 ? 2 : 2];
-    const daysArg = parseInt(args[mentions.length > 0 ? 3 : 3]) || 30;
+    const targetJid = mentions[0] || (args[1] ? args[1].replace(/[^0-9]/g, '') + '@s.whatsapp.net' : null);
+    const tierArg = args[2];
+    const daysArg = parseInt(args[3]) || 30;
 
     if (!targetJid || !tierArg) {
       await sock.sendMessage(jid, {

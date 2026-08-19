@@ -7,8 +7,98 @@ import * as mediaHandler from '../../mediaHandler.js';
 import * as ent from '../../entertainmentHandler.js';
 import { sendInteractiveButtons } from '../../bot.js';
 
+// In-Memory Nav Session untuk Quick Dial Angka & Alur Belanja Cepat (TTL 10 Menit)
+const userNavSessions = new Map();
+
+function setUserNavSession(userJid, sessionData) {
+  userNavSessions.set(userJid, {
+    ...sessionData,
+    updatedAt: Date.now()
+  });
+}
+
+function getUserNavSession(userJid) {
+  const session = userNavSessions.get(userJid);
+  if (!session) return null;
+  if (Date.now() - session.updatedAt > 10 * 60 * 1000) {
+    userNavSessions.delete(userJid);
+    return null;
+  }
+  return session;
+}
+
 export function createCustomerHandler(ctx) {
   const { sock, botSettings, userPushNamesMap, messageCache, formatPhoneNumber, react, sendInteractiveButtons } = ctx;
+
+  // Helper cerdas pencocokan pesanan bahasa santai (Natural Language Order Matcher)
+  const matchNaturalOrder = async (textQuery) => {
+    const q = (textQuery || '').toLowerCase().trim();
+    if (!/^(?:beli|buy|order|pesan|mau|ambil|tolong)\s+/i.test(q)) {
+      return null;
+    }
+    const cleanQ = q.replace(/^(?:beli|buy|order|pesan|mau|ambil|tolong)\s+/i, '').trim();
+    if (!cleanQ || cleanQ.length < 3) return null;
+
+    // Cek kata kunci durasi
+    let targetDuration = null;
+    if (/7\s*(?:hari|day|h|d)\b/i.test(cleanQ)) targetDuration = '7 Hari';
+    else if (/14\s*(?:hari|day|h|d)\b/i.test(cleanQ)) targetDuration = '14 Hari';
+    else if (/(?:30\s*(?:hari|day|h|d)|1\s*(?:bulan|bln|month|m)|sebulan)\b/i.test(cleanQ)) targetDuration = '30 Hari';
+    else if (/(?:60\s*(?:hari|day|h|d)|2\s*(?:bulan|bln|month|m))\b/i.test(cleanQ)) targetDuration = '2 Bulan';
+    else if (/(?:90\s*(?:hari|day|h|d)|3\s*(?:bulan|bln|month|m))\b/i.test(cleanQ)) targetDuration = '3 Bulan';
+    else if (/(?:6\s*(?:bulan|bln|month|m))\b/i.test(cleanQ)) targetDuration = '6 Bulan';
+    else if (/(?:12\s*(?:bulan|bln|month|m)|1\s*(?:tahun|thn|year|y)|setahun)\b/i.test(cleanQ)) targetDuration = '1 Tahun';
+
+    // Cek tipe (sharing / private)
+    let targetType = null;
+    if (/\b(?:sharing|shared|sh|1\s*profil|profil)\b/i.test(cleanQ)) targetType = 'Sharing';
+    if (/\b(?:private|privat|pv|full|5\s*profil)\b/i.test(cleanQ)) targetType = 'Private';
+
+    const allProducts = await db.getProducts();
+    let matchedProducts = [];
+
+    for (const p of allProducts) {
+      const pBrand = (p.brand_category || '').toLowerCase();
+      const pName = (p.nama || '').toLowerCase();
+      const pSku = (p.kode || '').toLowerCase();
+
+      const isBrandMatch = (pBrand && cleanQ.includes(pBrand)) || 
+                           cleanQ.includes(pSku) || 
+                           pName.split(/\s+/).some(word => word.length > 3 && cleanQ.includes(word));
+      if (isBrandMatch) {
+        matchedProducts.push(p);
+      }
+    }
+
+    if (matchedProducts.length === 0) return null;
+
+    let filtered = matchedProducts;
+    if (targetType) {
+      const byType = filtered.filter(p => (p.variant_type || '').toLowerCase().includes(targetType.toLowerCase()));
+      if (byType.length > 0) filtered = byType;
+    }
+    if (targetDuration) {
+      const byDur = filtered.filter(p => {
+        const dur = (p.duration || '').toLowerCase();
+        const nama = (p.nama || '').toLowerCase();
+        if (targetDuration === '30 Hari') return /\b30\b/i.test(dur) || /\b1\s*(?:bulan|bln|month|m)\b/i.test(dur) || /\b30\b/i.test(nama) || /\b1\s*(?:bulan|bln|month|m)\b/i.test(nama) || /sebulan/i.test(nama);
+        if (targetDuration === '7 Hari') return /\b7\b/i.test(dur) || /\b7\b/i.test(nama);
+        if (targetDuration === '14 Hari') return /\b14\b/i.test(dur) || /\b14\b/i.test(nama);
+        if (targetDuration === '2 Bulan') return /\b2\s*(?:bulan|bln|month|m)\b/i.test(dur) || /\b60\b/i.test(dur) || /\b2\s*(?:bulan|bln|month|m)\b/i.test(nama);
+        if (targetDuration === '3 Bulan') return /\b3\s*(?:bulan|bln|month|m)\b/i.test(dur) || /\b90\b/i.test(dur) || /\b3\s*(?:bulan|bln|month|m)\b/i.test(nama);
+        if (targetDuration === '6 Bulan') return /\b6\s*(?:bulan|bln|month|m)\b/i.test(dur) || /\b6\s*(?:bulan|bln|month|m)\b/i.test(nama);
+        if (targetDuration === '1 Tahun') return /\b(?:12|1\s*tahun|setahun)\b/i.test(dur) || /\b(?:12|1\s*tahun|setahun)\b/i.test(nama);
+        return false;
+      });
+      if (byDur.length > 0) filtered = byDur;
+    }
+
+    return {
+      bestMatch: filtered[0] || matchedProducts[0],
+      matches: filtered,
+      allBrandVariants: matchedProducts
+    };
+  };
 
   return async function handleCustomerMessage(jid, senderNumber, messageObj, text, isFromGroup = false, actor = {}) {
     const textLower = (text || '').toLowerCase();
@@ -34,12 +124,38 @@ export function createCustomerHandler(ctx) {
       return true;
     }
 
-    // SEMUA COMMAND CUSTOMER WAJIB MENGGUNAKAN PREFIX (. / #)
+    // Cek apakah pesan menggunakan prefix (. / #) ATAU merupakan navigasi angka cepat saat sesi aktif
     const isPrefix = actor?.isPrefixCmd !== undefined 
       ? actor.isPrefixCmd 
       : ((text || '').trim().startsWith('.') || (text || '').trim().startsWith('/') || (text || '').trim().startsWith('#'));
-    if (!isPrefix) {
+
+    const isNumericDial = /^[1-9]\d?$/.test(cleanText);
+    const hasNavSession = Boolean(getUserNavSession(senderNumber));
+
+    // STRICT PREFIX RULE: Hanya perbolehkan pesan ber-prefix atau angka dial saat sesi navigasi aktif
+    if (!isPrefix && !(isNumericDial && hasNavSession)) {
       return false;
+    }
+
+    // REGISTRATION CHECK
+    const exemptCustomerCmds = [
+      'daftar', 'register', 'registrasi', 'owner', 'kontakowner', 'menu', 'help', 'bantuan',
+      'list', 'produk', 'katalog', 'listproduk', 'p', 'detail', 'info', 'lihat'
+    ];
+
+    if (!exemptCustomerCmds.includes(cleanCmd) && !actor.isAdmin && !actor.isOwner) {
+      const isReg = await db.isCustomerRegistered(senderNumber);
+      if (!isReg) {
+        const senderMention = senderNumber.split('@')[0];
+        const regNotice = `⚠️ *AKSES DITOLAK — REGISTRASI DIPERLUKAN* ⚠️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nHalo @${senderMention}! Anda harus terdaftar sebagai member terlebih dahulu untuk melakukan transaksi / menggunakan fitur ini (100% Gratis & Cepat).\n\n📌 *Cara Pendaftaran (Hanya 5 Detik):*\nKetik: \`.daftar Nama Kamu\`\n\n_Contoh:_ \`.daftar Budi Santoso\`\n\nSetelah terdaftar, Anda dapat langsung berbelanja dan menikmati seluruh fitur bot! 🙏`;
+        await sendInteractiveButtons(sock, jid, {
+          text: regNotice,
+          buttons: [
+            { type: 'copy', text: '📋 Salin Format .daftar', copy_code: '.daftar ' }
+          ]
+        });
+        return true;
+      }
     }
 
     const memberProfile = await db.getCustomerMembershipProfile(senderNumber);
@@ -48,9 +164,76 @@ export function createCustomerHandler(ctx) {
       ['cart', 'keranjang', 'checkout', 'bayar', 'cancel', 'batal', 'status', 'riwayat', 'history'].includes(cleanCmd);
     const responseJid = (isFromGroup && isPrivateCommand) ? senderNumber : jid;
 
-    if (memberProfile?.account_status === 'BANNED' && !actor.isAdmin) {
+    if (memberProfile?.account_status === 'BANNED' && !actor.isAdmin && !actor.isOwner) {
       await sock.sendMessage(jid, { text: '⛔ Akun kamu sedang diblokir dari layanan bot. Hubungi Owner jika merasa ini kesalahan.' });
       return true;
+    }
+
+    // ====================================================================
+    // 🔢 QUICK DIAL / NAVIGASI BALAS ANGKA CEPAT (1, 2, 3...)
+    // ====================================================================
+    if (isNumericDial) {
+      const dialNum = parseInt(cleanText, 10);
+      const navSession = getUserNavSession(senderNumber);
+
+      if (navSession) {
+        // Kasus 1: Sesi Memilih Brand Kategori ([1] Netflix, [2] Spotify, dll)
+        if (navSession.type === 'BRAND_LIST') {
+          const selectedItem = navSession.items[dialNum - 1];
+          if (selectedItem) {
+            if (selectedItem.isMulti) {
+              const variantData = await db.getProductVariants(selectedItem.brand);
+              return await handleVariantGroupView(selectedItem.brand, variantData.variants);
+            } else {
+              const prod = await db.getProductByKode(selectedItem.targetId);
+              if (prod) return await handleProductDetail(prod);
+            }
+          }
+        }
+
+        // Kasus 2: Sesi Memilih Varian Paket ([1] 7 Hari, [2] 14 Hari, [3] 30 Hari, dll)
+        if (navSession.type === 'VARIANT_LIST') {
+          const selectedVariant = navSession.items[dialNum - 1];
+          if (selectedVariant) {
+            const addRes = await db.addToCart(senderNumber, selectedVariant.kode, 1);
+            if (!addRes.success) {
+              await sock.sendMessage(responseJid, { text: `❌ ${addRes.message}` });
+              return true;
+            }
+
+            setUserNavSession(senderNumber, {
+              type: 'ORDER_READY',
+              selectedSku: selectedVariant.kode,
+              productName: selectedVariant.nama,
+              price: selectedVariant.harga
+            });
+
+            const durLabel = selectedVariant.duration || selectedVariant.nama;
+            const confirmMsg = `✅ *PILIHAN BERHASIL DITAMBAHKAN!*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🛍️ *Paket:* ${selectedVariant.nama}
+🔑 *Kode SKU:* \`${selectedVariant.kode}\`
+💰 *Harga:* *Rp${selectedVariant.harga.toLocaleString('id-ID')}*
+📦 *Status:* Ready Stock (Siap Kirim)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+💡 *Langkah Selanjutnya:*
+Ketik *bayar* atau klik tombol *Bayar QRIS Langsung* di bawah untuk langsung memperoleh kode QRIS tagihan Anda!`;
+
+            await sendInteractiveButtons(sock, responseJid, {
+              text: confirmMsg,
+              title: `✅ ${selectedVariant.nama.toUpperCase()}`,
+              footer: 'Pilih Bayar QRIS Langsung untuk transaksi instan',
+              buttons: [
+                { type: 'reply', text: '💳 Bayar QRIS Langsung', id: '.checkout' },
+                { type: 'reply', text: '🛒 Lihat Keranjang', id: '.keranjang' },
+                { type: 'reply', text: '📦 Katalog Utama', id: '.list' }
+              ]
+            });
+            return true;
+          }
+        }
+      }
     }
 
     if (['daftar', 'register', 'registrasi'].includes(cleanCmd)) {
@@ -251,13 +434,14 @@ export function createCustomerHandler(ctx) {
     // Sub-Menu 1: Jualan & Produk
     if (['1', 'jualan', 'produk', 'list'].includes(subCat)) {
       const msg = headerCard + `🛍️ *PRODUK & JUALAN*
-▫️ \`.list\` / \`.produk\` — Katalog & sisa stok produk
+▫️ \`.list\` / \`.produk\` — Katalog produk ringkas & status stok
+▫️ \`.p <kode>\` / \`.detail <kode>\` — Detail spesifikasi & deskripsi produk
 ▫️ \`.beli <kode> <qty>\` — Beli produk digital
 ▫️ \`.cari <kata kunci>\` — Cari produk toko
 ▫️ \`.bundle\` — Lihat paket hemat bundling
 
 ━━━━━━━━━━━━━━━━━━━
-💡 _Contoh penggunaan: .list atau .beli NET01 1_`;
+💡 _Contoh: Ketik .list untuk lihat katalog atau .p NET01 untuk detail_`;
       await sendInteractiveButtons(sock, responseJid, {
         text: msg,
         title: '🛍️ PRODUK & JUALAN',
@@ -453,7 +637,8 @@ export function createCustomerHandler(ctx) {
 
     if (isSalesModeGroup) {
       const salesMenu = headerCard + `🛍️ *PRODUK & JUALAN*
-▫️ \`.list\` / \`.produk\` — Katalog & sisa stok produk
+▫️ \`.list\` / \`.produk\` — Katalog produk ringkas
+▫️ \`.p <kode>\` — Detail spesifikasi & deskripsi produk
 ▫️ \`.beli <kode> <qty>\` — Beli produk digital
 ▫️ \`.cari <kata kunci>\` — Cari produk toko
 ▫️ \`.bundle\` — Lihat paket hemat bundling
@@ -487,7 +672,8 @@ export function createCustomerHandler(ctx) {
 
     // TAMPILAN MENU UTAMA FULL (MODE ALL)
     const fullMenu = headerCard + `🛍️ *PRODUK & JUALAN*
-▫️ \`.list\` / \`.produk\` — Katalog & sisa stok produk
+▫️ \`.list\` / \`.produk\` — Katalog produk ringkas
+▫️ \`.p <kode>\` — Detail spesifikasi & deskripsi produk
 ▫️ \`.beli <kode> <qty>\` — Beli produk digital
 ▫️ \`.cari <kata kunci>\` — Cari produk toko
 ▫️ \`.bundle\` — Lihat paket hemat bundling
@@ -553,7 +739,210 @@ export function createCustomerHandler(ctx) {
     return;
   }
 
-  // 2. LIST / PRODUK
+  // Helper render menu grup varian (misal: Netflix Sharing vs Private dengan durasi 7H, 14H, 30H)
+  const handleVariantGroupView = async (brandName, variants) => {
+    const icon = db.getBrandEmoji ? db.getBrandEmoji(brandName) : '🎬';
+    const limit = botSettings.lowStockLimit || config.defaults.lowStockLimit;
+
+    // Kelompokkan varian berdasarkan variant_type (misal: 'Sharing', 'Private', 'Individual')
+    const typeGroups = new Map();
+    const allNumberedVariants = [];
+
+    for (const v of variants) {
+      const typeKey = v.variant_type || 'PILIHAN PAKET';
+      if (!typeGroups.has(typeKey)) {
+        typeGroups.set(typeKey, []);
+      }
+      typeGroups.get(typeKey).push(v);
+    }
+
+    let msg = `━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${icon} *${brandName.toUpperCase()} — PILIHAN PAKET & VARIAN*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+_Balas nomor paket atau pilih dari menu di bawah:_\n\n`;
+
+    const variantRows = [];
+    const quickBuyButtons = [];
+
+    let itemCounter = 1;
+    for (const [typeKey, items] of typeGroups.entries()) {
+      msg += `📌 *${typeKey.toUpperCase()}:*\n`;
+      for (const item of items) {
+        let stockBadge = "🟢 Ready";
+        if (item.stok === 0) {
+          stockBadge = "🔴 Habis";
+        } else if (item.stok <= limit) {
+          stockBadge = `🟡 Sisa ${item.stok}`;
+        }
+
+        const durLabel = item.duration || item.nama;
+        msg += `[${itemCounter}] *${durLabel}* — *Rp${item.harga.toLocaleString('id-ID')}*\n`;
+        if (item.deskripsi) {
+          msg += `    • Ket: ${item.deskripsi}\n`;
+        }
+        msg += `    • Kode: \`${item.kode}\` | [${stockBadge}]\n\n`;
+
+        allNumberedVariants.push(item);
+
+        variantRows.push({
+          title: `[${itemCounter}] ${durLabel}`,
+          description: `Rp${item.harga.toLocaleString('id-ID')} • [${stockBadge}] • ${item.kode}`,
+          id: `.beli ${item.kode} 1`
+        });
+
+        if (quickBuyButtons.length < 2 && item.stok > 0) {
+          quickBuyButtons.push({
+            type: 'reply',
+            text: `🛒 Beli [${itemCounter}] ${durLabel.length > 12 ? durLabel.substring(0, 10) + '..' : durLabel}`,
+            id: `.beli ${item.kode} 1`
+          });
+        }
+
+        itemCounter++;
+      }
+    }
+
+    // Simpan sesi navigasi varian untuk user
+    setUserNavSession(senderNumber, {
+      type: 'VARIANT_LIST',
+      brand: brandName,
+      items: allNumberedVariants
+    });
+
+    msg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 *CARA SUPER CEPAT:*
+Balas angka: *1* s/d *${allNumberedVariants.length}* untuk langsung beli!
+Atau klik salah satu tombol varian di bawah.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+
+    const sections = variantRows.length > 0 ? [
+      {
+        title: `🛍️ PILIH VARIAN ${brandName.toUpperCase()}`,
+        rows: variantRows.slice(0, 10)
+      }
+    ] : [];
+
+    quickBuyButtons.push({ type: 'reply', text: '💝 Wishlist', id: `.simpan ${variants[0]?.kode}` });
+    quickBuyButtons.push({ type: 'reply', text: '📦 Katalog Utama', id: '.list' });
+
+    await sendInteractiveButtons(sock, responseJid, {
+      text: msg,
+      title: `${icon} ${brandName.toUpperCase()} — PILIHAN VARIAN`,
+      footer: 'Balas nomor pilihan Anda atau klik menu dropdown di bawah',
+      buttons: quickBuyButtons,
+      sections
+    });
+    return true;
+  };
+
+  // Helper render detail produk lengkap saat SKU spesifik dipilih
+  const handleProductDetail = async (product) => {
+    const limit = botSettings.lowStockLimit || config.defaults.lowStockLimit;
+    let stockStatus = "";
+    if (product.stok === 0) {
+      stockStatus = "🔴 *Stok Habis* (Restok segera / klik tombol notifikasi)";
+    } else if (product.stok <= limit) {
+      stockStatus = `🟡 *Stok Terbatas* (Tersisa: ${product.stok} pcs)`;
+    } else {
+      stockStatus = `🟢 *Ready Stock* (Tersedia: ${product.stok} pcs)`;
+    }
+
+    const deliveryBadge = product.delivery_type === 'AUTO'
+      ? '⚡ *Otomatis (Instant Delivery)*\n_(Akun/voucher dikirim otomatis dalam 2–5 detik setelah konfirmasi bayar)_'
+      : '👨‍💼 *Manual oleh Admin Toko*';
+
+    let detailMsg = `━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🛍️ *DETAIL & SPESIFIKASI PRODUK*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📌 *Nama Produk:* *${product.nama}*
+🔑 *Kode Produk:* \`${product.kode}\`
+💰 *Harga Satuan:* *Rp${product.harga.toLocaleString('id-ID')}*
+📦 *Status Stok:* ${stockStatus}
+🚀 *Sistem Pengiriman:* ${deliveryBadge}`;
+
+    if (product.duration) {
+      detailMsg += `\n⏳ *Durasi Masa Aktif:* ${product.duration}`;
+    }
+    if (product.variant_type) {
+      detailMsg += `\n🏷️ *Jenis Paket:* ${product.variant_type}`;
+    }
+
+    detailMsg += `\n\n📝 *DESKRIPSI & FITUR:*
+${product.deskripsi ? product.deskripsi.trim() : '_Tidak ada deskripsi tambahan._'}`;
+
+    if (product.petunjuk && product.petunjuk.trim()) {
+      detailMsg += `\n\n📖 *PETUNJUK PENGGUNAAN / INFO GARANSI:*\n${product.petunjuk.trim()}`;
+    }
+
+    detailMsg += `\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 *CARA MEMBELI LANGSUNG:*
+Ketik: *.beli ${product.kode} 1*
+_(Bisa tambah jumlah, contoh: \`.beli ${product.kode} 2\`)_
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+
+    const detailButtons = [];
+    if (product.stok > 0) {
+      detailButtons.push({ type: 'reply', text: `🛒 Beli Sekarang`, id: `.beli ${product.kode} 1` });
+      detailButtons.push({ type: 'reply', text: `💳 Bayar QRIS`, id: `.beli ${product.kode} 1` });
+    } else {
+      detailButtons.push({ type: 'reply', text: `🔔 Notif Restok`, id: `.notify ${product.kode}` });
+    }
+    detailButtons.push({ type: 'reply', text: `💝 Wishlist`, id: `.simpan ${product.kode}` });
+    detailButtons.push({ type: 'reply', text: `📦 Kembali ke List`, id: '.list' });
+
+    await sendInteractiveButtons(sock, responseJid, {
+      text: detailMsg,
+      title: `🛍️ ${product.nama}`,
+      footer: 'Gunakan tombol di bawah untuk pesan langsung atau kembali ke katalog',
+      buttons: detailButtons
+    });
+    return true;
+  };
+
+  // 2A. DETAIL & VARIAN PRODUK (Jika memilih/mengetik brand atau kode, misal: .p netflix, .detail netflix, .p NET-SH-7D, .p SPOTIFY)
+  const isDetailCmd = ['p', 'detail', 'info', 'lihat'].includes(cleanCmd) || 
+    (['list', 'produk', 'katalog'].includes(cleanCmd) && args.length > 1);
+
+  if (isDetailCmd) {
+    const rawTarget = ['p', 'detail', 'info', 'lihat'].includes(cleanCmd) ? (args.slice(1).join(' ').trim() || '') : args.slice(1).join(' ').trim();
+    const targetQuery = rawTarget.trim();
+
+    if (targetQuery && !['ALL', 'PRODUK', 'BARANG', 'LIST', 'SEMUA'].includes(targetQuery.toUpperCase())) {
+      const variantData = await db.getProductVariants(targetQuery);
+
+      // Jika user mengetik kode SKU eksak dan bukan kata kunci brand umum
+      if (variantData.exactProduct && variantData.variants.length <= 1) {
+        return await handleProductDetail(variantData.exactProduct);
+      }
+
+      // Jika ditemukan beberapa varian dari brand/kategori tersebut
+      if (variantData.variants && variantData.variants.length > 1) {
+        const brandTitle = variantData.variants[0].brand_category || targetQuery;
+        return await handleVariantGroupView(brandTitle, variantData.variants);
+      }
+
+      // Jika hanya ditemukan 1 varian produk
+      if (variantData.variants && variantData.variants.length === 1) {
+        return await handleProductDetail(variantData.variants[0]);
+      }
+
+      // Jika tidak ditemukan via getProductVariants, coba searchProducts
+      const searchMatches = await db.searchProducts(targetQuery);
+      if (searchMatches && searchMatches.length > 1) {
+        return await handleVariantGroupView(targetQuery, searchMatches);
+      } else if (searchMatches && searchMatches.length === 1) {
+        return await handleProductDetail(searchMatches[0]);
+      }
+
+      await sock.sendMessage(responseJid, { 
+        text: `❌ Produk/Layanan dengan kata kunci *${targetQuery}* tidak ditemukan.\n\nKetik \`.list\` untuk melihat katalog semua layanan yang tersedia.` 
+      });
+      return true;
+    }
+  }
+
+  // 2B. LIST / PRODUK (KATALOG RINGKAS BERDASARKAN BRAND & KATEGORI)
   if (
     cleanCmd === 'list' || 
     cleanCmd === 'produk' || 
@@ -561,59 +950,134 @@ export function createCustomerHandler(ctx) {
     cleanCmd === 'catalog' || 
     cleanCmd === 'listproduk' || 
     cleanCmd === 'daftarproduk' ||
+    cleanCmd === 'p' ||
+    cleanCmd === 'detail' ||
+    cleanCmd === 'info' ||
+    cleanCmd === 'lihat' ||
     cleanTextLower === 'list' || 
     cleanTextLower === 'produk' || 
-    cleanTextLower === 'katalog' ||
+    cleanTextLower === 'katalog' || 
     cleanTextLower === 'list produk' || 
-    cleanTextLower === 'list all' ||
+    cleanTextLower === 'list all' || 
     cleanTextLower === 'list barang'
   ) {
-    const products = await db.getProducts();
-    if (products.length === 0) {
+    const catalog = await db.getGroupedCatalog();
+    if (catalog.length === 0) {
       await sock.sendMessage(responseJid, { text: "Saat ini belum ada produk yang terdaftar di toko kami." });
-      return;
+      return true;
     }
+
+    // Simpan sesi navigasi katalog brand untuk user
+    setUserNavSession(senderNumber, {
+      type: 'BRAND_LIST',
+      items: catalog.map(cat => ({
+        brand: cat.brand,
+        targetId: cat.is_multi ? cat.brand.toLowerCase() : cat.variants[0].kode,
+        isMulti: cat.is_multi
+      }))
+    });
 
     let msg = `━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📦 *KATALOG PRODUK TOKO*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+📦 *KATALOG PRODUK & LAYANAN*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+_Pilih nomor layanan atau gunakan menu dropdown di bawah:_\n\n`;
 
-    const limit = botSettings.lowStockLimit || config.defaults.lowStockLimit;
-    for (const p of products) {
-      let stockStatus = "";
-      if (p.stok === 0) {
-        stockStatus = "🔴 *Stok Habis* (Ketik `notify " + p.kode + "` agar diingatkan via DM saat restok)";
-      } else if (p.stok <= limit) {
-        stockStatus = `🟡 *Stok Terbatas* (Sisa: ${p.stok} pcs)`;
-      } else {
-        stockStatus = `🟢 *Ready Stock* (Tersedia: ${p.stok} pcs)`;
+    const productRows = [];
+
+    catalog.forEach((cat, idx) => {
+      const icon = cat.icon || '📦';
+      const stockBadge = cat.total_stock === 0 ? '🔴 Habis' : `🟢 Ready (${cat.total_stock})`;
+      const priceText = cat.min_price === cat.max_price
+        ? `*Rp${cat.min_price.toLocaleString('id-ID')}*`
+        : `Mulai *Rp${cat.min_price.toLocaleString('id-ID')}*`;
+
+      let optionSummary = "";
+      if (cat.types && cat.types.length > 0) {
+        optionSummary += cat.types.join(' & ');
+      }
+      if (cat.durations && cat.durations.length > 0) {
+        optionSummary += (optionSummary ? ' • ' : '') + cat.durations.join(', ');
       }
 
-      msg += `${stockStatus}
-📌 *${p.nama}*
-• Kode Produk : \`${p.kode}\`
-• Harga       : *Rp${p.harga.toLocaleString('id-ID')}*
-• Deskripsi   : ${p.deskripsi || '-'}\n\n`;
-    }
+      msg += `[${idx + 1}] ${icon} *${cat.brand.toUpperCase()}* [${stockBadge}]\n`;
+      if (optionSummary) {
+        msg += `    • Pilihan: ${optionSummary}\n`;
+      }
+      msg += `    • Harga: ${priceText}\n\n`;
+      
+      const targetId = cat.is_multi ? `.p ${cat.brand.toLowerCase()}` : `.p ${cat.variants[0].kode}`;
 
-    const sampleCode = products[0]?.kode || 'NET01';
+      productRows.push({
+        title: `[${idx + 1}] ${icon} ${cat.brand}`,
+        description: `${priceText.replace(/\*/g, '')} • [${stockBadge}]`,
+        id: targetId
+      });
+    });
+
     msg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💡 *CARA MEMBELI:*
-Ketik: *.beli [KODE] [JUMLAH]*
-_(Contoh: \`.beli ${sampleCode} 1\`)_
+💡 *CARA SUPER CEPAT:*
+Balas angka: *1* s/d *${catalog.length}* untuk membuka paket!
+Contoh: Cukup ketik *1* untuk membuka Netflix.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+
+    const sections = productRows.length > 0 ? [
+      {
+        title: '🛍️ PILIH LAYANAN (LIHAT VARIAN & HARGA)',
+        rows: productRows.slice(0, 10)
+      }
+    ] : [];
 
     await sendInteractiveButtons(sock, responseJid, {
       text: msg,
-      title: '📦 KATALOG PRODUK TOKO',
-      footer: 'Klik tombol di bawah untuk melihat keranjang atau ke menu utama',
+      title: '📦 KATALOG PRODUK & LAYANAN',
+      footer: 'Balas nomor pilihan Anda atau klik menu dropdown di bawah',
       buttons: [
         { type: 'reply', text: '🛒 Keranjang Saya', id: '.keranjang' },
         { type: 'reply', text: '💳 Checkout Pembayaran', id: '.checkout' },
         { type: 'reply', text: '📋 Menu Utama', id: '.menu' }
-      ]
+      ],
+      sections
     });
-    return;
+    return true;
+  }
+
+  // 2C. SMART NATURAL LANGUAGE ORDERING (Deteksi Pembelian Bahasa Santai)
+  const naturalOrderMatch = await matchNaturalOrder(cleanText);
+  if (naturalOrderMatch && naturalOrderMatch.bestMatch && !isPrefix && cleanCmd !== 'cari') {
+    const item = naturalOrderMatch.bestMatch;
+    
+    const addRes = await db.addToCart(senderNumber, item.kode, 1);
+    if (addRes.success) {
+      setUserNavSession(senderNumber, {
+        type: 'ORDER_READY',
+        selectedSku: item.kode,
+        productName: item.nama,
+        price: item.harga
+      });
+
+      const confirmMsg = `✅ *PESANAN TERDETEKSI & DITAMBAHKAN!*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🛍️ *Paket:* ${item.nama}
+🔑 *Kode SKU:* \`${item.kode}\`
+💰 *Harga:* *Rp${item.harga.toLocaleString('id-ID')}*
+📦 *Status Stok:* Ready Stock (Siap Kirim)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+💡 *Langkah Selanjutnya:*
+Ketik *bayar* atau klik tombol *Bayar QRIS Langsung* di bawah untuk langsung memperoleh kode QRIS tagihan Anda!`;
+
+      await sendInteractiveButtons(sock, responseJid, {
+        text: confirmMsg,
+        title: `✅ ${item.nama.toUpperCase()}`,
+        footer: 'Pilih Bayar QRIS Langsung untuk transaksi instan',
+        buttons: [
+          { type: 'reply', text: '💳 Bayar QRIS Langsung', id: '.checkout' },
+          { type: 'reply', text: '🛒 Lihat Keranjang', id: '.keranjang' },
+          { type: 'reply', text: '📦 Katalog Produk', id: '.list' }
+        ]
+      });
+      return true;
+    }
   }
 
   // 3. BELI [KODE] [JUMLAH]
@@ -772,8 +1236,11 @@ ${casakuPayment.uniqueCode > 0 ? `_(Harga produk Rp${lastOrder.total.toLocaleStr
 ⏰ *Berlaku hingga:* ${expiredStr} WIB
 ━━━━━━━━━━━━━━━━━━━━
 
-📱 *Scan QRIS di bawah untuk membayar:*
+📱 *Scan QRIS di atas untuk membayar:*
 ✅ DANA / GoPay / OVO / ShopeePay / BCA / BRI / Mandiri / dll.
+
+🌐 *Invoice & Checkout Online:*
+http://localhost:3000/pay/${lastOrder.order_id}
 
 🔄 *Pembayaran diverifikasi OTOMATIS.*
 Tidak perlu kirim bukti transfer — produk langsung terkirim begitu bayar!`;
@@ -929,8 +1396,11 @@ ${casakuPayment.uniqueCode > 0 ? `_(Harga produk Rp${order.total.toLocaleString(
 ⏰ *Berlaku hingga:* ${expiredStr} WIB
 ━━━━━━━━━━━━━━━━━━━━
 
-📱 *Scan QRIS di bawah untuk membayar:*
+📱 *Scan QRIS di atas untuk membayar:*
 ✅ Bisa bayar dari DANA / GoPay / OVO / ShopeePay / BCA / BRI / Mandiri / dll.
+
+🌐 *Invoice & Checkout Online:*
+http://localhost:3000/pay/${order.order_id}
 
 🔄 *Pembayaran diverifikasi otomatis.*
 Begitu Anda selesai bayar, produk langsung dikirim ke chat ini tanpa perlu konfirmasi manual.
@@ -1085,13 +1555,64 @@ Status: *${statusTranslate}*
 `;
 
     details.items.forEach(item => {
-      msg += `- ${item.produk_nama} (x${item.qty})\n`;
+      msg += `- ${item.produk_nama} (x${item.qty || item.jumlah || 1})\n`;
     });
     
-    msg += `━━━━━━━━━━━━━━━━━━`;
+    msg += `━━━━━━━━━━━━━━━━━━\n🌐 *Invoice Web:* http://localhost:3000/pay/${details.order_id}\n━━━━━━━━━━━━━━━━━━`;
     await sock.sendMessage(responseJid, { text: msg });
     await sendRedirectNotice();
     return;
+  }
+
+  // 7B. GARANSI & KLAIM KENDALA AKUN (.garansi [orderId])
+  if (['garansi', 'klaim', 'claim', 'warranty', 'bantuanakun'].includes(cleanCmd)) {
+    const targetOrderId = args[1] ? args[1].trim().toUpperCase() : '';
+    let targetOrder = null;
+
+    if (targetOrderId) {
+      targetOrder = await db.getOrderDetails(targetOrderId);
+    } else {
+      targetOrder = await db.getCustomerLastOrder(senderNumber);
+    }
+
+    if (!targetOrder) {
+      await sock.sendMessage(responseJid, {
+        text: `❌ Tidak ditemukan riwayat pembelian untuk nomor Anda.\n\nKetik \`.list\` untuk berbelanja produk digital.`
+      });
+      return true;
+    }
+
+    const now = Date.now();
+    const wUntil = targetOrder.warranty_until ? Number(targetOrder.warranty_until) : (targetOrder.created_at ? new Date(targetOrder.created_at).getTime() + 30 * 24 * 60 * 60 * 1000 : null);
+    const isExpired = wUntil ? (now > wUntil) : false;
+    const wDateStr = wUntil ? new Date(wUntil).toLocaleDateString('id-ID', { dateStyle: 'full' }) : '30 Hari sejak pembelian';
+
+    let warrantyMsg = `━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🛡️ *STATUS GARANSI & LAYANAN PURNA JUAL*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📦 *Order ID:* \`${targetOrder.order_id}\`
+🛍️ *Status Pesanan:* ${targetOrder.status}
+⏱️ *Masa Garansi Hingga:* ${wDateStr}
+🛡️ *Status Garansi:* ${isExpired ? '🔴 *Kedaluwarsa*' : '🟢 *Aktif & Bergaransi*'}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+
+    if (isExpired) {
+      warrantyMsg += `⚠️ Masa garansi untuk pesanan ini telah selesai. Jika Anda membutuhkan perpanjangan akun baru, ketik \`.list\` untuk memesan kembali.`;
+    } else {
+      warrantyMsg += `💡 *Klaim Kendala Akun:*
+Jika Anda mengalami masalah (akun logout, batas layar, kredensial salah), silakan hubungi tim Admin kami dengan mengklik tombol di bawah atau ketik langsung keluhan Anda di chat ini.`;
+    }
+
+    await sendInteractiveButtons(sock, responseJid, {
+      text: warrantyMsg,
+      title: '🛡️ GARANSI AKBAR STORE',
+      footer: 'Layanan purna jual resmi Akbar Store',
+      buttons: [
+        { type: 'reply', text: '👨‍💼 Hubungi Admin', id: '.owner' },
+        { type: 'reply', text: '📦 Katalog Utama', id: '.list' }
+      ]
+    });
+    return true;
   }
 
   // 8. NOTIFY [KODE] (BERLANGGANAN NOTIFIKASI STOK)

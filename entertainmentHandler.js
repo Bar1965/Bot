@@ -344,6 +344,7 @@ function loadApiGameImages() {
 const TEBAK_GAMBAR_DATABASE = [...BASE_TEBAK_GAMBAR_DATABASE, ...loadLocalGameImages(), ...loadApiGameImages()];
 
 export function getTebakGambarQuestion() {
+  if (!TEBAK_GAMBAR_DATABASE || TEBAK_GAMBAR_DATABASE.length === 0) return null;
   const q = TEBAK_GAMBAR_DATABASE[Math.floor(Math.random() * TEBAK_GAMBAR_DATABASE.length)];
   return q;
 }

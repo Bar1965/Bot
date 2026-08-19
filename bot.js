@@ -158,39 +158,40 @@ export function formatPhoneNumber(jid) {
 export function extractMessageText(m) {
   if (!m || !m.message) return '';
   const msg = m.message;
+  let raw = '';
 
   // 1. Pesan teks langsung / caption media
-  if (msg.conversation) return msg.conversation;
-  if (msg.extendedTextMessage?.text) return msg.extendedTextMessage.text;
-  if (msg.imageMessage?.caption) return msg.imageMessage.caption;
-  if (msg.videoMessage?.caption) return msg.videoMessage.caption;
-  if (msg.documentMessage?.caption) return msg.documentMessage.caption;
+  if (msg.conversation) raw = msg.conversation;
+  else if (msg.extendedTextMessage?.text) raw = msg.extendedTextMessage.text;
+  else if (msg.imageMessage?.caption) raw = msg.imageMessage.caption;
+  else if (msg.videoMessage?.caption) raw = msg.videoMessage.caption;
+  else if (msg.documentMessage?.caption) raw = msg.documentMessage.caption;
 
   // 2. Respons Tombol Standar / Quick Reply
-  if (msg.buttonsResponseMessage?.selectedButtonId) {
-    return msg.buttonsResponseMessage.selectedButtonId;
+  else if (msg.buttonsResponseMessage?.selectedButtonId) {
+    raw = msg.buttonsResponseMessage.selectedButtonId;
   }
-  if (msg.buttonsResponseMessage?.selectedDisplayText) {
-    return msg.buttonsResponseMessage.selectedDisplayText;
+  else if (msg.buttonsResponseMessage?.selectedDisplayText) {
+    raw = msg.buttonsResponseMessage.selectedDisplayText;
   }
-  if (msg.templateButtonReplyMessage?.selectedId) {
-    return msg.templateButtonReplyMessage.selectedId;
+  else if (msg.templateButtonReplyMessage?.selectedId) {
+    raw = msg.templateButtonReplyMessage.selectedId;
   }
 
   // 3. Respons Dropdown List (Single Select)
-  if (msg.listResponseMessage?.singleSelectReply?.selectedRowId) {
-    return msg.listResponseMessage.singleSelectReply.selectedRowId;
+  else if (msg.listResponseMessage?.singleSelectReply?.selectedRowId) {
+    raw = msg.listResponseMessage.singleSelectReply.selectedRowId;
   }
 
   // 4. Respons Native Flow Interactive Message (Proto WhatsApp Terbaru)
-  if (msg.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson) {
+  else if (msg.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson) {
     try {
       const params = JSON.parse(msg.interactiveResponseMessage.nativeFlowResponseMessage.paramsJson);
-      return params.id || params.row_id || params.text || params.copy_code || '';
+      raw = params.id || params.row_id || params.text || params.copy_code || '';
     } catch (e) {}
   }
 
-  return '';
+  return (raw || '').replace(/[\u200B-\u200D\uFEFF\u2060-\u206F]/g, '');
 }
 
 /**
@@ -301,11 +302,10 @@ const userMessageTimestamps = new Map();
 // Storage penghitung pesan tidak dikenal per pelanggan: Map<senderNumber, number>
 const unknownMessageCounter = new Map();
 
-function extractTargetJid(m, args) {
+export function extractTargetJid(m, args) {
   if (!m) return null;
   // 1. Tag / Mention dalam pesan
-  const mentions = m.message?.extendedTextMessage?.contextInfo?.mentionedJid || 
-                   m.message?.conversation?.contextInfo?.mentionedJid || [];
+  const mentions = m.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
   if (mentions.length > 0) return mentions[0];
 
   // 2. Quoted / Reply pesan seseorang
@@ -323,8 +323,8 @@ function extractTargetJid(m, args) {
 async function handleAntiSpamAndAntiLink(m, jid, senderNormalized, isGroup, msgText, isAdmin) {
   if (!isGroup) return false;
 
-  const antiSpamOn = (botSettings.antiSpamEnabled || "true") === "true";
-  const antiLinkOn = (botSettings.antiLinkEnabled || "true") === "true";
+  const antiSpamOn = botSettings.antiSpamEnabled === true || botSettings.antiSpamEnabled === "true" || botSettings.antiSpamEnabled === undefined;
+  const antiLinkOn = botSettings.antiLinkEnabled === true || botSettings.antiLinkEnabled === "true" || botSettings.antiLinkEnabled === undefined;
   const maxSpamMsgs = parseInt(botSettings.spamThreshold) || 5;
   const spamWindowMs = parseInt(botSettings.spamWindow) || 5000;
   const kickAfter = parseInt(botSettings.kickAfterWarnings) || 3;
@@ -516,7 +516,9 @@ async function checkIsUserInGroup(senderNumber) {
 
     const isMember = groupMeta.participants.some(p => {
       const pDigits = extractDigits(p.id);
-      return pDigits.length > 6 && senderDigits.includes(pDigits);
+      const pLidDigits = p.lid ? extractDigits(p.lid) : '';
+      return (pDigits.length > 6 && (pDigits === senderDigits || pDigits.endsWith(senderDigits) || senderDigits.endsWith(pDigits))) ||
+             (pLidDigits.length > 6 && (pLidDigits === senderDigits || pLidDigits.endsWith(senderDigits) || senderDigits.endsWith(pLidDigits)));
     });
 
     let inviteLink = botSettings.groupInviteLink || "";
@@ -980,8 +982,11 @@ export async function startBot(onSocketReady) {
   // FITUR MEDIA UTILITY (DOWNLOADER & CONVERTER)
   // ==========================================
   async function handleMediaCommands(jid, senderNumber, m, msgText) {
-    const textTrim = msgText.trim();
+    const textTrim = (msgText || '').trim();
     if (!textTrim) return false;
+    const isPrefix = textTrim.startsWith('.') || textTrim.startsWith('/') || textTrim.startsWith('#');
+    if (!isPrefix) return false;
+
     const args = textTrim.split(/\s+/);
     const rawCmd = args[0].toLowerCase();
     const cleanCmd = rawCmd.replace(/^[./#]/, '');
@@ -995,6 +1000,36 @@ export async function startBot(onSocketReady) {
           return false;
         }
       }
+    }
+
+    const knownMediaCmds = [
+      'hd', 'remini', 'upscale', 'stiker', 'sticker', 's', 'gif', 'sgif', 'toimg', 'unstick', 'toimage', 'tovideo', 'tovid', 'togif',
+      'qc', 'quote', 'brat', 'meme', 'draw', 'aiimg', 'dalle', 'editfoto', 'removebg', 'nobg',
+      'ssweb', 'ss', 'khodam', 'tod', 'truth', 'dare', 'tts', 'shortlink', 'short', 'cuaca', 'invoice', 'struk',
+      'tebakgambar', 'tebakangka', 'susunkata', 'bank', 'deposito', 'tarik', 'withdraw', 'transfer', 'rampok', 'rob', 'slot', 'roulette',
+      'ping', 'p', 'statusbot', 'owner', 'kontakowner', 'tagall', 'hidetag', 'everyone',
+      'tt', 'tiktok', 'ttmp3', 'ig', 'instagram', 'igstory', 'yt', 'youtube', 'ytmp3', 'ytmp4',
+      'fb', 'facebook', 'tw', 'twitter', 'x', 'spotify', 'play', 'song', 'tomp3', 'tovn',
+      'tr', 'translate', 'jadwalsholat', 'sholat', 'menfess', 'confess', 'balasmenfess', 'menfessreply', 'replymenfess', 'stopmenfess', 'closemenfess', 'endmenfess',
+      'bass', 'blown', 'deep', 'earrape', 'fast', 'fat', 'nightcore', 'reverse', 'robot', 'slow', 'smooth', 'tupai', 'chipmunk', 'echo'
+    ];
+
+    if (!knownMediaCmds.includes(cleanCmd)) {
+      return false;
+    }
+
+    // REGISTRATION CHECK
+    const isReg = await db.isCustomerRegistered(senderNumber);
+    if (!isReg) {
+      const senderMention = senderNumber.split('@')[0];
+      const regNotice = `⚠️ *AKSES DITOLAK — REGISTRASI DIPERLUKAN* ⚠️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nHalo @${senderMention}! Anda harus terdaftar sebagai member terlebih dahulu untuk menggunakan fitur media & downloader ini (100% Gratis & Cepat).\n\n📌 *Cara Pendaftaran (Hanya 5 Detik):*\nKetik: \`.daftar Nama Kamu\`\n\n_Contoh:_ \`.daftar Budi Santoso\`\n\nSetelah terdaftar, Anda dapat langsung menikmati semua fitur bot! 🙏`;
+      await sendInteractiveButtons(sock, jid, {
+        text: regNotice,
+        buttons: [
+          { type: 'copy', text: '📋 Salin Format .daftar', copy_code: '.daftar ' }
+        ]
+      });
+      return true;
     }
 
     const react = async (emoji) => {
@@ -1501,43 +1536,6 @@ _${khodamRes.desc}_`;
       return true;
     }
 
-    // 16. Enhance Image HD (.hd, .remini)
-    if (['hd', 'remini'].includes(cleanCmd)) {
-      const hasImage = m.message?.imageMessage || m.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage;
-      if (!hasImage) {
-        await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Kirim foto dengan caption `.hd` atau balas foto dengan `.hd` untuk menjernihkan gambar!" });
-        return true;
-      }
-
-      try {
-        await react('⏳');
-        let targetMessage = m;
-        if (m.message?.extendedTextMessage?.contextInfo?.quotedMessage) {
-          targetMessage = {
-            key: {
-              remoteJid: jid,
-              id: m.message.extendedTextMessage.contextInfo.stanzaId
-            },
-            message: m.message.extendedTextMessage.contextInfo.quotedMessage
-          };
-        }
-
-        const imgBuf = await downloadMediaMessage(targetMessage, 'buffer', {});
-        const hdRes = await ent.enhanceImageHD(imgBuf);
-        if (hdRes.success && hdRes.buffer) {
-          await sock.sendMessage(jid, { image: hdRes.buffer, caption: "✨ *Foto Berhasil Ditingkatkan ke Kualitas HD!*" });
-          await react('✅');
-        } else {
-          await react('❌');
-          await sock.sendMessage(jid, { text: `❌ Gagal menjernihkan foto.` });
-        }
-      } catch (err) {
-        await react('❌');
-        console.error("[HD_ERR]", err.message);
-        await sock.sendMessage(jid, { text: `❌ Gagal menjernihkan foto.` });
-      }
-      return true;
-    }
 
     // 17. Brat Sticker Aesthetics Generator (.brat)
     if (['brat'].includes(cleanCmd)) {
@@ -1604,6 +1602,9 @@ _${khodamRes.desc}_`;
       }
 
       const q = ent.getTebakGambarQuestion();
+      if (!q || !q.answer || !q.image) {
+        return await sock.sendMessage(jid, { text: "❌ Soal tebak gambar sedang tidak tersedia di server saat ini." });
+      }
       ent.activeGames.set(jid, {
         answer: q.answer.toUpperCase(),
         hint: q.hint,
@@ -1682,7 +1683,7 @@ _${khodamRes.desc}_`;
 
     // 19.1. Fitur Perbankan & Economy
     if (['bank', 'deposito'].includes(cleanCmd)) {
-      const amount = parseInt(argsCheck[1]);
+      const amount = parseInt(args[1]);
       if (!amount || isNaN(amount) || amount <= 0) {
         return await sock.sendMessage(jid, { text: "⚠️ Format salah!\nKetik: .bank <jumlah>\n\nUang di bank aman dari perampokan." });
       }
@@ -1695,7 +1696,7 @@ _${khodamRes.desc}_`;
     }
 
     if (['tarik', 'withdraw'].includes(cleanCmd)) {
-      const amount = parseInt(argsCheck[1]);
+      const amount = parseInt(args[1]);
       if (!amount || isNaN(amount) || amount <= 0) {
         return await sock.sendMessage(jid, { text: "⚠️ Format salah!\nKetik: .tarik <jumlah>\n\nPajak penarikan: 2%" });
       }
@@ -1708,8 +1709,8 @@ _${khodamRes.desc}_`;
     }
 
     if (['transfer'].includes(cleanCmd)) {
-      const targetStr = argsCheck[1];
-      const amount = parseInt(argsCheck[2]);
+      const targetStr = args[1];
+      const amount = parseInt(args[2]);
       if (!targetStr || !amount || isNaN(amount) || amount <= 0) {
         return await sock.sendMessage(jid, { text: "⚠️ Format salah!\nKetik: .transfer <@tag_user> <jumlah>" });
       }
@@ -1727,7 +1728,7 @@ _${khodamRes.desc}_`;
     if (['rampok', 'rob'].includes(cleanCmd)) {
       if (!isGroup) return await sock.sendMessage(jid, { text: "❌ Fitur ini hanya bisa digunakan di dalam grup!" });
       
-      const targetStr = argsCheck[1];
+      const targetStr = args[1];
       if (!targetStr) return await sock.sendMessage(jid, { text: "⚠️ Format salah!\nKetik: .rampok <@tag_user>" });
       
       const targetJid = targetStr.replace(/[^0-9]/g, '') + '@s.whatsapp.net';
@@ -1789,7 +1790,7 @@ _${khodamRes.desc}_`;
     }
 
     if (['slot'].includes(cleanCmd)) {
-      const bet = parseInt(argsCheck[1]);
+      const bet = parseInt(args[1]);
       if (!bet || isNaN(bet) || bet < 10) return await sock.sendMessage(jid, { text: "⚠️ Ketik: .slot <taruhan>\nMinimal taruhan 10 poin." });
       
       const prof = await db.getGameProfile(senderNormalized);
@@ -1815,8 +1816,8 @@ _${khodamRes.desc}_`;
     }
 
     if (['roulette'].includes(cleanCmd)) {
-      const bet = parseInt(argsCheck[1]);
-      const color = argsCheck[2]?.toLowerCase();
+      const bet = parseInt(args[1]);
+      const color = args[2]?.toLowerCase();
       if (!bet || isNaN(bet) || bet < 10 || !['merah', 'hitam', 'hijau'].includes(color)) {
         return await sock.sendMessage(jid, { text: "⚠️ Ketik: .roulette <taruhan> <merah/hitam/hijau>\nContoh: .roulette 50 merah\n\nHitam/Merah: 2x Lipat\nHijau: 10x Lipat" });
       }
@@ -2367,48 +2368,65 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
         // ====================================================================
         // DETEKSI OWNER & ADMIN — Sistem LID-Aware
         // Masalah: WhatsApp kini kirim pesan dari grup sebagai @lid (bukan nomor HP)
-        // Solusi: cek ownerJid yang tersimpan (registrasi sekali via .setownerid di DM)
-        //         + fallback ke phone digit match (untuk DM)
+        // Solusi: cek ownerJid yang tersimpan + mapping metadata grup
         // ====================================================================
+        const senderCleanJid = jidNormalizedUser(senderNormalized);
         const extractDigits = (s) => s ? String(s).replace(/[^0-9]/g, '') : '';
-        const senderDigits = extractDigits(senderNormalized);
+        const senderDigits = extractDigits(senderCleanJid);
         const ownerPhoneDigits = extractDigits(botSettings.ownerNumber || config.defaults.ownerNumber || '');
-        const storedOwnerJid = (botSettings.ownerJid || '').trim(); // JID (bisa @lid) yang disimpan via .setownerid
+        const storedOwnerJid = jidNormalizedUser((botSettings.ownerJid || '').trim());
         const adminEntries = (botSettings.adminNumbers || config.defaults.adminNumbers || "").split(',').map(n => extractDigits(n)).filter(d => d.length > 6);
 
         // Cek apakah sender adalah Owner (by fromMe, stored JID exact match, atau phone digit match)
         let isOwnerSender = false;
         if (m.key?.fromMe) {
           isOwnerSender = true; // Pesan dari bot sendiri (linked device owner) — paling reliable
-        } else if (storedOwnerJid && senderNormalized === storedOwnerJid) {
+        } else if (storedOwnerJid && (senderCleanJid === storedOwnerJid || senderCleanJid.includes(storedOwnerJid.split('@')[0]) || storedOwnerJid.includes(senderCleanJid.split('@')[0]))) {
           isOwnerSender = true; // Exact JID match (handles @lid yang disimpan via .setownerid)
         } else if (ownerPhoneDigits && senderDigits && senderDigits.length > 6 && (senderDigits === ownerPhoneDigits || senderDigits.endsWith(ownerPhoneDigits) || ownerPhoneDigits.endsWith(senderDigits))) {
           isOwnerSender = true; // Phone number match dengan toleransi kode negara (works in DM)
         }
 
+        let isGroupAdmin = false;
+        let isStoreAdmin = adminEntries.some(adm => senderDigits.length > 6 && (senderDigits === adm || senderDigits.endsWith(adm) || adm.endsWith(senderDigits)));
+        let isAdmin = isOwnerSender || isStoreAdmin;
 
-        let isAdmin = isOwnerSender;
-
-        // Cek admin entries dari settings
-        if (!isAdmin && adminEntries.some(adm => senderDigits.length > 6 && senderDigits.includes(adm))) {
-          isAdmin = true;
-        }
-
-        // Di GRUP: cek status admin grup via groupMetadata (untuk fitur grup seperti anti-link)
-        if (!isAdmin && isGroup) {
+        // Di GRUP: cek status admin grup via groupMetadata & resolusi LID -> Phone Owner/Admin
+        if (isGroup) {
           try {
             const groupMeta = await sock.groupMetadata(jid);
-            const pMatch = groupMeta.participants.find(p =>
-              p.id === sender || p.id === senderNormalized ||
-              p.lid === sender || p.lid === senderNormalized
-            );
-            if (pMatch && (pMatch.admin === 'admin' || pMatch.admin === 'superadmin')) {
-              isAdmin = true;
+            const pMatch = groupMeta.participants.find(p => {
+              const pCleanId = jidNormalizedUser(p.id);
+              const pCleanLid = p.lid ? jidNormalizedUser(p.lid) : null;
+              return pCleanId === senderCleanJid || pCleanLid === senderCleanJid ||
+                     (p.id && senderCleanJid.includes(p.id.split('@')[0])) ||
+                     (p.lid && senderCleanJid.includes(p.lid.split('@')[0]));
+            });
+            if (pMatch) {
+              if (pMatch.admin === 'admin' || pMatch.admin === 'superadmin') {
+                isGroupAdmin = true;
+              }
+              const pPhone = extractDigits(pMatch.id);
+              // Resolusi Owner jika pengirim memakai LID di grup
+              if (ownerPhoneDigits && pPhone && (pPhone === ownerPhoneDigits || pPhone.endsWith(ownerPhoneDigits) || ownerPhoneDigits.endsWith(pPhone))) {
+                isOwnerSender = true;
+                if (pMatch.lid && (!botSettings.ownerJid || botSettings.ownerJid !== jidNormalizedUser(pMatch.lid))) {
+                  botSettings.ownerJid = jidNormalizedUser(pMatch.lid);
+                  db.updateSettings({ ownerJid: botSettings.ownerJid }).catch(() => {});
+                }
+              }
+              // Resolusi Admin Toko jika pengirim memakai LID di grup
+              if (pPhone && adminEntries.some(adm => pPhone === adm || pPhone.endsWith(adm) || adm.endsWith(pPhone))) {
+                isStoreAdmin = true;
+              }
             }
           } catch (e) {
             // Silent fail jika tidak bisa ambil metadata grup
           }
         }
+
+        // Owner dan Admin Toko SELALU memiliki akses Admin penuh di SEMUA grup (walaupun bukan admin di grup WA tersebut)
+        isAdmin = isOwnerSender || isGroupAdmin || isStoreAdmin;
 
         // Cek apakah user sedang di-banned (Owner/Admin tidak pernah kena ban)
         if (!isAdmin) {
@@ -2430,7 +2448,7 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
         const isPrefixCmd = msgText.startsWith('.') || msgText.startsWith('/') || msgText.startsWith('#');
         const knownCmdList = [
           'daftar', 'register', 'registrasi', 'owner', 'kontakowner', 'menu', 'help', 'bantuan', 
-          'produk', 'list', 'katalog', 'listproduk', 'beli', 'checkout', 'keranjang', 'cart', 'status', 'riwayat', 'batal', 'cancel',
+          'produk', 'list', 'katalog', 'listproduk', 'p', 'detail', 'info', 'lihat', 'beli', 'checkout', 'keranjang', 'cart', 'status', 'riwayat', 'batal', 'cancel',
           'freegames', 'freegame', 'gamegratis', 'slot', 'slots', 'stiker', 'sticker', 's', 'gif',
           'tt', 'tiktok', 'ig', 'instagram', 'yt', 'youtube', 'fb', 'facebook', 'quiz', 'trivia',
           'tebakemoji', 'tebakkata', 'tebakgambar', 'zodiak', 'jodoh', 'khodam', 'truth', 'dare',
@@ -2449,18 +2467,18 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
           'setname', 'setowner', 'setownerid', 'addmod', 'delmod', 'listmod',
           'ban', 'unban', 'kick', 'add', 'promote', 'demote', 'tagall', 'hidetag',
           'everyone', 'admins', 'mode', 'setmode', 'botmode', 'antilink',
-          'welcome', 'setwelcome', 'link', 'getjid', 'backup', 'eval', 'join', 'levelup', 'autolevelup', 'autodl', 'autodownload', 'listfitur', 'fiturgrup', 'groupfeatures', 'tebaklagu', 'balasmenfess', 'menfessreply', 'stopmenfess', 'closemenfess'
+          'welcome', 'setwelcome', 'link', 'getjid', 'backup', 'eval', 'join', 'levelup', 'autolevelup', 'globallevelup', 'setlevelup', 'autodl', 'autodownload', 'listfitur', 'fiturgrup', 'groupfeatures', 'tebaklagu', 'balasmenfess', 'menfessreply', 'stopmenfess', 'closemenfess'
         ];
 
 
         const isBotCommand = isPrefixCmd;
-        const exemptCommands = ['daftar', 'register', 'registrasi', 'owner', 'kontakowner', 'menu', 'help', 'bantuan', 'ping', 'statusbot', 'list', 'produk', 'katalog', 'listproduk'];
+        const exemptCommands = ['daftar', 'register', 'registrasi', 'owner', 'kontakowner', 'menu', 'help', 'bantuan', 'ping', 'statusbot'];
 
         if (isBotCommand && !exemptCommands.includes(cleanCmdCheck) && !isAdmin) {
           const isRegistered = await db.isCustomerRegistered(senderNormalized);
           if (!isRegistered) {
             const senderMention = senderNormalized.split('@')[0];
-            const regNotice = `⚠️ *AKSES DITOLAK — REGISTRASI DIPERLUKAN* ⚠️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nHalo @${senderMention}! Untuk dapat menggunakan fitur bot kami & mencegah spam, Anda harus terdaftar sebagai member terlebih dahulu (100% Gratis).\n\n📌 *Cara Pendaftaran (Hanya 5 Detik):*\nKetik: \`.daftar Nama Kamu\`\n\n_Contoh:_ \`.daftar Budi Santoso\`\n\nSetelah terdaftar, Anda dapat langsung menikmati semua fitur katalog, transaksi, game, dan hiburan! 🙏`;
+            const regNotice = `⚠️ *AKSES DITOLAK — REGISTRASI DIPERLUKAN* ⚠️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nHalo @${senderMention}! Untuk dapat menggunakan fitur bot kami & mencegah spam, Anda harus terdaftar sebagai member terlebih dahulu (100% Gratis & Cepat).\n\n📌 *Cara Pendaftaran (Hanya 5 Detik):*\nKetik: \`.daftar Nama Kamu\`\n\n_Contoh:_ \`.daftar Budi Santoso\`\n\nSetelah terdaftar, Anda dapat langsung menikmati semua fitur katalog, transaksi, game, dan hiburan! 🙏`;
             
             await sendInteractiveButtons(sock, jid, {
               text: regNotice,
@@ -2529,9 +2547,12 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
         // Award XP & Check Level Up (Grup Only)
         if (isGroup && senderNormalized) {
           try {
+            const globalLevelUp = (botSettings.levelUpEnabled || "true") !== "false";
             const groupSettings = await db.getGroupSettings(jid);
+            const isGroupLevelUpEnabled = globalLevelUp && (groupSettings.levelup_enabled !== 0);
+
             const xpResult = await db.addMessageXp(senderNormalized, 10);
-            if (xpResult.leveledUp && groupSettings.levelup_enabled !== 0) {
+            if (xpResult.leveledUp && isGroupLevelUpEnabled) {
               let userAvatar = null;
               try { userAvatar = await sock.profilePictureUrl(senderNormalized, 'image'); } catch (e) {}
 
@@ -2556,10 +2577,6 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
             console.error('[LEVEL_UP_ERR]', e.message);
           }
         }
-
-        // Cek jika ini adalah perintah media utility (.tt, .ig, .yt, .stiker, .gif, .toimg, .hd)
-        const isMediaHandled = await handleMediaCommands(jid, senderNormalized, m, msgText);
-        if (isMediaHandled) continue;
 
 
         console.log(`[DEBUG_MSG] Grup: ${isGroup} (${jid}), Pengirim: ${senderNormalized}, Text: "${msgText}", Admin: ${isAdmin}, Owner: ${isOwnerSender}`);
@@ -2789,7 +2806,7 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
               if (!isFun) {
                 const isMedia = await handleMediaCommands(jid, senderNormalized, m, msgText);
                 if (isMedia) continue;
-                const isHandledAdmin = await handleGroupMessage(jid, senderNormalized, m, msgText, isAdmin);
+                const isHandledAdmin = await handleGroupMessage(jid, senderNormalized, m, msgText, isAdmin, isPrefixCmd, { isAdmin, isOwner: isOwnerSender });
                 if (!isHandledAdmin) {
                   if (isTakenOver) {
                     console.log(`[BOT] Percakapan dengan ${senderNormalized} sedang diambil alih admin. Auto-reply dinonaktifkan.`);
@@ -2815,7 +2832,7 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
               if (!isFun) {
                 const isMedia = await handleMediaCommands(jid, senderNormalized, m, msgText);
                 if (isMedia) continue;
-                const isHandledAdmin = await handleGroupMessage(jid, senderNormalized, m, msgText, isAdmin);
+                const isHandledAdmin = await handleGroupMessage(jid, senderNormalized, m, msgText, isAdmin, isPrefixCmd, { isAdmin, isOwner: isOwnerSender });
                 if (!isHandledAdmin) {
                   // Perintah pelanggan (list, menu, buy, checkout, status, dll) di grup
                   await handleCustomerMessage(jid, senderNormalized, m, msgText, true, { isAdmin, isOwner: isOwnerSender });

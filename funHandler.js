@@ -2,6 +2,7 @@ import * as db from './database.js';
 import * as entertainment from './entertainmentHandler.js';
 import { sendInteractiveButtons } from './bot.js';
 import { getPremiumBenefits } from './premiumHandler.js';
+import { jidNormalizedUser } from '@whiskeysockets/baileys';
 
 
 const activeRounds = new Map();
@@ -310,46 +311,21 @@ Dengarkan potongan musik audio di atas dan tebak judul lagunya!
 export async function handleFunCommand({ sock, jid, senderNumber, messageObj, text, args, cleanCmd, isFromGroup = false, isAdmin = false, isOwner = false, isPrefixCmd }) {
   const command = String(cleanCmd || '').toLowerCase();
   const scope = scopeKey(jid, senderNumber, isFromGroup);
-  
-  // --- Easter Egg: Karbit Detector (Boleh trigger tanpa prefix) ---
-  const rawText = String(text || '').trim();
-  const karbitMatch = rawText.match(/^[\.#\/]?(my|karbit|karbitan)$/i) || rawText.match(/\bmy\s*(gueh|gue|gweh|gwe|wife|waifu|husband|husbu|hubby|goat|king|queen|lord|hero|idola|idol|dek|deck|bro|guy|man)\b/i);
-  
-  if (karbitMatch) {
-    const cdKey = `karbit_${scope}`;
-    const now = Date.now();
-    const lastTrigger = easterEggCooldowns.get(cdKey) || 0;
-    
-    if (now - lastTrigger > 5000) {
-      easterEggCooldowns.set(cdKey, now);
-      
-      const matchedPhrase = karbitMatch[0].trim();
-      const senderTag = `@${senderNumber.split('@')[0]}`;
-      
-      const karbitReplies = [
-        `Wkwkwk dasar *FANS KARBIT*! 🦗⚡\nBaru tau kemarin sore aja udah sok-sokan "*${matchedPhrase}*" 🗿`,
-        `hmmm tercium aroma *KARBITAN* yang sangat menyengat 👃🔥\nSi paling "*${matchedPhrase}*" padahal mah maba! 🫵😆`,
-        `Si Paling *KARBIT* 🫵🤣\nNgetik "*${matchedPhrase}*" padahal tau karakternya dari TikTok doang kvndol 🗿`,
-        `Woi *KARBIT* ${senderTag}! Mengaku-ngaku "*${matchedPhrase}*" padahal baru join kemarin 🦗💨`,
-        `Awokwkwk *KARBIT DETECTED!* 🚨⚡\nDia ngetik "*${matchedPhrase}*" guys, padahal sebulan lalu belum kenal 🗿`,
-        `Ciri-ciri *KARBITAN*: Ngetik "*${matchedPhrase}*" seolah-olah puh sepuh 🤏🤣`
-      ];
-      
-      const selectedReply = karbitReplies[Math.floor(Math.random() * karbitReplies.length)];
-      await sock.sendMessage(jid, { 
-        text: selectedReply,
-        mentions: [senderNumber]
-      }, { quoted: messageObj });
-      
-      return true;
-    }
-  }
 
   // Deteksi Jawaban Langsung Game Aktif (Quiz, Tebak Kata, Tebak Emoji, Tebak Lagu)
   const activeGameRound = activeRounds.get(scope);
   if (activeGameRound && !activeGameRound.isAnswered && text) {
     const rawAnswer = normalizeAnswer(text);
     if (rawAnswer && rawAnswer === normalizeAnswer(activeGameRound.answer)) {
+      // HANYA user yang sudah terdaftar (.daftar) yang bisa menjawab dan klaim hadiah
+      const isRegUser = await db.isCustomerRegistered(senderNumber);
+      if (!isRegUser && !isAdmin && !isOwner) {
+        await sock.sendMessage(jid, {
+          text: `⚠️ Jawabanmu benar, tapi kamu belum terdaftar sebagai member!\nKetik *.daftar <Nama Kamu>* terlebih dahulu untuk mulai mengumpulkan poin dan bermain game.`
+        }, { quoted: messageObj });
+        return true;
+      }
+
       activeGameRound.isAnswered = true;
       if (activeGameRound.timeout) clearTimeout(activeGameRound.timeout);
       activeRounds.delete(scope);
@@ -362,20 +338,37 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
       
       const userTag = `@${senderNumber.split('@')[0]}`;
       const congratsMsg = activeGameRound.type === 'tebaklagu'
-        ? `🎉 *TEBAKAN LAGU TEPAT SEKALI!* 🎵\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nSelamat ${userTag}! Jawaban yang benar adalah: *${activeGameRound.answer}* (${activeGameRound.artist})\n\n🎁 *Hadiah:* +${pointsReward} Poin Game & +${xpReward} XP!\n💰 Total Poin Kamu: *${profile.points}*\n\nKetik \`.tebaklagu\` untuk ronde musik selanjutnya!`
-        : `🎉 *Jawaban benar!*\nSelamat ${userTag}, +${pointsReward} poin & +${xpReward} XP untuk kamu. Total poin: *${profile.points}*`;
+        ? `🎉 *TEBAK LAGU TERJAWAB!* 🎶\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n👤 Pemenang: *${userTag}*\n🎵 Artis: *${activeGameRound.artist}*\n🎼 Judul Lagu: *${activeGameRound.answer}*\n🎁 Bonus: *+${pointsReward} Poin* | *+${xpReward} XP*\n💰 Total Poin: *${profile.points} Poin*`
+        : `🎉 *SELAMAT!* ${userTag} berhasil menjawab dengan benar!\n\n💡 Jawaban: *${activeGameRound.answer}*\n🎁 Hadiah: *+${pointsReward} Poin* & *+${xpReward} XP*\n💰 Total Poin: *${profile.points}*`;
         
-      await sock.sendMessage(jid, { text: congratsMsg, mentions: [senderNumber] }, { quoted: messageObj });
+      await sock.sendMessage(jid, {
+        text: congratsMsg,
+        mentions: [senderNumber]
+      }, { quoted: messageObj });
       return true;
     }
   }
 
-  // SEMUA COMMAND FUN/GAME LAIN WAJIB MENGGUNAKAN PREFIX
+  // SEMUA COMMAND FUN/GAME LAIN WAJIB MENGGUNAKAN PREFIX . / #
   const isPrefix = isPrefixCmd !== undefined 
     ? isPrefixCmd 
-    : (text?.trim().startsWith('.') || text?.trim().startsWith('/') || text?.trim().startsWith('#'));
+    : ((text || '').trim().startsWith('.') || (text || '').trim().startsWith('/') || (text || '').trim().startsWith('#'));
   if (!isPrefix) {
     return false;
+  }
+
+  // REGISTRATION CHECK: User non-admin yang belum daftar tidak boleh menggunakan fitur game/fun
+  const isReg = await db.isCustomerRegistered(senderNumber);
+  if (!isReg && !isAdmin && !isOwner) {
+    const senderMention = senderNumber.split('@')[0];
+    const regNotice = `⚠️ *AKSES DITOLAK — REGISTRASI DIPERLUKAN* ⚠️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nHalo @${senderMention}! Anda harus terdaftar sebagai member terlebih dahulu untuk bermain game & menggunakan fitur hiburan (100% Gratis & Cepat).\n\n📌 *Cara Pendaftaran (Hanya 5 Detik):*\nKetik: \`.daftar Nama Kamu\`\n\n_Contoh:_ \`.daftar Budi Santoso\`\n\nSetelah terdaftar, Anda dapat langsung menikmati semua game dan fitur bot! 🙏`;
+    await sendInteractiveButtons(sock, jid, {
+      text: regNotice,
+      buttons: [
+        { type: 'copy', text: '📋 Salin Format .daftar', copy_code: '.daftar ' }
+      ]
+    });
+    return true;
   }
   
   // AFK System
@@ -487,10 +480,10 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     if (groupSettings.bot_mode === 'sales') return false;
   }
 
-  if (['quiz', 'trivia', 'tebakquiz'].includes(command)) return startRound({ sock, jid, senderNumber, messageObj, isFromGroup, type: 'quiz' });
-  if (['tebakemoji', 'emoji'].includes(command)) return startRound({ sock, jid, senderNumber, messageObj, isFromGroup, type: 'tebakemoji' });
-  if (['tebakkata', 'hangman', 'kata'].includes(command)) return startRound({ sock, jid, senderNumber, messageObj, isFromGroup, type: 'tebakkata' });
-  if (['tebaklagu', 'lagu', 'musicquiz', 'tebakmusik'].includes(command)) return startRound({ sock, jid, senderNumber, messageObj, isFromGroup, type: 'tebaklagu' });
+  if (['quiz', 'trivia', 'tebakquiz'].includes(command)) return await startRound({ sock, jid, senderNumber, messageObj, isFromGroup, type: 'quiz' });
+  if (['tebakemoji', 'emoji'].includes(command)) return await startRound({ sock, jid, senderNumber, messageObj, isFromGroup, type: 'tebakemoji' });
+  if (['tebakkata', 'hangman', 'kata'].includes(command)) return await startRound({ sock, jid, senderNumber, messageObj, isFromGroup, type: 'tebakkata' });
+  if (['tebaklagu', 'lagu', 'musicquiz', 'tebakmusik'].includes(command)) return await startRound({ sock, jid, senderNumber, messageObj, isFromGroup, type: 'tebaklagu' });
 
   if (['truth', 'dare', 'tod'].includes(command)) {
     if (isOnCooldown(`${scope}:truth`, 5000)) return true;
@@ -1549,7 +1542,7 @@ Gunakan kupon ini saat checkout belanja di bot dengan mengetik:
     }
 
     const selected = exchangeRates[option - 1];
-    const deductRes = await db.deductCustomerPoints(senderNumber, selected.cost, `TUKAR_REWARD_${selected.id}`);
+    const deductRes = await db.deductGamePoints(senderNumber, selected.cost);
     if (!deductRes.success) {
       await send(sock, jid, messageObj, `❌ Poin kamu tidak mencukupi untuk menukar *${selected.name}* (Poin kamu: *${currentPoints} Poin*, Dibutuhkan: *${selected.cost} Poin*).`);
       return true;

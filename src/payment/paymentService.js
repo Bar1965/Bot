@@ -17,7 +17,8 @@ export async function createPayment(orderId, subtotal) {
     orderId,
     qrisData.transactionId,
     qrisData.totalAmount,
-    15
+    15,
+    qrisData.qrString
   );
 
   return {

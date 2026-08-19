@@ -3,7 +3,8 @@ const categories = {
     title: '🛍️ PRODUK & JUALAN',
     aliases: ['1', 'jualan', 'produk', 'list', 'katalog'],
     commands: [
-      ['.list / .produk', 'Lihat katalog & sisa stok produk'],
+      ['.list / .produk', 'Lihat katalog produk ringkas'],
+      ['.p <kode> / .detail <kode>', 'Lihat deskripsi & detail produk'],
       ['.beli <kode> <jumlah>', 'Tambah produk ke keranjang'],
       ['.lapak', 'Lihat / buka lapak reseller komunitas'],
       ['.lapak add <nama> <harga> <stok> <isi>', 'Buka lapak (Premium)'],
@@ -19,6 +20,7 @@ const categories = {
       ['.keranjang', 'Lihat keranjang belanja'],
       ['.checkout', 'Buat tagihan pembayaran'],
       ['.status', 'Cek status pesanan terakhir'],
+      ['.garansi [orderId]', 'Cek masa garansi & klaim akun'],
       ['.riwayat', 'Lihat riwayat pesanan'],
       ['.batal', 'Batalkan pesanan aktif']
     ]
@@ -129,7 +131,8 @@ const categories = {
       ['.ping', 'Cek status dan kecepatan bot'],
       ['.listfitur / .fiturgrup', 'Lihat daftar & status fitur grup yang bisa diatur'],
       ['.autodl <on/off>', 'Aktif/nonaktifkan auto-download video TikTok & IG'],
-      ['.levelup <on/off>', 'Aktif/nonaktifkan notif naik level di grup'],
+      ['.levelup <on/off>', 'Aktif/nonaktifkan notif kartu naik level di grup ini'],
+      ['.globallevelup <on/off>', 'Matikan/aktifkan naik level di semua grup (Owner)'],
       ['.mode <jualan/all>', 'Atur mode grup'],
       ['.tagall <pesan>', 'Mention anggota grup'],
       ['.daftar <nama>', 'Daftar profil member'],
