@@ -1019,17 +1019,20 @@ export async function startBot(onSocketReady) {
     }
 
     // REGISTRATION CHECK
-    const isReg = await db.isCustomerRegistered(senderNumber);
-    if (!isReg) {
-      const senderMention = senderNumber.split('@')[0];
-      const regNotice = `⚠️ *AKSES DITOLAK — REGISTRASI DIPERLUKAN* ⚠️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nHalo @${senderMention}! Anda harus terdaftar sebagai member terlebih dahulu untuk menggunakan fitur media & downloader ini (100% Gratis & Cepat).\n\n📌 *Cara Pendaftaran (Hanya 5 Detik):*\nKetik: \`.daftar Nama Kamu\`\n\n_Contoh:_ \`.daftar Budi Santoso\`\n\nSetelah terdaftar, Anda dapat langsung menikmati semua fitur bot! 🙏`;
-      await sendInteractiveButtons(sock, jid, {
-        text: regNotice,
-        buttons: [
-          { type: 'copy', text: '📋 Salin Format .daftar', copy_code: '.daftar ' }
-        ]
-      });
-      return true;
+    const exemptMediaCmds = ['owner', 'kontakowner', 'ping', 'p', 'statusbot', 'invoice', 'struk', 'tagall', 'hidetag', 'everyone'];
+    if (!exemptMediaCmds.includes(cleanCmd)) {
+      const isReg = await db.isCustomerRegistered(senderNumber);
+      if (!isReg) {
+        const senderMention = senderNumber.split('@')[0];
+        const regNotice = `⚠️ *AKSES DITOLAK — REGISTRASI DIPERLUKAN* ⚠️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nHalo @${senderMention}! Anda harus terdaftar sebagai member terlebih dahulu untuk menggunakan fitur media & downloader ini (100% Gratis & Cepat).\n\n📌 *Cara Pendaftaran (Hanya 5 Detik):*\nKetik: \`.daftar Nama Kamu\`\n\n_Contoh:_ \`.daftar Budi Santoso\`\n\nSetelah terdaftar, Anda dapat langsung menikmati semua fitur bot! 🙏`;
+        await sendInteractiveButtons(sock, jid, {
+          text: regNotice,
+          buttons: [
+            { type: 'copy', text: '📋 Salin Format .daftar', copy_code: '.daftar ' }
+          ]
+        });
+        return true;
+      }
     }
 
     const react = async (emoji) => {

@@ -357,6 +357,34 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     return false;
   }
 
+  const knownFunCmds = [
+    'afk', 'rampok', 'curi', 'ww', 'werewolf',
+    'jawab', 'answer', 'hint',
+    'quiz', 'trivia', 'tebakquiz', 'tebakemoji', 'emoji', 'tebakkata', 'hangman', 'kata',
+    'tebaklagu', 'lagu', 'musicquiz', 'tebakmusik',
+    'truth', 'dare', 'tod', 'dadu', 'dice', 'coinflip', 'koin', 'coin',
+    'sambungkata', 'wordchain', 'daily', 'harian', 'reward',
+    'addpoint', 'addpoints', 'tambahpoin',
+    'poin', 'point', 'profile', 'level', 'me',
+    'rank', 'leaderboard', 'top', 'misi', 'mission', 'challenge',
+    'giveaway', 'setpoints', 'bagipoin', 'kompensasi',
+    'badge', 'badges', 'achievement', 'achievements',
+    'rekomendasi', 'recommend', 'saranproduk',
+    'poll', 'voting', 'vote', 'love', 'jodoh', 'compatibility',
+    'zodiak', 'zodiac', 'horoscope',
+    'freegames', 'freegame', 'gamegratis', 'freegamestag',
+    'slot', 'slots', 'judi',
+    'torebot', 'tochipmunk', 'todeep', 'toecho',
+    'tebakangka', 'tebak', 'spin', 'luckyspin',
+    'suit', 'pilihsuit', 'cancelsuit', 'batalsuit',
+    'tukar', 'pointshop', 'penukaran',
+    'fun', 'game', 'games', 'hiburan'
+  ];
+
+  if (!knownFunCmds.includes(command)) {
+    return false;
+  }
+
   // REGISTRATION CHECK: User non-admin yang belum daftar tidak boleh menggunakan fitur game/fun
   const isReg = await db.isCustomerRegistered(senderNumber);
   if (!isReg && !isAdmin && !isOwner) {
