@@ -8,11 +8,12 @@ import { createMidtransTransaction, botState } from '../../server.js';
 import { buildCommandMenu } from '../../commandRegistry.js';
 import * as mediaHandler from '../../mediaHandler.js';
 import * as ent from '../../entertainmentHandler.js';
-import { sendInteractiveButtons, extractTargetJid, parseDuration, logToSystem, broadcastTagAll } from '../../bot.js';
-import { triggerRestockBroadcast, checkAndNotifySubscribers, backupDatabase } from '../../scheduler.js';
+import { sendInteractiveButtons, extractTargetJid, parseDuration, logToSystem, broadcastTagAll, triggerRestockBroadcast, checkAndNotifySubscribers } from '../../bot.js';
+import { backupDatabase } from '../../scheduler.js';
 
 export function createGroupAdminHandler(ctx) {
-    const { sock, botSettings, userPushNamesMap, messageCache, formatPhoneNumber, react, sendInteractiveButtons } = ctx;
+    const { sock, userPushNamesMap, messageCache, formatPhoneNumber, react, sendInteractiveButtons } = ctx;
+    let botSettings = ctx.botSettings || {};
 
     return async function handleGroupMessage(jid, senderNumber, messageObj, text, isGroupAdminParam, isPrefixCmd, actor = {}) {
   // STRICT RULE: Semua perintah WAJIB diawali prefix . / # (TIDAK ADA perintah tanpa prefix)
@@ -227,7 +228,7 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
       }
 
       await db.updateSettings({ ownerJid: senderNormalized });
-      botSettings = await db.getSettings();
+      Object.assign(botSettings, await db.getSettings());
       await sock.sendMessage(jid, { text: `✅ *Owner JID Berhasil Didaftarkan!*
 
 🆔 JID Tersimpan: \`${senderNormalized}\`
@@ -247,7 +248,7 @@ Sekarang Anda akan dikenali sebagai Owner di semua grup meskipun menggunakan sis
       const newStatus = !currentAntiDelete;
       
       await db.updateSettings({ antiDelete: newStatus.toString() });
-      botSettings = await db.getSettings(); // Reload config
+      Object.assign(botSettings, await db.getSettings()); // Reload config
       
       const statusText = newStatus ? "✅ *AKTIF*" : "❌ *NONAKTIF*";
       await sock.sendMessage(jid, { text: `Fitur *Anti-Delete (Rewind)* sekarang ${statusText}.\n\nJika aktif, bot akan menangkap pesan yang dihapus oleh pengirim dan menampilkannya kembali.` });
@@ -477,7 +478,7 @@ Moderataor dapat menggunakan \`.ban\` dan \`.unban\`.` });
         return true;
       }
       await db.updateSettings({ storeName: newName, botName: newName });
-      botSettings = await db.getSettings(); // Bug Fix: was getBotSettings (tidak ada)
+      Object.assign(botSettings, await db.getSettings());
       await sock.sendMessage(jid, { text: `✅ Nama Toko / Bot berhasil diperbarui menjadi: *${newName}*` });
       return true;
     }
@@ -495,7 +496,7 @@ Moderataor dapat menggunakan \`.ban\` dan \`.unban\`.` });
       }
       const newOwnerJid = `${newNum}@s.whatsapp.net`;
       await db.updateSettings({ ownerNumber: newOwnerJid });
-      botSettings = await db.getSettings(); // Bug Fix: was getBotSettings (tidak ada)
+      Object.assign(botSettings, await db.getSettings());
       await sock.sendMessage(jid, { text: `✅ Nomor Owner utama berhasil diperbarui ke: *+${newNum}*` });
       return true;
     }
