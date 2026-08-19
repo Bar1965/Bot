@@ -41,8 +41,26 @@ let sock = null;
 let botSettings = {};
 const userPushNamesMap = new Map();
 
+// Group Metadata Cache (TTL: 3 Menit)
+const groupMetaCache = new Map();
+const GROUP_META_TTL = 3 * 60 * 1000;
+
+async function getCachedGroupMetadata(sockInstance, groupJid) {
+  const cached = groupMetaCache.get(groupJid);
+  if (cached && (Date.now() - cached.timestamp < GROUP_META_TTL)) {
+    return cached.data;
+  }
+  try {
+    const data = await sockInstance.groupMetadata(groupJid);
+    groupMetaCache.set(groupJid, { data, timestamp: Date.now() });
+    return data;
+  } catch (e) {
+    return cached?.data || null;
+  }
+}
+
 // Helper parsing durasi waktu untuk ban sementara
-function parseDuration(argsList) {
+export function parseDuration(argsList) {
   if (argsList.length === 0) {
     return { expiresAt: null, consumed: 0, durationText: 'Permanen' };
   }
@@ -299,8 +317,24 @@ export async function broadcastTagAll(sock, groupId, messageText) {
 
 // Rate Limiter Storage: Map<senderJid, number[]>
 const userMessageTimestamps = new Map();
-// Storage penghitung pesan tidak dikenal per pelanggan: Map<senderNumber, number>
-const unknownMessageCounter = new Map();
+const MAX_RATE_LIMITER_ENTRIES = 5000;
+
+// Periodic Sweep setiap 10 menit untuk membersihkan data rate limiter usang
+setInterval(() => {
+  const now = Date.now();
+  for (const [jid, timestamps] of userMessageTimestamps.entries()) {
+    const valid = (timestamps || []).filter(t => now - t < 10000);
+    if (valid.length === 0) {
+      userMessageTimestamps.delete(jid);
+    } else {
+      userMessageTimestamps.set(jid, valid);
+    }
+  }
+  if (userMessageTimestamps.size > MAX_RATE_LIMITER_ENTRIES) {
+    const keysToDelete = Array.from(userMessageTimestamps.keys()).slice(0, 1000);
+    keysToDelete.forEach(k => userMessageTimestamps.delete(k));
+  }
+}, 10 * 60 * 1000);
 
 export function extractTargetJid(m, args) {
   if (!m) return null;
@@ -547,7 +581,7 @@ export async function reloadBotSettings() {
 }
 
 // Fungsi Helper untuk mengirim log sistem (DB & Log Group WhatsApp jika terpisah)
-async function logToSystem(type, text) {
+export async function logToSystem(type, text) {
   console.log(`[${type}] ${text}`);
   // Catat ke tabel log SQLite (bisa dilihat via Web Dashboard -> Tab Bot Status -> Log Aktivitas Bot)
   await db.addLog(type, text);
@@ -794,9 +828,15 @@ export async function startBot(onSocketReady) {
       botState.sock = null;
       botState.reconnectCount = (botState.reconnectCount || 0) + 1;
 
-      const statusCode = lastDisconnect?.error instanceof Boom 
-        ? lastDisconnect.error.output?.statusCode 
-        : null;
+      // Hentikan Fulfillment Worker saat offline agar tidak membuang kuota retry
+      try {
+        const { stopFulfillmentWorker } = await import('./src/payment/fulfillmentWorker.js');
+        stopFulfillmentWorker();
+      } catch (e) {}
+
+      const statusCode = lastDisconnect?.error?.output?.statusCode || 
+                         lastDisconnect?.error?.statusCode || 
+                         (lastDisconnect?.error instanceof Boom ? lastDisconnect.error.output?.statusCode : null);
 
       botState.lastDisconnectReason = statusCode;
         
@@ -807,8 +847,15 @@ export async function startBot(onSocketReady) {
       console.log(`[SOCKET_STATE] Connection CLOSED. StatusCode: ${statusCode}, ShouldReconnect: ${shouldReconnect}`);
       
       if (shouldReconnect) {
-        await logToSystem('SYSTEM', `[SOCKET] Terputus (${statusCode}). Reconnect #${botState.reconnectCount} dalam 5 detik...`);
-        setTimeout(() => startBot(onSocketReady), 5000);
+        if (!botState.isReconnecting) {
+          botState.isReconnecting = true;
+          const delayMs = statusCode === DisconnectReason.restartRequired ? 1000 : 5000;
+          await logToSystem('SYSTEM', `[SOCKET] Terputus (${statusCode}). Reconnect #${botState.reconnectCount} dalam ${delayMs / 1000}s...`);
+          setTimeout(async () => {
+            botState.isReconnecting = false;
+            await startBot(onSocketReady);
+          }, delayMs);
+        }
       } else {
         if (statusCode === DisconnectReason.connectionReplaced) {
           console.warn("⚠️ [SOCKET] Connection Replaced (405). Sesi dipasang di instance lain.");
@@ -823,6 +870,8 @@ export async function startBot(onSocketReady) {
       botState.whatsappConnected = true;
       botState.sock = sock;
       botState.lastReconnect = Date.now();
+      botState.reconnectCount = 0;
+      botState.isReconnecting = false;
 
       console.log('[SOCKET_STATE] Connection OPEN. Session & Signal Keys synchronized.');
       await logToSystem('SYSTEM', '🟢 Bot WhatsApp Sales ONLINE & Signal Session Synchronized!');
@@ -1166,6 +1215,28 @@ export async function startBot(onSocketReady) {
       } else {
         await react('❌');
         await sock.sendMessage(jid, { text: `❌ ${res.message || 'Gagal mengunduh video Facebook.'}` });
+      }
+      return true;
+    }
+
+    // Twitter / X Downloader (.tw, .twitter, .x)
+    if (['tw', 'twitter', 'x'].includes(cleanCmd)) {
+      const url = args[1] || (msgText.match(/https?:\/\/[^\s]+/i)?.[0]);
+      if (!url || (!url.includes('twitter.com') && !url.includes('x.com'))) {
+        await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Harap sertakan link Twitter/X yang valid.\n\n_Contoh:_ `.tw https://x.com/username/status/xxxx`" });
+        return true;
+      }
+      await react('⏳');
+      const res = await mediaHandler.downloadTwitter(url);
+      if (res.success && (res.buffer || res.videoUrl)) {
+        await sock.sendMessage(jid, { 
+          video: res.buffer || { url: res.videoUrl }, 
+          caption: `🐦 *${res.title || 'Twitter / X Media'}*\n\n✅ *Berhasil diunduh via Akbar Store Bot*` 
+        });
+        await react('✅');
+      } else {
+        await react('❌');
+        await sock.sendMessage(jid, { text: `❌ ${res.message || 'Gagal mengunduh media Twitter/X.'}` });
       }
       return true;
     }
@@ -2308,6 +2379,9 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
       userPushNamesMap,
       messageCache,
       formatPhoneNumber,
+      checkIsUserInGroup,
+      sendQris,
+      logToSystem,
       sendInteractiveButtons: (...args) => sendInteractiveButtons(sock, ...args),
       react: async (jid, emoji, key) => { await sock.sendMessage(jid, { react: { text: emoji, key: key } }) }
   };
@@ -2355,7 +2429,7 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
         const jid = m.key.remoteJid;
         const isGroup = jid.endsWith('@g.us');
         const sender = m.key.participant || jid;
-        const senderNormalized = jidNormalizedUser(sender);
+        let senderNormalized = jidNormalizedUser(sender);
         const isFromMe = m.key.fromMe;
         
         if (isGroup && !isFromMe) {
@@ -2373,7 +2447,7 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
         // Masalah: WhatsApp kini kirim pesan dari grup sebagai @lid (bukan nomor HP)
         // Solusi: cek ownerJid yang tersimpan + mapping metadata grup
         // ====================================================================
-        const senderCleanJid = jidNormalizedUser(senderNormalized);
+        let senderCleanJid = jidNormalizedUser(senderNormalized);
         const extractDigits = (s) => s ? String(s).replace(/[^0-9]/g, '') : '';
         const senderDigits = extractDigits(senderCleanJid);
         const ownerPhoneDigits = extractDigits(botSettings.ownerNumber || config.defaults.ownerNumber || '');
@@ -2394,33 +2468,41 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
         let isStoreAdmin = adminEntries.some(adm => senderDigits.length > 6 && (senderDigits === adm || senderDigits.endsWith(adm) || adm.endsWith(senderDigits)));
         let isAdmin = isOwnerSender || isStoreAdmin;
 
-        // Di GRUP: cek status admin grup via groupMetadata & resolusi LID -> Phone Owner/Admin
+        // Di GRUP: cek status admin grup via groupMetadata & resolusi LID -> Phone Owner/Admin/Customer
         if (isGroup) {
           try {
-            const groupMeta = await sock.groupMetadata(jid);
-            const pMatch = groupMeta.participants.find(p => {
-              const pCleanId = jidNormalizedUser(p.id);
-              const pCleanLid = p.lid ? jidNormalizedUser(p.lid) : null;
-              return pCleanId === senderCleanJid || pCleanLid === senderCleanJid ||
-                     (p.id && senderCleanJid.includes(p.id.split('@')[0])) ||
-                     (p.lid && senderCleanJid.includes(p.lid.split('@')[0]));
-            });
-            if (pMatch) {
-              if (pMatch.admin === 'admin' || pMatch.admin === 'superadmin') {
-                isGroupAdmin = true;
-              }
-              const pPhone = extractDigits(pMatch.id);
-              // Resolusi Owner jika pengirim memakai LID di grup
-              if (ownerPhoneDigits && pPhone && (pPhone === ownerPhoneDigits || pPhone.endsWith(ownerPhoneDigits) || ownerPhoneDigits.endsWith(pPhone))) {
-                isOwnerSender = true;
-                if (pMatch.lid && (!botSettings.ownerJid || botSettings.ownerJid !== jidNormalizedUser(pMatch.lid))) {
-                  botSettings.ownerJid = jidNormalizedUser(pMatch.lid);
-                  db.updateSettings({ ownerJid: botSettings.ownerJid }).catch(() => {});
+            const groupMeta = await getCachedGroupMetadata(sock, jid);
+            if (groupMeta && groupMeta.participants) {
+              const pMatch = groupMeta.participants.find(p => {
+                const pCleanId = jidNormalizedUser(p.id);
+                const pCleanLid = p.lid ? jidNormalizedUser(p.lid) : null;
+                return pCleanId === senderCleanJid || pCleanLid === senderCleanJid ||
+                       (p.id && senderCleanJid.includes(p.id.split('@')[0])) ||
+                       (p.lid && senderCleanJid.includes(p.lid.split('@')[0]));
+              });
+              if (pMatch) {
+                // Resolusi LID ke Phone JID (@s.whatsapp.net) jika tersedia
+                if (pMatch.id && pMatch.id.endsWith('@s.whatsapp.net')) {
+                  senderNormalized = jidNormalizedUser(pMatch.id);
+                  senderCleanJid = senderNormalized;
                 }
-              }
-              // Resolusi Admin Toko jika pengirim memakai LID di grup
-              if (pPhone && adminEntries.some(adm => pPhone === adm || pPhone.endsWith(adm) || adm.endsWith(pPhone))) {
-                isStoreAdmin = true;
+
+                if (pMatch.admin === 'admin' || pMatch.admin === 'superadmin') {
+                  isGroupAdmin = true;
+                }
+                const pPhone = extractDigits(pMatch.id);
+                // Resolusi Owner jika pengirim memakai LID di grup
+                if (ownerPhoneDigits && pPhone && (pPhone === ownerPhoneDigits || pPhone.endsWith(ownerPhoneDigits) || ownerPhoneDigits.endsWith(pPhone))) {
+                  isOwnerSender = true;
+                  if (pMatch.lid && (!botSettings.ownerJid || botSettings.ownerJid !== jidNormalizedUser(pMatch.lid))) {
+                    botSettings.ownerJid = jidNormalizedUser(pMatch.lid);
+                    db.updateSettings({ ownerJid: botSettings.ownerJid }).catch(() => {});
+                  }
+                }
+                // Resolusi Admin Toko jika pengirim memakai LID di grup
+                if (pPhone && adminEntries.some(adm => pPhone === adm || pPhone.endsWith(adm) || adm.endsWith(pPhone))) {
+                  isStoreAdmin = true;
+                }
               }
             }
           } catch (e) {
@@ -2556,25 +2638,35 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
 
             const xpResult = await db.addMessageXp(senderNormalized, 10);
             if (xpResult.leveledUp && isGroupLevelUpEnabled) {
-              let userAvatar = null;
-              try { userAvatar = await sock.profilePictureUrl(senderNormalized, 'image'); } catch (e) {}
-
-              const senderName = m.pushName || senderNormalized.split('@')[0];
-              const cardBuffer = await createLevelUpCard({
-                avatarUrl: userAvatar,
-                username: senderName,
-                oldLevel: xpResult.oldLevel,
-                newLevel: xpResult.newLevel,
-                titleBadge: xpResult.titleBadge,
-                xp: xpResult.xp
-              });
-
               const userTag = `@${senderNormalized.split('@')[0]}`;
-              await sock.sendMessage(jid, {
-                image: cardBuffer,
-                caption: `🎉 *SELAMAT ${userTag}!* Kamu telah naik ke *Level ${xpResult.newLevel}*!\n🏆 *Rank:* ${xpResult.titleBadge}`,
-                mentions: [senderNormalized]
-              }, { quoted: m });
+              const captionText = `🎉 *SELAMAT ${userTag}!* Kamu telah naik ke *Level ${xpResult.newLevel}*!\n🏆 *Rank:* ${xpResult.titleBadge}\n✨ *Total XP:* ${(xpResult.xp || 0).toLocaleString('id-ID')} XP`;
+
+              try {
+                let userAvatar = null;
+                try { userAvatar = await sock.profilePictureUrl(senderNormalized, 'image'); } catch (e) {}
+
+                const senderName = m.pushName || senderNormalized.split('@')[0];
+                const cardBuffer = await createLevelUpCard({
+                  avatarUrl: userAvatar,
+                  username: senderName,
+                  oldLevel: xpResult.oldLevel,
+                  newLevel: xpResult.newLevel,
+                  titleBadge: xpResult.titleBadge,
+                  xp: xpResult.xp
+                });
+
+                await sock.sendMessage(jid, {
+                  image: cardBuffer,
+                  caption: captionText,
+                  mentions: [senderNormalized]
+                }, { quoted: m });
+              } catch (canvasErr) {
+                console.warn('[LEVEL_UP_CARD_FAIL] Mengirim fallback teks:', canvasErr.message);
+                await sock.sendMessage(jid, {
+                  text: captionText,
+                  mentions: [senderNormalized]
+                }, { quoted: m });
+              }
             }
           } catch (e) {
             console.error('[LEVEL_UP_ERR]', e.message);
@@ -2826,9 +2918,18 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
           const routerArgs = msgText.trim().split(/\s+/);
           const routerRawCmd = routerArgs[0].toLowerCase();
           const routerCleanCmd = routerRawCmd.replace(/^[./#]/, '');
+
+          // Check sesi penggabungan PDF aktif di grup
+          const isPdfMergeFile = await checkPdfMergeSession(sock, m, senderNormalized, jid);
+          if (isPdfMergeFile) continue;
+
           const isPlugin = await executePlugin(routerCleanCmd, { sock, jid, senderNumber: senderNormalized, m, msgText, args: routerArgs, cleanCmd: routerCleanCmd, isAdmin });
 
           if (!isPlugin) {
+            // Check perintah PDF di grup (.pdf, .pdfmerge, .topdf, dll)
+            const isPdfCmd = await handlePdfCommands(sock, m, senderNormalized, jid, routerCleanCmd, routerArgs, true, null);
+            if (isPdfCmd) continue;
+
             const isPrem = await handlePremiumCommand({ sock, jid, senderNumber: senderNormalized, messageObj: m, args: routerArgs, cleanCmd: routerCleanCmd, isAdmin, isOwner: isOwnerSender });
             if (!isPrem) {
               const isFun = await handleFunCommand({ sock, jid, senderNumber: senderNormalized, messageObj: m, text: msgText, args: routerArgs, cleanCmd: routerCleanCmd, isFromGroup: true, isAdmin, isOwner: isOwnerSender });
@@ -2852,27 +2953,30 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
   });
 
   // ==========================================
-  // CRON JOB: GROUP RENTALS AUTO-LEAVE
+  // CRON JOB: GROUP RENTALS AUTO-LEAVE (SINGLETON)
   // ==========================================
-  setInterval(async () => {
-    try {
-      const expiredGroups = await db.getExpiredGroupRentals();
-      for (const rent of expiredGroups) {
-        console.log(`[GROUP RENTAL] Waktu sewa habis untuk grup ${rent.group_jid}`);
-        try {
-          await sock.sendMessage(rent.group_jid, { text: `Waktu sewa bot di grup ini telah habis. Hubungi owner untuk memperpanjang.\n\nBye! 👋` });
-          // Tunggu sebentar sebelum keluar agar pesan terkirim
-          await new Promise(r => setTimeout(r, 2000));
-          await sock.groupLeave(rent.group_jid);
-        } catch (e) {
-          console.error(`[GROUP RENTAL] Gagal leave grup ${rent.group_jid}:`, e.message);
+  if (!global.groupRentalCronStarted) {
+    global.groupRentalCronStarted = true;
+    setInterval(async () => {
+      try {
+        if (!sock || !botState.whatsappConnected) return;
+        const expiredGroups = await db.getExpiredGroupRentals();
+        for (const rent of expiredGroups) {
+          console.log(`[GROUP RENTAL] Waktu sewa habis untuk grup ${rent.group_jid}`);
+          try {
+            await sock.sendMessage(rent.group_jid, { text: `Waktu sewa bot di grup ini telah habis. Hubungi owner untuk memperpanjang.\n\nBye! 👋` });
+            await new Promise(r => setTimeout(r, 2000));
+            await sock.groupLeave(rent.group_jid);
+          } catch (e) {
+            console.error(`[GROUP RENTAL] Gagal leave grup ${rent.group_jid}:`, e.message);
+          }
+          await db.removeGroupRental(rent.group_jid);
         }
-        await db.removeGroupRental(rent.group_jid);
+      } catch (err) {
+        console.error('[GROUP RENTAL CRON] Error:', err.message);
       }
-    } catch (err) {
-      console.error('[GROUP RENTAL CRON] Error:', err.message);
-    }
-  }, 60 * 60 * 1000); // Berjalan setiap 1 jam
+    }, 60 * 60 * 1000); // Berjalan setiap 1 jam
+  }
 
 }
 

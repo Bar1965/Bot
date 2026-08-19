@@ -25,7 +25,14 @@ export function initWebSocket(httpServer) {
       .split(';')
       .map(cookie => cookie.trim())
       .find(cookie => cookie.startsWith('auth_token='));
-    const cookieToken = sessionCookie ? decodeURIComponent(sessionCookie.slice('auth_token='.length)) : null;
+    let cookieToken = null;
+    if (sessionCookie) {
+      try {
+        cookieToken = decodeURIComponent(sessionCookie.slice('auth_token='.length));
+      } catch (e) {
+        cookieToken = sessionCookie.slice('auth_token='.length);
+      }
+    }
     const token = socket.handshake.auth?.token || socket.handshake.headers?.token || cookieToken;
     if (!token) {
       return next(new Error("Authentication error: Token missing"));
@@ -47,12 +54,14 @@ export function initWebSocket(httpServer) {
     socket.join('admin');
 
     // Menangani event pengetikan dari admin (typing/composing)
-    socket.on('admin_typing', async ({ customerJid, isTyping }) => {
+    socket.on('admin_typing', async (data = {}) => {
+      const { customerJid, isTyping } = data;
+      if (!customerJid) return;
       // Siarkan pengetikan ke admin lain di dashboard
       socket.to('admin').emit('admin_typing_status', { 
         customerJid, 
         adminUsername: socket.user.username, 
-        isTyping 
+        isTyping: !!isTyping 
       });
 
       // Kirim status pengetikan (composing/paused) ke WhatsApp customer melalui Baileys

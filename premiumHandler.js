@@ -3,6 +3,16 @@ import { sendInteractiveButtons } from './bot.js';
 
 const aiContextMap = new Map();
 
+// Bersihkan konteks AI yang tidak aktif lebih dari 30 menit setiap 10 menit
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, val] of aiContextMap.entries()) {
+    if (val && val.lastActive && (now - val.lastActive > 30 * 60 * 1000)) {
+      aiContextMap.delete(key);
+    }
+  }
+}, 10 * 60 * 1000).unref?.();
+
 // ============================================================
 // KONFIGURASI TIER PREMIUM
 // ============================================================
@@ -247,10 +257,8 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
         }
       } else {
         // Conversational AI context
-        if (!aiContextMap.has(senderNumber)) {
-          aiContextMap.set(senderNumber, []);
-        }
-        const context = aiContextMap.get(senderNumber);
+        const session = aiContextMap.get(senderNumber) || { messages: [], lastActive: Date.now() };
+        const context = session.messages || [];
         
         let contextualPrompt = "";
         if (context.length > 0) {
@@ -270,7 +278,7 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
         if (context.length > 5) {
           context.shift();
         }
-        aiContextMap.set(senderNumber, context);
+        aiContextMap.set(senderNumber, { messages: context, lastActive: Date.now() });
       }
 
       await db.incrementAiUsage(senderNumber);

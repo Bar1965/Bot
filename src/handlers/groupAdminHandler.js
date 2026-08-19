@@ -1,3 +1,6 @@
+import fs from 'fs';
+import path from 'path';
+import { exec } from 'child_process';
 import * as db from '../../database.js';
 import { config } from '../../config.js';
 import { jidNormalizedUser } from '@whiskeysockets/baileys';
@@ -5,7 +8,8 @@ import { createMidtransTransaction, botState } from '../../server.js';
 import { buildCommandMenu } from '../../commandRegistry.js';
 import * as mediaHandler from '../../mediaHandler.js';
 import * as ent from '../../entertainmentHandler.js';
-import { sendInteractiveButtons, extractTargetJid } from '../../bot.js';
+import { sendInteractiveButtons, extractTargetJid, parseDuration, logToSystem, broadcastTagAll } from '../../bot.js';
+import { triggerRestockBroadcast, checkAndNotifySubscribers, backupDatabase } from '../../scheduler.js';
 
 export function createGroupAdminHandler(ctx) {
     const { sock, botSettings, userPushNamesMap, messageCache, formatPhoneNumber, react, sendInteractiveButtons } = ctx;
@@ -29,14 +33,15 @@ export function createGroupAdminHandler(ctx) {
     'paid', 'done', 'cancel', 'flashsale', 'stats', 'broadcast', 'addcoupon', 
     'delcoupon', 'listcoupon', 'addfaq', 'delfaq', 'listfaq', 'laporan', 
     'restock', 'stock', 'price', 'out', 'ready', 'addproduct', 'takeover', 
-    'release', 'setname', 'setowner', 'eval', 'exec', 'backup'
+    'release', 'setname', 'setowner', 'eval', 'exec', 'backup', 'resetleaderboard'
   ];
 
   const groupModerationCommands = [
     'add', 'kick', 'promote', 'demote', 'group', 'link', 'tagall', 'hidetag', 
     'everyone', 'admins', 'mode', 'setmode', 'botmode', 'antilink', 'welcome', 
-    'autowelcomeswitch', 'setwelcome', 'setupdategroup', 'autosholat', 'levelup', 'autolevelup',
-    'globallevelup', 'setlevelup',
+    'autowelcomeswitch', 'setwelcome', 'setupdategroup', 'testupdate', 'autosholat', 'levelup', 'autolevelup',
+    'globallevelup', 'setlevelup', 'fitur', 'open', 'close', 'del', 'delete', 'totalchat', 'ceksewabot', 'sponsor',
+    'textwelcome', 'textleave',
     'autodl', 'autodownload', 'listfitur', 'fiturgrup', 'groupfeatures'
   ];
 
@@ -932,92 +937,8 @@ Mode Saat Ini: *${modeLabel}*
       return true;
     }
 
-    if (cleanCmd === 'broadcast') {
-      if (!isOwner) {
-        await sock.sendMessage(jid, { text: "❌ Perintah ini hanya dapat dijalankan oleh Pemilik (Owner) bot." });
-        return true;
-      }
-      const broadcastMsg = args.slice(1).join(' ');
-      if (!broadcastMsg) {
-        await sock.sendMessage(jid, { text: "⚠️ Format salah. Gunakan: `.broadcast [PESAN]`" });
-        return true;
-      }
-      
-      const delayVal = botSettings.broadcastDelay || config.defaults.broadcastDelay;
-      
-      let targetGroupJids = [];
-      if (botSettings.buyerGroupId) {
-        targetGroupJids.push(botSettings.buyerGroupId);
-      } else {
-        try {
-          const groups = await sock.groupFetchAllParticipating();
-          targetGroupJids = Object.keys(groups);
-        } catch (e) {
-          console.error("Gagal mengambil daftar grup:", e.message);
-        }
-      }
-
-      if (targetGroupJids.length === 0) {
-        await sock.sendMessage(jid, { text: "⚠️ Bot belum dikonfigurasi ID Grup atau belum bergabung di grup manapun untuk siaran broadcast." });
-        return true;
-      }
-
-      await sock.sendMessage(jid, { text: `📢 Memulai broadcast ke *${targetGroupJids.length}* Grup WhatsApp...` });
-      
-      let success = 0;
-      for (const gJid of targetGroupJids) {
-        if (botState.whatsappConnected && sock) {
-          try {
-            await sock.sendMessage(gJid, { text: `📢 *PENGUMUMAN RESMI TOKO:*\n\n${broadcastMsg}` });
-            success++;
-            
-            const randomDelay = Math.floor(Math.random() * 2000) + delayVal;
-            await new Promise(resolve => setTimeout(resolve, randomDelay)); 
-          } catch (err) {
-            console.error(`Gagal kirim broadcast grup ke ${gJid}:`, err.message);
-          }
-        } else {
-          break;
-        }
-      }
-      await sock.sendMessage(jid, { text: `✅ *Broadcast selesai!*\nBerhasil dikirim ke *${success}/${targetGroupJids.length}* Grup WhatsApp.` });
-      await logToSystem('BROADCAST', `📢 Siaran pesan selesai dikirim ke ${success}/${targetGroupJids.length} Grup WhatsApp oleh Owner.`);
-      return true;
-    }
-
-    // ==========================================
-    // PERINTAH MODERASI GRUP & BOT MANAGEMENT (v2)
-    // ==========================================
-    if (isGroup && ['add', 'kick', 'promote', 'demote'].includes(cleanCmd)) {
-      const targetJid = extractTargetJid(m, args);
-      if (!targetJid) {
-        await sock.sendMessage(jid, { text: `⚠️ Format salah. Tag user atau masukkan nomor. Contoh: \`.${cleanCmd} @user\` atau \`.${cleanCmd} 628123456789\`` });
-        return true;
-      }
-      
-      const botId = sock.user?.id?.split(':')[0];
-      if (botId && targetJid.includes(botId)) {
-        await sock.sendMessage(jid, { text: `⚠️ Ditolak: Saya tidak bisa melakukan ${cleanCmd} pada diri saya sendiri.` });
-        return true;
-      }
-
-      try {
-        const actionMap = { 'add': 'add', 'kick': 'remove', 'promote': 'promote', 'demote': 'demote' };
-        const actNameMap = { 'add': 'ditambahkan', 'kick': 'dikeluarkan', 'promote': 'diangkat jadi admin', 'demote': 'diturunkan dari admin' };
-        
-        await sock.groupParticipantsUpdate(jid, [targetJid], actionMap[cleanCmd]);
-        await sock.sendMessage(jid, { text: `✅ Berhasil! Pengguna @${targetJid.split('@')[0]} telah ${actNameMap[cleanCmd]}.`, mentions: [targetJid] });
-        await db.addLog("MODERATION", `Admin (${senderNormalized}) menjalankan ${cleanCmd} pada ${targetJid} di grup ${jid}`);
-      } catch (err) {
-        await sock.sendMessage(jid, { 
-          text: `❌ Gagal menjalankan ${cleanCmd}: ${err.message}.\n\n💡 *PENTING:* Pastikan **nomor WhatsApp Bot sudah dijadikan ADMIN GRUP** di WhatsApp agar fitur moderasi (${cleanCmd}) dapat mengeksekusi tindakan.` 
-        });
-      }
-      return true;
-    }
-
     if (isGroup && cleanCmd === 'fitur') {
-      if (!isAdmin) {
+      if (!isAdminUser && !isOwner) {
         await sock.sendMessage(jid, { text: '⚠️ Perintah ini hanya untuk admin grup.' });
         return true;
       }
@@ -1082,8 +1003,7 @@ Mode Saat Ini: *${modeLabel}*
       return true;
     }
 
-      if (isGroup && cleanCmd === 'totalchat' && currentSettings.features_config && currentSettings.features_config.totalchat === false) return true;
-if (isGroup && cleanCmd === 'totalchat') {
+    if (isGroup && cleanCmd === 'totalchat') {
       try {
         const stats = await db.getTopGroupChatStats(jid, 10);
         if (!stats || stats.length === 0) {
@@ -1132,8 +1052,7 @@ if (isGroup && cleanCmd === 'totalchat') {
       return true;
     }
 
-      if (isGroup && cleanCmd === 'sponsor' && currentSettings.features_config && currentSettings.features_config.sponsor === false) return true;
-if (isGroup && cleanCmd === 'sponsor') {
+    if (isGroup && cleanCmd === 'sponsor') {
       const promoMsg = `🚀 *PROMO & SPONSOR* 🚀\n\n🌟 *Diskon Spesial Hari Ini!*\nGunakan kode voucher *PROMO20* untuk diskon 20% di toko kami.\n\nIngin mempromosikan produk Anda di bot ini? Hubungi admin/owner (.owner) untuk sewa slot iklan.`;
       await sock.sendMessage(jid, { text: promoMsg });
       return true;
@@ -1198,6 +1117,7 @@ if (isGroup && cleanCmd === 'sponsor') {
       return true;
     }
 
+    const hasAtMentionAll = (text || '').includes('@everyone') || (text || '').includes('@all') || (text || '').includes('@semua');
     if (isGroup && (cleanCmd === 'tagall' || cleanCmd === 'hidetag' || cleanCmd === 'everyone' || cleanCmd === 'all' || cleanCmd === 'semua' || hasAtMentionAll)) {
       try {
         const groupMeta = await sock.groupMetadata(jid);

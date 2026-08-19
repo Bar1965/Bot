@@ -354,8 +354,9 @@ export function getTebakGambarQuestion() {
  */
 export async function generateInvoiceImage(order) {
   try {
+    const items = order.items || [{ name: order.product_name || 'Produk Digital', qty: order.qty || 1, price: order.total_harga || 0 }];
     const width = 600;
-    const height = 750;
+    const height = Math.max(750, 450 + items.length * 40 + 120);
     const canvas = createCanvas(width, height);
     const ctx = canvas.getContext('2d');
 
@@ -407,13 +408,12 @@ export async function generateInvoiceImage(order) {
 
     // Table Items
     let y = 320;
-    const items = order.items || [{ name: order.product_name || 'Produk Digital', qty: order.qty || 1, price: order.total_harga || 0 }];
     
     items.forEach((item) => {
       ctx.fillStyle = '#333333';
       ctx.font = '15px sans-serif';
-      ctx.fillText(item.name.slice(0, 25), 45, y);
-      ctx.fillText(String(item.qty), 325, y);
+      ctx.fillText((item.name || '').slice(0, 25), 45, y);
+      ctx.fillText(String(item.qty || 1), 325, y);
       ctx.fillText(`Rp${(item.price || 0).toLocaleString('id-ID')}`, 395, y);
       ctx.fillText(`Rp${((item.price || 0) * (item.qty || 1)).toLocaleString('id-ID')}`, 485, y);
       y += 35;
@@ -442,7 +442,7 @@ export async function generateInvoiceImage(order) {
     ctx.fillStyle = '#888888';
     ctx.font = 'italic 14px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('Terima kasih telah berbelanja di Akbar Store!', width / 2, 710);
+    ctx.fillText('Terima kasih telah berbelanja di Akbar Store!', width / 2, height - 35);
 
     const pngBuf = await canvas.encode('png');
     return { success: true, buffer: pngBuf };

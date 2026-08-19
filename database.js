@@ -24,8 +24,15 @@ export function openDb() {
   });
 }
 
+let inTransaction = false;
+
 export async function withTransaction(callback) {
+  if (inTransaction) {
+    return await callback();
+  }
+
   const transaction = transactionQueue.then(async () => {
+    inTransaction = true;
     await runQuery('BEGIN IMMEDIATE');
     try {
       const result = await callback();
@@ -38,6 +45,8 @@ export async function withTransaction(callback) {
         console.error('Gagal membatalkan transaksi SQLite:', rollbackError.message);
       }
       throw error;
+    } finally {
+      inTransaction = false;
     }
   });
   transactionQueue = transaction.catch(() => undefined);
@@ -1096,6 +1105,14 @@ You can now enjoy:
   await runQuery("CREATE INDEX IF NOT EXISTS idx_financial_customer ON financial_logs(customer_nomor)");
   await runQuery("CREATE INDEX IF NOT EXISTS idx_point_logs_customer ON point_logs(customer_nomor)");
   await runQuery("CREATE INDEX IF NOT EXISTS idx_referral_referrer ON referral_verifications(referrer_nomor)");
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_orders_customer ON orders(customer_nomor)");
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_orders_status_created ON orders(status, created_at)");
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id)");
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_order_items_product ON order_items(produk_kode)");
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_product_items_code_status ON product_items(produk_kode, status)");
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_product_items_order ON product_items(order_id)");
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_customer_warnings_jid ON customer_warnings(jid)");
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_banned_users_expires ON banned_users(expires_at)");
 
   // Cleanup & Migration untuk mencegah NULL/NaN/Non-Integer points/xp di database
   await runQuery("UPDATE game_profiles SET points = 0 WHERE points IS NULL OR typeof(points) != 'integer' OR points < 0 OR points > 1000000");
@@ -1502,11 +1519,21 @@ export async function claimAndDeliverItems(orderId) {
       if (itemWarrantyMs > maxWarrantyMs) maxWarrantyMs = itemWarrantyMs;
 
       if (item.delivery_type === 'AUTO') {
-        // Ambil kredensial siap pakai
+        // Ambil kredensial siap pakai secara idempoten
+        // 1. Ambil item yang SUDAH pernah di-claim untuk order ini (idempotent recovery saat retry)
         let readyItems = await allQuery(
-          "SELECT id, data_content FROM product_items WHERE produk_kode = ? AND status = 'RESERVED' AND order_id = ? LIMIT ?",
-          [item.produk_kode, orderId, item.qty]
+          "SELECT id, data_content FROM product_items WHERE produk_kode = ? AND order_id = ? AND status = 'USED'",
+          [item.produk_kode, orderId]
         );
+        // 2. Jika belum mencukupi, ambil dari status RESERVED untuk order ini
+        if (readyItems.length < item.qty) {
+          const reservedItems = await allQuery(
+            "SELECT id, data_content FROM product_items WHERE produk_kode = ? AND status = 'RESERVED' AND order_id = ? LIMIT ?",
+            [item.produk_kode, orderId, item.qty - readyItems.length]
+          );
+          readyItems = readyItems.concat(reservedItems);
+        }
+        // 3. Fallback jika masih kurang, ambil dari status READY
         if (readyItems.length < item.qty) {
           const fallbackItems = await allQuery(
             "SELECT id, data_content FROM product_items WHERE produk_kode = ? AND status = 'READY' LIMIT ?",
@@ -3045,14 +3072,14 @@ export async function searchProducts(keyword) {
 export async function getDailySalesReport(dateStr) {
   const orders = await allQuery(
     `SELECT COUNT(*) as total_orders, COALESCE(SUM(total), 0) as total_revenue 
-     FROM orders WHERE status = 'COMPLETED' AND DATE(created_at) = ?`, [dateStr]
+     FROM orders WHERE status = 'COMPLETED' AND DATE(created_at, '+7 hours') = ?`, [dateStr]
   );
   const topProducts = await allQuery(
     `SELECT oi.produk_kode, p.nama, SUM(oi.qty) as total_qty, SUM(oi.subtotal) as total_sales
      FROM order_items oi
      JOIN orders o ON oi.order_id = o.order_id
      JOIN products p ON oi.produk_kode = p.kode
-     WHERE o.status = 'COMPLETED' AND DATE(o.created_at) = ?
+     WHERE o.status = 'COMPLETED' AND DATE(o.created_at, '+7 hours') = ?
      GROUP BY oi.produk_kode ORDER BY total_qty DESC LIMIT 5`, [dateStr]
   );
   const lowStockProducts = await allQuery(
@@ -3369,7 +3396,7 @@ export async function updateProductLastState(kode, lastPrice, lastStockStatus) {
 
 export async function getPremiumUser(jid) {
   const row = await getQuery(
-    "SELECT * FROM premium_users WHERE jid = ? AND expires_at > datetime('now')",
+    "SELECT * FROM premium_users WHERE jid = ? AND datetime(expires_at) > datetime('now')",
     [jid]
   );
   return row || null;
@@ -3741,6 +3768,15 @@ export async function markTransactionPaid(casakuTransactionId, receivedAmount) {
       await addCustomerBalance(tx.customer_nomor, tx.expected_amount, 'DEPOSIT', `Top-up deposit via QRIS #${tx.order_id}`);
       await addLog('BALANCE', `💰 Auto-deposit Rp${tx.expected_amount.toLocaleString('id-ID')} berhasil via Casaku QRIS untuk ${tx.customer_nomor}`);
     } else {
+      // Redim kupon jika ada
+      if (tx.coupon_code && !tx.coupon_redeemed) {
+        await runQuery(
+          "UPDATE coupons SET used_count = used_count + 1 WHERE code = ? AND (max_uses = 0 OR used_count < max_uses)",
+          [tx.coupon_code]
+        );
+        await runQuery("UPDATE orders SET coupon_redeemed = 1 WHERE order_id = ?", [tx.order_id]);
+      }
+
       // Award 10 Poin per Rp10.000 spent for real product purchases
       const pointsAwarded = Math.floor(receivedAmount / 10000) * 10;
       if (pointsAwarded > 0) {
@@ -3790,6 +3826,16 @@ export async function getPendingFulfillmentJobs() {
      JOIN orders o ON fj.order_id = o.order_id
      WHERE fj.status IN ('PENDING', 'FAILED')
      ORDER BY fj.created_at ASC`
+  );
+}
+
+/**
+ * Set a fulfillment job status to PROCESSING without incrementing attempt count.
+ */
+export async function setFulfillmentJobProcessing(jobId) {
+  await runQuery(
+    `UPDATE fulfillment_jobs SET status = 'PROCESSING', updated_at = ? WHERE job_id = ?`,
+    [Date.now(), jobId]
   );
 }
 
@@ -3852,6 +3898,10 @@ export async function expireStaleOrders(expiryMinutes = 15) {
       for (const item of manualItems) {
         await runQuery(`UPDATE products SET stok = stok + ? WHERE kode = ?`, [item.qty, item.produk_kode]);
       }
+      await runQuery(
+        `UPDATE order_items SET stock_reserved = 0 WHERE order_id = ?`,
+        [order.order_id]
+      );
       // Mark order expired
       await runQuery(
         `UPDATE orders SET payment_status = 'EXPIRED', status = 'CANCELLED', updated_at = ? WHERE order_id = ?`,

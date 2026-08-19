@@ -164,11 +164,12 @@ export async function handleNightAction(sock, senderJid, command, targetArg) {
 
   // Parse Target
   let targetPlayer = null;
-  const numIndex = parseInt(targetArg, 10);
+  const safeTargetArg = (targetArg || '').toString().trim();
+  const numIndex = parseInt(safeTargetArg, 10);
   if (!isNaN(numIndex) && numIndex >= 1 && numIndex <= session.players.length) {
     targetPlayer = session.players[numIndex - 1];
-  } else if (targetArg.includes('@')) {
-    const cleanJid = targetArg.replace(/[^0-9]/g, '') + '@s.whatsapp.net';
+  } else if (safeTargetArg.includes('@')) {
+    const cleanJid = safeTargetArg.replace(/[^0-9]/g, '') + '@s.whatsapp.net';
     targetPlayer = session.players.find(p => p.jid === cleanJid);
   }
 
@@ -278,11 +279,12 @@ export async function handleDayVote(sock, groupJid, voterJid, targetArg) {
   }
 
   let targetPlayer = null;
-  const numIndex = parseInt(targetArg, 10);
+  const safeTargetArg = (targetArg || '').toString().trim();
+  const numIndex = parseInt(safeTargetArg, 10);
   if (!isNaN(numIndex) && numIndex >= 1 && numIndex <= session.players.length) {
     targetPlayer = session.players[numIndex - 1];
-  } else if (targetArg.includes('@')) {
-    const cleanJid = targetArg.replace(/[^0-9]/g, '') + '@s.whatsapp.net';
+  } else if (safeTargetArg.includes('@')) {
+    const cleanJid = safeTargetArg.replace(/[^0-9]/g, '') + '@s.whatsapp.net';
     targetPlayer = session.players.find(p => p.jid === cleanJid);
   }
 

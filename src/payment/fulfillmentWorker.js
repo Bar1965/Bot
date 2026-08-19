@@ -72,8 +72,12 @@ async function processJob(job) {
   console.log(`[FULFILLMENT] Processing job ${job.job_id} for order ${job.order_id} (attempt ${job.attempts + 1})`);
 
   try {
-    // Mark as PROCESSING
-    await db.updateFulfillmentJob(job.job_id, 'PROCESSING', null);
+    // Mark as PROCESSING without double-incrementing attempts
+    if (db.setFulfillmentJobProcessing) {
+      await db.setFulfillmentJobProcessing(job.job_id);
+    } else {
+      await db.updateFulfillmentJob(job.job_id, 'PROCESSING', null);
+    }
 
     // Special handling for Deposit Top-up orders
     if (job.order_id.startsWith('DEP-')) {

@@ -47,6 +47,9 @@ export async function backupDatabase() {
                     now.getSeconds().toString().padStart(2, '0');
 
     const backupFile = path.join(backupsDir, `shop_backup_${dateStr}_${timeStr}.db`);
+    try {
+      await db.runQuery("PRAGMA wal_checkpoint(TRUNCATE);");
+    } catch (e) {}
     fs.copyFileSync(path.resolve('./shop.db'), backupFile);
     const removedBackups = removeExpiredBackups(backupsDir);
     
@@ -160,11 +163,11 @@ async function sendDailySalesReport(sock) {
   if (!sock || !botState.whatsappConnected) return;
   
   try {
-    const today = new Date();
-    const dateStr = today.toISOString().split('T')[0];
+    const wibNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
+    const dateStr = wibNow.toISOString().split('T')[0];
     const report = await db.getDailySalesReport(dateStr);
     
-    let msg = `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📊 *LAPORAN PENJUALAN HARIAN*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📅 Tanggal: *${today.toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}*\n\n`;
+    let msg = `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📊 *LAPORAN PENJUALAN HARIAN*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📅 Tanggal: *${wibNow.toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' })}*\n\n`;
     msg += `📦 Total Pesanan Selesai: *${report.total_orders}*\n`;
     msg += `💰 Total Omzet: *Rp${report.total_revenue.toLocaleString('id-ID')}*\n\n`;
     
@@ -456,12 +459,14 @@ export function startScheduler(sock) {
     }
   }, 60 * 60 * 1000);
 
-  // Set interval pengecekan laporan harian (kirim 1x sehari pada jam 21:00)
+  // Set interval pengecekan laporan harian (kirim 1x sehari pada jam 21:00 WIB)
   let lastDailyReportDate = '';
   setInterval(() => {
-    const now = new Date();
-    const today = now.toISOString().slice(0, 10);
-    if (now.getHours() === 21 && now.getMinutes() < 5 && lastDailyReportDate !== today) {
+    const wibNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
+    const today = wibNow.toISOString().slice(0, 10);
+    const wibHours = wibNow.getUTCHours();
+    const wibMinutes = wibNow.getUTCMinutes();
+    if (wibHours === 21 && wibMinutes < 5 && lastDailyReportDate !== today) {
       lastDailyReportDate = today;
       sendDailySalesReport(schedulerSock);
     }

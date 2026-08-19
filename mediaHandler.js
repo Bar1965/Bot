@@ -450,12 +450,48 @@ export async function downloadFacebook(url) {
 }
 
 /**
+ * Download Twitter / X Video & Media
+ */
+export async function downloadTwitter(url) {
+  // Method 1: yt-dlp CLI
+  const ytdlpResult = await downloadWithYtdlp(url);
+  if (ytdlpResult?.buffer) {
+    return { success: true, buffer: ytdlpResult.buffer, title: ytdlpResult.title || 'Twitter / X Media' };
+  }
+  if (ytdlpResult?.videoUrl) {
+    const buf = await fetchBuffer(ytdlpResult.videoUrl);
+    return { success: true, buffer: buf || undefined, videoUrl: ytdlpResult.videoUrl, title: ytdlpResult.title || 'Twitter / X Media' };
+  }
+
+  // Method 2: Third-party API fallback
+  try {
+    const apiRes = await axios.get(`https://api.siputzx.my.id/api/d/twitter?url=${encodeURIComponent(url)}`, { timeout: 15000 });
+    if (apiRes.data && apiRes.data.status && apiRes.data.data) {
+      const mediaData = apiRes.data.data;
+      const downloadUrl = mediaData.video_sd || mediaData.video_hd || mediaData.url || (Array.isArray(mediaData) ? mediaData[0]?.url : null);
+      if (downloadUrl) {
+        const buf = await fetchBuffer(downloadUrl);
+        return { success: true, buffer: buf || undefined, videoUrl: downloadUrl, title: mediaData.title || 'Twitter / X Media' };
+      }
+    }
+  } catch (apiErr) {
+    console.log('[MEDIA_HANDLER] Twitter API fallback failed:', apiErr.message);
+  }
+
+  return {
+    success: false,
+    message: 'Gagal mengunduh media dari Twitter/X. Pastikan link publik dan tweet tidak dilindungi.'
+  };
+}
+
+/**
  * Universal Downloader Fallback
  */
 export async function downloadUniversalMedia(url) {
   if (url.includes('instagram.com')) return await downloadInstagram(url);
   if (url.includes('youtube.com') || url.includes('youtu.be')) return await downloadYouTube(url);
   if (url.includes('facebook.com') || url.includes('fb.watch') || url.includes('fb.com')) return await downloadFacebook(url);
+  if (url.includes('twitter.com') || url.includes('x.com')) return await downloadTwitter(url);
   if (url.includes('tiktok.com')) return await downloadTikTok(url);
   
   return { success: false, message: 'Platform media sosial ini belum didukung.' };

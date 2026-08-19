@@ -3,6 +3,7 @@ import * as entertainment from './entertainmentHandler.js';
 import { sendInteractiveButtons } from './bot.js';
 import { getPremiumBenefits } from './premiumHandler.js';
 import { jidNormalizedUser } from '@whiskeysockets/baileys';
+import * as ww from './werewolfGame.js';
 
 
 const activeRounds = new Map();
@@ -167,7 +168,8 @@ function isOnCooldown(key, duration = 3000) {
 }
 
 async function send(sock, jid, messageObj, text, options = {}) {
-  if (options.buttons || options.sections) {
+  const mentions = Array.isArray(options) ? options : (options.mentions || []);
+  if (options && (options.buttons || options.sections)) {
     await sendInteractiveButtons(sock, jid, {
       text,
       title: options.title,
@@ -176,7 +178,7 @@ async function send(sock, jid, messageObj, text, options = {}) {
       sections: options.sections
     });
   } else {
-    await sock.sendMessage(jid, { text }, messageObj ? { quoted: messageObj } : undefined);
+    await sock.sendMessage(jid, { text, mentions: mentions.length > 0 ? mentions : undefined }, messageObj ? { quoted: messageObj } : undefined);
   }
 }
 
@@ -436,7 +438,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
   // Werewolf System
   if (['ww', 'werewolf'].includes(command)) {
     const subCmd = (args[1] || 'help').toLowerCase();
-    const targetArg = args.slice(2).join(' ') || args[1] || '';
+    const targetArg = args.slice(2).join(' ') || '';
 
     if (!isFromGroup && ['kill', 'inspect', 'protect'].includes(subCmd)) {
       const res = await ww.handleNightAction(sock, senderNumber, subCmd, targetArg);
@@ -546,11 +548,11 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
       bet = Math.max(1, currentPoints);
     } else {
       const parsedBet = rawBet ? Number.parseInt(rawBet, 10) : 10;
-      if (rawBet && (isNaN(parsedBet) || !isFinite(parsedBet))) {
-        await send(sock, jid, messageObj, `❌ Jumlah taruhan tidak valid: *${rawBet}*\n\nGunakan angka atau 'all'. Contoh: \`.dadu besar 50\` atau \`.dadu besar all\``);
+      if (rawBet && (isNaN(parsedBet) || !isFinite(parsedBet) || parsedBet <= 0)) {
+        await send(sock, jid, messageObj, `❌ Jumlah taruhan tidak valid: *${rawBet}*\n\nGunakan angka positif minimal 1 atau 'all'. Contoh: \`.dadu besar 50\` atau \`.dadu besar all\``);
         return true;
       }
-      bet = Math.max(1, Math.min(maxBet, Math.abs(parsedBet || 10)));
+      bet = Math.max(1, Math.min(maxBet, parsedBet || 10));
     }
 
     const deductRes = await db.deductGamePoints(senderNumber, bet);
@@ -638,11 +640,11 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
       bet = Math.max(1, currentPoints);
     } else {
       const parsedBet = rawBet ? Number.parseInt(rawBet, 10) : 10;
-      if (rawBet && (isNaN(parsedBet) || !isFinite(parsedBet))) {
-        await send(sock, jid, messageObj, `❌ Jumlah taruhan tidak valid: *${rawBet}*\n\nGunakan angka atau 'all'. Contoh: \`.coinflip heads 50\` atau \`.coinflip heads all\``);
+      if (rawBet && (isNaN(parsedBet) || !isFinite(parsedBet) || parsedBet <= 0)) {
+        await send(sock, jid, messageObj, `❌ Jumlah taruhan tidak valid: *${rawBet}*\n\nGunakan angka positif minimal 1 atau 'all'. Contoh: \`.coinflip heads 50\` atau \`.coinflip heads all\``);
         return true;
       }
-      bet = Math.max(1, Math.min(maxBet, Math.abs(parsedBet || 10)));
+      bet = Math.max(1, Math.min(maxBet, parsedBet || 10));
     }
 
     const deductRes = await db.deductGamePoints(senderNumber, bet);
@@ -706,7 +708,12 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
       await send(sock, jid, messageObj, `❌ Harus dimulai dari huruf *${round.lastWord.slice(-1)}*.`);
       return true;
     }
+    if (round.lastPlayer === senderNumber && isFromGroup) {
+      await send(sock, jid, messageObj, `⚠️ Tunggu giliran member lain untuk menyambung kata selanjutnya!`);
+      return true;
+    }
     round.lastWord = word;
+    round.lastPlayer = senderNumber;
     const profile = await db.awardGamePoints(senderNumber, 5, true);
     await send(sock, jid, messageObj, `✅ *${word}* diterima! Lanjutkan dengan kata berawalan *${word.slice(-1)}*.\n+5 poin untukmu. Total: *${profile.points}*`);
     return true;
@@ -1512,7 +1519,12 @@ Gunakan kupon ini saat checkout belanja di bot dengan mengetik:
         await sock.sendMessage(playerB, { text: endDmText });
       }
     } catch (err) {
-      await send(sock, jid, messageObj, `❌ Gagal menyimpan pilihan: ${err.message}`);
+      if (err.message === 'INSUFFICIENT_POINTS') {
+        await send(sock, jid, messageObj, `❌ Poin kamu tidak mencukupi untuk menerima taruhan ini (${challenge.bet} Poin). Tantangan dibatalkan.`);
+        await db.refundSuitChallenge(challenge.id, true, false);
+      } else {
+        await send(sock, jid, messageObj, `❌ Gagal menyimpan pilihan: ${err.message}`);
+      }
     }
     return true;
   }

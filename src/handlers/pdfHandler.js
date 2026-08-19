@@ -11,9 +11,7 @@ import * as db from '../../database.js';
 const mergeSessions = new Map();
 
 export async function handlePdfCommands(sock, m, senderNumber, jid, cmd, args, isFromGroup, groupSettings, isPrefixCmd) {
-  const isPrefix = isPrefixCmd !== undefined 
-    ? isPrefixCmd 
-    : (args?.[0]?.startsWith('.') || args?.[0]?.startsWith('/') || args?.[0]?.startsWith('#'));
+  const isPrefix = isPrefixCmd !== undefined ? isPrefixCmd : true;
   if (!isPrefix) return false;
 
   const PDF_COMMANDS = ['pdfmerge', 'pdfsplit', 'img2pdf', 'pdf2txt'];
@@ -39,6 +37,18 @@ export async function handlePdfCommands(sock, m, senderNumber, jid, cmd, args, i
 
   switch (cmd) {
     case 'pdfmerge':
+      if (args[0] === 'cancel' || args[0] === 'batal') {
+        const session = mergeSessions.get(senderNumber);
+        if (session) {
+          clearTimeout(session.timeout);
+          mergeSessions.delete(senderNumber);
+          await sock.sendMessage(jid, { text: '🛑 Sesi penggabungan PDF berhasil dibatalkan.' }, { quoted: m });
+        } else {
+          await sock.sendMessage(jid, { text: '⚠️ Tidak ada sesi penggabungan PDF aktif.' }, { quoted: m });
+        }
+        return true;
+      }
+
       if (args[0] === 'done') {
         const session = mergeSessions.get(senderNumber);
         if (!session || session.files.length === 0) {
@@ -81,7 +91,7 @@ export async function handlePdfCommands(sock, m, senderNumber, jid, cmd, args, i
             sock.sendMessage(jid, { text: '⚠️ Sesi penggabungan PDF telah berakhir karena timeout (5 menit).' });
           }, 5 * 60 * 1000)
         });
-        await sock.sendMessage(jid, { text: '📁 *Mode PDF Merge Diaktifkan*\n\nSilakan kirimkan (atau teruskan) file-file PDF yang ingin digabung SATU PER SATU ke sini.\n\nJika semua file sudah terkirim, ketik perintah:\n*.pdfmerge done*' }, { quoted: m });
+        await sock.sendMessage(jid, { text: '📁 *Mode PDF Merge Diaktifkan*\n\nSilakan kirimkan file-file PDF yang ingin digabung SATU PER SATU ke sini (Maks. 15 File).\n\n• Jika sudah selesai kirim: *.pdfmerge done*\n• Untuk membatalkan: *.pdfmerge cancel*' }, { quoted: m });
         return true;
       }
       return true;
@@ -215,12 +225,29 @@ export async function checkPdfMergeSession(sock, m, senderNumber, jid) {
     const directMedia = m?.message?.documentMessage;
     if (directMedia && directMedia.mimetype === 'application/pdf') {
       try {
-        const buffer = await downloadMediaMessage(m, 'buffer', {});
         const session = mergeSessions.get(senderNumber);
+        if (session.files.length >= 15) {
+          await sock.sendMessage(jid, { text: '⚠️ Batas maksimal penggabungan adalah 15 file PDF. Ketik *.pdfmerge done* untuk menggabungkan.' }, { quoted: m });
+          return true;
+        }
+
+        const buffer = await downloadMediaMessage(m, 'buffer', {});
+        if (buffer && buffer.length > 25 * 1024 * 1024) {
+          await sock.sendMessage(jid, { text: '❌ Ukuran file PDF terlalu besar (maksimal 25MB per file).' }, { quoted: m });
+          return true;
+        }
+
         session.files.push(buffer);
-        await sock.sendMessage(jid, { text: `✅ PDF #${session.files.length} diterima! Kirim file lainnya atau ketik *.pdfmerge done* jika selesai.` }, { quoted: m });
+        // Refresh timeout 5 menit lagi
+        clearTimeout(session.timeout);
+        session.timeout = setTimeout(() => {
+          mergeSessions.delete(senderNumber);
+          sock.sendMessage(jid, { text: '⚠️ Sesi penggabungan PDF telah berakhir karena timeout (5 menit).' });
+        }, 5 * 60 * 1000);
+
+        await sock.sendMessage(jid, { text: `✅ PDF #${session.files.length} diterima! Kirim file lainnya, ketik *.pdfmerge done* jika selesai, atau *.pdfmerge cancel* untuk membatalkan.` }, { quoted: m });
       } catch (e) {
-        await sock.sendMessage(jid, { text: '❌ Gagal mengunduh PDF.' }, { quoted: m });
+        await sock.sendMessage(jid, { text: '❌ Gagal mengunduh PDF: ' + e.message }, { quoted: m });
       }
       return true; // Berhenti memproses command lain
     }
