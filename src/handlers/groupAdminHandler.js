@@ -1134,7 +1134,7 @@ Mode Saat Ini: *${modeLabel}*
     const hasAtMentionAll = (text || '').includes('@everyone') || (text || '').includes('@all') || (text || '').includes('@semua');
     if (isGroup && (cleanCmd === 'tagall' || cleanCmd === 'hidetag' || cleanCmd === 'everyone' || cleanCmd === 'all' || cleanCmd === 'semua' || hasAtMentionAll)) {
       try {
-        if (typeof react === 'function') await react('📣');
+        if (sock && m?.key) sock.sendMessage(jid, { react: { text: '📣', key: m.key } }).catch(() => {});
         const groupMeta = (typeof getCachedGroupMetadata === 'function' ? await getCachedGroupMetadata(sock, jid) : null) || await sock.groupMetadata(jid);
         if (!groupMeta || !groupMeta.participants || groupMeta.participants.length === 0) {
           throw new Error('Tidak dapat mengambil daftar peserta grup.');
@@ -1165,9 +1165,9 @@ Mode Saat Ini: *${modeLabel}*
         }
 
         await sock.sendMessage(jid, { text: tagMsg, mentions: allMentions });
-        if (typeof react === 'function') await react('✅');
+        if (sock && m?.key) sock.sendMessage(jid, { react: { text: '✅', key: m.key } }).catch(() => {});
       } catch (err) {
-        if (typeof react === 'function') await react('❌');
+        if (sock && m?.key) sock.sendMessage(jid, { react: { text: '❌', key: m.key } }).catch(() => {});
         console.error("[TAGALL_ERR]", err.message);
         await sock.sendMessage(jid, { text: `❌ Gagal tagall: ${err.message}` });
       }

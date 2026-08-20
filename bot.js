@@ -41,17 +41,20 @@ let sock = null;
 let botSettings = {};
 const userPushNamesMap = new Map();
 
-// Group Metadata Cache (TTL: 3 Menit)
+// Group Metadata Cache (TTL: 5 Menit)
 const groupMetaCache = new Map();
-const GROUP_META_TTL = 3 * 60 * 1000;
+const GROUP_META_TTL = 5 * 60 * 1000;
 
 export async function getCachedGroupMetadata(sockInstance, groupJid) {
+  if (!sockInstance || !groupJid) return null;
   const cached = groupMetaCache.get(groupJid);
   if (cached && (Date.now() - cached.timestamp < GROUP_META_TTL)) {
     return cached.data;
   }
   try {
-    const data = await sockInstance.groupMetadata(groupJid);
+    const fetchPromise = sockInstance.groupMetadata(groupJid);
+    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('TIMEOUT')), 1500));
+    const data = await Promise.race([fetchPromise, timeoutPromise]);
     groupMetaCache.set(groupJid, { data, timestamp: Date.now() });
     return data;
   } catch (e) {
@@ -669,6 +672,11 @@ const MAX_CACHE_SIZE = 1000;
 export async function safeSendMessage(jid, content, options = {}) {
   botState.lastSentTimestamp = Date.now();
   
+  if (!jid || typeof jid !== 'string' || (!jid.includes('@') && jid !== 'status@broadcast')) {
+    console.warn(`[MSG_SEND_DROP] Mengabaikan pengiriman ke JID tidak valid: "${jid}"`);
+    return Promise.resolve(null);
+  }
+
   return new Promise((resolve, reject) => {
     const queueItem = {
       jid,
@@ -2437,7 +2445,19 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
       sendQris,
       logToSystem,
       sendInteractiveButtons: (...args) => sendInteractiveButtons(sock, ...args),
-      react: async (jid, emoji, key) => { await sock.sendMessage(jid, { react: { text: emoji, key: key } }) }
+      react: async (jidOrEmoji, emojiOrKey, maybeKey) => {
+        let targetJid = jidOrEmoji;
+        let targetEmoji = emojiOrKey;
+        let targetKey = maybeKey;
+        if (typeof jidOrEmoji === 'string' && !jidOrEmoji.includes('@')) {
+          targetEmoji = jidOrEmoji;
+          targetKey = emojiOrKey;
+          targetJid = null;
+        }
+        if (targetJid && targetEmoji && targetKey) {
+          try { await sock.sendMessage(targetJid, { react: { text: targetEmoji, key: targetKey } }); } catch (e) {}
+        }
+      }
   };
   const handleCustomerMessage = createCustomerHandler(ctx);
   const handleGroupMessage = createGroupAdminHandler(ctx);
@@ -2484,22 +2504,25 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
         const isGroup = jid.endsWith('@g.us');
         const sender = m.key.participant || jid;
         let senderNormalized = jidNormalizedUser(sender);
-        const isFromMe = m.key.fromMe;
-        
+        const isFromMe = !!m.key.fromMe;
+        const msgText = extractMessageText(m).trim();
+        const isPrefixCmd = msgText.startsWith('.') || msgText.startsWith('/') || msgText.startsWith('#');
+
         if (isGroup && !isFromMe) {
-          await db.incrementGroupChatStats(jid, senderNormalized);
+          db.incrementGroupChatStats(jid, senderNormalized).catch(() => {});
         }
 
         if (m.pushName && senderNormalized) {
           userPushNamesMap.set(senderNormalized, m.pushName);
         }
 
-        if (isFromMe) continue;
+        // Jika pesan dikirim dari akun bot sendiri (fromMe) tapi BUKAN perintah awalan bot, abaikan
+        if (isFromMe && !isPrefixCmd) continue;
 
         // ====================================================================
         // DETEKSI OWNER & ADMIN — Sistem LID-Aware
         // Masalah: WhatsApp kini kirim pesan dari grup sebagai @lid (bukan nomor HP)
-        // Solusi: cek ownerJid yang tersimpan + mapping metadata grup + database role
+        // Solusi: cek fromMe + ownerJid yang tersimpan + mapping metadata grup + database role
         // ====================================================================
         let senderCleanJid = jidNormalizedUser(senderNormalized);
         const extractDigits = (s) => s ? String(s).replace(/[^0-9]/g, '') : '';
@@ -2510,11 +2533,11 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
 
         // Cek apakah sender adalah Owner (by fromMe, stored JID exact match, atau phone digit match)
         let isOwnerSender = false;
-        if (m.key?.fromMe) {
-          isOwnerSender = true; // Pesan dari bot sendiri (linked device owner) — paling reliable
+        if (isFromMe) {
+          isOwnerSender = true; // Pesan dari nomor bot/owner sendiri — 100% Owner
         } else if (storedOwnerJid && (senderCleanJid === storedOwnerJid || senderCleanJid.includes(storedOwnerJid.split('@')[0]) || storedOwnerJid.includes(senderCleanJid.split('@')[0]))) {
           isOwnerSender = true; // Exact JID match (handles @lid yang disimpan via .setownerid)
-        } else if (ownerPhoneDigits && senderDigits && senderDigits.length > 6 && (senderDigits === ownerPhoneDigits || senderDigits.endsWith(ownerPhoneDigits) || ownerPhoneDigits.endsWith(senderDigits))) {
+        } else if (ownerPhoneDigits && senderDigits && senderDigits.length > 6 && db.isPhoneMatch(senderCleanJid, ownerPhoneDigits)) {
           isOwnerSender = true; // Phone number match dengan toleransi kode negara (works in DM)
         }
 
@@ -2590,16 +2613,12 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
 
         const mainBuyerGroupJid = botSettings.buyerGroupId || "";
 
-        const msgText = extractMessageText(m).trim();
-
         // ====================================================================
         // PROTEKSI WAJIB REGISTRASI MEMBER (.daftar <nama>) & ANTI-SPAM
         // ====================================================================
         const argsCheck = msgText.trim().split(/\s+/);
         const rawCmdCheck = argsCheck[0].toLowerCase();
         const cleanCmdCheck = rawCmdCheck.replace(/^[./#]/, '');
-
-        const isPrefixCmd = msgText.startsWith('.') || msgText.startsWith('/') || msgText.startsWith('#');
         const knownCmdList = [
           'daftar', 'register', 'registrasi', 'owner', 'kontakowner', 'menu', 'help', 'bantuan', 
           'produk', 'list', 'katalog', 'listproduk', 'p', 'detail', 'info', 'lihat', 'beli', 'checkout', 'keranjang', 'cart', 'status', 'riwayat', 'batal', 'cancel',
@@ -2698,21 +2717,25 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
         }
 
 
-        // Award XP & Check Level Up (Grup Only)
+        // Award XP & Check Level Up (Grup Only - Async non-blocking)
         if (isGroup && senderNormalized) {
-          try {
-            const globalLevelUp = (botSettings.levelUpEnabled || "true") !== "false";
-            const groupSettings = await db.getGroupSettings(jid);
-            const isGroupLevelUpEnabled = globalLevelUp && (groupSettings.levelup_enabled !== 0);
+          (async () => {
+            try {
+              const globalLevelUp = (botSettings.levelUpEnabled || "true") !== "false";
+              const groupSettings = await db.getGroupSettings(jid);
+              const isGroupLevelUpEnabled = globalLevelUp && (groupSettings.levelup_enabled !== 0);
 
-            const xpResult = await db.addMessageXp(senderNormalized, 10);
-            if (xpResult.leveledUp && isGroupLevelUpEnabled) {
-              const userTag = `@${senderNormalized.split('@')[0]}`;
-              const captionText = `🎉 *SELAMAT ${userTag}!* Kamu telah naik ke *Level ${xpResult.newLevel}*!\n🏆 *Rank:* ${xpResult.titleBadge}\n✨ *Total XP:* ${(xpResult.xp || 0).toLocaleString('id-ID')} XP`;
+              const xpResult = await db.addMessageXp(senderNormalized, 10);
+              if (xpResult.leveledUp && isGroupLevelUpEnabled) {
+                const userTag = `@${senderNormalized.split('@')[0]}`;
+                const captionText = `🎉 *SELAMAT ${userTag}!* Kamu telah naik ke *Level ${xpResult.newLevel}*!\n🏆 *Rank:* ${xpResult.titleBadge}\n✨ *Total XP:* ${(xpResult.xp || 0).toLocaleString('id-ID')} XP`;
 
-              try {
                 let userAvatar = null;
-                try { userAvatar = await sock.profilePictureUrl(senderNormalized, 'image'); } catch (e) {}
+                try {
+                  const pfpPromise = sock.profilePictureUrl(senderNormalized, 'image');
+                  const pfpTimeout = new Promise((_, reject) => setTimeout(() => reject(new Error('TIMEOUT')), 1000));
+                  userAvatar = await Promise.race([pfpPromise, pfpTimeout]);
+                } catch (e) {}
 
                 const senderName = m.pushName || senderNormalized.split('@')[0];
                 const cardBuffer = await createLevelUpCard({
@@ -2729,17 +2752,9 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
                   caption: captionText,
                   mentions: [senderNormalized]
                 }, { quoted: m });
-              } catch (canvasErr) {
-                console.warn('[LEVEL_UP_CARD_FAIL] Mengirim fallback teks:', canvasErr.message);
-                await sock.sendMessage(jid, {
-                  text: captionText,
-                  mentions: [senderNormalized]
-                }, { quoted: m });
               }
-            }
-          } catch (e) {
-            console.error('[LEVEL_UP_ERR]', e.message);
-          }
+            } catch (e) {}
+          })().catch(() => {});
         }
 
 

@@ -567,13 +567,13 @@ Ketik *bayar* atau klik tombol *Bayar QRIS Langsung* di bawah untuk langsung mem
       await sock.sendMessage(responseJid, { 
         text: "🛍️ *MODE JUALAN AKTIF:* Grup ini berada dalam *Mode Jualan/Toko*. Fitur media, downloader, dan game tidak diaktifkan di grup ini agar grup tetap tertib khusus jualan." 
       });
-      return;
+      return true;
     }
 
     const organizedMenu = buildCommandMenu(subCat || 'all', { salesMode: isSalesModeGroup });
     if (organizedMenu) {
       await sock.sendMessage(responseJid, { text: organizedMenu });
-      return;
+      return true;
     }
 
     // Hitung Uptime
@@ -614,7 +614,7 @@ Ketik *bayar* atau klik tombol *Bayar QRIS Langsung* di bawah untuk langsung mem
           { type: 'reply', text: '📋 Menu Utama', id: '.menu' }
         ]
       });
-      return;
+      return true;
     }
 
     // Sub-Menu 2: Transaksi & Pembayaran
@@ -638,7 +638,7 @@ Ketik *bayar* atau klik tombol *Bayar QRIS Langsung* di bawah untuk langsung mem
           { type: 'reply', text: '📋 Menu Utama', id: '.menu' }
         ]
       });
-      return;
+      return true;
     }
 
     // Sub-Menu 3: Downloader, Media & Hiburan
@@ -674,7 +674,7 @@ Ketik *bayar* atau klik tombol *Bayar QRIS Langsung* di bawah untuk langsung mem
           { type: 'reply', text: '📋 Menu Utama', id: '.menu' }
         ]
       });
-      return;
+      return true;
     }
 
     // Sub-Menu 4: Promo & Diskon
@@ -696,7 +696,7 @@ Ketik *bayar* atau klik tombol *Bayar QRIS Langsung* di bawah untuk langsung mem
           { type: 'reply', text: '📋 Menu Utama', id: '.menu' }
         ]
       });
-      return;
+      return true;
     }
 
     // Sub-Menu 5: Wishlist & Notifikasi Stok
@@ -718,7 +718,7 @@ Ketik *bayar* atau klik tombol *Bayar QRIS Langsung* di bawah untuk langsung mem
           { type: 'reply', text: '📋 Menu Utama', id: '.menu' }
         ]
       });
-      return;
+      return true;
     }
 
     // Sub-Menu 6: Admin & Owner
@@ -747,7 +747,7 @@ Ketik *bayar* atau klik tombol *Bayar QRIS Langsung* di bawah untuk langsung mem
           { type: 'reply', text: '📋 Menu Utama', id: '.menu' }
         ]
       });
-      return;
+      return true;
     }
 
     // Sub-Menu 7: Ekonomi & Perbankan
@@ -772,7 +772,7 @@ Ketik *bayar* atau klik tombol *Bayar QRIS Langsung* di bawah untuk langsung mem
           { type: 'reply', text: '📋 Menu Utama', id: '.menu' }
         ]
       });
-      return;
+      return true;
     }
 
     // TAMPILAN MENU UTAMA KHUSUS MODE JUALAN / TOKO
@@ -829,7 +829,7 @@ Ketik *bayar* atau klik tombol *Bayar QRIS Langsung* di bawah untuk langsung mem
         buttons: menuQuickButtons,
         sections: menuSections
       });
-      return;
+      return true;
     }
 
     // TAMPILAN MENU UTAMA FULL (MODE ALL)
@@ -901,7 +901,7 @@ Ketik *bayar* atau klik tombol *Bayar QRIS Langsung* di bawah untuk langsung mem
       buttons: menuQuickButtons,
       sections: menuSections
     });
-    return;
+    return true;
   }
 
   // 2A. DETAIL & VARIAN PRODUK (Jika memilih/mengetik brand atau kode, misal: .p netflix, .detail netflix, .p NET-SH-7D, .p SPOTIFY)
