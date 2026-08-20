@@ -737,14 +737,46 @@ export async function processOutgoingQueue() {
 
     console.log(`${logPrefix} SEND START (Retry: ${item.retries}/${item.maxRetries})`);
 
+    const isReaction = Boolean(item.content && item.content.react);
+    const isAudio = Boolean(item.content && (item.content.audio || item.content.ptt));
+    const isHumanDelayActive = (botSettings.humanDelayEnabled || config.defaults.humanDelayEnabled || 'true') !== 'false';
+
+    // 🛡️ ANTI-BAN & HUMAN-LIKE TYPING SIMULATION
+    if (!isReaction && isHumanDelayActive && botState.whatsappConnected && sock) {
+      try {
+        const presenceType = isAudio ? 'recording' : 'composing';
+        await sock.sendPresenceUpdate(presenceType, item.jid);
+
+        // Menghitung delay pengetikan yang natural (antara 400ms - 1200ms) berdasarkan panjang pesan
+        const textLen = typeof item.content?.text === 'string' 
+          ? item.content.text.length 
+          : (typeof item.content?.caption === 'string' ? item.content.caption.length : 25);
+        const naturalDelay = Math.min(1200, Math.max(400, Math.floor(textLen * 8) + Math.floor(Math.random() * 200)));
+        await new Promise(r => setTimeout(r, naturalDelay));
+      } catch (pErr) {
+        // Non-fatal jika presence update gagal
+      }
+    }
+
     try {
       const sendFn = sock.rawSendMessage ? sock.rawSendMessage : sock.sendMessage.bind(sock);
       const result = await sendFn(item.jid, item.content, item.options);
       console.log(`${logPrefix} SUCCESS (MessageID: ${result?.key?.id || 'N/A'})`);
       
+      // Hentikan status mengetik
+      if (!isReaction && isHumanDelayActive && botState.whatsappConnected && sock) {
+        sock.sendPresenceUpdate('paused', item.jid).catch(() => {});
+      }
+
       outgoingMessageQueue.shift();
       botState.pendingQueueCount = outgoingMessageQueue.length;
       item.resolve(result);
+
+      // 🛡️ Inter-message buffer delay (300ms - 500ms) untuk antrean pesan beruntun agar tidak memicu deteksi spam WA
+      if (outgoingMessageQueue.length > 0) {
+        const interMessageDelay = 300 + Math.floor(Math.random() * 200);
+        await new Promise(r => setTimeout(r, interMessageDelay));
+      }
     } catch (err) {
       console.error(`${logPrefix} SEND FAILED (Reason: ${err.message})`);
       item.retries += 1;

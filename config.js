@@ -85,7 +85,10 @@ Setelah transfer, harap kirim BUKTI TRANSFER (berupa gambar/screenshot) langsung
 
     // Fitur Jadwal Sholat & Adzan Otomatis Grup
     autoSholatEnabled: "true",
-    sholatCity: "Jakarta"
+    sholatCity: "Jakarta",
+
+    // Anti-Ban & Human-Like Typing Delay
+    humanDelayEnabled: "true"
   },
 
   // ============================================================
