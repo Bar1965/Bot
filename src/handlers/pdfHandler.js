@@ -10,7 +10,7 @@ import * as db from '../../database.js';
 // Session state untuk pdfmerge
 const mergeSessions = new Map();
 
-export async function handlePdfCommands(sock, m, senderNumber, jid, cmd, args, isFromGroup, groupSettings, isPrefixCmd) {
+export async function handlePdfCommands(sock, m, senderNumber, jid, cmd, args, isFromGroup, groupSettings, isPrefixCmd, isAdmin = false, isOwner = false) {
   const isPrefix = isPrefixCmd !== undefined ? isPrefixCmd : true;
   if (!isPrefix) return false;
 
@@ -21,7 +21,7 @@ export async function handlePdfCommands(sock, m, senderNumber, jid, cmd, args, i
 
   const premiumTier = await db.getPremiumTier(senderNumber);
   const isPremium = premiumTier !== 'Free';
-  if (!isPremium) {
+  if (!isPremium && !isAdmin && !isOwner) {
     await sock.sendMessage(jid, { text: '⛔ *Akses Ditolak!*\nFitur PDF Tools ini khusus untuk pengguna *Premium*.\n\nKetik `.sewabot` untuk mendaftar.' }, { quoted: m });
     return true;
   }

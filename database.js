@@ -1245,14 +1245,32 @@ export async function getLogs(typeFilter = "") {
 
 // --- FUNGSI SETTINGS ---
 
+export function normalizePhoneDigits(phoneStr) {
+  if (!phoneStr) return '';
+  let digits = String(phoneStr).split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+  if (digits.startsWith('0')) {
+    digits = '62' + digits.slice(1);
+  }
+  return digits;
+}
+
+export function isPhoneMatch(phoneA, phoneB) {
+  const normA = normalizePhoneDigits(phoneA);
+  const normB = normalizePhoneDigits(phoneB);
+  if (!normA || !normB || normA.length < 7 || normB.length < 7) return false;
+  return normA === normB || normA.endsWith(normB) || normB.endsWith(normA);
+}
+
 export async function getSettings() {
   const rows = await allQuery("SELECT * FROM settings");
-  const settings = {};
+  const settings = { ...config.defaults };
   rows.forEach(r => {
-    if (r.key === 'lowStockLimit' || r.key === 'broadcastDelay') {
-      settings[r.key] = parseInt(r.value);
-    } else {
-      settings[r.key] = r.value;
+    if (r.value !== null && r.value !== undefined) {
+      if (r.key === 'lowStockLimit' || r.key === 'broadcastDelay') {
+        settings[r.key] = parseInt(r.value, 10) || 0;
+      } else {
+        settings[r.key] = r.value;
+      }
     }
   });
   return settings;
@@ -1260,16 +1278,19 @@ export async function getSettings() {
 
 export async function getSetting(key) {
   const row = await getQuery("SELECT value FROM settings WHERE key = ?", [key]);
-  if (!row) return null;
+  if (!row || row.value === null || row.value === undefined) {
+    return config.defaults[key] ?? null;
+  }
   if (key === 'lowStockLimit' || key === 'broadcastDelay') {
-    return parseInt(row.value);
+    return parseInt(row.value, 10) || 0;
   }
   return row.value;
 }
 
 export async function updateSettings(settingsObj) {
   for (const [key, val] of Object.entries(settingsObj)) {
-    await runQuery("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", [key, val.toString()]);
+    const safeVal = (val !== null && val !== undefined) ? String(val) : '';
+    await runQuery("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", [key, safeVal]);
   }
 
   await addLog("SYSTEM", "Konfigurasi sistem diperbarui dari Dashboard Admin.");
@@ -1597,18 +1618,49 @@ export async function claimAndDeliverItems(orderId) {
 // --- FUNGSI PELANGGAN (TIER DINAMIS) ---
 
 export async function getOrCreateCustomer(nomor, nama) {
+  const clean = String(nomor || '').split(':')[0].replace(/@.*$/, '').trim();
+  const fullClean = String(nomor || '').replace(/:[0-9]+@/, '@').trim();
+  const digits = normalizePhoneDigits(nomor);
+
+  let defaultRole = 'MEMBER';
+  let defaultProfileCompleted = 0;
+
+  try {
+    const settings = await getSettings();
+    const ownerDigits = normalizePhoneDigits(settings.ownerNumber || config.defaults.ownerNumber);
+    const ownerJid = (settings.ownerJid || '').trim();
+    const adminDigitsList = (settings.adminNumbers || config.defaults.adminNumbers || '')
+      .split(',')
+      .map(n => normalizePhoneDigits(n))
+      .filter(d => d.length >= 7);
+
+    const isOwner = (ownerJid && (nomor === ownerJid || fullClean === ownerJid || clean === ownerJid.split('@')[0] || (ownerJid.endsWith('@lid') && clean === ownerJid.replace(/@.*$/, '')))) ||
+                    (ownerDigits && digits && isPhoneMatch(digits, ownerDigits));
+    const isAdmin = adminDigitsList.some(adm => isPhoneMatch(digits, adm));
+
+    if (isOwner) {
+      defaultRole = 'OWNER';
+      defaultProfileCompleted = 1;
+    } else if (isAdmin) {
+      defaultRole = 'ADMIN';
+      defaultProfileCompleted = 1;
+    }
+  } catch (e) {}
+
   const existing = await getQuery("SELECT * FROM customers WHERE nomor = ?", [nomor]);
   if (existing) {
-    // Hanya perbarui nama jika pendaftaran profil belum diselesaikan (.daftar)
-    if (nama && existing.nama !== nama && Number(existing.profile_completed || 0) === 0) {
+    // Jika user adalah Owner/Admin tapi di database masih terdata sebagai MEMBER / belum completed, otomatis update
+    if ((defaultRole === 'OWNER' || defaultRole === 'ADMIN') && (existing.role !== defaultRole || Number(existing.profile_completed || 0) === 0)) {
+      await runQuery("UPDATE customers SET role = ?, profile_completed = 1 WHERE nomor = ?", [defaultRole, nomor]);
+    } else if (nama && existing.nama !== nama && Number(existing.profile_completed || 0) === 0) {
       await runQuery("UPDATE customers SET nama = ? WHERE nomor = ?", [nama, nomor]);
     }
     await runQuery("UPDATE customers SET last_seen_at = CURRENT_TIMESTAMP WHERE nomor = ?", [nomor]);
     return { nomor, nama: Number(existing.profile_completed || 0) === 1 ? existing.nama : (nama || existing.nama) };
   } else {
-    await runQuery("INSERT INTO customers (nomor, nama, last_seen_at) VALUES (?, ?, CURRENT_TIMESTAMP)", [nomor, nama || "Pelanggan"]);
+    await runQuery("INSERT INTO customers (nomor, nama, role, profile_completed, registered_at, last_seen_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", [nomor, nama || (defaultRole === 'OWNER' ? 'Owner' : 'Pelanggan'), defaultRole, defaultProfileCompleted]);
     await addLog("SYSTEM", `Pelanggan baru terdaftar: ${nama || 'Pelanggan'} (${nomor})`);
-    return { nomor, nama: nama || "Pelanggan" };
+    return { nomor, nama: nama || (defaultRole === 'OWNER' ? 'Owner' : 'Pelanggan') };
   }
 }
 
@@ -1638,24 +1690,79 @@ export async function isCustomerRegistered(nomor) {
   if (!nomor) return false;
   const clean = String(nomor).split(':')[0].replace(/@.*$/, '').trim();
   const fullClean = String(nomor).replace(/:[0-9]+@/, '@').trim();
-  const digits = clean.replace(/[^0-9]/g, '');
+  const digits = normalizePhoneDigits(nomor);
 
-  // 1. Cek exact match full JID (contoh: 59837887057934@lid atau 628123456@s.whatsapp.net)
-  const rowExact = await getQuery("SELECT profile_completed FROM customers WHERE nomor = ? OR nomor = ?", [nomor, fullClean]);
-  if (rowExact && Number(rowExact.profile_completed) === 1) return true;
+  // 0. Owner / Admin / Moderator SELALU terdaftar secara otomatis (tidak pernah disuruh registrasi)
+  try {
+    const settings = await getSettings();
+    const ownerDigits = normalizePhoneDigits(settings.ownerNumber || config.defaults.ownerNumber);
+    const ownerJid = (settings.ownerJid || '').trim();
+    const adminDigitsList = (settings.adminNumbers || config.defaults.adminNumbers || '')
+      .split(',')
+      .map(n => normalizePhoneDigits(n))
+      .filter(d => d.length >= 7);
+
+    if (ownerJid && (nomor === ownerJid || fullClean === ownerJid || clean === ownerJid.split('@')[0] || (ownerJid.endsWith('@lid') && clean === ownerJid.replace(/@.*$/, '')))) {
+      return true;
+    }
+    if (ownerDigits && digits && isPhoneMatch(digits, ownerDigits)) {
+      return true;
+    }
+    if (adminDigitsList.some(adm => isPhoneMatch(digits, adm))) {
+      return true;
+    }
+  } catch (e) {}
+
+  // 1. Cek exact match full JID
+  const rowExact = await getQuery("SELECT profile_completed, role FROM customers WHERE nomor = ? OR nomor = ?", [nomor, fullClean]);
+  if (rowExact) {
+    if (['OWNER', 'ADMIN', 'MODERATOR'].includes(rowExact.role)) return true;
+    if (Number(rowExact.profile_completed) === 1) return true;
+  }
 
   // 2. Cek by phone digits jika nomor memiliki setidaknya 7 digit
   if (digits && digits.length >= 7) {
-    const rowPhone = await getQuery("SELECT profile_completed FROM customers WHERE nomor LIKE ? AND profile_completed = 1", [`%${digits}%`]);
-    if (rowPhone && Number(rowPhone.profile_completed) === 1) return true;
+    const allRegistered = await allQuery("SELECT nomor, profile_completed, role FROM customers WHERE profile_completed = 1 OR role IN ('OWNER', 'ADMIN', 'MODERATOR')");
+    for (const r of allRegistered) {
+      if (isPhoneMatch(r.nomor, digits)) return true;
+    }
   }
 
   return false;
 }
 
 export async function getCustomerMembershipProfile(nomor) {
-  const customer = await getQuery('SELECT * FROM customers WHERE nomor = ?', [nomor]);
-  if (!customer) return null;
+  let customer = await getQuery('SELECT * FROM customers WHERE nomor = ?', [nomor]);
+  const cleanNomor = String(nomor || '').split(':')[0].trim();
+  const digits = normalizePhoneDigits(nomor);
+
+  let resolvedRole = (customer?.role && customer.role !== 'null') ? customer.role : 'MEMBER';
+  try {
+    const settings = await getSettings();
+    const ownerDigits = normalizePhoneDigits(settings.ownerNumber || config.defaults.ownerNumber);
+    const ownerJid = (settings.ownerJid || '').trim();
+    const adminDigitsList = (settings.adminNumbers || config.defaults.adminNumbers || '')
+      .split(',')
+      .map(n => normalizePhoneDigits(n))
+      .filter(d => d.length >= 7);
+
+    const isOwner = (ownerJid && (cleanNomor === ownerJid || cleanNomor.includes(ownerJid.split('@')[0]))) ||
+                    (ownerDigits && digits && isPhoneMatch(digits, ownerDigits));
+    const isAdmin = adminDigitsList.some(adm => isPhoneMatch(digits, adm));
+
+    if (isOwner) resolvedRole = 'OWNER';
+    else if (isAdmin && resolvedRole !== 'OWNER') resolvedRole = 'ADMIN';
+  } catch (e) {}
+
+  if (!customer) {
+    if (resolvedRole === 'OWNER' || resolvedRole === 'ADMIN') {
+      await getOrCreateCustomer(nomor, resolvedRole === 'OWNER' ? 'Owner' : 'Admin');
+      customer = await getQuery('SELECT * FROM customers WHERE nomor = ?', [nomor]);
+    } else {
+      return null;
+    }
+  }
+
   const [stats, gameProfile, loyalty] = await Promise.all([
     getQuery(`
       SELECT COUNT(CASE WHEN status = 'COMPLETED' THEN 1 END) AS total_orders,
@@ -1665,9 +1772,10 @@ export async function getCustomerMembershipProfile(nomor) {
     getQuery('SELECT * FROM game_profiles WHERE customer_jid = ?', [nomor]),
     getQuery('SELECT * FROM loyalty WHERE customer_nomor = ?', [nomor])
   ]);
+
   return {
     ...customer,
-    role: (customer.role && customer.role !== 'null') ? customer.role : 'MEMBER',
+    role: resolvedRole,
     total_orders: stats?.total_orders || 0,
     total_spend: stats?.total_spend || 0,
     tier: calculateCustomerTier(stats?.total_orders || 0),
@@ -3738,7 +3846,7 @@ export async function getOrderPublicInvoice(orderId) {
 export async function markTransactionPaid(casakuTransactionId, receivedAmount) {
   return withTransaction(async () => {
     const tx = await getQuery(
-      `SELECT pt.*, o.customer_nomor, o.payment_status, o.expected_amount
+      `SELECT pt.*, o.customer_nomor, o.payment_status, o.coupon_code, o.coupon_redeemed
        FROM payment_transactions pt
        JOIN orders o ON pt.order_id = o.order_id
        WHERE pt.provider_transaction_id = ? AND pt.provider = 'casaku'`,
@@ -4147,7 +4255,7 @@ export async function addCustomerBalance(customerNomor, amount, source = 'DEPOSI
 
   return withTransaction(async () => {
     // Ensure customer record exists
-    await getCustomerMembershipProfile(customerNomor);
+    await getOrCreateCustomer(customerNomor, 'Pelanggan');
 
     await runQuery(
       `UPDATE customers SET balance = balance + ? WHERE nomor = ?`,

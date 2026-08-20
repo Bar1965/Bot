@@ -45,7 +45,7 @@ const userPushNamesMap = new Map();
 const groupMetaCache = new Map();
 const GROUP_META_TTL = 3 * 60 * 1000;
 
-async function getCachedGroupMetadata(sockInstance, groupJid) {
+export async function getCachedGroupMetadata(sockInstance, groupJid) {
   const cached = groupMetaCache.get(groupJid);
   if (cached && (Date.now() - cached.timestamp < GROUP_META_TTL)) {
     return cached.data;
@@ -1030,7 +1030,7 @@ export async function startBot(onSocketReady) {
   // ==========================================
   // FITUR MEDIA UTILITY (DOWNLOADER & CONVERTER)
   // ==========================================
-  async function handleMediaCommands(jid, senderNumber, m, msgText) {
+  async function handleMediaCommands(jid, senderNumber, m, msgText, isAdmin = false, isOwner = false) {
     const textTrim = (msgText || '').trim();
     if (!textTrim) return false;
     const isPrefix = textTrim.startsWith('.') || textTrim.startsWith('/') || textTrim.startsWith('#');
@@ -1044,7 +1044,7 @@ export async function startBot(onSocketReady) {
     if (isGroup) {
       const gSettings = await db.getGroupSettings(jid);
       if (gSettings.bot_mode === 'sales') {
-        const allowedInSalesGroup = ['owner', 'kontakowner', 'invoice', 'struk', 'tagall', 'hidetag', 'everyone'];
+        const allowedInSalesGroup = ['owner', 'kontakowner', 'invoice', 'struk'];
         if (!allowedInSalesGroup.includes(cleanCmd)) {
           return false;
         }
@@ -1057,7 +1057,7 @@ export async function startBot(onSocketReady) {
       'qc', 'quote', 'brat', 'meme', 'draw', 'aiimg', 'dalle', 'editfoto', 'removebg', 'nobg',
       'ssweb', 'ss', 'khodam', 'tod', 'truth', 'dare', 'tts', 'shortlink', 'short', 'cuaca', 'invoice', 'struk',
       'tebakgambar', 'tebakangka', 'susunkata', 'bank', 'deposito', 'tarik', 'withdraw', 'transfer', 'rampok', 'rob', 'slot', 'roulette',
-      'ping', 'p', 'statusbot', 'owner', 'kontakowner', 'tagall', 'hidetag', 'everyone',
+      'ping', 'p', 'statusbot', 'owner', 'kontakowner',
       'tt', 'tiktok', 'ttmp3', 'ig', 'instagram', 'igstory', 'yt', 'youtube', 'ytmp3', 'ytmp4',
       'fb', 'facebook', 'tw', 'twitter', 'x', 'spotify', 'play', 'song', 'tomp3', 'tovn',
       'tr', 'translate', 'jadwalsholat', 'sholat', 'menfess', 'confess', 'balasmenfess', 'menfessreply', 'replymenfess', 'stopmenfess', 'closemenfess', 'endmenfess',
@@ -1069,8 +1069,8 @@ export async function startBot(onSocketReady) {
     }
 
     // REGISTRATION CHECK
-    const exemptMediaCmds = ['owner', 'kontakowner', 'ping', 'p', 'statusbot', 'invoice', 'struk', 'tagall', 'hidetag', 'everyone'];
-    if (!exemptMediaCmds.includes(cleanCmd)) {
+    const exemptMediaCmds = ['owner', 'kontakowner', 'ping', 'p', 'statusbot', 'invoice', 'struk'];
+    if (!exemptMediaCmds.includes(cleanCmd) && !isAdmin && !isOwner) {
       const isReg = await db.isCustomerRegistered(senderNumber);
       if (!isReg) {
         const senderMention = senderNumber.split('@')[0];
@@ -2133,52 +2133,7 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
       return true;
     }
 
-    // 21. Tag All / Hidetag Anggota Grup (.tagall, .hidetag, /tagall, /hidetag)
-    if (['tagall', 'hidetag', 'everyone'].includes(cleanCmd)) {
-      const isGroup = jid.endsWith('@g.us');
-      if (!isGroup) {
-        await sock.sendMessage(jid, { text: "⚠️ Perintah ini hanya dapat dijalankan di dalam Grup WhatsApp!" });
-        return true;
-      }
-
-      // Cek apakah pengirim admin toko/admin grup
-      const isGroupAdmin = isGroup ? (async () => {
-        try {
-          const groupMeta = await sock.groupMetadata(jid);
-          const participant = groupMeta.participants.find(p => jidNormalizedUser(p.id) === senderNumber);
-          return participant && (participant.admin === 'admin' || participant.admin === 'superadmin');
-        } catch (e) { return false; }
-      })() : false;
-
-      const isAdminUser = senderNumber === botSettings.ownerNumber || (await isGroupAdmin);
-      if (!isAdminUser) {
-        await sock.sendMessage(jid, { text: "❌ Perintah ini hanya dapat dijalankan oleh Admin atau Owner." });
-        return true;
-      }
-
-      try {
-        await react('📣');
-        const groupMeta = await sock.groupMetadata(jid);
-        const participants = groupMeta.participants || [];
-        const mentions = participants.map(p => p.id);
-        const annText = args.slice(1).join(' ') || (m.message?.extendedTextMessage?.contextInfo?.quotedMessage?.conversation || m.message?.extendedTextMessage?.contextInfo?.quotedMessage?.extendedTextMessage?.text) || 'Pengumuman untuk seluruh anggota grup!';
-
-        let tagMsg = `📣 *PENGUMUMAN GRUP (${groupMeta.subject})* 📣\n\n📌 *Pesan:* ${annText}\n\n👥 *Anggota (${participants.length}):*\n`;
-        participants.forEach((p, idx) => {
-          tagMsg += `${idx + 1}. @${p.id.split('@')[0]}\n`;
-        });
-
-        await sock.sendMessage(jid, { text: tagMsg, mentions });
-        await react('✅');
-      } catch (err) {
-        await react('❌');
-        console.error("[TAGALL_ERR]", err.message);
-        await sock.sendMessage(jid, { text: `❌ Gagal melakukan Tag All: ${err.message}` });
-      }
-      return true;
-    }
-
-    // 22. Cari & Download Lagu (.song, .play)
+    // 21. Cari & Download Lagu (.song, .play)
     if (['song', 'play'].includes(cleanCmd)) {
       const query = args.slice(1).join(' ');
       if (!query) {
@@ -2544,7 +2499,7 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
         // ====================================================================
         // DETEKSI OWNER & ADMIN — Sistem LID-Aware
         // Masalah: WhatsApp kini kirim pesan dari grup sebagai @lid (bukan nomor HP)
-        // Solusi: cek ownerJid yang tersimpan + mapping metadata grup
+        // Solusi: cek ownerJid yang tersimpan + mapping metadata grup + database role
         // ====================================================================
         let senderCleanJid = jidNormalizedUser(senderNormalized);
         const extractDigits = (s) => s ? String(s).replace(/[^0-9]/g, '') : '';
@@ -2565,7 +2520,6 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
 
         let isGroupAdmin = false;
         let isStoreAdmin = adminEntries.some(adm => senderDigits.length > 6 && (senderDigits === adm || senderDigits.endsWith(adm) || adm.endsWith(senderDigits)));
-        let isAdmin = isOwnerSender || isStoreAdmin;
 
         // Di GRUP: cek status admin grup via groupMetadata & resolusi LID -> Phone Owner/Admin/Customer
         if (isGroup) {
@@ -2609,8 +2563,24 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
           }
         }
 
+        // Database Role Fallback: jika role di DB adalah OWNER / ADMIN / MODERATOR
+        if (!isOwnerSender || !isStoreAdmin) {
+          try {
+            const dbCustomer = await db.getQuery("SELECT role FROM customers WHERE nomor = ? OR nomor = ?", [senderCleanJid, senderNormalized]);
+            if (dbCustomer?.role === 'OWNER') {
+              isOwnerSender = true;
+            } else if (['ADMIN', 'MODERATOR'].includes(dbCustomer?.role)) {
+              isStoreAdmin = true;
+            }
+            if (!isStoreAdmin) {
+              const isMod = await db.isModerator(senderCleanJid) || await db.isModerator(senderNormalized);
+              if (isMod) isStoreAdmin = true;
+            }
+          } catch (e) {}
+        }
+
         // Owner dan Admin Toko SELALU memiliki akses Admin penuh di SEMUA grup (walaupun bukan admin di grup WA tersebut)
-        isAdmin = isOwnerSender || isGroupAdmin || isStoreAdmin;
+        let isAdmin = isOwnerSender || isGroupAdmin || isStoreAdmin;
 
         // Cek apakah user sedang di-banned (Owner/Admin tidak pernah kena ban)
         if (!isAdmin) {
@@ -2847,7 +2817,7 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
             await sock.sendMessage(jid, { text: `🏳️ Kamu menyerah!\n\nJawaban yang benar adalah: *${game.answer}*` });
             continue;
           } else if (msgText.toUpperCase().trim() === game.answer) {
-            if (!await db.isCustomerRegistered(senderNormalized)) {
+            if (!await db.isCustomerRegistered(senderNormalized) && !isAdmin && !isOwnerSender) {
               await sock.sendMessage(jid, { text: `⚠️ Maaf @${senderNormalized.split('@')[0]}, kamu harus terdaftar (.daftar <nama>) untuk mendapatkan poin dari mini-games!`, mentions: [senderNormalized] }, { quoted: m });
               continue;
             }
@@ -2882,7 +2852,7 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
             const guess = parseInt(msgText.trim());
             if (!isNaN(guess)) {
               if (guess === game.target) {
-                if (!await db.isCustomerRegistered(senderNormalized)) {
+                if (!await db.isCustomerRegistered(senderNormalized) && !isAdmin && !isOwnerSender) {
                   await sock.sendMessage(jid, { text: `⚠️ Maaf @${senderNormalized.split('@')[0]}, kamu harus terdaftar (.daftar <nama>) untuk mendapatkan poin dari mini-games!`, mentions: [senderNormalized] }, { quoted: m });
                 } else {
                   game.isAnswered = true;
@@ -2923,7 +2893,7 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
             await sock.sendMessage(jid, { text: `🏳️ Kamu menyerah!\n\nKata yang benar adalah: *${game.answer}*` });
             continue;
           } else if (msgText.toUpperCase().trim() === game.answer) {
-            if (!await db.isCustomerRegistered(senderNormalized)) {
+            if (!await db.isCustomerRegistered(senderNormalized) && !isAdmin && !isOwnerSender) {
               await sock.sendMessage(jid, { text: `⚠️ Maaf @${senderNormalized.split('@')[0]}, kamu harus terdaftar (.daftar <nama>) untuk mendapatkan poin dari mini-games!`, mentions: [senderNormalized] }, { quoted: m });
               continue;
             }
@@ -2988,17 +2958,17 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
           const isPdfMergeFile = await checkPdfMergeSession(sock, m, senderNormalized, jid);
           if (isPdfMergeFile) continue;
 
-          const isPlugin = await executePlugin(routerCleanCmd, { sock, jid, senderNumber: senderNormalized, m, msgText, args: routerArgs, cleanCmd: routerCleanCmd, isAdmin });
+          const isPlugin = await executePlugin(routerCleanCmd, { sock, jid, senderNumber: senderNormalized, m, msgText, args: routerArgs, cleanCmd: routerCleanCmd, isAdmin, isOwner: isOwnerSender });
           
           if (!isPlugin) {
-            const isPdfCmd = await handlePdfCommands(sock, m, senderNormalized, jid, routerCleanCmd, routerArgs, isGroup, null);
+            const isPdfCmd = await handlePdfCommands(sock, m, senderNormalized, jid, routerCleanCmd, routerArgs, isGroup, null, isPrefixCmd, isAdmin, isOwnerSender);
             if (isPdfCmd) continue;
 
             const isPrem = await handlePremiumCommand({ sock, jid, senderNumber: senderNormalized, messageObj: m, args: routerArgs, cleanCmd: routerCleanCmd, isAdmin, isOwner: isOwnerSender });
             if (!isPrem) {
               const isFun = await handleFunCommand({ sock, jid, senderNumber: senderNormalized, messageObj: m, text: msgText, args: routerArgs, cleanCmd: routerCleanCmd, isFromGroup: false, isAdmin, isOwner: isOwnerSender });
               if (!isFun) {
-                const isMedia = await handleMediaCommands(jid, senderNormalized, m, msgText);
+                const isMedia = await handleMediaCommands(jid, senderNormalized, m, msgText, isAdmin, isOwnerSender);
                 if (isMedia) continue;
                 const isHandledAdmin = await handleGroupMessage(jid, senderNormalized, m, msgText, isAdmin, isPrefixCmd, { isAdmin, isOwner: isOwnerSender });
                 if (!isHandledAdmin) {
@@ -3022,18 +2992,18 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
           const isPdfMergeFile = await checkPdfMergeSession(sock, m, senderNormalized, jid);
           if (isPdfMergeFile) continue;
 
-          const isPlugin = await executePlugin(routerCleanCmd, { sock, jid, senderNumber: senderNormalized, m, msgText, args: routerArgs, cleanCmd: routerCleanCmd, isAdmin });
+          const isPlugin = await executePlugin(routerCleanCmd, { sock, jid, senderNumber: senderNormalized, m, msgText, args: routerArgs, cleanCmd: routerCleanCmd, isAdmin, isOwner: isOwnerSender });
 
           if (!isPlugin) {
             // Check perintah PDF di grup (.pdf, .pdfmerge, .topdf, dll)
-            const isPdfCmd = await handlePdfCommands(sock, m, senderNormalized, jid, routerCleanCmd, routerArgs, true, null);
+            const isPdfCmd = await handlePdfCommands(sock, m, senderNormalized, jid, routerCleanCmd, routerArgs, true, null, isPrefixCmd, isAdmin, isOwnerSender);
             if (isPdfCmd) continue;
 
             const isPrem = await handlePremiumCommand({ sock, jid, senderNumber: senderNormalized, messageObj: m, args: routerArgs, cleanCmd: routerCleanCmd, isAdmin, isOwner: isOwnerSender });
             if (!isPrem) {
               const isFun = await handleFunCommand({ sock, jid, senderNumber: senderNormalized, messageObj: m, text: msgText, args: routerArgs, cleanCmd: routerCleanCmd, isFromGroup: true, isAdmin, isOwner: isOwnerSender });
               if (!isFun) {
-                const isMedia = await handleMediaCommands(jid, senderNormalized, m, msgText);
+                const isMedia = await handleMediaCommands(jid, senderNormalized, m, msgText, isAdmin, isOwnerSender);
                 if (isMedia) continue;
                 const isHandledAdmin = await handleGroupMessage(jid, senderNormalized, m, msgText, isAdmin, isPrefixCmd, { isAdmin, isOwner: isOwnerSender });
                 if (!isHandledAdmin) {

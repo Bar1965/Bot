@@ -8,7 +8,7 @@ import { createMidtransTransaction, botState } from '../../server.js';
 import { buildCommandMenu } from '../../commandRegistry.js';
 import * as mediaHandler from '../../mediaHandler.js';
 import * as ent from '../../entertainmentHandler.js';
-import { sendInteractiveButtons, extractTargetJid, parseDuration, logToSystem, broadcastTagAll, triggerRestockBroadcast, checkAndNotifySubscribers } from '../../bot.js';
+import { sendInteractiveButtons, extractTargetJid, parseDuration, logToSystem, broadcastTagAll, triggerRestockBroadcast, checkAndNotifySubscribers, getCachedGroupMetadata } from '../../bot.js';
 import { backupDatabase } from '../../scheduler.js';
 
 export function createGroupAdminHandler(ctx) {
@@ -50,12 +50,6 @@ export function createGroupAdminHandler(ctx) {
 
   if (!adminStoreCommands.includes(cleanCmd) && !groupModerationCommands.includes(cleanCmd) && !banCommands.includes(cleanCmd) && cleanCmd !== 'getjid' && cleanCmd !== 'owner') {
     return false;
-  }
-
-  if (cleanCmd === 'resetleaderboard') {
-    const res = await db.resetGameLeaderboard();
-    await sock.sendMessage(jid, { text: `✅ *LEADERBOARD GAME DIRESET BERSIH!*\n\nSemua poin, level, dan streak game pengguna un-registered telah dibersihkan.\n\nSekarang hanya member terdaftar (.daftar <nama>) yang dapat mengumpulkan poin dan masuk ke leaderboard!` });
-    return true;
   }
 
   if (cleanCmd === 'getjid') {
@@ -116,8 +110,8 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
 
   if (isGroup && !isOwner) {
     try {
-      const groupMeta = await sock.groupMetadata(jid);
-      const pMatch = groupMeta.participants.find(p => {
+      const groupMeta = (typeof getCachedGroupMetadata === 'function' ? await getCachedGroupMetadata(sock, jid) : null) || await sock.groupMetadata(jid);
+      const pMatch = groupMeta?.participants?.find(p => {
         const pCleanId = jidNormalizedUser(p.id);
         const pCleanLid = p.lid ? jidNormalizedUser(p.lid) : null;
         return pCleanId === senderCleanJid || pCleanLid === senderCleanJid ||
@@ -143,8 +137,17 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
   }
 
   const adminList = (botSettings.adminNumbers || config.defaults.adminNumbers || '').split(',').map(n => cleanDigits(n));
-  const isAdminStore = isOwner || isMod || adminList.some(adm => adm && (senderDigits === adm || senderDigits.endsWith(adm) || adm.endsWith(senderDigits)));
-  const isAdminUser = isAdminStore || isGroupAdmin;
+  let isAdminStore = isOwner || isMod || adminList.some(adm => adm && (senderDigits === adm || senderDigits.endsWith(adm) || adm.endsWith(senderDigits)));
+
+  if (!isOwner || !isAdminStore) {
+    try {
+      const custRow = await db.getQuery("SELECT role FROM customers WHERE nomor = ? OR nomor = ?", [senderCleanJid, senderNormalized]);
+      if (custRow?.role === 'OWNER') isOwner = true;
+      else if (['ADMIN', 'MODERATOR'].includes(custRow?.role)) isAdminStore = true;
+    } catch (e) {}
+  }
+
+  const isAdminUser = isAdminStore || isGroupAdmin || isOwner;
 
   // Jika bukan Admin/Owner, tolak perintah
   if (!isAdminUser && !isOwner) {
@@ -159,6 +162,16 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
       return true;
     }
   }
+
+    if (cleanCmd === 'resetleaderboard') {
+      if (!isOwner && !isAdminUser) {
+        await sock.sendMessage(jid, { text: "❌ Perintah ini hanya dapat dijalankan oleh Admin atau Owner bot." });
+        return true;
+      }
+      const res = await db.resetGameLeaderboard();
+      await sock.sendMessage(jid, { text: `✅ *LEADERBOARD GAME DIRESET BERSIH!*\n\nSemua poin, level, dan streak game pengguna un-registered telah dibersihkan.\n\nSekarang hanya member terdaftar (.daftar <nama>) yang dapat mengumpulkan poin dan masuk ke leaderboard!` });
+      return true;
+    }
 
     if (cleanCmd === 'stats') {
       if (!isOwner) {
@@ -1121,15 +1134,17 @@ Mode Saat Ini: *${modeLabel}*
     const hasAtMentionAll = (text || '').includes('@everyone') || (text || '').includes('@all') || (text || '').includes('@semua');
     if (isGroup && (cleanCmd === 'tagall' || cleanCmd === 'hidetag' || cleanCmd === 'everyone' || cleanCmd === 'all' || cleanCmd === 'semua' || hasAtMentionAll)) {
       try {
-        const groupMeta = await sock.groupMetadata(jid);
-        const allMentions = [];
-        groupMeta.participants.forEach(p => {
-          if (p.id) allMentions.push(p.id);
-          if (p.lid) allMentions.push(p.lid);
-        });
+        if (typeof react === 'function') await react('📣');
+        const groupMeta = (typeof getCachedGroupMetadata === 'function' ? await getCachedGroupMetadata(sock, jid) : null) || await sock.groupMetadata(jid);
+        if (!groupMeta || !groupMeta.participants || groupMeta.participants.length === 0) {
+          throw new Error('Tidak dapat mengambil daftar peserta grup.');
+        }
+        const allMentions = [...new Set(groupMeta.participants.map(p => p.id || p.lid).filter(Boolean))];
 
         const isExplicitTagAll = (cleanCmd === 'tagall');
-        const extraMsg = args.slice(1).join(' ').trim();
+        const quoted = m.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+        const quotedText = quoted?.conversation || quoted?.extendedTextMessage?.text || quoted?.imageMessage?.caption || quoted?.videoMessage?.caption || '';
+        const extraMsg = args.slice(1).join(' ').trim() || quotedText;
         
         let tagMsg = '';
         if (isExplicitTagAll) {
@@ -1150,7 +1165,9 @@ Mode Saat Ini: *${modeLabel}*
         }
 
         await sock.sendMessage(jid, { text: tagMsg, mentions: allMentions });
+        if (typeof react === 'function') await react('✅');
       } catch (err) {
+        if (typeof react === 'function') await react('❌');
         console.error("[TAGALL_ERR]", err.message);
         await sock.sendMessage(jid, { text: `❌ Gagal tagall: ${err.message}` });
       }
@@ -1159,13 +1176,12 @@ Mode Saat Ini: *${modeLabel}*
 
     if (isGroup && cleanCmd === 'admins') {
       try {
-        const groupMeta = await sock.groupMetadata(jid);
+        const groupMeta = (typeof getCachedGroupMetadata === 'function' ? await getCachedGroupMetadata(sock, jid) : null) || await sock.groupMetadata(jid);
+        if (!groupMeta || !groupMeta.participants) {
+          throw new Error('Tidak dapat membaca daftar peserta grup.');
+        }
         const adminParticipants = groupMeta.participants.filter(p => p.admin === 'admin' || p.admin === 'superadmin');
-        const adminMentions = [];
-        adminParticipants.forEach(p => {
-          if (p.id) adminMentions.push(p.id);
-          if (p.lid) adminMentions.push(p.lid);
-        });
+        const adminMentions = [...new Set(adminParticipants.map(p => p.id || p.lid).filter(Boolean))];
 
         const extraMsg = args.slice(1).join(' ').trim();
         

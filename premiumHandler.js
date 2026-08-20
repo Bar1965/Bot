@@ -163,7 +163,7 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
       }
       
       const premiumTier = await db.getPremiumTier(senderNumber);
-      if (premiumTier === 'Free') {
+      if (premiumTier === 'Free' && !isAdmin && !isOwner) {
         await sock.sendMessage(jid, {
           text: '🚫 *FITUR KHUSUS PREMIUM*\n\nFitur `.ocr` untuk ekstrak teks dari gambar/PDF hanya tersedia bagi pengguna *Silver, Gold, dan Diamond*.\n\n💸 Ketik `.premium` untuk melihat info paket.'
         }, { quoted: messageObj });
@@ -183,7 +183,7 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
     const benefits = getPremiumBenefits(premiumTier);
     const usedCount = await db.getAiUsageToday(senderNumber);
 
-    if (usedCount >= benefits.aiDailyLimit) {
+    if (!isAdmin && !isOwner && usedCount >= benefits.aiDailyLimit) {
       await sock.sendMessage(jid, {
         text: `⚠️ *KUOTA AI HARIAN HABIS* (${usedCount}/${benefits.aiDailyLimit})\n\nKuotamu untuk tier *${premiumTier}* telah terpakai semua hari ini.\n\n💸 Upgrade ke *Gold* / *Diamond* untuk kuota AI lebih banyak!\nKetik *.premium* untuk info paket.`
       }, { quoted: messageObj });
@@ -558,76 +558,81 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
     return true;
   }
 
-  // ─── ADMIN: .setpremium @user TIER HARI ───────────────────────
-  if (cmd === 'setpremium' && (isAdmin || isOwner)) {
-    const mentions = messageObj?.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
-    const targetJid = mentions[0] || (args[1] ? args[1].replace(/[^0-9]/g, '') + '@s.whatsapp.net' : null);
-    const tierArg = args[2];
-    const daysArg = parseInt(args[3]) || 30;
-
-    if (!targetJid || !tierArg) {
-      await sock.sendMessage(jid, {
-        text: `❌ Format: *.setpremium @user TIER HARI*\nContoh: *.setpremium @user gold 30*`
-      }, { quoted: messageObj });
+  // ─── ADMIN: .setpremium / .revokepremium / .listpremium ─────────
+  if (['setpremium', 'revokepremium', 'listpremium'].includes(cmd)) {
+    if (!isAdmin && !isOwner) {
+      await sock.sendMessage(jid, { text: "❌ Perintah ini hanya dapat dijalankan oleh Admin atau Owner." }, { quoted: messageObj });
       return true;
     }
 
-    const tierKey = tierArg.charAt(0).toUpperCase() + tierArg.slice(1).toLowerCase();
-    if (!PREMIUM_TIERS[tierKey]) {
-      await sock.sendMessage(jid, { text: `❌ Tier tidak valid: *${tierArg}*. Pilih: silver, gold, diamond` }, { quoted: messageObj });
+    if (cmd === 'setpremium') {
+      const mentions = messageObj?.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
+      const targetJid = mentions[0] || (args[1] ? args[1].replace(/[^0-9]/g, '') + '@s.whatsapp.net' : null);
+      const tierArg = args[2];
+      const daysArg = parseInt(args[3]) || 30;
+
+      if (!targetJid || !tierArg) {
+        await sock.sendMessage(jid, {
+          text: `❌ Format: *.setpremium @user TIER HARI*\nContoh: *.setpremium @user gold 30*`
+        }, { quoted: messageObj });
+        return true;
+      }
+
+      const tierKey = tierArg.charAt(0).toUpperCase() + tierArg.slice(1).toLowerCase();
+      if (!PREMIUM_TIERS[tierKey]) {
+        await sock.sendMessage(jid, { text: `❌ Tier tidak valid: *${tierArg}*. Pilih: silver, gold, diamond` }, { quoted: messageObj });
+        return true;
+      }
+
+      try {
+        const result = await db.grantPremium(targetJid, tierKey, daysArg, 'ADMIN');
+        const phone = targetJid.split('@')[0];
+        await sock.sendMessage(jid, {
+          text: `✅ Premium berhasil diberikan!\n\n📱 User: *+${phone}*\n${PREMIUM_TIERS[tierKey].emoji} Tier: *${tierKey}*\n📅 Sampai: *${formatExpiry(result.expiresAt)}*\n⏳ Durasi: *${daysArg} hari*`
+        }, { quoted: messageObj });
+      } catch (e) {
+        await sock.sendMessage(jid, { text: `❌ Gagal: ${e.message}` }, { quoted: messageObj });
+      }
       return true;
     }
 
-    try {
-      const result = await db.grantPremium(targetJid, tierKey, daysArg, 'ADMIN');
+    if (cmd === 'revokepremium') {
+      const mentions = messageObj?.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
+      const targetJid = mentions[0] || (args[1] ? args[1].replace(/[^0-9]/g, '') + '@s.whatsapp.net' : null);
+
+      if (!targetJid) {
+        await sock.sendMessage(jid, { text: `❌ Format: *.revokepremium @user*` }, { quoted: messageObj });
+        return true;
+      }
+
+      const removed = await db.revokePremium(targetJid);
       const phone = targetJid.split('@')[0];
       await sock.sendMessage(jid, {
-        text: `✅ Premium berhasil diberikan!\n\n📱 User: *+${phone}*\n${PREMIUM_TIERS[tierKey].emoji} Tier: *${tierKey}*\n📅 Sampai: *${formatExpiry(result.expiresAt)}*\n⏳ Durasi: *${daysArg} hari*`
+        text: removed
+          ? `✅ Premium user *+${phone}* berhasil dicabut.`
+          : `⚠️ User *+${phone}* tidak memiliki premium aktif.`
       }, { quoted: messageObj });
-    } catch (e) {
-      await sock.sendMessage(jid, { text: `❌ Gagal: ${e.message}` }, { quoted: messageObj });
-    }
-    return true;
-  }
-
-  // ─── ADMIN: .revokepremium @user ─────────────────────────────
-  if (cmd === 'revokepremium' && (isAdmin || isOwner)) {
-    const mentions = messageObj?.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
-    const targetJid = mentions[0] || args[1]?.replace('@', '') + '@s.whatsapp.net';
-
-    if (!targetJid || targetJid === 'undefined@s.whatsapp.net') {
-      await sock.sendMessage(jid, { text: `❌ Format: *.revokepremium @user*` }, { quoted: messageObj });
       return true;
     }
 
-    const removed = await db.revokePremium(targetJid);
-    const phone = targetJid.split('@')[0];
-    await sock.sendMessage(jid, {
-      text: removed
-        ? `✅ Premium user *+${phone}* berhasil dicabut.`
-        : `⚠️ User *+${phone}* tidak memiliki premium aktif.`
-    }, { quoted: messageObj });
-    return true;
-  }
+    if (cmd === 'listpremium') {
+      const rows = await db.listPremiumUsers();
+      if (rows.length === 0) {
+        await sock.sendMessage(jid, { text: `📋 Tidak ada premium user aktif saat ini.` }, { quoted: messageObj });
+        return true;
+      }
 
-  // ─── ADMIN: .listpremium ──────────────────────────────────────
-  if (cmd === 'listpremium' && (isAdmin || isOwner)) {
-    const rows = await db.listPremiumUsers();
-    if (rows.length === 0) {
-      await sock.sendMessage(jid, { text: `📋 Tidak ada premium user aktif saat ini.` }, { quoted: messageObj });
+      const lines = rows.map((r, i) => {
+        const tierInfo = PREMIUM_TIERS[r.tier];
+        const phone = r.jid.split('@')[0];
+        return `${i+1}. ${tierInfo?.emoji || '👑'} *${r.nama}* (+${phone})\n   Tier: ${r.tier} | Sisa: ${daysLeft(r.expires_at)} hari`;
+      });
+
+      await sock.sendMessage(jid, {
+        text: `📋 *PREMIUM USERS AKTIF* (${rows.length})\n\n${lines.join('\n\n')}`
+      }, { quoted: messageObj });
       return true;
     }
-
-    const lines = rows.map((r, i) => {
-      const tierInfo = PREMIUM_TIERS[r.tier];
-      const phone = r.jid.split('@')[0];
-      return `${i+1}. ${tierInfo?.emoji || '👑'} *${r.nama}* (+${phone})\n   Tier: ${r.tier} | Sisa: ${daysLeft(r.expires_at)} hari`;
-    });
-
-    await sock.sendMessage(jid, {
-      text: `📋 *PREMIUM USERS AKTIF* (${rows.length})\n\n${lines.join('\n\n')}`
-    }, { quoted: messageObj });
-    return true;
   }
 
   return false;
