@@ -218,9 +218,32 @@ export function extractMessageText(m) {
 /**
  * Helper terpusat untuk mengirim pesan interaktif dengan tombol (Native Flow / Quick Reply / List)
  */
-export async function sendInteractiveButtons(targetSock, jid, { text, title, footer, buttons = [], sections = [] }) {
+export async function sendInteractiveButtons(...args) {
+  let targetSock = sock;
+  let targetJid = null;
+  let options = {};
+
+  for (const arg of args) {
+    if (!arg) continue;
+    if (typeof arg === 'string' && (arg.includes('@') || arg === 'status@broadcast')) {
+      targetJid = arg;
+    } else if (typeof arg === 'object') {
+      if (typeof arg.sendMessage === 'function' || typeof arg.relayMessage === 'function') {
+        targetSock = arg;
+      } else if (arg.text !== undefined || arg.title !== undefined || arg.buttons !== undefined || arg.sections !== undefined) {
+        options = arg;
+      }
+    }
+  }
+
   const activeSock = targetSock || sock;
-  if (!activeSock) return false;
+  if (!activeSock || !targetJid) {
+    console.warn(`[INTERACTIVE MSG DROP] JID tidak valid: "${targetJid}"`);
+    return false;
+  }
+
+  const { text, title, footer, buttons = [], sections = [] } = options;
+  const jid = targetJid;
 
   try {
     let fullText = '';
@@ -1065,7 +1088,7 @@ export async function startBot(onSocketReady) {
       'qc', 'quote', 'brat', 'meme', 'draw', 'aiimg', 'dalle', 'editfoto', 'removebg', 'nobg',
       'ssweb', 'ss', 'khodam', 'tod', 'truth', 'dare', 'tts', 'shortlink', 'short', 'cuaca', 'invoice', 'struk',
       'tebakgambar', 'tebakangka', 'susunkata', 'bank', 'deposito', 'tarik', 'withdraw', 'transfer', 'rampok', 'rob', 'slot', 'roulette',
-      'ping', 'p', 'statusbot', 'owner', 'kontakowner',
+      'ping', 'statusbot', 'owner', 'kontakowner',
       'tt', 'tiktok', 'ttmp3', 'ig', 'instagram', 'igstory', 'yt', 'youtube', 'ytmp3', 'ytmp4',
       'fb', 'facebook', 'tw', 'twitter', 'x', 'spotify', 'play', 'song', 'tomp3', 'tovn',
       'tr', 'translate', 'jadwalsholat', 'sholat', 'menfess', 'confess', 'balasmenfess', 'menfessreply', 'replymenfess', 'stopmenfess', 'closemenfess', 'endmenfess',
@@ -1077,7 +1100,7 @@ export async function startBot(onSocketReady) {
     }
 
     // REGISTRATION CHECK
-    const exemptMediaCmds = ['owner', 'kontakowner', 'ping', 'p', 'statusbot', 'invoice', 'struk'];
+    const exemptMediaCmds = ['owner', 'kontakowner', 'ping', 'statusbot', 'invoice', 'struk'];
     if (!exemptMediaCmds.includes(cleanCmd) && !isAdmin && !isOwner) {
       const isReg = await db.isCustomerRegistered(senderNumber);
       if (!isReg) {
@@ -2026,8 +2049,8 @@ _${khodamRes.desc}_`;
       return true;
     }
 
-    // 19.5. Cek Status & Kecepatan Respon Bot (.ping, .p, .statusbot)
-    if (['ping', 'p', 'statusbot'].includes(cleanCmd)) {
+    // 19.5. Cek Status & Kecepatan Respon Bot (.ping, .statusbot, .speed)
+    if (['ping', 'statusbot', 'speed'].includes(cleanCmd)) {
       const startTime = Date.now();
       await react('⚡');
       const latencySec = ((Date.now() - startTime) / 1000).toFixed(4);
@@ -2444,7 +2467,7 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
       checkIsUserInGroup,
       sendQris,
       logToSystem,
-      sendInteractiveButtons: (...args) => sendInteractiveButtons(sock, ...args),
+      sendInteractiveButtons: (...args) => sendInteractiveButtons(...args),
       react: async (jidOrEmoji, emojiOrKey, maybeKey) => {
         let targetJid = jidOrEmoji;
         let targetEmoji = emojiOrKey;
