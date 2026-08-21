@@ -710,7 +710,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     'duel', 'terimaduel', 'gasduel', 'tolakduel', 'tembak', 'dor',
     'blackjack', 'bj', 'hit', 'stand', 'double',
     'heist', 'rampokbank', 'joinheist', 'startheist',
-    'balapkuda', 'pasangkuda', 'race',
+    'balapkuda', 'pasangkuda', 'betkuda', 'pasang', 'bet', 'kuda', 'race', 'startbalap', 'startrace', 'cancelbalap',
     'bank', 'brankas', 'depo', 'setor', 'tarik', 'withdraw',
     'tebaklagu', 'lagu', 'musicquiz', 'tebakmusik',
     'tebakbendera', 'tebaknegara', 'bendera', 'negara', 'flag',
@@ -907,8 +907,8 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     return await handleBankHeist(sock, jid, senderNumber, messageObj, args, command, isFromGroup);
   }
 
-  // Balap Kuda Multi-Betting
-  if (['balapkuda', 'pasangkuda', 'race'].includes(command)) {
+  // Balap Kuda Uma Musume Derby Multi-Betting
+  if (['balapkuda', 'pasangkuda', 'betkuda', 'pasang', 'bet', 'kuda', 'race', 'startbalap', 'startrace', 'cancelbalap'].includes(command)) {
     return await handleHorseRace(sock, jid, senderNumber, messageObj, args, command, isFromGroup);
   }
 
@@ -3162,104 +3162,177 @@ ${failList.join('\n')}
 }
 
 // ─── 6. BALAP KUDA MULTI-BETTING ──────────────────────────────
-const horseList = [
-  { id: 1, name: "⚡ Si Kilat", odds: 2.0 },
-  { id: 2, name: "🐎 Si Petir", odds: 2.5 },
-  { id: 3, name: "🔥 Naga Api", odds: 3.2 },
-  { id: 4, name: "🌪️ Bayangan Malam", odds: 4.5 },
-  { id: 5, name: "🌟 Kuda Emas", odds: 6.0 }
+const UMA_MUSUME_ROSTER = [
+  { id: 1, name: "Special Week", emoji: "🌸", nickname: "Spica" },
+  { id: 2, name: "Silence Suzuka", emoji: "⚡", nickname: "Escape" },
+  { id: 3, name: "Tokai Teio", emoji: "👑", nickname: "Step" },
+  { id: 4, name: "Gold Ship", emoji: "⚓", nickname: "Warp" },
+  { id: 5, name: "Mayano Top Gun", emoji: "✈️", nickname: "Top Gun" },
+  { id: 6, name: "Mejiro McQueen", emoji: "🍨", nickname: "Stamina" },
+  { id: 7, name: "Oguri Cap", emoji: "🍙", nickname: "Beast" },
+  { id: 8, name: "Haru Urara", emoji: "🎀", nickname: "Miracle" }
 ];
 
 async function handleHorseRace(sock, jid, senderNumber, messageObj, args, command, isFromGroup) {
   if (!isFromGroup) {
-    await send(sock, jid, messageObj, "❌ Pacuan Kuda Akbar Derby hanya bisa dimainkan di grup!");
+    await send(sock, jid, messageObj, "❌ Permainan Balap Kuda Uma Musume Derby hanya bisa dimainkan di grup!");
     return true;
   }
 
-  if (['balapkuda', 'race'].includes(command)) {
-    if (activeHorseRaces.has(jid)) {
-      const r = activeHorseRaces.get(jid);
-      const remSec = Math.ceil((r.startAt - Date.now()) / 1000);
-      await send(sock, jid, messageObj, `🏇 *BURSA TARUHAN BALAP KUDA SEDANG BUKA!*\n\nSisa waktu pasang: *${remSec} detik*.\nTotal Taruhan Masuk: *${r.bets.length} taruhan*\n\nPasang: \`.pasangkuda [nomor_kuda] [jumlah]\``);
+  const bettingCommands = ['pasangkuda', 'betkuda', 'pasang', 'bet', 'kuda'];
+  const isDirectBetCmd = bettingCommands.includes(command);
+
+  let session = activeHorseRaces.get(jid);
+
+  if (['startbalap', 'startrace'].includes(command)) {
+    if (!session) {
+      await send(sock, jid, messageObj, "❌ Tidak ada bursa balap kuda yang sedang aktif. Ketik `.balapkuda` untuk membuka bursa taruhan!");
       return true;
     }
+    if (session.bets.length === 0) {
+      await send(sock, jid, messageObj, "⚠️ Belum ada taruhan yang dipasang! Pasang minimal 1 taruhan sebelum memulai.");
+      return true;
+    }
+    if (session.timeout) clearTimeout(session.timeout);
+    await runHorseRace(sock, jid, messageObj, session);
+    return true;
+  }
 
-    const raceSession = {
+  if (['cancelbalap'].includes(command)) {
+    if (!session) return true;
+    if (session.timeout) clearTimeout(session.timeout);
+    for (const b of session.bets) {
+      await db.addGamePoints(b.sender, b.amount);
+    }
+    activeHorseRaces.delete(jid);
+    await send(sock, jid, messageObj, "🏳️ Bursa balap kuda dibatalkan. Seluruh poin taruhan telah dikembalikan ke dompet pemain.");
+    return true;
+  }
+
+  let directHorseId = null;
+  let directBetAmount = null;
+
+  if (isDirectBetCmd && args[1]) {
+    directHorseId = parseInt(args[1], 10);
+    directBetAmount = parseInt(args[2], 10);
+  } else if (['balapkuda', 'race'].includes(command) && args[1] && !isNaN(parseInt(args[1], 10)) && args[2]) {
+    directHorseId = parseInt(args[1], 10);
+    directBetAmount = parseInt(args[2], 10);
+  }
+
+  if (!session) {
+    const horseCount = (args[1] && parseInt(args[1], 10) >= 4 && parseInt(args[1], 10) <= 8 && !args[2]) 
+      ? parseInt(args[1], 10) 
+      : 8;
+
+    const racers = UMA_MUSUME_ROSTER.slice(0, horseCount);
+    const payoutMultiplier = Number((horseCount - 0.5).toFixed(1));
+
+    session = {
       jid,
+      racers,
+      payoutMultiplier,
       bets: [],
       startAt: Date.now() + 2 * 60 * 1000,
       timeout: null
     };
 
-    raceSession.timeout = setTimeout(async () => {
+    session.timeout = setTimeout(async () => {
       if (!activeHorseRaces.has(jid)) return;
-      await runHorseRace(sock, jid, messageObj, raceSession);
+      await runHorseRace(sock, jid, messageObj, session);
     }, 2 * 60 * 1000);
 
-    activeHorseRaces.set(jid, raceSession);
+    activeHorseRaces.set(jid, session);
 
-    const bursaMsg = 
-`🏇 *AKBAR GRAND DERBY — BURSA TARUHAN DIBUKA* 🏁
+    if (directHorseId && directBetAmount) {
+      await processHorseBet(sock, jid, senderNumber, messageObj, session, directHorseId, directBetAmount);
+    } else {
+      let rosterText = racers.map(h => `${h.id}. ${h.emoji} *${h.name}*`).join('\n');
+      const bursaMsg = 
+`🏇 *UMA MUSUME TOKYO RACECOURSE DERBY* 🏁
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Bursa taruhan dibuka selama **2 MENIT**! Pasang taruhanmu pada kuda jagoanmu:
+Bursa taruhan dibuka selama **2 MENIT**!
+Peluang seluruh kuda berlari adalah **SETARA (FAIR)** dengan hadiah payout pemenang **${session.payoutMultiplier}x Lipat**!
 
-1. ⚡ *Si Kilat* (Odds 2.0x)
-2. 🐎 *Si Petir* (Odds 2.5x)
-3. 🔥 *Naga Api* (Odds 3.2x)
-4. 🌪️ *Bayangan Malam* (Odds 4.5x)
-5. 🌟 *Kuda Emas* (Odds 6.0x)
+*Daftar Kuda Uma Musume:*
+${rosterText}
 
 📌 *Cara Pasang Taruhan:*
-Ketik: \`.pasangkuda [nomor_kuda] [jumlah_poin]\`
-_Contoh:_ \`.pasangkuda 1 100\`
+Ketik: \`.pasang [1-${session.racers.length}] [jumlah]\`
+_Contoh:_ \`.pasang 4 100\` atau \`.balapkuda 2 50\`
 
-⏰ Balapan akan otomatis dimulai dalam **2 Menit**!`;
+⏰ Balapan akan otomatis dimulai dalam **2 Menit** (atau ketik \`.startbalap\` jika semua sudah pasang)!`;
 
-    await send(sock, jid, messageObj, bursaMsg);
+      await send(sock, jid, messageObj, bursaMsg);
+    }
     return true;
   }
 
-  if (['pasangkuda'].includes(command)) {
-    const session = activeHorseRaces.get(jid);
-    if (!session) {
-      await send(sock, jid, messageObj, "❌ Tidak ada bursa balap kuda yang aktif. Ketik `.balapkuda` untuk membuka bursa taruhan!");
-      return true;
-    }
+  if (directHorseId && directBetAmount) {
+    await processHorseBet(sock, jid, senderNumber, messageObj, session, directHorseId, directBetAmount);
+    return true;
+  }
 
-    const horseId = parseInt(args[1], 10);
-    const amount = parseInt(args[2], 10);
+  if (['balapkuda', 'race'].includes(command)) {
+    const remSec = Math.max(1, Math.ceil((session.startAt - Date.now()) / 1000));
+    let betSummary = session.bets.length > 0
+      ? session.bets.map(b => `▫️ ${b.label}: ${b.horseName} (${b.amount.toLocaleString('id-ID')} Poin)`).join('\n')
+      : '_Belum ada taruhan masuk._';
 
-    if (!horseId || horseId < 1 || horseId > 5 || !amount || isNaN(amount) || amount <= 0) {
-      await send(sock, jid, messageObj, "⚠️ *Format Pasang Salah!*\nGunakan: `.pasangkuda [1-5] [jumlah_poin]`\n_Contoh:_ `.pasangkuda 2 50`");
-      return true;
-    }
+    const infoMsg = 
+`🏇 *BURSA BALAP UMA MUSUME SEDANG AKTIF!* 🏁
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏰ Sisa Waktu Pasang: *${remSec} Detik*
+💰 Hadiah Kemenangan: *${session.payoutMultiplier}x Lipat*
 
-    const prof = await db.getGameProfile(senderNumber);
-    if ((prof?.points || 0) < amount) {
-      await send(sock, jid, messageObj, `❌ Poin kamu tidak mencukupi! (Poinmu: ${prof?.points || 0})`);
-      return true;
-    }
+📊 *Taruhan Terpasang (${session.bets.length}):*
+${betSummary}
 
-    await db.deductGamePoints(senderNumber, amount);
+📌 *Pasang Taruhan:*
+Ketik: \`.pasang [1-${session.racers.length}] [jumlah_poin]\`
+_Contoh:_ \`.pasang 1 100\``;
 
-    const horse = horseList.find(h => h.id === horseId);
-    const cust = await db.getCustomerByPhone(senderNumber);
-    const senderLabel = cust?.nama ? `*${cust.nama}* (@${senderNumber.split('@')[0]})` : `@${senderNumber.split('@')[0]}`;
+    await send(sock, jid, messageObj, infoMsg);
+    return true;
+  }
 
-    session.bets.push({
-      sender: senderNumber,
-      label: senderLabel,
-      horseId,
-      horseName: horse.name,
-      odds: horse.odds,
-      amount
-    });
-
-    await send(sock, jid, messageObj, `✅ Taruhan diterima!\n👤 ${senderLabel} memasang *${amount} Poin* pada *${horse.name}* (Odds ${horse.odds}x).\n\nSisa waktu: ${Math.max(1, Math.ceil((session.startAt - Date.now()) / 1000))} detik.`, { mentions: [senderNumber] });
+  if (isDirectBetCmd) {
+    await send(sock, jid, messageObj, `⚠️ *Format Pasang Salah!*\nGunakan: \`.pasang [1-${session.racers.length}] [jumlah_poin]\`\n_Contoh:_ \`.pasang 3 50\``);
     return true;
   }
 
   return false;
+}
+
+async function processHorseBet(sock, jid, senderNumber, messageObj, session, horseId, amount) {
+  if (isNaN(horseId) || horseId < 1 || horseId > session.racers.length || isNaN(amount) || amount <= 0) {
+    await send(sock, jid, messageObj, `⚠️ *Pilihan Kuda Salah!*\nPilih nomor kuda 1 sampai ${session.racers.length}.\n_Contoh:_ \`.pasang 1 50\``);
+    return;
+  }
+
+  const prof = await db.getGameProfile(senderNumber);
+  if ((prof?.points || 0) < amount) {
+    await send(sock, jid, messageObj, `❌ Poin kamu tidak mencukupi! (Poinmu: ${prof?.points || 0})`);
+    return;
+  }
+
+  await db.deductGamePoints(senderNumber, amount);
+
+  const horse = session.racers.find(h => h.id === horseId);
+  const cust = await db.getCustomerByPhone(senderNumber);
+  const senderPhone = senderNumber.split('@')[0];
+  const senderLabel = cust?.nama ? `*${cust.nama}* (@${senderPhone})` : `@${senderPhone}`;
+
+  session.bets.push({
+    sender: senderNumber,
+    label: senderLabel,
+    horseId,
+    horseName: `${horse.emoji} ${horse.name}`,
+    amount
+  });
+
+  const remSec = Math.max(1, Math.ceil((session.startAt - Date.now()) / 1000));
+  await send(sock, jid, messageObj, `✅ *TARUHAN DITERIMA!* 🎫\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n👤 Pemain: ${senderLabel}\n🏇 Kuda Pilihan: *${horse.emoji} ${horse.name}* (No. ${horse.id})\n💰 Taruhan: *${amount.toLocaleString('id-ID')} Poin* (Potensi Menang: *${Math.floor(amount * session.payoutMultiplier).toLocaleString('id-ID')} Poin*)\n\n⏰ Sisa Waktu Pasang: *${remSec} Detik*`, { mentions: [senderNumber] });
 }
 
 async function runHorseRace(sock, jid, messageObj, session) {
@@ -3270,23 +3343,36 @@ async function runHorseRace(sock, jid, messageObj, session) {
     return;
   }
 
-  const weights = [35, 28, 20, 11, 6];
-  const rand = Math.floor(Math.random() * 100);
-  let cumulative = 0;
-  let winningIndex = 0;
-  for (let i = 0; i < weights.length; i++) {
-    cumulative += weights[i];
-    if (rand < cumulative) {
-      winningIndex = i;
-      break;
-    }
-  }
+  const winningIndex = Math.floor(Math.random() * session.racers.length);
+  const winningHorse = session.racers[winningIndex];
 
-  const winningHorse = horseList[winningIndex];
+  const trackLength = 12;
+  const generateTrack = (step) => {
+    let lines = [];
+    session.racers.forEach((r, idx) => {
+      let progress = 0;
+      if (step === 1) {
+        progress = Math.floor(Math.random() * 4) + 1;
+      } else if (step === 2) {
+        progress = Math.floor(Math.random() * 5) + 5;
+      } else {
+        progress = (idx === winningIndex) ? trackLength : Math.min(trackLength - 1, Math.floor(Math.random() * 4) + 7);
+      }
+      const before = "=".repeat(progress);
+      const after = "-".repeat(Math.max(0, trackLength - progress));
+      const finishFlag = progress >= trackLength ? " 🏁🏆" : "";
+      lines.push(`${r.id}. ${r.emoji} ${r.name.padEnd(14, ' ')} [${before}🏃${after}]${finishFlag}`);
+    });
+    return lines.join('\n');
+  };
 
-  await send(sock, jid, messageObj, `🏁 *GIRINGAN BALAPAN KUDA DIMULAI!* 🏇💨\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nGerbang start dibuka! Kuda-kuda melesat kencang...`);
+  await send(sock, jid, messageObj, `🏁 *GERBANG START TERBUKA — UMA MUSUME DERBY!* 🏇💨\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nSeluruh kuda melesat kencang memperebutkan posisi depan!\n\n\`\`\`\n${generateTrack(1)}\n\`\`\``);
 
-  await new Promise(r => setTimeout(r, 2500));
+  await new Promise(r => setTimeout(r, 3000));
+
+  await send(sock, jid, messageObj, `🔥 *TIKUNGAN TERAKHIR MENDEKATI GARIS FINISH!* 💨\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\`\`\`\n${generateTrack(2)}\n\`\`\``);
+
+  await new Promise(r => setTimeout(r, 3000));
 
   const winners = session.bets.filter(b => b.horseId === winningHorse.id);
   const mentionList = [];
@@ -3294,24 +3380,26 @@ async function runHorseRace(sock, jid, messageObj, session) {
   let winSummary = '';
   if (winners.length > 0) {
     for (const w of winners) {
-      const payout = Math.floor(w.amount * w.odds);
+      const payout = Math.floor(w.amount * session.payoutMultiplier);
       await db.addGamePoints(w.sender, payout);
-      await db.addMessageXp(w.sender, 40);
+      await db.addMessageXp(w.sender, 50);
       mentionList.push(w.sender);
-      winSummary += `▫️ ${w.label} — Menang *+${payout.toLocaleString('id-ID')} Poin* (Taruhan: ${w.amount} Poin)\n`;
+      winSummary += `▫️ ${w.label} — Menang *+${payout.toLocaleString('id-ID')} Poin* (Taruhan: ${w.amount.toLocaleString('id-ID')} Poin)\n`;
     }
   } else {
-    winSummary = `_Tidak ada pemain yang bertaruh pada kuda ini. Seluruh taruhan masuk ke kas bandar._\n`;
+    winSummary = `_Tidak ada pemain yang bertaruh pada ${winningHorse.name}. Seluruh taruhan masuk ke kas bandar._\n`;
   }
 
   const resultMsg = 
-`🏆 *HASIL AKBAR GRAND DERBY* 🏁
+`🏆 *HASIL AKHIR UMA MUSUME DERBY* 🏁
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🥇 *JUARA 1:* ${winningHorse.name} (Odds ${winningHorse.odds}x)!
+\`\`\`\n${generateTrack(3)}\n\`\`\`
+🥇 *JUARA 1:* ${winningHorse.emoji} *${winningHorse.name}* (No. ${winningHorse.id})!
+💰 Payout Pemenang: *${session.payoutMultiplier}x Lipat*
 
 🎉 *Daftar Pemenang Taruhan:*
 ${winSummary}
-👏 Selamat kepada seluruh pemenang! Ketik \`.balapkuda\` untuk memulai ronde berikutnya.`;
+👏 Selamat kepada para pemenang! Ketik \`.balapkuda\` untuk membuka bursa balapan berikutnya!`;
 
   await send(sock, jid, messageObj, resultMsg, { mentions: mentionList });
 }
