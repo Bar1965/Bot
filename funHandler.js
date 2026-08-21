@@ -444,7 +444,7 @@ function isOnCooldown(key, duration = 3000) {
 async function send(sock, jid, messageObj, text, options = {}) {
   const mentions = Array.isArray(options) ? options : (options.mentions || []);
   if (options && (options.buttons || options.sections)) {
-    await sendInteractiveButtons(sock, jid, {
+    return await sendInteractiveButtons(sock, jid, {
       text,
       title: options.title,
       footer: options.footer || 'Akbar Store Bot',
@@ -452,7 +452,7 @@ async function send(sock, jid, messageObj, text, options = {}) {
       sections: options.sections
     });
   } else {
-    await sock.sendMessage(jid, { text, mentions: mentions.length > 0 ? mentions : undefined }, messageObj ? { quoted: messageObj } : undefined);
+    return await sock.sendMessage(jid, { text, mentions: mentions.length > 0 ? mentions : undefined }, messageObj ? { quoted: messageObj } : undefined);
   }
 }
 
@@ -3439,34 +3439,74 @@ async function runHorseRace(sock, jid, messageObj, session) {
   const winningIndex = Math.floor(Math.random() * session.racers.length);
   const winningHorse = session.racers[winningIndex];
 
-  const trackLength = 12;
+  const trackLength = 10;
   const generateTrack = (step) => {
     let lines = [];
     session.racers.forEach((r, idx) => {
       let progress = 0;
       if (step === 1) {
-        progress = Math.floor(Math.random() * 4) + 1;
+        progress = Math.floor(Math.random() * 3) + 1;
       } else if (step === 2) {
-        progress = Math.floor(Math.random() * 5) + 5;
+        progress = Math.floor(Math.random() * 4) + 4;
       } else {
-        progress = (idx === winningIndex) ? trackLength : Math.min(trackLength - 1, Math.floor(Math.random() * 4) + 7);
+        progress = (idx === winningIndex) ? trackLength : Math.min(trackLength - 1, Math.floor(Math.random() * 3) + 6);
       }
-      const before = "=".repeat(progress);
-      const after = "-".repeat(Math.max(0, trackLength - progress));
-      const finishFlag = progress >= trackLength ? " 🏁🏆" : "";
-      lines.push(`${r.id}. ${r.emoji} ${r.name.padEnd(14, ' ')} [${before}🏃${after}]${finishFlag}`);
+      const before = "═".repeat(progress);
+      const after = "─".repeat(Math.max(0, trackLength - progress));
+      const runner = (progress >= trackLength) ? "🏇🏁" : "🏃‍♀️";
+      const cleanName = r.name.length > 14 ? r.name.slice(0, 13) + '.' : r.name;
+      const paddedName = cleanName.padEnd(14, ' ');
+      lines.push(`${r.id}. ${paddedName} [${before}${runner}${after}]`);
     });
     return lines.join('\n');
   };
 
-  await send(sock, jid, messageObj, `🏁 *GERBANG START TERBUKA — UMA MUSUME DERBY!* 🏇💨\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nSeluruh kuda melesat kencang memperebutkan posisi depan!\n\n\`\`\`\n${generateTrack(1)}\n\`\`\``);
+  const frame1 = 
+`🏁 *GERBANG START TERBUKA — UMA MUSUME DERBY!* 🏇💨
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Seluruh Uma Musume melesat kencang dari gerbang start!
 
-  await new Promise(r => setTimeout(r, 3000));
+\`\`\`
+No. Nama Uma       Lintasan
+───────────────────────────────
+${generateTrack(1)}
+\`\`\`
+_Status: Lap 1/3 (Start Dash)_`;
 
-  await send(sock, jid, messageObj, `🔥 *TIKUNGAN TERAKHIR MENDEKATI GARIS FINISH!* 💨\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\`\`\`\n${generateTrack(2)}\n\`\`\``);
+  const frame2 = 
+`🔥 *TIKUNGAN TERAKHIR MENDEKATI FINISH!* 💨
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Persaingan sengit memperebutkan posisi terdepan!
 
-  await new Promise(r => setTimeout(r, 3000));
+\`\`\`
+No. Nama Uma       Lintasan
+───────────────────────────────
+${generateTrack(2)}
+\`\`\`
+_Status: Lap 2/3 (Final Corner)_`;
 
+  // Kirim Pesan Frame 1 (Single Live Message)
+  let liveMsg = null;
+  try {
+    liveMsg = await sock.sendMessage(jid, { text: frame1 }, messageObj ? { quoted: messageObj } : undefined);
+  } catch (e) {
+    console.error("[HORSE_RACE] Gagal kirim frame 1:", e);
+  }
+
+  await new Promise(r => setTimeout(r, 2500));
+
+  // Edit ke Frame 2
+  if (liveMsg?.key) {
+    try {
+      await sock.sendMessage(jid, { text: frame2, edit: liveMsg.key });
+    } catch (e) {
+      liveMsg = await sock.sendMessage(jid, { text: frame2 });
+    }
+  }
+
+  await new Promise(r => setTimeout(r, 2500));
+
+  // Hasil Akhir & Pembagian Hadiah
   const winners = session.bets.filter(b => b.horseId === winningHorse.id);
   const mentionList = [];
 
@@ -3483,10 +3523,15 @@ async function runHorseRace(sock, jid, messageObj, session) {
     winSummary = `_Tidak ada pemain yang bertaruh pada ${winningHorse.name}. Seluruh taruhan masuk ke kas bandar._\n`;
   }
 
-  const resultMsg = 
+  const finalResult = 
 `🏆 *HASIL AKHIR UMA MUSUME DERBY* 🏁
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-\`\`\`\n${generateTrack(3)}\n\`\`\`
+\`\`\`
+No. Nama Uma       Lintasan
+───────────────────────────────
+${generateTrack(3)}
+\`\`\`
+
 🥇 *JUARA 1:* ${winningHorse.emoji} *${winningHorse.name}* (No. ${winningHorse.id})!
 💰 Payout Pemenang: *${session.payoutMultiplier}x Lipat*
 
@@ -3494,7 +3539,15 @@ async function runHorseRace(sock, jid, messageObj, session) {
 ${winSummary}
 👏 Selamat kepada para pemenang! Ketik \`.balapkuda\` untuk membuka bursa balapan berikutnya!`;
 
-  await send(sock, jid, messageObj, resultMsg, { mentions: mentionList });
+  if (liveMsg?.key) {
+    try {
+      await sock.sendMessage(jid, { text: finalResult, edit: liveMsg.key, mentions: mentionList });
+    } catch (e) {
+      await send(sock, jid, messageObj, finalResult, { mentions: mentionList });
+    }
+  } else {
+    await send(sock, jid, messageObj, finalResult, { mentions: mentionList });
+  }
 }
 
 // ─── 7. BANK POIN & BUNGA HARIAN ─────────────────────────────
