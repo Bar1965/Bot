@@ -2138,11 +2138,13 @@ export async function handleStealAnswer(sock, jid, m, senderNumber, textAnswer) 
     const percentStolen = Math.floor(Math.random() * 16) + 10; // 10% s/d 25%
     const currentVictimProf = await db.getGameProfile(session.targetNumber);
     const maxVictimPts = Math.max(0, currentVictimProf?.points || 0);
-    const amountStolen = Math.max(10, Math.min(5000, Math.floor((maxVictimPts * percentStolen) / 100)));
+    const amountStolen = Math.max(5, Math.min(5000, Math.floor((maxVictimPts * percentStolen) / 100)));
 
     await db.deductGamePoints(session.targetNumber, amountStolen);
     const updatedStealer = await db.addGamePoints(senderNumber, amountStolen);
     await db.addMessageXp(senderNumber, 40);
+
+    const newVictimProf = await db.getGameProfile(session.targetNumber);
 
     stealCooldowns.set(senderNumber, now + 15 * 60 * 1000); // 15 menit
     victimImmunity.set(session.targetNumber, now + 30 * 60 * 1000); // 30 menit imun
@@ -2154,10 +2156,14 @@ export async function handleStealAnswer(sock, jid, m, senderNumber, textAnswer) 
 🎯 Target: ${session.targetLabel}
 🔓 Sandi Terbobol: *${session.challenge.answer}*
 
-🎉 *Hasil Rampokan:*
-🎁 Mendapatkan: *+${amountStolen} Poin* (${percentStolen}%) & *+40 XP*!
-💰 Total Saldo Pelaku: *${updatedStealer.points.toLocaleString('id-ID')} Poin*
-⏳ Status: Pelaku dalam masa buron selama 15 menit.`;
+🎉 *Hasil Pembobolan:*
+💸 Poin Tercuri: *+${amountStolen.toLocaleString('id-ID')} Poin* (${percentStolen}% dari brankas target)
+⭐ Bonus EXP: *+40 XP*
+
+💳 *Informasi Saldo Terkini:*
+▫️ Sisa Poin Target: *${(newVictimProf?.points || 0).toLocaleString('id-ID')} Poin*
+▫️ Total Poin Pelaku: *${updatedStealer.points.toLocaleString('id-ID')} Poin*
+⏳ Status: Pelaku buron selama 15 menit.`;
 
     await send(sock, jid, m, successMsg, { mentions: [senderNumber, session.targetNumber] });
     return true;
