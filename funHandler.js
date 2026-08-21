@@ -1012,9 +1012,10 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     return true;
   }
 
-  if (['poin', 'point', 'profile', 'level', 'me'].includes(command)) {
-    const mentions = messageObj?.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
-    let targetJid = mentions[0];
+  if (['poin', 'point', 'profile', 'level', 'me', 'cekpoin'].includes(command)) {
+    const contextInfo = messageObj?.message?.extendedTextMessage?.contextInfo;
+    const mentions = contextInfo?.mentionedJid || [];
+    let targetJid = mentions[0] || contextInfo?.participant;
     if (!targetJid && args[1]) {
       const cleanNum = args[1].replace(/[^0-9]/g, '');
       if (cleanNum.length > 5) targetJid = `${cleanNum}@s.whatsapp.net`;
