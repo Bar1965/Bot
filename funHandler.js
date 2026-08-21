@@ -3162,16 +3162,59 @@ ${failList.join('\n')}
 }
 
 // ─── 6. BALAP KUDA MULTI-BETTING ──────────────────────────────
-const UMA_MUSUME_ROSTER = [
-  { id: 1, name: "Special Week", emoji: "🌸", nickname: "Spica" },
-  { id: 2, name: "Silence Suzuka", emoji: "⚡", nickname: "Escape" },
-  { id: 3, name: "Tokai Teio", emoji: "👑", nickname: "Step" },
-  { id: 4, name: "Gold Ship", emoji: "⚓", nickname: "Warp" },
-  { id: 5, name: "Mayano Top Gun", emoji: "✈️", nickname: "Top Gun" },
-  { id: 6, name: "Mejiro McQueen", emoji: "🍨", nickname: "Stamina" },
-  { id: 7, name: "Oguri Cap", emoji: "🍙", nickname: "Beast" },
-  { id: 8, name: "Haru Urara", emoji: "🎀", nickname: "Miracle" }
+const ALL_UMA_MUSUME_POOL = [
+  { name: "Special Week", emoji: "🌸", nickname: "Spica" },
+  { name: "Silence Suzuka", emoji: "⚡", nickname: "Escape" },
+  { name: "Tokai Teio", emoji: "👑", nickname: "Step" },
+  { name: "Gold Ship", emoji: "⚓", nickname: "Warp" },
+  { name: "Mayano Top Gun", emoji: "✈️", nickname: "Top Gun" },
+  { name: "Mejiro McQueen", emoji: "🍨", nickname: "Stamina" },
+  { name: "Oguri Cap", emoji: "🍙", nickname: "Beast" },
+  { name: "Haru Urara", emoji: "🎀", nickname: "Miracle" },
+  { name: "Rice Shower", emoji: "🌹", nickname: "Assassin" },
+  { name: "Symboli Rudolf", emoji: "🎓", nickname: "Emperor" },
+  { name: "Daiwa Scarlet", emoji: "🎀", nickname: "Miss Perfect" },
+  { name: "Vodka", emoji: "🥃", nickname: "Wild Top" },
+  { name: "Twin Turbo", emoji: "🏎️", nickname: "Full Throttle" },
+  { name: "Kitasan Black", emoji: "🌟", nickname: "Festival Queen" },
+  { name: "Satono Diamond", emoji: "💎", nickname: "Diamond Rush" },
+  { name: "Grass Wonder", emoji: "🍃", nickname: "Calm Breeze" },
+  { name: "El Condor Pasa", emoji: "🦅", nickname: "Masked Eagle" },
+  { name: "Seiun Sky", emoji: "☁️", nickname: "Trickster" },
+  { name: "King Halo", emoji: "👑", nickname: "First Class" },
+  { name: "Agnes Tachyon", emoji: "🧪", nickname: "Mad Scientist" },
+  { name: "Manhattan Cafe", emoji: "☕", nickname: "Shadow Runner" },
+  { name: "Tamamo Cross", emoji: "⚡", nickname: "White Lightning" },
+  { name: "Super Creek", emoji: "🍼", nickname: "Gentle Breeze" },
+  { name: "Inari One", emoji: "🦊", nickname: "Edo Spirit" },
+  { name: "Nice Nature", emoji: "🥉", nickname: "Bronze Lover" },
+  { name: "Machikane Tannhauser", emoji: "🎩", nickname: "Hard Worker" },
+  { name: "Matikanefukukitaru", emoji: "🔮", nickname: "Fortune Seeker" },
+  { name: "Maruzensky", emoji: "🚗", nickname: "Supercar" },
+  { name: "Narita Taishin", emoji: "🌙", nickname: "Lone Wolf" },
+  { name: "Winning Ticket", emoji: "🎫", nickname: "Emotional Runner" },
+  { name: "Mejiro Dober", emoji: "🐕", nickname: "Cool Beauty" },
+  { name: "Smart Falcon", emoji: "🎤", nickname: "Top Idol" },
+  { name: "Curren Chan", emoji: "📱", nickname: "Cute Influencer" },
+  { name: "Copano Rickey", emoji: "🪙", nickname: "Lucky Star" },
+  { name: "Hokko Tarumae", emoji: "🏮", nickname: "Tomakomai Idol" },
+  { name: "Mihono Bourbon", emoji: "🤖", nickname: "Cyborg Runner" }
 ];
+
+function getRandomUmaMusumeRoster(count = 8) {
+  const safeCount = Math.max(4, Math.min(count, 8));
+  const shuffled = [...ALL_UMA_MUSUME_POOL];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled.slice(0, safeCount).map((uma, index) => ({
+    id: index + 1,
+    name: uma.name,
+    emoji: uma.emoji,
+    nickname: uma.nickname
+  }));
+}
 
 async function handleHorseRace(sock, jid, senderNumber, messageObj, args, command, isFromGroup) {
   if (!isFromGroup) {
@@ -3225,7 +3268,7 @@ async function handleHorseRace(sock, jid, senderNumber, messageObj, args, comman
       ? parseInt(args[1], 10) 
       : 8;
 
-    const racers = UMA_MUSUME_ROSTER.slice(0, horseCount);
+    const racers = getRandomUmaMusumeRoster(horseCount);
     const payoutMultiplier = Number((horseCount - 0.5).toFixed(1));
 
     session = {
