@@ -1963,7 +1963,7 @@ _${khodamRes.desc}_`;
       }
     }
 
-    if (['steal', 'maling', 'copet', 'rampok', 'rob', 'hack'].includes(cleanCmd)) {
+    if (['steal', 'maling', 'copet', 'rampok', 'rob', 'hack', 'family100', 'f100', 'caklontong', 'tts', 'duel', 'terimaduel', 'gasduel', 'tolakduel', 'tembak', 'dor', 'blackjack', 'bj', 'hit', 'stand', 'double', 'heist', 'rampokbank', 'joinheist', 'startheist', 'balapkuda', 'pasangkuda', 'race', 'bank', 'brankas', 'depo', 'setor', 'tarik', 'withdraw'].includes(cleanCmd)) {
       return await funHandler.handleFunCommand({ sock, jid, senderNumber, messageObj: m, text: msgText, args, cleanCmd, isFromGroup: isGroup, isAdmin, isOwner, isPrefixCmd });
     }
 

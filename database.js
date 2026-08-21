@@ -462,6 +462,7 @@ export async function initDb() {
       daily_streak INTEGER DEFAULT 0,
       last_robbed_at DATETIME,
       last_rob_time DATETIME,
+      jailed_until DATETIME,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
@@ -470,6 +471,7 @@ export async function initDb() {
   try { await runQuery("ALTER TABLE game_profiles ADD COLUMN bank_points INTEGER DEFAULT 0"); } catch (e) { /* ignore if exists */ }
   try { await runQuery("ALTER TABLE game_profiles ADD COLUMN last_robbed_at DATETIME"); } catch (e) { /* ignore if exists */ }
   try { await runQuery("ALTER TABLE game_profiles ADD COLUMN last_rob_time DATETIME"); } catch (e) { /* ignore if exists */ }
+  try { await runQuery("ALTER TABLE game_profiles ADD COLUMN jailed_until DATETIME"); } catch (e) { /* ignore if exists */ }
 
   // Tabel AFK Users
   await runQuery(`
@@ -2939,6 +2941,40 @@ export async function bankWithdraw(customerJid, amount, taxRate = 0.02) {
   });
 }
 
+export async function applyDailyBankInterest(interestRate = 0.02) {
+  return withTransaction(async () => {
+    const res = await runQuery(
+      `UPDATE game_profiles
+       SET bank_points = MIN(${MAX_POINTS}, CAST(ROUND(bank_points * (1 + ?)) AS INTEGER)),
+           updated_at = CURRENT_TIMESTAMP
+       WHERE bank_points >= 25`,
+      [interestRate]
+    );
+    return res.changes || 0;
+  });
+}
+
+export async function setGameJail(customerJid, durationMinutes = 30) {
+  const jailExpiry = new Date(Date.now() + durationMinutes * 60 * 1000).toISOString();
+  await runQuery(
+    "UPDATE game_profiles SET jailed_until = ? WHERE customer_jid = ?",
+    [jailExpiry, customerJid]
+  );
+  return jailExpiry;
+}
+
+export async function isPlayerJailed(customerJid) {
+  const row = await getQuery("SELECT jailed_until FROM game_profiles WHERE customer_jid = ?", [customerJid]);
+  if (!row || !row.jailed_until) return { isJailed: false, remainingMinutes: 0 };
+  const jailTime = new Date(row.jailed_until).getTime();
+  const now = Date.now();
+  if (jailTime > now) {
+    const remainingMinutes = Math.ceil((jailTime - now) / 60000);
+    return { isJailed: true, remainingMinutes };
+  }
+  return { isJailed: false, remainingMinutes: 0 };
+}
+
 export async function transferPoints(senderJid, targetJid, amount, taxRate = 0.01) {
   const safeAmount = Math.max(0, Math.floor(Number(amount)));
   if (safeAmount <= 0) return { success: false, reason: 'INVALID_AMOUNT' };
@@ -3291,7 +3327,29 @@ export async function getOrderById(orderId) {
  * tapi hanya READ — tidak membuat record baru jika tidak ada.
  */
 export async function getCustomer(nomor) {
-  return await getQuery("SELECT * FROM customers WHERE nomor = ?", [nomor]);
+  if (!nomor) return null;
+  const fullClean = String(nomor).replace(/:[0-9]+@/, '@').trim();
+  return await getQuery("SELECT * FROM customers WHERE nomor = ? OR nomor = ?", [nomor, fullClean]);
+}
+
+/**
+ * Cari data customer berdasarkan nomor JID atau digit telepon
+ */
+export async function getCustomerByPhone(nomor) {
+  if (!nomor) return null;
+  const fullClean = String(nomor).replace(/:[0-9]+@/, '@').trim();
+  const digits = normalizePhoneDigits(nomor);
+
+  let row = await getQuery("SELECT * FROM customers WHERE nomor = ? OR nomor = ?", [nomor, fullClean]);
+  if (row) return row;
+
+  if (digits && digits.length >= 7) {
+    const allCust = await allQuery("SELECT * FROM customers");
+    for (const c of allCust) {
+      if (isPhoneMatch(c.nomor, digits)) return c;
+    }
+  }
+  return null;
 }
 
 // --- FUNGSI ANALITIK LANJUTAN ---

@@ -472,6 +472,26 @@ export function startScheduler(sock) {
     }
   }, 60 * 1000);
 
+  // Set interval pembagian bunga bank harian (2% tiap jam 00:05 WIB)
+  let lastBankInterestDate = '';
+  setInterval(async () => {
+    try {
+      const wibNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
+      const today = wibNow.toISOString().slice(0, 10);
+      const wibHours = wibNow.getUTCHours();
+      const wibMinutes = wibNow.getUTCMinutes();
+      if (wibHours === 0 && wibMinutes < 10 && lastBankInterestDate !== today) {
+        lastBankInterestDate = today;
+        const totalAccounts = await db.applyDailyBankInterest(0.02);
+        if (totalAccounts > 0) {
+          console.log(`[BANK INTEREST] Berhasil membagikan bunga harian 2% ke ${totalAccounts} akun nasabah bank.`);
+        }
+      }
+    } catch (e) {
+      console.error('[BANK INTEREST] Gagal membagikan bunga harian:', e.message);
+    }
+  }, 60 * 1000);
+
   // Set interval kuis otomatis grup setiap 1 jam
   setInterval(() => {
     processAutoQuiz(schedulerSock);

@@ -19,6 +19,10 @@ export async function handlePdfCommands(sock, m, senderNumber, jid, cmd, args, i
     return false;
   }
 
+  // bot.js mengoper routerArgs mentah, jadi args[0] masih token perintahnya sendiri ('.pdfmerge').
+  // Sub-argumen yang sebenarnya mulai dari args[1], sama seperti handler lain di project ini.
+  const subArgs = Array.isArray(args) ? args.slice(1) : [];
+
   const premiumTier = await db.getPremiumTier(senderNumber);
   const isPremium = premiumTier !== 'Free';
   if (!isPremium && !isAdmin && !isOwner) {
@@ -37,7 +41,7 @@ export async function handlePdfCommands(sock, m, senderNumber, jid, cmd, args, i
 
   switch (cmd) {
     case 'pdfmerge':
-      if (args[0] === 'cancel' || args[0] === 'batal') {
+      if (subArgs[0] === 'cancel' || subArgs[0] === 'batal') {
         const session = mergeSessions.get(senderNumber);
         if (session) {
           clearTimeout(session.timeout);
@@ -49,7 +53,7 @@ export async function handlePdfCommands(sock, m, senderNumber, jid, cmd, args, i
         return true;
       }
 
-      if (args[0] === 'done') {
+      if (subArgs[0] === 'done') {
         const session = mergeSessions.get(senderNumber);
         if (!session || session.files.length === 0) {
           await sock.sendMessage(jid, { text: '⚠️ Anda belum mengirim file PDF apapun untuk digabung. Mulai dengan ketik `.pdfmerge` lalu kirim PDF-nya.' }, { quoted: m });
@@ -106,7 +110,7 @@ export async function handlePdfCommands(sock, m, senderNumber, jid, cmd, args, i
         const mediaMsg = getMediaMessage();
         const buffer = await downloadMediaMessage(mediaMsg, 'buffer', {});
         
-        const range = args.join('');
+        const range = subArgs.join('');
         let startPage = 1, endPage = 1;
         if (range.includes('-')) {
           const parts = range.split('-');

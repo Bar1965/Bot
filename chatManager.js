@@ -2,6 +2,19 @@ import * as db from './database.js';
 import { broadcastToAdmins } from './websocket.js';
 import { botState } from './server.js';
 import fs from 'fs';
+import path from 'path';
+
+// Semua media yang dikirim dari dashboard WAJIB berada di dalam folder ini. Tanpa pagar ini,
+// mediaPath dari body request bisa menunjuk ke berkas mana pun di server (.env, session/creds.json)
+// dan berkas itu akan dikirimkan lewat WhatsApp.
+const CHAT_MEDIA_ROOT = path.resolve('./public/uploads/chat_media');
+
+function resolveSafeMediaPath(mediaPath) {
+  if (typeof mediaPath !== 'string' || !mediaPath.trim()) return null;
+  const resolved = path.resolve(mediaPath.trim());
+  if (resolved !== CHAT_MEDIA_ROOT && !resolved.startsWith(CHAT_MEDIA_ROOT + path.sep)) return null;
+  return resolved;
+}
 
 // Antrean pesan keluar
 let outgoingQueue = [];
@@ -98,6 +111,15 @@ export async function saveOutgoingMessage({ id, customerJid, sender = 'admin', m
 // --- LOGIKA MESSAGE QUEUE & WORKER ---
 
 export async function enqueueOutgoingMessage({ customerJid, messageType, message, mediaPath, quotedId, adminUsername }) {
+  // Kunci berkas media ke folder unggahan chat sebelum apa pun disimpan atau diantrekan.
+  let safeMediaPath = null;
+  if (messageType && messageType !== 'text') {
+    safeMediaPath = resolveSafeMediaPath(mediaPath);
+    if (!safeMediaPath) {
+      throw new Error('Lokasi berkas media tidak sah. Unggah dulu berkasnya lewat tombol lampiran.');
+    }
+  }
+
   const msgId = `admin_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
   const msgObj = {
     id: msgId,
@@ -106,6 +128,7 @@ export async function enqueueOutgoingMessage({ customerJid, messageType, message
     message,
     mediaPath,
     quotedId,
+    safeMediaPath,
     timestamp: Date.now(),
     adminUsername,
     retryCount: 0,
@@ -162,25 +185,25 @@ export async function processQueue() {
         payload = { text: msg.message };
       } else if (msg.messageType === 'image') {
         payload = { 
-          image: fs.readFileSync(msg.mediaPath), 
+          image: fs.readFileSync(msg.safeMediaPath || msg.mediaPath), 
           caption: msg.message 
         };
       } else if (msg.messageType === 'file') {
         const filename = msg.mediaPath.split(/[/\\]/).pop();
         payload = { 
-          document: fs.readFileSync(msg.mediaPath), 
+          document: fs.readFileSync(msg.safeMediaPath || msg.mediaPath), 
           mimetype: getMimeTypeFromPath(msg.mediaPath), 
           fileName: filename,
           caption: msg.message 
         };
       } else if (msg.messageType === 'video') {
         payload = { 
-          video: fs.readFileSync(msg.mediaPath), 
+          video: fs.readFileSync(msg.safeMediaPath || msg.mediaPath), 
           caption: msg.message 
         };
       } else if (msg.messageType === 'audio') {
         payload = { 
-          audio: fs.readFileSync(msg.mediaPath), 
+          audio: fs.readFileSync(msg.safeMediaPath || msg.mediaPath), 
           mimetype: 'audio/mp4',
           ptt: true // voice note style
         };
