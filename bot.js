@@ -1963,68 +1963,8 @@ _${khodamRes.desc}_`;
       }
     }
 
-    if (['rampok', 'rob'].includes(cleanCmd)) {
-      if (!isGroup) return await sock.sendMessage(jid, { text: "❌ Fitur ini hanya bisa digunakan di dalam grup!" });
-      
-      const targetStr = args[1];
-      if (!targetStr) return await sock.sendMessage(jid, { text: "⚠️ Format salah!\nKetik: .rampok <@tag_user>" });
-      
-      const targetJid = targetStr.replace(/[^0-9]/g, '') + '@s.whatsapp.net';
-      if (targetJid === senderNumber) return await sock.sendMessage(jid, { text: "❌ Ngapain ngerampok diri sendiri?" });
-      if (targetJid.includes('bot')) return await sock.sendMessage(jid, { text: "❌ Kamu tidak bisa merampok bot!" });
-
-      const robberProf = await db.getGameProfile(senderNumber);
-      const targetProf = await db.getGameProfile(targetJid);
-
-      // Cooldown 1 jam
-      if (robberProf.last_rob_time) {
-        const lastRob = new Date(robberProf.last_rob_time).getTime();
-        const now = Date.now();
-        const cooldown = 60 * 60 * 1000;
-        if (now - lastRob < cooldown) {
-          const sisa = Math.ceil((cooldown - (now - lastRob)) / 1000 / 60);
-          return await sock.sendMessage(jid, { text: `⏳ Kamu sedang kelelahan setelah merampok!\nTunggu ${sisa} menit lagi.` });
-        }
-      }
-
-      // Safe zone 2 jam
-      if (targetProf.last_robbed_at) {
-        const lastRobbed = new Date(targetProf.last_robbed_at).getTime();
-        const now = Date.now();
-        const safezone = 2 * 60 * 60 * 1000;
-        if (now - lastRobbed < safezone) {
-          const sisa = Math.ceil((safezone - (now - lastRobbed)) / 1000 / 60);
-          return await sock.sendMessage(jid, { text: `🛡️ Target sedang dalam masa perlindungan polisi (Safe Zone).\nTunggu ${sisa} menit lagi.` });
-        }
-      }
-
-      if (targetProf.points < 50) {
-        return await sock.sendMessage(jid, { text: `❌ Kasian, saldonya kurang dari 50 poin. Cari target lain yang lebih kaya!` });
-      }
-
-      if (robberProf.points < 50) {
-        return await sock.sendMessage(jid, { text: `❌ Modal kamu kurang! Butuh minimal 50 poin di tangan sebagai jaminan kalau tertangkap.` });
-      }
-
-      await db.updateLastRobTime(senderNumber);
-
-      // 40% success rate
-      const isSuccess = Math.random() < 0.40;
-      
-      if (isSuccess) {
-        const stolen = Math.floor(targetProf.points * (Math.random() * 0.10 + 0.05)); // 5-15% of target's points
-        await db.deductCustomerPoints(targetJid, stolen, 'Dirampok');
-        await db.awardGamePoints(senderNumber, stolen);
-        await db.updateLastRobbedAt(targetJid);
-        
-        return await sock.sendMessage(jid, { text: `💰 *PERAMPOKAN BERHASIL!* 💰\n\nKamu menyelinap masuk dan mencuri *${stolen} poin* dari @${targetJid.split('@')[0]}!`, mentions: [targetJid] });
-      } else {
-        const fine = Math.floor(robberProf.points * (Math.random() * 0.10 + 0.10)); // 10-20% fine
-        await db.deductCustomerPoints(senderNumber, fine, 'Denda Rampok');
-        await db.awardGamePoints(targetJid, Math.floor(fine * 0.5)); // 50% denda masuk ke target sebagai kompensasi
-        
-        return await sock.sendMessage(jid, { text: `🚨 *TERTANGKAP POLISI!* 🚨\n\nUsahamu merampok @${targetJid.split('@')[0]} gagal dan kamu tertangkap!\nKamu didenda *${fine} poin* (sebagian diberikan ke target).`, mentions: [targetJid] });
-      }
+    if (['steal', 'maling', 'copet', 'rampok', 'rob', 'hack'].includes(cleanCmd)) {
+      return await funHandler.handleFunCommand({ sock, jid, senderNumber, messageObj: m, text: msgText, args, cleanCmd, isFromGroup: isGroup, isAdmin, isOwner, isPrefixCmd });
     }
 
     if (['slot'].includes(cleanCmd)) {
@@ -2787,7 +2727,7 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
           'torebot', 'tochipmunk', 'todeep', 'toecho', 'ping', 'statusbot', 'daily', 'poin', 'rank',
           'song', 'play', 'tomp3', 'tovn', 'tr', 'translate', 'jadwalsholat', 'sholat', 'menfess', 'confess',
           'hd', 'remini', 'upscale', 'afk', 'ww', 'werewolf', 'pay', 'qris', 'pembayaran',
-          'rampok', 'rob', 'bank', 'deposito', 'tarik', 'withdraw', 'transfer', 'susunkata', 'tebakangka', 'roulette',
+          'rampok', 'rob', 'steal', 'maling', 'copet', 'hack', 'bank', 'deposito', 'tarik', 'withdraw', 'transfer', 'susunkata', 'tebakangka', 'roulette',
           'premium', 'upgradepremium', 'cekpremium', 'ai', 'gemini', 'tanyaai', 'lapak', 'jual', 'claimvoucher', 'wishlist',
           // Perintah owner / admin
 

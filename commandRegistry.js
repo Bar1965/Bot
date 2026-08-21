@@ -78,6 +78,8 @@ const categories = {
     commands: [
       ['.freegames', 'Daftar semua game PC gratis 100%'],
       ['.ww / .werewolf', 'Mainkan game Werewolf/Mafia multiplayer'],
+      ['.steal @member / .maling', 'Misi pembobolan brankas poin dengan tantangan bypass'],
+      ['.hack <jawaban>', 'Ketik jawaban bypass tantangan pembobolan brankas'],
       ['.tebakbendera / .tebaknegara', 'Game tebak bendera & nama negara dunia'],
       ['.tebaklagu', 'Game kuis tebak judul lagu dari potongan musik audio'],
       ['.afk <alasan>', 'Set status AFK (Auto-reply saat di-mention)'],

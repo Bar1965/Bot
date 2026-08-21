@@ -12,7 +12,77 @@ const tebakAngkaGames = new Map();
 const rampokCooldowns = new Map();
 const victimImmunity = new Map();
 const easterEggCooldowns = new Map();
+const activeStealSessions = new Map();
+const stealCooldowns = new Map();
 const ROUND_DURATION_MS = 2 * 60 * 1000;
+const STEAL_TIMEOUT_MS = 35 * 1000;
+
+function generateStealChallenge() {
+  const challengeTypes = ['math', 'reverse_pin', 'code_word', 'wire_cut'];
+  const type = challengeTypes[Math.floor(Math.random() * challengeTypes.length)];
+
+  if (type === 'math') {
+    const a = Math.floor(Math.random() * 30) + 10;
+    const b = Math.floor(Math.random() * 20) + 5;
+    const c = Math.floor(Math.random() * 5) + 2;
+    const answer = String((a + b) * c);
+    return {
+      type: 'math',
+      title: '🔐 Kode PIN Matematika Brankas',
+      instruction: `Hitung cepat kode PIN brankas:\n👉 *(${a} + ${b}) × ${c}* = ?`,
+      answer: answer,
+      hint: `Ketik angka hasil perhitungannya.`
+    };
+  }
+
+  if (type === 'reverse_pin') {
+    const pin = String(Math.floor(Math.random() * 90000) + 10000);
+    const answer = pin.split('').reverse().join('');
+    return {
+      type: 'reverse_pin',
+      title: '📡 Bypass Firewall CCTV (Reverse PIN)',
+      instruction: `Ketik terbalik 5 digit kode keamanan ini:\n👉 *${pin}* (dari digit paling belakang ke depan)`,
+      answer: answer,
+      hint: `Contoh: 12345 menjadi 54321`
+    };
+  }
+
+  if (type === 'code_word') {
+    const words = [
+      { clue: 'Ketik cepat kata sandi pembobolan', word: 'HACKER' },
+      { clue: 'Ketik cepat kata sandi pembobolan', word: 'BRANKAS' },
+      { clue: 'Ketik cepat kata sandi pembobolan', word: 'BURONAN' },
+      { clue: 'Ketik cepat kata sandi pembobolan', word: 'RAHASIA' },
+      { clue: 'Ketik cepat kata sandi pembobolan', word: 'DIAMOND' },
+      { clue: 'Ketik cepat kata sandi pembobolan', word: 'MALING' },
+      { clue: 'Ketik cepat kata sandi pembobolan', word: 'HEIST' },
+      { clue: 'Ketik cepat kata sandi pembobolan', word: 'CYBER' }
+    ];
+    const picked = words[Math.floor(Math.random() * words.length)];
+    return {
+      type: 'code_word',
+      title: '🎙️ Bypass Voice Recognition Alarm',
+      instruction: `${picked.clue}:\n👉 *${picked.word}*`,
+      answer: picked.word,
+      hint: `Ketik kata persis sama.`
+    };
+  }
+
+  const wires = [
+    { color: 'MERAH', clue: 'Potong kabel yang sewarna dengan DARAH / API (Pilihan: MERAH / BIRU / HIJAU / KUNING)' },
+    { color: 'BIRU', clue: 'Potong kabel yang sewarna dengan LAUT / LANGIT (Pilihan: MERAH / BIRU / HIJAU / KUNING)' },
+    { color: 'HIJAU', clue: 'Potong kabel yang sewarna dengan DAUN / RUMPUT (Pilihan: MERAH / BIRU / HIJAU / KUNING)' },
+    { color: 'KUNING', clue: 'Potong kabel yang sewarna dengan PISANG / MATAHARI (Pilihan: MERAH / BIRU / HIJAU / KUNING)' }
+  ];
+  const pickedWire = wires[Math.floor(Math.random() * wires.length)];
+  return {
+    type: 'wire_cut',
+    title: '✂️ Nonaktifkan Sensor Laser Alarm',
+    instruction: `Putuskan kabel yang tepat:\n👉 ${pickedWire.clue}`,
+    answer: pickedWire.color,
+    hint: `Ketik salah satu nama warna.`
+  };
+}
 
 const quizQuestions = [
   { question: 'Planet terbesar di tata surya adalah?', options: ['A. Mars', 'B. Jupiter', 'C. Venus', 'D. Saturnus'], answer: 'B', hint: 'Namanya diawali huruf J.' },
@@ -397,6 +467,12 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
   const command = String(cleanCmd || '').toLowerCase();
   const scope = scopeKey(jid, senderNumber, isFromGroup);
 
+  // Deteksi Jawaban Tantangan Pembobolan / Steal (.steal / .hack)
+  if (activeStealSessions.has(senderNumber) && text && !text.startsWith('.')) {
+    const isStealProcessed = await handleStealAnswer(sock, jid, messageObj, senderNumber, text);
+    if (isStealProcessed) return true;
+  }
+
   // Deteksi Jawaban Langsung Game Aktif (Quiz, Tebak Kata, Tebak Emoji, Tebak Lagu, Tebak Bendera)
   const activeGameRound = activeRounds.get(scope);
   if (activeGameRound && !activeGameRound.isAnswered && text) {
@@ -452,7 +528,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
   }
 
   const knownFunCmds = [
-    'afk', 'rampok', 'curi', 'rob', 'ww', 'werewolf',
+    'afk', 'steal', 'maling', 'copet', 'rampok', 'curi', 'rob', 'hack', 'ww', 'werewolf',
     'jawab', 'answer', 'hint',
     'quiz', 'trivia', 'tebakquiz', 'tebakemoji', 'emoji', 'tebakkata', 'hangman', 'kata',
     'tebaklagu', 'lagu', 'musicquiz', 'tebakmusik',
@@ -511,8 +587,12 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     return true;
   }
 
-  // Heist / Rampok System
-  if (['rampok', 'curi', 'rob'].includes(command)) {
+  // Interactive Point Heist / Steal System (.steal, .maling, .copet, .rampok, .rob)
+  if (['steal', 'maling', 'copet', 'rampok', 'curi', 'rob'].includes(command)) {
+    if (!isFromGroup) {
+      await send(sock, jid, messageObj, "❌ Fitur pencurian/pembobolan poin (.steal) hanya bisa dimainkan di dalam grup!");
+      return true;
+    }
     let targetNumber = '';
     const mentionRegex = /@([0-9]{10,15})/g;
     const mentions = [...text.matchAll(mentionRegex)].map(m => m[1] + '@s.whatsapp.net');
@@ -522,10 +602,22 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     } else if (messageObj?.message?.extendedTextMessage?.contextInfo?.participant) {
       targetNumber = messageObj.message.extendedTextMessage.contextInfo.participant;
     } else if (args[1]) {
-      targetNumber = args[1].replace(/[^0-9]/g, '') + '@s.whatsapp.net';
+      const cleanNum = args[1].replace(/[^0-9]/g, '');
+      if (cleanNum.length > 5) targetNumber = cleanNum + '@s.whatsapp.net';
     }
 
-    await handleRampok(sock, jid, messageObj, senderNumber, targetNumber);
+    await handleStealHeist(sock, jid, messageObj, senderNumber, targetNumber);
+    return true;
+  }
+
+  // Jawaban Manual Hack Brankas (.hack <jawaban>)
+  if (['hack'].includes(command)) {
+    const answer = args.slice(1).join(' ').trim();
+    if (!activeStealSessions.has(senderNumber)) {
+      await send(sock, jid, messageObj, "❌ Kamu tidak sedang dalam misi pembobolan brankas. Ketik `.steal @member` untuk memulai misi!");
+      return true;
+    }
+    await handleStealAnswer(sock, jid, messageObj, senderNumber, answer);
     return true;
   }
 
@@ -1880,20 +1972,25 @@ export async function triggerAutoQuiz(sock, jid) {
   return startRound({ sock, jid, senderNumber: 'SYSTEM', messageObj: null, isFromGroup: true, type });
 }
 
-export async function handleRampok(sock, jid, m, senderNumber, targetNumber) {
+export async function handleStealHeist(sock, jid, m, senderNumber, targetNumber) {
   if (!targetNumber) {
-    await send(sock, jid, m, "⚠️ *Format Salah*\nBalas (reply) pesan target atau tag orangnya!\n_Contoh: .rampok @user_");
+    await send(sock, jid, m, "⚠️ *Format Perintah Salah!*\nBalas (reply) pesan target atau tag orangnya!\n_Contoh:_ `.steal @member` atau `.maling @member`");
     return true;
   }
 
   if (senderNumber === targetNumber) {
-    await send(sock, jid, m, "⚠️ Kamu tidak bisa merampok dirimu sendiri!");
+    await send(sock, jid, m, "⚠️ Kamu tidak bisa mencuri/merampok dari dirimu sendiri!");
+    return true;
+  }
+
+  if (activeStealSessions.has(senderNumber)) {
+    await send(sock, jid, m, "⚠️ Kamu sedang memiliki misi pembobolan aktif! Selesaikan tantangan yang ada terlebih dahulu.");
     return true;
   }
 
   const isTargetReg = await db.isCustomerRegistered(targetNumber);
   if (!isTargetReg) {
-    await send(sock, jid, m, "❌ Target belum terdaftar di database (guest).");
+    await send(sock, jid, m, "❌ Target belum terdaftar sebagai member di database.");
     return true;
   }
 
@@ -1901,68 +1998,164 @@ export async function handleRampok(sock, jid, m, senderNumber, targetNumber) {
   const immExpires = victimImmunity.get(targetNumber) || 0;
   if (now < immExpires) {
     const sisaMenit = Math.ceil((immExpires - now) / 60000);
-    await send(sock, jid, m, `🛡️ *GAGAL!*\nTarget sedang dilindungi oleh Polisi (Immunity) selama ${sisaMenit} menit ke depan.`);
+    await send(sock, jid, m, `🛡️ *GAGAL!* Target sedang dilindungi oleh Sistem Keamanan / Polisi (Immunity) selama ${sisaMenit} menit ke depan.`);
     return true;
   }
 
-  const cdExpires = rampokCooldowns.get(senderNumber) || 0;
+  const cdExpires = stealCooldowns.get(senderNumber) || 0;
   if (now < cdExpires) {
     const sisaMenit = Math.ceil((cdExpires - now) / 60000);
-    await send(sock, jid, m, `🚨 *BURONAN!*\nKamu sedang dalam masa buron. Sembunyi dulu selama ${sisaMenit} menit sebelum merampok lagi.`);
+    await send(sock, jid, m, `🚨 *BURONAN!* Kamu sedang dalam radar polisi. Bersembunyilah dulu selama ${sisaMenit} menit sebelum melakukan misi pencurian lagi.`);
     return true;
   }
 
   const profilePerampok = await db.getGameProfile(senderNumber);
   const profileKorban = await db.getGameProfile(targetNumber);
 
-  if (!profilePerampok || profilePerampok.points < 500) {
-    await send(sock, jid, m, "❌ Modal kamu kurang! Kamu butuh minimal *500 Poin* sebagai modal jaminan penalti jika tertangkap.");
+  if (!profilePerampok || profilePerampok.points < 50) {
+    await send(sock, jid, m, "❌ Modal kamu kurang! Kamu butuh minimal *50 Poin* sebagai modal jaminan denda jika tertangkap polisi.");
     return true;
   }
 
-  if (!profileKorban || profileKorban.points < 1000) {
-    await send(sock, jid, m, "❌ Gagal merampok! Target terlalu miskin (Poin < 1000). Jangan mem-bully rakyat jelata!");
+  if (!profileKorban || profileKorban.points < 100) {
+    await send(sock, jid, m, "❌ Target terlalu miskin (Poin < 100). Jangan mem-bully member yang sedang merintis!");
     return true;
   }
 
-  // 40% chance of success
-  const isSuccess = Math.random() < 0.40;
+  const challenge = generateStealChallenge();
+  const expiresAt = now + STEAL_TIMEOUT_MS;
 
-  // Set Cooldown (2 hours) & Immunity (4 hours)
-  rampokCooldowns.set(senderNumber, now + (2 * 60 * 60 * 1000));
-  victimImmunity.set(targetNumber, now + (4 * 60 * 60 * 1000));
+  const senderCust = await db.getCustomerByPhone(senderNumber);
+  const targetCust = await db.getCustomerByPhone(targetNumber);
+  const senderPhone = senderNumber.split('@')[0];
+  const targetPhone = targetNumber.split('@')[0];
+  const senderLabel = senderCust?.nama ? `*${senderCust.nama}* (@${senderPhone})` : `@${senderPhone}`;
+  const targetLabel = targetCust?.nama ? `*${targetCust.nama}* (@${targetPhone})` : `@${targetPhone}`;
 
-  if (isSuccess) {
-    const percentStolen = Math.floor(Math.random() * 11) + 10; // 10% to 20%
-    const amountStolen = Math.floor((profileKorban.points * percentStolen) / 100);
+  const session = {
+    senderNumber,
+    targetNumber,
+    senderLabel,
+    targetLabel,
+    jid,
+    m,
+    challenge,
+    expiresAt,
+    targetPoints: profileKorban.points,
+    stealerPoints: profilePerampok.points,
+    timeout: null
+  };
 
-    const deductRes = await db.deductGamePoints(targetNumber, amountStolen);
-    if (!deductRes.success) {
-       await send(sock, jid, m, "❌ Terjadi kesalahan pada brankas target (Transaksi gagal).");
-       return true;
-    }
-    await db.addGamePoints(senderNumber, amountStolen);
+  session.timeout = setTimeout(async () => {
+    if (!activeStealSessions.has(senderNumber)) return;
+    activeStealSessions.delete(senderNumber);
 
-    await sock.sendMessage(jid, {
-        text: `🥷 *PERAMPOKAN BERHASIL!*\n\nKamu berhasil menyelinap dan mencuri *${amountStolen} Poin* (${percentStolen}%) dari brankas @${targetNumber.split('@')[0]}!\n\n💰 Saldo kamu sekarang: *${profilePerampok.points + amountStolen} Poin*\n⏳ Kamu buron selama 2 jam.`,
-        mentions: [targetNumber]
-    }, { quoted: m });
-  } else {
-    // Failed: 30% penalty
-    const denda = Math.floor((profilePerampok.points * 30) / 100);
+    // Timeout penalty: tertangkap polisi
+    const curPerampok = await db.getGameProfile(senderNumber);
+    const denda = Math.max(25, Math.floor(((curPerampok?.points || 0) * 20) / 100));
     const kompensasi = Math.floor(denda / 2);
 
-    const deductRes = await db.deductGamePoints(senderNumber, denda);
-    if (!deductRes.success) {
-        await send(sock, jid, m, "❌ Terjadi kesalahan sistem saat menjatuhkan denda.");
-        return true;
-    }
+    await db.deductGamePoints(senderNumber, denda);
     await db.addGamePoints(targetNumber, kompensasi);
+    stealCooldowns.set(senderNumber, Date.now() + 15 * 60 * 1000);
+    victimImmunity.set(targetNumber, Date.now() + 20 * 60 * 1000);
 
-    await sock.sendMessage(jid, {
-        text: `🚨 *TERTANGKAP POLISI!*\n\nAksi kamu ketahuan! Polisi menyita *${denda} Poin* (30%) dari dompetmu sebagai denda.\n\nSebagai kompensasi kaget, @${targetNumber.split('@')[0]} mendapatkan perlindungan polisi selama 4 jam dan *${kompensasi} Poin* dari uang dendamu.\n\n💸 Saldo kamu sekarang: *${profilePerampok.points - denda} Poin*`,
-        mentions: [targetNumber]
-    }, { quoted: m });
-  }
+    const failMsg = `🚨 *WAKTU HABIS — ALARM BERBUNYI!* 🚨\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🦹 Pelaku: ${senderLabel}\n🎯 Target: ${targetLabel}\n\nPolisi tiba di lokasi! Aksi pembobolan brankas gagal total karena waktu habis (35 detik).\n\n💸 *Sanksi Denda:* Pelaku didenda *-${denda} Poin*!\n🎁 *Kompensasi:* ${targetLabel} menerima perlindungan polisi & *+${kompensasi} Poin* ganti rugi.\n⏳ Status: Pelaku buron selama 15 menit.`;
+
+    await send(sock, jid, m, failMsg, { mentions: [senderNumber, targetNumber] });
+  }, STEAL_TIMEOUT_MS);
+
+  activeStealSessions.set(senderNumber, session);
+
+  const promptMsg = 
+`🥷 *MISI PEMBOBOLAN BRANKAS POIN (.steal)* 🚨
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🦹 Pelaku: ${senderLabel}
+🎯 Target: ${targetLabel}
+💰 Brankas Target: *${profileKorban.points.toLocaleString('id-ID')} Poin*
+
+⚠️ *TANTANGAN KEAMANAN BRANKAS:*
+_${challenge.title}_
+
+${challenge.instruction}
+
+⌨️ *Cara Eksekusi:*
+Ketik: \`.hack <jawaban>\` atau langsung ketik jawabannya di grup!
+
+⏰ *Waktu:* 35 Detik
+⚠️ *Risiko:* Jika jawaban salah / waktu habis, kamu akan tertangkap polisi dan didenda *20% poin*!`;
+
+  await send(sock, jid, m, promptMsg, {
+    mentions: [senderNumber, targetNumber]
+  });
   return true;
+}
+
+export async function handleStealAnswer(sock, jid, m, senderNumber, textAnswer) {
+  const session = activeStealSessions.get(senderNumber);
+  if (!session) return false;
+
+  if (session.timeout) clearTimeout(session.timeout);
+  activeStealSessions.delete(senderNumber);
+
+  const cleanSub = normalizeAnswer(textAnswer);
+  const cleanAns = normalizeAnswer(session.challenge.answer);
+  const isCorrect = cleanSub === cleanAns;
+
+  const now = Date.now();
+  if (isCorrect) {
+    // Sukses: Curi 10% - 25% dari poin target
+    const percentStolen = Math.floor(Math.random() * 16) + 10; // 10% s/d 25%
+    const currentVictimProf = await db.getGameProfile(session.targetNumber);
+    const maxVictimPts = Math.max(0, currentVictimProf?.points || 0);
+    const amountStolen = Math.max(10, Math.min(5000, Math.floor((maxVictimPts * percentStolen) / 100)));
+
+    await db.deductGamePoints(session.targetNumber, amountStolen);
+    const updatedStealer = await db.addGamePoints(senderNumber, amountStolen);
+    await db.addMessageXp(senderNumber, 40);
+
+    stealCooldowns.set(senderNumber, now + 15 * 60 * 1000); // 15 menit
+    victimImmunity.set(session.targetNumber, now + 30 * 60 * 1000); // 30 menit imun
+
+    const successMsg = 
+`🥷 *PEMBOBOLAN BRANKAS BERHASIL!* 💰
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🦹 Pelaku: ${session.senderLabel}
+🎯 Target: ${session.targetLabel}
+🔓 Sandi Terbobol: *${session.challenge.answer}*
+
+🎉 *Hasil Rampokan:*
+🎁 Mendapatkan: *+${amountStolen} Poin* (${percentStolen}%) & *+40 XP*!
+💰 Total Saldo Pelaku: *${updatedStealer.points.toLocaleString('id-ID')} Poin*
+⏳ Status: Pelaku dalam masa buron selama 15 menit.`;
+
+    await send(sock, jid, m, successMsg, { mentions: [senderNumber, session.targetNumber] });
+    return true;
+  } else {
+    // Gagal: Salah jawab -> Denda 20%
+    const curPerampok = await db.getGameProfile(senderNumber);
+    const denda = Math.max(25, Math.floor(((curPerampok?.points || 0) * 20) / 100));
+    const kompensasi = Math.floor(denda / 2);
+
+    await db.deductGamePoints(senderNumber, denda);
+    await db.addGamePoints(session.targetNumber, kompensasi);
+    stealCooldowns.set(senderNumber, now + 15 * 60 * 1000);
+    victimImmunity.set(session.targetNumber, now + 20 * 60 * 1000);
+
+    const failMsg = 
+`🚨 *KODE SALAH — TERTANGKAP POLISI!* 🚨
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🦹 Pelaku: ${session.senderLabel}
+🎯 Target: ${session.targetLabel}
+❌ Jawabanmu: *${textAnswer}* (Kunci Asli: *${session.challenge.answer}*)
+
+Alarm berbunyi keras! Polisi langsung menyergap pelaku di lokasi.
+
+💸 *Sanksi Denda:* Pelaku disita *-${denda} Poin* (20%)!
+🎁 *Kompensasi:* ${session.targetLabel} menerima *+${kompensasi} Poin* ganti rugi & proteksi polisi.
+⏳ Status: Pelaku buron selama 15 menit.`;
+
+    await send(sock, jid, m, failMsg, { mentions: [senderNumber, session.targetNumber] });
+    return true;
+  }
 }
