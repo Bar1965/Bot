@@ -453,14 +453,14 @@ Ketik *bayar* atau klik tombol *Bayar QRIS Langsung* di bawah untuk langsung mem
     const regStatus = isRegistered ? '✅ Terdaftar' : '⚠️ Belum lengkap (ketik .daftar <nama>)';
     const regDate = isRegistered ? formatWib(profile?.registered_at) : 'Belum pernah registrasi';
     const lastSeen = formatWib(profile?.last_seen_at);
-    const isSelf = targetJid === senderNumber;
-    const headerTitle = isSelf ? '👤 *INFORMASI PROFIL SAYA*' : `👤 *INFORMASI PROFIL MEMBER* (@${phoneNum})`;
+    const custNick = profile?.nama ? `*${profile.nama}* (@${phoneNum})` : `@${phoneNum}`;
+    const headerTitle = isSelf ? `👤 *INFORMASI PROFIL SAYA* (${custNick})` : `👤 *INFORMASI PROFIL MEMBER* (${custNick})`;
 
     let text = `${headerTitle}\n`;
     text += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
     text += `📋 *DATA REGISTRASI*\n`;
-    text += `▫️ Nama Terdaftar: *${profile?.nama || customerName}*\n`;
-    text += `▫️ Nomor WA: *+${phoneNum}*\n`;
+    text += `▫️ Nama / Nick: *${profile?.nama || customerName}*\n`;
+    text += `▫️ WhatsApp: @${phoneNum}\n`;
     text += `▫️ Status Akun: *${profile?.account_status || 'ACTIVE'}*\n`;
     text += `▫️ Role: *${role}*\n`;
     text += `▫️ Status Registrasi: *${regStatus}*\n`;

@@ -244,7 +244,7 @@ function profileText(profile, name, premiumTier) {
   const safeLevel = Math.max(1, Math.floor(Number(profile?.level) || 1));
   const safeStreak = Math.max(0, Math.floor(Number(profile?.daily_streak) || 0));
   const premBadge = { Free: '🎮', Silver: '🥈 Silver', Gold: '🥇 Gold', Diamond: '💎 Diamond' }[premiumTier || 'Free'] || '🎮';
-  return `🏆 *PROFILE GAME*\n\n👤 ${name || 'Pelanggan'} [${premBadge}]\n💰 Poin: *${safePoints}*\n⭐ Level: *${safeLevel}* (${safeXp} XP)\n🎮 Game dimainkan: *${safePlayed}*\n🥇 Menang: *${safeWon}* (${winRate}%)\n🔥 Streak harian: *${safeStreak}*`;
+  return `🏆 *PROFIL GAME PEMAIN*\n\n👤 Nick: ${name || 'Pelanggan'} [${premBadge}]\n💰 Akbar Poin: *${safePoints.toLocaleString('id-ID')} Poin*\n⭐ Level: *Lv.${safeLevel}* (${safeXp} XP)\n🎮 Total Game: *${safePlayed}*\n🥇 Menang: *${safeWon}* (${winRate}%)\n🔥 Streak Harian: *${safeStreak} Hari*`;
 }
 
 async function handleRoundCommand({ sock, jid, senderNumber, messageObj, args, cleanCmd, isFromGroup }) {
@@ -887,7 +887,9 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     try {
       const profile = await db.addGamePoints(targetJid, amount);
       const targetPhone = targetJid.split('@')[0];
-      await send(sock, jid, messageObj, `✅ Berhasil menambahkan *${amount} poin* ke @${targetPhone}.\n💰 Total Poin Sekarang: *${profile.points} poin*`, {
+      const targetCust = await db.getCustomerByPhone(targetJid);
+      const targetLabel = targetCust?.nama ? `*${targetCust.nama}* (@${targetPhone})` : `@${targetPhone}`;
+      await send(sock, jid, messageObj, `✅ Berhasil menambahkan *${amount} poin* ke ${targetLabel}.\n💰 Total Poin Sekarang: *${profile.points} poin*`, {
         mentions: [targetJid]
       });
     } catch (err) {
@@ -945,10 +947,12 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
       
       const newProfile = await db.getGameProfile(targetJid);
       const targetPhone = targetJid.split('@')[0];
-      await send(sock, jid, messageObj, `✅ *Berhasil Mengurangi Poin!*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n👤 Target: @${targetPhone}\n🔻 Poin Dikurangi: *${amount} poin*\n💰 Sisa Poin Sekarang: *${newProfile.points || 0} poin*`, {
+      const targetCust = await db.getCustomerByPhone(targetJid);
+      const targetLabel = targetCust?.nama ? `*${targetCust.nama}* (@${targetPhone})` : `@${targetPhone}`;
+      await send(sock, jid, messageObj, `✅ *Berhasil Mengurangi Poin!*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n👤 Target: ${targetLabel}\n🔻 Poin Dikurangi: *${amount} poin*\n💰 Sisa Poin Sekarang: *${newProfile.points || 0} poin*`, {
         mentions: [targetJid]
       });
-      await db.addLog('ADMIN', `Owner mengurangi ${amount} poin dari @${targetPhone}. Sisa: ${newProfile.points || 0}`);
+      await db.addLog('ADMIN', `Owner mengurangi ${amount} poin dari ${targetLabel}. Sisa: ${newProfile.points || 0}`);
     } catch (err) {
       await send(sock, jid, messageObj, `❌ Gagal mengurangi poin: ${err.message}`);
     }
@@ -998,7 +1002,11 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     if (res.success) {
       const targetPhone = targetJid.split('@')[0];
       const senderPhone = senderNumber.split('@')[0];
-      await send(sock, jid, messageObj, `✅ *Transfer Poin Berhasil!*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📤 Pengirim: @${senderPhone}\n📥 Penerima: @${targetPhone}\n💰 Jumlah: *${amount} Poin*\n💸 Pajak (1%): *${amount - res.received} Poin*\n🎁 Diterima: *${res.received} Poin*`, {
+      const senderCust = await db.getCustomerByPhone(senderNumber);
+      const targetCust = await db.getCustomerByPhone(targetJid);
+      const senderLabel = senderCust?.nama ? `*${senderCust.nama}* (@${senderPhone})` : `@${senderPhone}`;
+      const targetLabel = targetCust?.nama ? `*${targetCust.nama}* (@${targetPhone})` : `@${targetPhone}`;
+      await send(sock, jid, messageObj, `✅ *Transfer Poin Berhasil!*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📤 Pengirim: ${senderLabel}\n📥 Penerima: ${targetLabel}\n💰 Jumlah: *${amount} Poin*\n💸 Pajak (1%): *${amount - res.received} Poin*\n🎁 Diterima: *${res.received} Poin*`, {
         mentions: [senderNumber, targetJid]
       });
     } else {
@@ -1023,8 +1031,19 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     const target = targetJid || senderNumber;
     const profile = await db.getGameProfile(target);
     const premiumTier = await db.getPremiumTier(target);
+    const cust = await db.getCustomerByPhone(target);
     const targetPhone = target.split('@')[0];
-    const nameStr = target === senderNumber ? messageObj?.pushName : `@${targetPhone}`;
+    
+    // Tampilkan Nama / Nick Terdaftar dan @tag nomornya
+    let nameStr = '';
+    if (cust?.nama) {
+      nameStr = `*${cust.nama}* (@${targetPhone})`;
+    } else if (target === senderNumber && messageObj?.pushName) {
+      nameStr = `*${messageObj.pushName}* (@${targetPhone})`;
+    } else {
+      nameStr = `@${targetPhone}`;
+    }
+
     await send(sock, jid, messageObj, profileText(profile, nameStr, premiumTier), {
       title: '👤 PROFIL & POIN GAME',
       buttons: [
@@ -1032,7 +1051,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
         { type: 'reply', text: '🏆 Leaderboard', id: '.rank' },
         { type: 'reply', text: '🛍️ Katalog Produk', id: '.produk' }
       ],
-      mentions: targetJid ? [targetJid] : []
+      mentions: [target]
     });
     return true;
   }
