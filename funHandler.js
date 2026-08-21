@@ -535,10 +535,10 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     'tebakbendera', 'tebaknegara', 'bendera', 'negara', 'flag',
     'truth', 'dare', 'tod', 'dadu', 'dice', 'coinflip', 'koin', 'coin',
     'sambungkata', 'wordchain', 'daily', 'harian', 'reward',
-    'addpoint', 'addpoints', 'tambahpoin',
-    'kurangpoin', 'kurangipoin', 'delpoint', 'delpoints', 'deductpoint', 'potongpoin',
-    'transfer', 'kirimpoin', 'transferpoin',
-    'poin', 'point', 'profile', 'level', 'me',
+    'addpoint', 'addpoints', 'addpoin', 'tambahpoin', 'tambahpoint', 'pluspoin',
+    'kurangpoin', 'kurangipoin', 'delpoint', 'delpoints', 'deductpoint', 'potongpoin', 'minuspoin',
+    'transfer', 'kirimpoin', 'transferpoin', 'tfpoin',
+    'poin', 'point', 'points', 'profile', 'profil', 'level', 'me', 'cekpoin',
     'rank', 'leaderboard', 'top', 'misi', 'mission', 'challenge',
     'giveaway', 'setpoints', 'bagipoin', 'kompensasi',
     'badge', 'badges', 'achievement', 'achievements',
@@ -939,17 +939,21 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     return true;
   }
 
-  if (['addpoint', 'addpoints', 'tambahpoin'].includes(command)) {
+  if (['addpoint', 'addpoints', 'addpoin', 'tambahpoin', 'tambahpoint', 'pluspoin'].includes(command)) {
     if (!isAdmin && !isOwner) {
-      await send(sock, jid, messageObj, "❌ Perintah ini hanya dapat dijalankan oleh Admin atau Owner.");
+      await send(sock, jid, messageObj, "❌ Perintah penambahan poin ini khusus untuk *Admin* atau *Owner*.");
       return true;
     }
-    const mentions = messageObj?.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
-    let targetJid = mentions[0];
+    const contextInfo = messageObj?.message?.extendedTextMessage?.contextInfo;
+    const mentions = contextInfo?.mentionedJid || [];
+    let targetJid = mentions[0] || contextInfo?.participant;
     let amount = NaN;
 
     if (mentions.length > 0) {
-      amount = parseInt(args[2], 10);
+      amount = parseInt(args[2], 10) || parseInt(args[1], 10);
+    } else if (contextInfo?.participant) {
+      targetJid = contextInfo.participant;
+      amount = parseInt(args[1], 10);
     } else {
       const arg1 = args[1]?.toLowerCase();
       const arg2 = args[2];
@@ -959,11 +963,15 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
         amount = parseInt(arg2, 10);
       } else if (arg1 && arg2) {
         // Format: .addpoint nomor jumlah
-        const cleanNum = arg1.replace(/[^0-9]/g, '');
-        if (cleanNum.length > 5) {
-          targetJid = `${cleanNum}@s.whatsapp.net`;
+        const cleanNum1 = arg1.replace(/[^0-9]/g, '');
+        const cleanNum2 = (arg2 || '').replace(/[^0-9]/g, '');
+        if (cleanNum1.length > 5) {
+          targetJid = `${cleanNum1}@s.whatsapp.net`;
+          amount = parseInt(arg2, 10);
+        } else if (cleanNum2.length > 5) {
+          targetJid = `${cleanNum2}@s.whatsapp.net`;
+          amount = parseInt(arg1, 10);
         }
-        amount = parseInt(arg2, 10);
       } else if (arg1 && !arg2) {
         // Format: .addpoint jumlah (auto-target diri sendiri)
         targetJid = senderNumber;
@@ -972,7 +980,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     }
 
     if (!targetJid || isNaN(amount)) {
-      await send(sock, jid, messageObj, "⚠️ *Format Perintah Salah!* Gunakan:\n▫️ `.addpoint [jumlah]` (untuk diri sendiri)\n▫️ `.addpoint @member [jumlah]` (tag orang)\n▫️ `.addpoint [nomor] [jumlah]` (ketik nomor)\n\n*Contoh:* `.addpoint 500` atau `.addpoint @628123456789 500`");
+      await send(sock, jid, messageObj, "⚠️ *Format Perintah Tambah Poin (Admin/Owner):*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n▫️ `.addpoint [jumlah]` (tambah ke diri sendiri)\n▫️ `.addpoint @member [jumlah]` (tag orang)\n▫️ `.addpoint [nomor] [jumlah]` (ketik nomor)\n▫️ Balas/Quote pesan member lalu ketik `.addpoint [jumlah]`\n\n*Contoh:* `.addpoint 500` atau `.addpoint @628123456789 500`");
       return true;
     }
 
