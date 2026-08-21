@@ -39,7 +39,7 @@ export function createGroupAdminHandler(ctx) {
 
   const groupModerationCommands = [
     'add', 'kick', 'promote', 'demote', 'group', 'link', 'tagall', 'hidetag', 
-    'everyone', 'admins', 'mode', 'setmode', 'botmode', 'antilink', 'welcome', 
+    'everyone', 'admins', 'mode', 'setmode', 'botmode', 'antilink', 'setantilink', 'globalantilink', 'welcome', 
     'autowelcomeswitch', 'setwelcome', 'setupdategroup', 'testupdate', 'autosholat', 'levelup', 'autolevelup',
     'globallevelup', 'setlevelup', 'fitur', 'open', 'close', 'del', 'delete', 'totalchat', 'ceksewabot', 'sponsor',
     'textwelcome', 'textleave',
@@ -156,6 +156,30 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
 
   // 🔒 Guard Grup Admin ACC khusus untuk perintah transaksi toko
   if (adminStoreCommands.includes(cleanCmd)) {
+    // Perintah toko & uang (.paid, .price, .stock, .addproduct, .addcoupon, dll) wajib identitas
+    // Admin Toko atau Owner. Status admin grup WhatsApp SAJA tidak cukup — kalau tidak, siapa pun
+    // yang jadi admin di grup mana pun yang bot ikuti bisa mengirim produk gratis lewat .paid.
+    // actor.isStoreAdmin berasal dari bot.js, yang sudah meresolusi pengirim @lid menjadi nomor HP
+    // lewat metadata grup SEBELUM mencocokkannya ke adminNumbers. Perhitungan isAdminStore di file ini
+    // tidak melakukan resolusi itu, jadi tanpa sinyal dari bot.js setiap Admin Toko yang mengirim
+    // pesan sebagai @lid akan terkunci dari perintahnya sendiri.
+    const isStoreAdminResolved = isAdminStore || !!(actor && actor.isStoreAdmin);
+    if (!isStoreAdminResolved && !isOwner) {
+      // 'cancel' juga milik handler pelanggan (batalkan order sendiri). Admin grup yang kebetulan
+      // pelanggan biasa harus tetap bisa memakainya, jadi khusus itu diteruskan ke bawah.
+      if (cleanCmd === 'cancel') return false;
+      // Kirim penolakan tanpa await yang bisa menggagalkan seluruh batch pesan: sock.sendMessage
+      // di sini adalah antrean safeSendMessage yang bisa reject setelah 3 kali gagal kirim.
+      try {
+        await sock.sendMessage(jid, { text: "❌ Perintah ini khusus *Admin Toko* atau *Owner*. Status admin grup WhatsApp saja tidak cukup." }, { quoted: m });
+      } catch (e) {
+        console.error('[ADMIN_GUARD] Gagal mengirim pesan penolakan:', e.message);
+      }
+      return true;
+    }
+    // CATATAN: transactionGroupId sengaja TIDAK dimasukkan ke rantai ini. Guard lokasi di bawah
+    // berlaku untuk seluruh 27 adminStoreCommands — termasuk .eval/.backup/.broadcast/.stats —
+    // sehingga mengaktifkannya akan membuat perintah Owner diam-diam mati di grup lain.
     const adminGroupId = botSettings.adminGroupId || botSettings.transactionLogGroupId || "";
     if (adminGroupId && isGroup && jid !== adminGroupId) {
       // Diam / tidak merespons perintah admin yang salah tempat agar tidak spam grup
@@ -750,16 +774,45 @@ Mode Saat Ini: *${modeLabel}*
       return true;
     }
 
-    // MODERASI GRUP: Sakelar Proteksi Anti-Link (.antilink)
-    if (cleanCmd === 'antilink') {
+    // MODERASI GRUP: Sakelar Proteksi Anti-Link (.antilink, .setantilink)
+    if (['antilink', 'setantilink'].includes(cleanCmd)) {
       const param = args[1]?.toLowerCase();
-      if (!['on', 'off', '1', '0', 'aktif', 'matikan'].includes(param)) {
-        await sock.sendMessage(jid, { text: "⚠️ Gunakan: `.antilink on` atau `.antilink off`" });
+      const currentGroup = await db.getGroupSettings(jid);
+      const isCurrentlyActive = Number(currentGroup.anti_link) === 1;
+
+      if (!['on', 'off', '1', '0', 'aktif', 'mati', 'matikan', 'status'].includes(param)) {
+        const statusText = isCurrentlyActive ? 'AKTIF 🟢' : 'NONAKTIF 🔴';
+        const helpText = `🛡️ *PENGATURAN ANTI-LINK GRUP*\n━━━━━━━━━━━━━━━━━━━━\n📊 *Status Grup Ini:* ${statusText}\n\n📌 *Cara Mengubah:*\n• Ketik \`.antilink on\` untuk Mengaktifkan\n• Ketik \`.antilink off\` untuk Mematikan\n\n_Catatan: Jika dinonaktifkan, member bebas mengirim link tanpa peringatan atau kick._`;
+        await sock.sendMessage(jid, { text: helpText });
+        return true;
+      }
+      if (param === 'status') {
+        const statusText = isCurrentlyActive ? 'AKTIF 🟢' : 'NONAKTIF 🔴';
+        await sock.sendMessage(jid, { text: `🛡️ Status Anti-Link di grup ini: *${statusText}*` });
         return true;
       }
       const isEnable = ['on', '1', 'aktif'].includes(param);
       await db.updateGroupSettings(jid, { anti_link: isEnable ? 1 : 0 });
-      await sock.sendMessage(jid, { text: `🛡️ Proteksi Anti-Link Grup berhasil *${isEnable ? 'DIAKTIFKAN 🟢' : 'DINONAKTIFKAN 🔴'}* di grup ini!` });
+      await sock.sendMessage(jid, { text: `🛡️ Fitur Anti-Link Grup berhasil *${isEnable ? 'DIAKTIFKAN 🟢' : 'DINONAKTIFKAN 🔴'}* di grup ini!\n\n${isEnable ? '_Pesan berisi link dari member akan otomatis dihapus dan diberi peringatan._' : '_Member sekarang bebas mengirim link di grup ini._'}` });
+      return true;
+    }
+
+    // OWNER LEVEL: Sakelar Anti-Link Seluruh Bot (.globalantilink)
+    if (cleanCmd === 'globalantilink') {
+      if (!isOwner) {
+        await sock.sendMessage(jid, { text: "❌ Perintah ini khusus untuk Pemilik (Owner) bot." });
+        return true;
+      }
+      const param = args[1]?.toLowerCase();
+      if (!['on', 'off', '1', '0', 'aktif', 'mati', 'matikan'].includes(param)) {
+        const currentGlobal = (botSettings.antiLinkEnabled || "true") === "true" ? 'AKTIF 🟢' : 'NONAKTIF 🔴';
+        await sock.sendMessage(jid, { text: `🛡️ Status Global Anti-Link Toko: *${currentGlobal}*\n\n📌 *Gunakan:* \`.globalantilink on\` atau \`.globalantilink off\`` });
+        return true;
+      }
+      const isEnable = ['on', '1', 'aktif'].includes(param);
+      botSettings.antiLinkEnabled = isEnable ? "true" : "false";
+      await db.updateSettings({ antiLinkEnabled: botSettings.antiLinkEnabled });
+      await sock.sendMessage(jid, { text: `🛡️ Sakelar Global Anti-Link berhasil *${isEnable ? 'DIAKTIFKAN 🟢' : 'DINONAKTIFKAN 🔴'}* untuk seluruh bot!` });
       return true;
     }
 

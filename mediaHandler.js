@@ -116,12 +116,33 @@ export async function fetchBuffer(url) {
 /**
  * Download media via yt-dlp CLI — metode paling andal (disuntikkan FFmpeg location & format gabungan)
  */
-async function downloadWithYtdlp(url) {
+async function downloadWithYtdlp(url, isAudio = false) {
   const cookiesPath = path.join(process.cwd(), 'ig_cookies.txt');
   const hasCookies = fs.existsSync(cookiesPath);
   const tmpDir = path.join(process.cwd(), 'tmp');
   if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
-  const tmpFile = path.join(tmpDir, `ytdlp_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp4`);
+  
+  const ext = isAudio ? 'mp3' : 'mp4';
+  const tmpFile = path.join(tmpDir, `ytdlp_${Date.now()}_${Math.floor(Math.random() * 1000)}.${ext}`);
+
+  // Dapatkan Judul
+  let title = 'YouTube Media';
+  try {
+    const titleRes = await runPythonProc(['-m', 'yt_dlp', '--get-title', '--no-warnings', '--no-playlist', url], 12000);
+    if (titleRes && titleRes.stdout.trim()) {
+      title = titleRes.stdout.trim().split('\n')[0];
+    }
+  } catch (e) {}
+
+  const formatArgs = isAudio ? [
+    '-f', 'ba/bestaudio/best',
+    '-x',
+    '--audio-format', 'mp3',
+    '--audio-quality', '0'
+  ] : [
+    '-f', 'bv*[height<=720][ext=mp4]+ba[ext=m4a]/bv*[height<=720]+ba/b[height<=720]/best',
+    '--merge-output-format', 'mp4'
+  ];
 
   const fileArgs = [
     '-m', 'yt_dlp',
@@ -129,17 +150,15 @@ async function downloadWithYtdlp(url) {
     '--no-playlist',
     '--geo-bypass',
     '--ffmpeg-location', ffmpegInstaller.path,
-    '--extractor-args', 'youtube:player_client=android,web',
-    '-f', 'b/best[ext=mp4]/18/bestvideo[filesize<38M]+bestaudio/best',
-    '--print', 'title',
+    ...formatArgs,
+    '--max-filesize', '48M',
     '-o', tmpFile,
     ...(hasCookies ? ['--cookies', cookiesPath] : []),
     url
   ];
 
-  const procRes = await runPythonProc(fileArgs, 45000);
+  const procRes = await runPythonProc(fileArgs, 60000);
   if (procRes && fs.existsSync(tmpFile)) {
-    const title = procRes.stdout.trim().split('\n')[0] || 'Media Video';
     const stats = fs.statSync(tmpFile);
     if (stats.size > 5000) {
       try {
@@ -167,7 +186,7 @@ async function downloadWithYtdlp(url) {
     '--no-playlist',
     '--geo-bypass',
     '--ffmpeg-location', ffmpegInstaller.path,
-    '-f', 'b/best[ext=mp4]/18/best',
+    '-f', isAudio ? 'ba/bestaudio/best' : 'b/best[height<=720]/best',
     ...(hasCookies ? ['--cookies', cookiesPath] : []),
     url
   ];
@@ -176,10 +195,10 @@ async function downloadWithYtdlp(url) {
   if (procRes2 && procRes2.stdout.trim()) {
     const lines = procRes2.stdout.trim().split('\n').map(l => l.trim()).filter(Boolean);
     const urlLine = [...lines].reverse().find(l => l.startsWith('http'));
-    const titleLine = lines.find(l => !l.startsWith('http'));
+    const titleLine = lines.find(l => !l.startsWith('http')) || title;
     if (urlLine) {
       const buf = await fetchBuffer(urlLine);
-      return { success: true, buffer: buf || undefined, videoUrl: urlLine, title: titleLine || 'Media Video' };
+      return { success: true, buffer: buf || undefined, videoUrl: urlLine, audioUrl: urlLine, title: titleLine };
     }
   }
 
@@ -355,8 +374,8 @@ export async function downloadInstagram(url) {
  * Download YouTube Videos / Shorts — Multi-Tier Failover
  */
 export async function downloadYouTube(url) {
-  // Method 1: yt-dlp CLI
-  const ytdlpResult = await downloadWithYtdlp(url);
+  // Method 1: yt-dlp CLI Video
+  const ytdlpResult = await downloadWithYtdlp(url, false);
   if (ytdlpResult?.buffer) {
     return { success: true, buffer: ytdlpResult.buffer, title: ytdlpResult.title || 'YouTube Video' };
   }
@@ -374,7 +393,7 @@ export async function downloadYouTube(url) {
       const buf = await fetchBuffer(format.url);
       return { 
         success: true, 
-        buffer: buf || undefined,
+        buffer: buf || undefined, 
         videoUrl: format.url, 
         title: info.videoDetails?.title || 'YouTube Video' 
       };
@@ -386,6 +405,43 @@ export async function downloadYouTube(url) {
   return { 
     success: false, 
     message: '❌ Gagal mengunduh video YouTube. Pastikan link publik dan dapat diakses.' 
+  };
+}
+
+/**
+ * Download YouTube Audio / MP3 — Multi-Tier Failover
+ */
+export async function downloadYouTubeAudio(url) {
+  // Method 1: yt-dlp CLI Audio
+  const ytdlpResult = await downloadWithYtdlp(url, true);
+  if (ytdlpResult?.buffer) {
+    return { success: true, buffer: ytdlpResult.buffer, title: ytdlpResult.title || 'YouTube Audio' };
+  }
+  if (ytdlpResult?.audioUrl) {
+    const buf = await fetchBuffer(ytdlpResult.audioUrl);
+    return { success: true, buffer: buf || undefined, audioUrl: ytdlpResult.audioUrl, title: ytdlpResult.title || 'YouTube Audio' };
+  }
+
+  // Method 2: @distube/ytdl-core Audio
+  try {
+    const info = await ytdl.getInfo(url);
+    const format = ytdl.chooseFormat(info.formats, { filter: 'audioonly', quality: 'highestaudio' });
+    if (format && format.url) {
+      const buf = await fetchBuffer(format.url);
+      return { 
+        success: true, 
+        buffer: buf || undefined, 
+        audioUrl: format.url, 
+        title: info.videoDetails?.title || 'YouTube Audio' 
+      };
+    }
+  } catch (err) {
+    console.log('[MEDIA_HANDLER] YT Audio Method 2 failed:', err.message);
+  }
+
+  return { 
+    success: false, 
+    message: '❌ Gagal mengunduh audio YouTube. Pastikan link publik dan dapat diakses.' 
   };
 }
 

@@ -383,8 +383,14 @@ export function extractTargetJid(m, args) {
 async function handleAntiSpamAndAntiLink(m, jid, senderNormalized, isGroup, msgText, isAdmin) {
   if (!isGroup) return false;
 
+  const groupSettings = await db.getGroupSettings(jid);
+  const groupAntiLinkActive = groupSettings ? Number(groupSettings.anti_link) === 1 : false;
+  const globalAntiLinkActive = (botSettings.antiLinkEnabled || "true") === "true";
+  
+  // Anti-link aktif HANYA jika sakelar per-grup menyala (.antilink on) dan sakelar global on
+  const antiLinkOn = globalAntiLinkActive && groupAntiLinkActive;
+
   const antiSpamOn = botSettings.antiSpamEnabled === true || botSettings.antiSpamEnabled === "true" || botSettings.antiSpamEnabled === undefined;
-  const antiLinkOn = botSettings.antiLinkEnabled === true || botSettings.antiLinkEnabled === "true" || botSettings.antiLinkEnabled === undefined;
   const maxSpamMsgs = parseInt(botSettings.spamThreshold) || 5;
   const spamWindowMs = parseInt(botSettings.spamWindow) || 5000;
   const kickAfter = parseInt(botSettings.kickAfterWarnings) || 3;
@@ -1232,24 +1238,42 @@ export async function startBot(onSocketReady) {
       return true;
     }
 
-    // 3. YouTube / Shorts Downloader
-    if (['yt', 'youtube'].includes(cleanCmd)) {
+    // 3. YouTube / Shorts Downloader (.yt, .youtube, .ytmp4, .ytmp3, .play, .song)
+    if (['yt', 'youtube', 'ytmp4', 'ytmp3', 'play', 'song'].includes(cleanCmd)) {
+      const isAudio = ['ytmp3', 'play', 'song'].includes(cleanCmd);
       const url = args[1] || (msgText.match(/https?:\/\/[^\s]+/i)?.[0]);
       if (!url || (!url.includes('youtube.com') && !url.includes('youtu.be'))) {
-        await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Harap sertakan link YouTube/Shorts yang valid.\n\n_Contoh:_ `.yt https://youtube.com/shorts/xxxx`" });
+        const cmdExample = isAudio ? '.ytmp3' : '.yt';
+        await sock.sendMessage(jid, { text: `⚠️ *Format Salah:* Harap sertakan link YouTube/Shorts yang valid.\n\n_Contoh:_ \`${cmdExample} https://youtu.be/xxxx\`` });
         return true;
       }
       await react('⏳');
-      const res = await mediaHandler.downloadYouTube(url);
-      if (res.success && (res.buffer || res.videoUrl)) {
-        await sock.sendMessage(jid, { 
-          video: res.buffer || { url: res.videoUrl }, 
-          caption: `🎬 *${res.title || 'YouTube Video'}*\n\n✅ *Berhasil diunduh via Akbar Store Bot*` 
-        });
-        await react('✅');
+      if (isAudio) {
+        const res = await mediaHandler.downloadYouTubeAudio(url);
+        if (res.success && (res.buffer || res.audioUrl)) {
+          const cleanTitle = (res.title || 'YouTube Audio').replace(/[/\\?%*:|"<>]/g, '');
+          await sock.sendMessage(jid, { 
+            audio: res.buffer || { url: res.audioUrl }, 
+            mimetype: 'audio/mp4',
+            fileName: `${cleanTitle}.mp3`
+          });
+          await react('✅');
+        } else {
+          await react('❌');
+          await sock.sendMessage(jid, { text: `❌ ${res.message || 'Gagal mengunduh audio YouTube.'}` });
+        }
       } else {
-        await react('❌');
-        await sock.sendMessage(jid, { text: `❌ ${res.message || 'Gagal mengunduh video YouTube.'}` });
+        const res = await mediaHandler.downloadYouTube(url);
+        if (res.success && (res.buffer || res.videoUrl)) {
+          await sock.sendMessage(jid, { 
+            video: res.buffer || { url: res.videoUrl }, 
+            caption: `🎬 *${res.title || 'YouTube Video'}*\n\n✅ *Berhasil diunduh via Akbar Store Bot*` 
+          });
+          await react('✅');
+        } else {
+          await react('❌');
+          await sock.sendMessage(jid, { text: `❌ ${res.message || 'Gagal mengunduh video YouTube.'}` });
+        }
       }
       return true;
     }
