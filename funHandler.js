@@ -1166,51 +1166,79 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     }
     const contextInfo = messageObj?.message?.extendedTextMessage?.contextInfo;
     const mentions = contextInfo?.mentionedJid || [];
-    let targetJid = mentions[0] || contextInfo?.participant;
+    let targetJid = null;
     let amount = NaN;
 
     if (mentions.length > 0) {
-      amount = parseInt(args[2], 10) || parseInt(args[1], 10);
+      targetJid = mentions[0];
+      for (let i = 1; i < args.length; i++) {
+        const val = parseInt(args[i], 10);
+        if (!isNaN(val) && val > 0 && !args[i].startsWith('@')) {
+          amount = val;
+          break;
+        }
+      }
     } else if (contextInfo?.participant) {
       targetJid = contextInfo.participant;
-      amount = parseInt(args[1], 10);
+      for (let i = 1; i < args.length; i++) {
+        const val = parseInt(args[i], 10);
+        if (!isNaN(val) && val > 0) {
+          amount = val;
+          break;
+        }
+      }
     } else {
-      const arg1 = args[1]?.toLowerCase();
+      const arg1 = args[1];
       const arg2 = args[2];
 
-      if (arg1 === 'me' || arg1 === 'self' || arg1 === 'saya') {
+      if (!arg1) {
+        // empty
+      } else if (arg1.toLowerCase() === 'me' || arg1.toLowerCase() === 'self' || arg1.toLowerCase() === 'saya') {
         targetJid = senderNumber;
         amount = parseInt(arg2, 10);
+      } else if (arg1 && !arg2) {
+        const parsed = parseInt(arg1, 10);
+        if (!isNaN(parsed) && parsed > 0) {
+          targetJid = senderNumber;
+          amount = parsed;
+        }
       } else if (arg1 && arg2) {
-        // Format: .addpoint nomor jumlah
-        const cleanNum1 = arg1.replace(/[^0-9]/g, '');
-        const cleanNum2 = (arg2 || '').replace(/[^0-9]/g, '');
-        if (cleanNum1.length > 5) {
-          targetJid = `${cleanNum1}@s.whatsapp.net`;
+        const num1 = arg1.replace(/[^0-9]/g, '');
+        const num2 = arg2.replace(/[^0-9]/g, '');
+        if (num1.length > 5 && !isNaN(parseInt(arg2, 10))) {
+          targetJid = `${num1}@s.whatsapp.net`;
           amount = parseInt(arg2, 10);
-        } else if (cleanNum2.length > 5) {
-          targetJid = `${cleanNum2}@s.whatsapp.net`;
+        } else if (num2.length > 5 && !isNaN(parseInt(arg1, 10))) {
+          targetJid = `${num2}@s.whatsapp.net`;
           amount = parseInt(arg1, 10);
         }
-      } else if (arg1 && !arg2) {
-        // Format: .addpoint jumlah (auto-target diri sendiri)
-        targetJid = senderNumber;
-        amount = parseInt(arg1, 10);
       }
     }
 
-    if (!targetJid || isNaN(amount)) {
+    if (!targetJid || isNaN(amount) || amount <= 0) {
       await send(sock, jid, messageObj, "⚠️ *Format Perintah Tambah Poin (Admin/Owner):*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n▫️ `.addpoint [jumlah]` (tambah ke diri sendiri)\n▫️ `.addpoint @member [jumlah]` (tag orang)\n▫️ `.addpoint [nomor] [jumlah]` (ketik nomor)\n▫️ Balas/Quote pesan member lalu ketik `.addpoint [jumlah]`\n\n*Contoh:* `.addpoint 500` atau `.addpoint @628123456789 500`");
       return true;
     }
 
+    let actualTargetJid = targetJid;
+    const digits = targetJid.replace(/[^0-9]/g, '');
+    if (digits.length > 5) {
+      const alt = await db.getQuery(
+        "SELECT customer_jid FROM game_profiles WHERE (customer_jid LIKE ? OR customer_jid LIKE ?) ORDER BY points DESC LIMIT 1",
+        [`%${digits}%`, `${digits}@%`]
+      );
+      if (alt && alt.customer_jid) {
+        actualTargetJid = alt.customer_jid;
+      }
+    }
+
     try {
-      const profile = await db.addGamePoints(targetJid, amount);
-      const targetPhone = targetJid.split('@')[0];
-      const targetCust = await db.getCustomerByPhone(targetJid);
+      const profile = await db.addGamePoints(actualTargetJid, amount);
+      const targetPhone = actualTargetJid.split('@')[0];
+      const targetCust = await db.getCustomerByPhone(actualTargetJid);
       const targetLabel = targetCust?.nama ? `*${targetCust.nama}* (@${targetPhone})` : `@${targetPhone}`;
-      await send(sock, jid, messageObj, `✅ Berhasil menambahkan *${amount} poin* ke ${targetLabel}.\n💰 Total Poin Sekarang: *${profile.points} poin*`, {
-        mentions: [targetJid]
+      await send(sock, jid, messageObj, `✅ Berhasil menambahkan *${amount.toLocaleString('id-ID')} poin* ke ${targetLabel}.\n💰 Total Poin Sekarang: *${profile.points.toLocaleString('id-ID')} poin*`, {
+        mentions: [actualTargetJid]
       });
     } catch (err) {
       await send(sock, jid, messageObj, `❌ Gagal menambahkan poin: ${err.message}`);
@@ -1219,36 +1247,46 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
   }
 
   // ─── OWNER ONLY: KURANGI POIN MEMBER LAIN (.kurangpoin / .delpoint) ───
-  if (['kurangpoin', 'kurangipoin', 'delpoint', 'delpoints', 'deductpoint', 'potongpoin'].includes(command)) {
+  if (['kurangpoin', 'kurangipoin', 'delpoint', 'delpoints', 'deductpoint', 'potongpoin', 'minuspoin'].includes(command)) {
     if (!isOwner) {
       await send(sock, jid, messageObj, "❌ Fitur pengurangan poin ini khusus untuk Pemilik (Owner) bot.");
       return true;
     }
     const contextInfo = messageObj?.message?.extendedTextMessage?.contextInfo;
     const mentions = contextInfo?.mentionedJid || [];
-    let targetJid = mentions[0] || contextInfo?.participant;
+    let targetJid = null;
     let amount = NaN;
 
     if (mentions.length > 0) {
-      amount = parseInt(args[2], 10) || parseInt(args[1], 10);
+      targetJid = mentions[0];
+      for (let i = 1; i < args.length; i++) {
+        const val = parseInt(args[i], 10);
+        if (!isNaN(val) && val > 0 && !args[i].startsWith('@')) {
+          amount = val;
+          break;
+        }
+      }
     } else if (contextInfo?.participant) {
       targetJid = contextInfo.participant;
-      amount = parseInt(args[1], 10);
+      for (let i = 1; i < args.length; i++) {
+        const val = parseInt(args[i], 10);
+        if (!isNaN(val) && val > 0) {
+          amount = val;
+          break;
+        }
+      }
     } else {
-      const arg1 = args[1]?.toLowerCase();
+      const arg1 = args[1];
       const arg2 = args[2];
 
-      if (arg1 === 'me' || arg1 === 'self' || arg1 === 'saya') {
-        targetJid = senderNumber;
-        amount = parseInt(arg2, 10);
-      } else if (arg1 && arg2) {
-        const cleanNum1 = arg1.replace(/[^0-9]/g, '');
-        const cleanNum2 = (arg2 || '').replace(/[^0-9]/g, '');
-        if (cleanNum1.length > 5) {
-          targetJid = `${cleanNum1}@s.whatsapp.net`;
+      if (arg1 && arg2) {
+        const num1 = arg1.replace(/[^0-9]/g, '');
+        const num2 = arg2.replace(/[^0-9]/g, '');
+        if (num1.length > 5 && !isNaN(parseInt(arg2, 10))) {
+          targetJid = `${num1}@s.whatsapp.net`;
           amount = parseInt(arg2, 10);
-        } else if (cleanNum2.length > 5) {
-          targetJid = `${cleanNum2}@s.whatsapp.net`;
+        } else if (num2.length > 5 && !isNaN(parseInt(arg1, 10))) {
+          targetJid = `${num2}@s.whatsapp.net`;
           amount = parseInt(arg1, 10);
         }
       }
@@ -1259,20 +1297,32 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
       return true;
     }
 
+    let actualTargetJid = targetJid;
+    const digits = targetJid.replace(/[^0-9]/g, '');
+    if (digits.length > 5) {
+      const alt = await db.getQuery(
+        "SELECT customer_jid FROM game_profiles WHERE (customer_jid LIKE ? OR customer_jid LIKE ?) ORDER BY points DESC LIMIT 1",
+        [`%${digits}%`, `${digits}@%`]
+      );
+      if (alt && alt.customer_jid) {
+        actualTargetJid = alt.customer_jid;
+      }
+    }
+
     try {
-      const currentProfile = await db.getGameProfile(targetJid);
+      const currentProfile = await db.getGameProfile(actualTargetJid);
       const safeCurrent = Math.max(0, currentProfile?.points || 0);
       const deductAmt = Math.min(safeCurrent, amount);
-      await db.deductGamePoints(targetJid, deductAmt);
+      await db.deductGamePoints(actualTargetJid, deductAmt);
       
-      const newProfile = await db.getGameProfile(targetJid);
-      const targetPhone = targetJid.split('@')[0];
-      const targetCust = await db.getCustomerByPhone(targetJid);
+      const newProfile = await db.getGameProfile(actualTargetJid);
+      const targetPhone = actualTargetJid.split('@')[0];
+      const targetCust = await db.getCustomerByPhone(actualTargetJid);
       const targetLabel = targetCust?.nama ? `*${targetCust.nama}* (@${targetPhone})` : `@${targetPhone}`;
-      await send(sock, jid, messageObj, `✅ *Berhasil Mengurangi Poin!*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n👤 Target: ${targetLabel}\n🔻 Poin Dikurangi: *${amount} poin*\n💰 Sisa Poin Sekarang: *${newProfile.points || 0} poin*`, {
-        mentions: [targetJid]
+      await send(sock, jid, messageObj, `✅ *Berhasil Mengurangi Poin!*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n👤 Target: ${targetLabel}\n🔻 Poin Dikurangi: *${deductAmt.toLocaleString('id-ID')} poin*\n💰 Sisa Poin Sekarang: *${newProfile.points.toLocaleString('id-ID')} poin*`, {
+        mentions: [actualTargetJid]
       });
-      await db.addLog('ADMIN', `Owner mengurangi ${amount} poin dari ${targetLabel}. Sisa: ${newProfile.points || 0}`);
+      await db.addLog('ADMIN', `Owner mengurangi ${deductAmt} poin dari ${targetLabel}. Sisa: ${newProfile.points || 0}`);
     } catch (err) {
       await send(sock, jid, messageObj, `❌ Gagal mengurangi poin: ${err.message}`);
     }
