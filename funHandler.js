@@ -460,6 +460,8 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     'truth', 'dare', 'tod', 'dadu', 'dice', 'coinflip', 'koin', 'coin',
     'sambungkata', 'wordchain', 'daily', 'harian', 'reward',
     'addpoint', 'addpoints', 'tambahpoin',
+    'kurangpoin', 'kurangipoin', 'delpoint', 'delpoints', 'deductpoint', 'potongpoin',
+    'transfer', 'kirimpoin', 'transferpoin',
     'poin', 'point', 'profile', 'level', 'me',
     'rank', 'leaderboard', 'top', 'misi', 'mission', 'challenge',
     'giveaway', 'setpoints', 'bagipoin', 'kompensasi',
@@ -890,6 +892,122 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
       });
     } catch (err) {
       await send(sock, jid, messageObj, `❌ Gagal menambahkan poin: ${err.message}`);
+    }
+    return true;
+  }
+
+  // ─── OWNER ONLY: KURANGI POIN MEMBER LAIN (.kurangpoin / .delpoint) ───
+  if (['kurangpoin', 'kurangipoin', 'delpoint', 'delpoints', 'deductpoint', 'potongpoin'].includes(command)) {
+    if (!isOwner) {
+      await send(sock, jid, messageObj, "❌ Fitur pengurangan poin ini khusus untuk Pemilik (Owner) bot.");
+      return true;
+    }
+    const contextInfo = messageObj?.message?.extendedTextMessage?.contextInfo;
+    const mentions = contextInfo?.mentionedJid || [];
+    let targetJid = mentions[0] || contextInfo?.participant;
+    let amount = NaN;
+
+    if (mentions.length > 0) {
+      amount = parseInt(args[2], 10) || parseInt(args[1], 10);
+    } else if (contextInfo?.participant) {
+      targetJid = contextInfo.participant;
+      amount = parseInt(args[1], 10);
+    } else {
+      const arg1 = args[1]?.toLowerCase();
+      const arg2 = args[2];
+
+      if (arg1 === 'me' || arg1 === 'self' || arg1 === 'saya') {
+        targetJid = senderNumber;
+        amount = parseInt(arg2, 10);
+      } else if (arg1 && arg2) {
+        const cleanNum1 = arg1.replace(/[^0-9]/g, '');
+        const cleanNum2 = (arg2 || '').replace(/[^0-9]/g, '');
+        if (cleanNum1.length > 5) {
+          targetJid = `${cleanNum1}@s.whatsapp.net`;
+          amount = parseInt(arg2, 10);
+        } else if (cleanNum2.length > 5) {
+          targetJid = `${cleanNum2}@s.whatsapp.net`;
+          amount = parseInt(arg1, 10);
+        }
+      }
+    }
+
+    if (!targetJid || isNaN(amount) || amount <= 0) {
+      await send(sock, jid, messageObj, "⚠️ *Format Perintah Kurangi Poin (Khusus Owner):*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n▫️ `.kurangpoin @member [jumlah]` (tag orang)\n▫️ `.kurangpoin [nomor] [jumlah]` (ketik nomor)\n▫️ Balas/Quote pesan member lalu ketik `.kurangpoin [jumlah]`\n\n*Contoh:* `.kurangpoin @628123456789 500`");
+      return true;
+    }
+
+    try {
+      const currentProfile = await db.getGameProfile(targetJid);
+      const safeCurrent = Math.max(0, currentProfile?.points || 0);
+      const deductAmt = Math.min(safeCurrent, amount);
+      await db.deductGamePoints(targetJid, deductAmt);
+      
+      const newProfile = await db.getGameProfile(targetJid);
+      const targetPhone = targetJid.split('@')[0];
+      await send(sock, jid, messageObj, `✅ *Berhasil Mengurangi Poin!*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n👤 Target: @${targetPhone}\n🔻 Poin Dikurangi: *${amount} poin*\n💰 Sisa Poin Sekarang: *${newProfile.points || 0} poin*`, {
+        mentions: [targetJid]
+      });
+      await db.addLog('ADMIN', `Owner mengurangi ${amount} poin dari @${targetPhone}. Sisa: ${newProfile.points || 0}`);
+    } catch (err) {
+      await send(sock, jid, messageObj, `❌ Gagal mengurangi poin: ${err.message}`);
+    }
+    return true;
+  }
+
+  // ─── TRANSFER POIN ANTAR MEMBER (.transfer) ───
+  if (['transfer', 'kirimpoin', 'transferpoin'].includes(command)) {
+    const contextInfo = messageObj?.message?.extendedTextMessage?.contextInfo;
+    const mentions = contextInfo?.mentionedJid || [];
+    let targetJid = mentions[0] || contextInfo?.participant;
+    let amount = NaN;
+
+    if (mentions.length > 0) {
+      amount = parseInt(args[2], 10) || parseInt(args[1], 10);
+    } else if (contextInfo?.participant) {
+      targetJid = contextInfo.participant;
+      amount = parseInt(args[1], 10);
+    } else {
+      const arg1 = args[1]?.toLowerCase();
+      const arg2 = args[2];
+
+      if (arg1 && arg2) {
+        const cleanNum1 = arg1.replace(/[^0-9]/g, '');
+        const cleanNum2 = (arg2 || '').replace(/[^0-9]/g, '');
+        if (cleanNum1.length > 5) {
+          targetJid = `${cleanNum1}@s.whatsapp.net`;
+          amount = parseInt(arg2, 10);
+        } else if (cleanNum2.length > 5) {
+          targetJid = `${cleanNum2}@s.whatsapp.net`;
+          amount = parseInt(arg1, 10);
+        }
+      }
+    }
+
+    if (!targetJid || isNaN(amount) || amount <= 0) {
+      await send(sock, jid, messageObj, "💸 *TRANSFER POIN GAME*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n📌 *Format Perintah:*\n▫️ `.transfer @member [jumlah]` (tag orang)\n▫️ `.transfer [nomor] [jumlah]` (ketik nomor)\n▫️ Balas/Quote pesan member lalu ketik `.transfer [jumlah]`\n\n*Contoh:* `.transfer @628123456789 100`\n\n_Catatan: Dikenakan pajak transfer 1%._");
+      return true;
+    }
+
+    if (targetJid === senderNumber) {
+      await send(sock, jid, messageObj, "❌ Tidak bisa mentransfer poin ke diri sendiri.");
+      return true;
+    }
+
+    const res = await db.transferPoints(senderNumber, targetJid, amount);
+    if (res.success) {
+      const targetPhone = targetJid.split('@')[0];
+      const senderPhone = senderNumber.split('@')[0];
+      await send(sock, jid, messageObj, `✅ *Transfer Poin Berhasil!*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📤 Pengirim: @${senderPhone}\n📥 Penerima: @${targetPhone}\n💰 Jumlah: *${amount} Poin*\n💸 Pajak (1%): *${amount - res.received} Poin*\n🎁 Diterima: *${res.received} Poin*`, {
+        mentions: [senderNumber, targetJid]
+      });
+    } else {
+      if (res.reason === 'INSUFFICIENT_FUNDS') {
+        const senderProfile = await db.getGameProfile(senderNumber);
+        await send(sock, jid, messageObj, `❌ Saldo poin kamu tidak mencukupi!\nPoin kamu saat ini: *${senderProfile.points || 0} Poin*.\n\nKetik \`.daily\` atau mainkan game untuk mendapatkan poin.`);
+      } else {
+        await send(sock, jid, messageObj, "❌ Gagal memproses transfer poin. Pastikan nominal valid.");
+      }
     }
     return true;
   }

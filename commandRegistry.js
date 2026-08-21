@@ -109,6 +109,7 @@ const categories = {
     commands: [
       ['.daily', 'Klaim hadiah harian'],
       ['.poin / .profile', 'Lihat XP, level, dan poin'],
+      ['.transfer @user <jumlah>', 'Transfer poin ke member lain (Pajak 1%)'],
       ['.tukar [nomor]', 'Tukar poin dengan kupon belanja/premium'],
       ['.rank / .leaderboard', 'Lihat peringkat pemain'],
       ['.badge', 'Lihat pencapaian game'],
@@ -144,6 +145,8 @@ const categories = {
       ['.profil', 'Lihat role, status, tier, level, dan poin'],
       ['.setmemberrole @user MEMBER|ADMIN', 'Ubah role member (Owner)'],
       ['.setmemberstatus @user ACTIVE|BANNED', 'Ubah status member (Admin)'],
+      ['.addpoint @user <jumlah>', 'Tambah poin game member (Admin/Owner)'],
+      ['.kurangpoin @user <jumlah>', 'Kurangi poin game member (Khusus Owner)'],
       ['.backup', 'Buat backup database']
     ]
   }
