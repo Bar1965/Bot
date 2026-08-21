@@ -741,21 +741,14 @@ export async function processOutgoingQueue() {
     const isAudio = Boolean(item.content && (item.content.audio || item.content.ptt));
     const isHumanDelayActive = (botSettings.humanDelayEnabled || config.defaults.humanDelayEnabled || 'true') !== 'false';
 
-    // 🛡️ ANTI-BAN & HUMAN-LIKE TYPING SIMULATION
+    // 🛡️ ANTI-BAN & LIGHT TYPING SIMULATION (Ringan & Cepat: 100ms - 250ms)
     if (!isReaction && isHumanDelayActive && botState.whatsappConnected && sock) {
-      try {
-        const presenceType = isAudio ? 'recording' : 'composing';
-        await sock.sendPresenceUpdate(presenceType, item.jid);
+      const presenceType = isAudio ? 'recording' : 'composing';
+      sock.sendPresenceUpdate(presenceType, item.jid).catch(() => {});
 
-        // Menghitung delay pengetikan yang natural (antara 400ms - 1200ms) berdasarkan panjang pesan
-        const textLen = typeof item.content?.text === 'string' 
-          ? item.content.text.length 
-          : (typeof item.content?.caption === 'string' ? item.content.caption.length : 25);
-        const naturalDelay = Math.min(1200, Math.max(400, Math.floor(textLen * 8) + Math.floor(Math.random() * 200)));
-        await new Promise(r => setTimeout(r, naturalDelay));
-      } catch (pErr) {
-        // Non-fatal jika presence update gagal
-      }
+      // Jeda ringan & responsif (100ms - 250ms) agar cepat namun tetap natural
+      const lightDelay = 100 + Math.floor(Math.random() * 150);
+      await new Promise(r => setTimeout(r, lightDelay));
     }
 
     try {
@@ -763,7 +756,7 @@ export async function processOutgoingQueue() {
       const result = await sendFn(item.jid, item.content, item.options);
       console.log(`${logPrefix} SUCCESS (MessageID: ${result?.key?.id || 'N/A'})`);
       
-      // Hentikan status mengetik
+      // Hentikan status mengetik di background
       if (!isReaction && isHumanDelayActive && botState.whatsappConnected && sock) {
         sock.sendPresenceUpdate('paused', item.jid).catch(() => {});
       }
@@ -772,9 +765,9 @@ export async function processOutgoingQueue() {
       botState.pendingQueueCount = outgoingMessageQueue.length;
       item.resolve(result);
 
-      // 🛡️ Inter-message buffer delay (300ms - 500ms) untuk antrean pesan beruntun agar tidak memicu deteksi spam WA
+      // Jeda mini antar-pesan beruntun (50ms - 100ms)
       if (outgoingMessageQueue.length > 0) {
-        const interMessageDelay = 300 + Math.floor(Math.random() * 200);
+        const interMessageDelay = 50 + Math.floor(Math.random() * 50);
         await new Promise(r => setTimeout(r, interMessageDelay));
       }
     } catch (err) {
@@ -1825,7 +1818,7 @@ _${khodamRes.desc}_`;
       if (!amount || isNaN(amount) || amount <= 0) {
         return await sock.sendMessage(jid, { text: "⚠️ Format salah!\nKetik: .bank <jumlah>\n\nUang di bank aman dari perampokan." });
       }
-      const res = await db.bankDeposit(senderNormalized, amount);
+      const res = await db.bankDeposit(senderNumber, amount);
       if (res.success) {
         return await sock.sendMessage(jid, { text: `✅ Berhasil menabung ${amount} poin ke Bank.\nUang kamu sekarang aman dari rampok.` });
       } else {
@@ -1838,7 +1831,7 @@ _${khodamRes.desc}_`;
       if (!amount || isNaN(amount) || amount <= 0) {
         return await sock.sendMessage(jid, { text: "⚠️ Format salah!\nKetik: .tarik <jumlah>\n\nPajak penarikan: 2%" });
       }
-      const res = await db.bankWithdraw(senderNormalized, amount);
+      const res = await db.bankWithdraw(senderNumber, amount);
       if (res.success) {
         return await sock.sendMessage(jid, { text: `✅ Berhasil menarik ${amount} poin dari Bank.\nPajak 2% dipotong, kamu menerima ${res.received} poin di tangan.` });
       } else {
@@ -1853,9 +1846,9 @@ _${khodamRes.desc}_`;
         return await sock.sendMessage(jid, { text: "⚠️ Format salah!\nKetik: .transfer <@tag_user> <jumlah>" });
       }
       const targetJid = targetStr.replace(/[^0-9]/g, '') + '@s.whatsapp.net';
-      if (targetJid === senderNormalized) return await sock.sendMessage(jid, { text: "❌ Tidak bisa transfer ke diri sendiri." });
+      if (targetJid === senderNumber) return await sock.sendMessage(jid, { text: "❌ Tidak bisa transfer ke diri sendiri." });
 
-      const res = await db.transferPoints(senderNormalized, targetJid, amount);
+      const res = await db.transferPoints(senderNumber, targetJid, amount);
       if (res.success) {
         return await sock.sendMessage(jid, { text: `✅ Berhasil mentransfer ${amount} poin ke @${targetJid.split('@')[0]}.\nPajak 1% dipotong, target menerima ${res.received} poin.`, mentions: [targetJid] });
       } else {
@@ -1870,10 +1863,10 @@ _${khodamRes.desc}_`;
       if (!targetStr) return await sock.sendMessage(jid, { text: "⚠️ Format salah!\nKetik: .rampok <@tag_user>" });
       
       const targetJid = targetStr.replace(/[^0-9]/g, '') + '@s.whatsapp.net';
-      if (targetJid === senderNormalized) return await sock.sendMessage(jid, { text: "❌ Ngapain ngerampok diri sendiri?" });
+      if (targetJid === senderNumber) return await sock.sendMessage(jid, { text: "❌ Ngapain ngerampok diri sendiri?" });
       if (targetJid.includes('bot')) return await sock.sendMessage(jid, { text: "❌ Kamu tidak bisa merampok bot!" });
 
-      const robberProf = await db.getGameProfile(senderNormalized);
+      const robberProf = await db.getGameProfile(senderNumber);
       const targetProf = await db.getGameProfile(targetJid);
 
       // Cooldown 1 jam
@@ -1906,7 +1899,7 @@ _${khodamRes.desc}_`;
         return await sock.sendMessage(jid, { text: `❌ Modal kamu kurang! Butuh minimal 50 poin di tangan sebagai jaminan kalau tertangkap.` });
       }
 
-      await db.updateLastRobTime(senderNormalized);
+      await db.updateLastRobTime(senderNumber);
 
       // 40% success rate
       const isSuccess = Math.random() < 0.40;
@@ -1914,13 +1907,13 @@ _${khodamRes.desc}_`;
       if (isSuccess) {
         const stolen = Math.floor(targetProf.points * (Math.random() * 0.10 + 0.05)); // 5-15% of target's points
         await db.deductCustomerPoints(targetJid, stolen, 'Dirampok');
-        await db.awardGamePoints(senderNormalized, stolen);
+        await db.awardGamePoints(senderNumber, stolen);
         await db.updateLastRobbedAt(targetJid);
         
         return await sock.sendMessage(jid, { text: `💰 *PERAMPOKAN BERHASIL!* 💰\n\nKamu menyelinap masuk dan mencuri *${stolen} poin* dari @${targetJid.split('@')[0]}!`, mentions: [targetJid] });
       } else {
         const fine = Math.floor(robberProf.points * (Math.random() * 0.10 + 0.10)); // 10-20% fine
-        await db.deductCustomerPoints(senderNormalized, fine, 'Denda Rampok');
+        await db.deductCustomerPoints(senderNumber, fine, 'Denda Rampok');
         await db.awardGamePoints(targetJid, Math.floor(fine * 0.5)); // 50% denda masuk ke target sebagai kompensasi
         
         return await sock.sendMessage(jid, { text: `🚨 *TERTANGKAP POLISI!* 🚨\n\nUsahamu merampok @${targetJid.split('@')[0]} gagal dan kamu tertangkap!\nKamu didenda *${fine} poin* (sebagian diberikan ke target).`, mentions: [targetJid] });
@@ -1931,7 +1924,7 @@ _${khodamRes.desc}_`;
       const bet = parseInt(args[1]);
       if (!bet || isNaN(bet) || bet < 10) return await sock.sendMessage(jid, { text: "⚠️ Ketik: .slot <taruhan>\nMinimal taruhan 10 poin." });
       
-      const prof = await db.getGameProfile(senderNormalized);
+      const prof = await db.getGameProfile(senderNumber);
       if (prof.points < bet) return await sock.sendMessage(jid, { text: "❌ Poin di tangan tidak mencukupi untuk taruhan ini." });
 
       const emojis = ['🍒', '🍎', '🍇', '🍉', '⭐', '💎'];
@@ -1944,9 +1937,9 @@ _${khodamRes.desc}_`;
       else if (s1 === s2 || s2 === s3 || s1 === s3) winAmount = Math.floor(bet * 1.5);
       
       if (winAmount > 0) {
-        await db.awardGamePoints(senderNormalized, winAmount - bet);
+        await db.awardGamePoints(senderNumber, winAmount - bet);
       } else {
-        await db.deductCustomerPoints(senderNormalized, bet, 'Slot Kalah');
+        await db.deductCustomerPoints(senderNumber, bet, 'Slot Kalah');
       }
 
       const resultText = `🎰 *SLOT MACHINE* 🎰\n\n[ ${s1} | ${s2} | ${s3} ]\n\n${winAmount > 0 ? `🎉 MENANG! +${winAmount} Poin!` : `💥 KALAH! -${bet} Poin`}`;
@@ -1960,7 +1953,7 @@ _${khodamRes.desc}_`;
         return await sock.sendMessage(jid, { text: "⚠️ Ketik: .roulette <taruhan> <merah/hitam/hijau>\nContoh: .roulette 50 merah\n\nHitam/Merah: 2x Lipat\nHijau: 10x Lipat" });
       }
 
-      const prof = await db.getGameProfile(senderNormalized);
+      const prof = await db.getGameProfile(senderNumber);
       if (prof.points < bet) return await sock.sendMessage(jid, { text: "❌ Poin di tangan tidak mencukupi untuk taruhan ini." });
 
       // Roll 0-36 (0 is Green, 1-18 is Red, 19-36 is Black)
@@ -1975,9 +1968,9 @@ _${khodamRes.desc}_`;
       if (color === resultColor) {
         isWin = true;
         winAmount = color === 'hijau' ? bet * 10 : bet * 2;
-        await db.awardGamePoints(senderNormalized, winAmount - bet);
+        await db.awardGamePoints(senderNumber, winAmount - bet);
       } else {
-        await db.deductCustomerPoints(senderNormalized, bet, 'Roulette Kalah');
+        await db.deductCustomerPoints(senderNumber, bet, 'Roulette Kalah');
       }
 
       return await sock.sendMessage(jid, { text: `🎲 *ROULETTE* 🎲\n\nBola berputar dan berhenti di angka *${roll}* (*${resultColor.toUpperCase()}*)!\n\n${isWin ? `🎉 MENANG! Kamu dapat +${winAmount} poin!` : `💥 KALAH! Kamu kehilangan -${bet} poin.`}` });
@@ -1997,12 +1990,12 @@ _${khodamRes.desc}_`;
       } else if (argTarget === 'bot') {
         targetJid = sock.user?.id ? (sock.user.id.split(':')[0] + '@s.whatsapp.net') : null;
       } else if (argTarget === 'me' || argTarget === 'saya') {
-        targetJid = senderNormalized;
+        targetJid = senderNumber;
       }
 
       // Jika di DM dan tidak ada argumen, targetnya adalah diri sendiri atau pengirim
       if (!targetJid && !isGroup) {
-        targetJid = senderNormalized;
+        targetJid = senderNumber;
       }
 
       if (!targetJid) {
@@ -2621,9 +2614,13 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
                 if (pMatch.admin === 'admin' || pMatch.admin === 'superadmin') {
                   isGroupAdmin = true;
                 }
+                // Baileys 6.7.x: di grup ber-LID, pMatch.id BERISI @lid dan nomor HP-nya ada di
+                // pMatch.jid. Membaca .id saja membuat pencocokan owner/admin tidak pernah berhasil.
                 const pPhone = extractDigits(pMatch.id);
+                const pPhoneReal = extractDigits(pMatch.jid || '');
+                const pPhones = [pPhone, pPhoneReal].filter(d => d && d.length > 6);
                 // Resolusi Owner jika pengirim memakai LID di grup
-                if (ownerPhoneDigits && pPhone && (pPhone === ownerPhoneDigits || pPhone.endsWith(ownerPhoneDigits) || ownerPhoneDigits.endsWith(pPhone))) {
+                if (ownerPhoneDigits && pPhones.some(d => d === ownerPhoneDigits || d.endsWith(ownerPhoneDigits) || ownerPhoneDigits.endsWith(d))) {
                   isOwnerSender = true;
                   if (pMatch.lid && (!botSettings.ownerJid || botSettings.ownerJid !== jidNormalizedUser(pMatch.lid))) {
                     botSettings.ownerJid = jidNormalizedUser(pMatch.lid);
@@ -2631,7 +2628,7 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
                   }
                 }
                 // Resolusi Admin Toko jika pengirim memakai LID di grup
-                if (pPhone && adminEntries.some(adm => pPhone === adm || pPhone.endsWith(adm) || adm.endsWith(pPhone))) {
+                if (pPhones.some(d => adminEntries.some(adm => d === adm || d.endsWith(adm) || adm.endsWith(d)))) {
                   isStoreAdmin = true;
                 }
               }
@@ -3038,9 +3035,13 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
             if (!isPrem) {
               const isFun = await handleFunCommand({ sock, jid, senderNumber: senderNormalized, messageObj: m, text: msgText, args: routerArgs, cleanCmd: routerCleanCmd, isFromGroup: false, isAdmin, isOwner: isOwnerSender });
               if (!isFun) {
-                const isMedia = await handleMediaCommands(jid, senderNormalized, m, msgText, isAdmin, isOwnerSender);
+                // Pesan fromMe di DM tidak punya m.key.participant, jadi senderNormalized menunjuk ke LAWAN
+                // BICARA. Khusus handler ini — satu-satunya yang memakai pengirim sebagai pemilik dompet —
+                // pakai identitas bot sendiri, supaya .bank/.tarik/.transfer tidak memotong dompet pelanggan.
+                const walletJid = (isFromMe && !isGroup && sock.user?.id) ? jidNormalizedUser(sock.user.id) : senderNormalized;
+                const isMedia = await handleMediaCommands(jid, walletJid, m, msgText, isAdmin, isOwnerSender);
                 if (isMedia) continue;
-                const isHandledAdmin = await handleGroupMessage(jid, senderNormalized, m, msgText, isAdmin, isPrefixCmd, { isAdmin, isOwner: isOwnerSender });
+                const isHandledAdmin = await handleGroupMessage(jid, senderNormalized, m, msgText, isAdmin, isPrefixCmd, { isAdmin, isOwner: isOwnerSender, isStoreAdmin });
                 if (!isHandledAdmin) {
                   if (isTakenOver) {
                     console.log(`[BOT] Percakapan dengan ${senderNormalized} sedang diambil alih admin. Auto-reply dinonaktifkan.`);
@@ -3073,9 +3074,13 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
             if (!isPrem) {
               const isFun = await handleFunCommand({ sock, jid, senderNumber: senderNormalized, messageObj: m, text: msgText, args: routerArgs, cleanCmd: routerCleanCmd, isFromGroup: true, isAdmin, isOwner: isOwnerSender });
               if (!isFun) {
-                const isMedia = await handleMediaCommands(jid, senderNormalized, m, msgText, isAdmin, isOwnerSender);
+                // Pesan fromMe di DM tidak punya m.key.participant, jadi senderNormalized menunjuk ke LAWAN
+                // BICARA. Khusus handler ini — satu-satunya yang memakai pengirim sebagai pemilik dompet —
+                // pakai identitas bot sendiri, supaya .bank/.tarik/.transfer tidak memotong dompet pelanggan.
+                const walletJid = (isFromMe && !isGroup && sock.user?.id) ? jidNormalizedUser(sock.user.id) : senderNormalized;
+                const isMedia = await handleMediaCommands(jid, walletJid, m, msgText, isAdmin, isOwnerSender);
                 if (isMedia) continue;
-                const isHandledAdmin = await handleGroupMessage(jid, senderNormalized, m, msgText, isAdmin, isPrefixCmd, { isAdmin, isOwner: isOwnerSender });
+                const isHandledAdmin = await handleGroupMessage(jid, senderNormalized, m, msgText, isAdmin, isPrefixCmd, { isAdmin, isOwner: isOwnerSender, isStoreAdmin });
                 if (!isHandledAdmin) {
                   // Perintah pelanggan (list, menu, buy, checkout, status, dll) di grup
                   await handleCustomerMessage(jid, senderNormalized, m, msgText, true, { isAdmin, isOwner: isOwnerSender });
