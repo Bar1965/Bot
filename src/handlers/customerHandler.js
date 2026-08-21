@@ -6,6 +6,8 @@ import { buildCommandMenu } from '../../commandRegistry.js';
 import * as mediaHandler from '../../mediaHandler.js';
 import * as ent from '../../entertainmentHandler.js';
 import { sendInteractiveButtons } from '../../bot.js';
+import fs from 'fs';
+import path from 'path';
 
 // In-Memory Nav Session untuk Quick Dial Angka & Alur Belanja Cepat (TTL 10 Menit)
 const userNavSessions = new Map();
@@ -657,13 +659,16 @@ Ketik *bayar* atau klik tombol *Bayar QRIS Langsung* di bawah untuk langsung mem
 ▫️ \`.tts <teks>\` — Ubah teks ke Voice Note
 
 🎮 *HIBURAN & GAME*
-▫️ \`.khodam <nama>\` — Cek khodam lucu
-▫️ \`.susunkata\` — Game anagram kata
+▫️ \`.tebakbendera\` — Game tebak bendera negara
+▫️ \`.tebaklagu\` — Game kuis tebak audio lagu
+▫️ \`.tebakgambar\` — Game tebak gambar visual
 ▫️ \`.tebakangka\` — Game tebak angka 1-100
-▫️ \`.tebakgambar\` — Game tebak gambar
+▫️ \`.susunkata\` — Game anagram susun kata
+▫️ \`.ww\` — Main Werewolf multiplayer
+▫️ \`.khodam <nama>\` — Cek khodam lucu
 
 ━━━━━━━━━━━━━━━━━━━
-💡 _Contoh penggunaan: .brat kamu nanya? atau .tebakangka_`;
+💡 _Contoh penggunaan: .brat kamu nanya? atau .tebakbendera_`;
       await sendInteractiveButtons(sock, responseJid, {
         text: msg,
         title: '📥 MEDIA & GAME',
@@ -864,10 +869,13 @@ Ketik *bayar* atau klik tombol *Bayar QRIS Langsung* di bawah untuk langsung mem
 ▫️ \`.tts <teks>\` — Ubah teks ke Voice Note
 
 🎮 *HIBURAN & GAME*
-▫️ \`.khodam <nama>\` — Cek khodam lucu
-▫️ \`.susunkata\` — Game anagram kata
+▫️ \`.tebakbendera\` — Game tebak bendera negara
+▫️ \`.tebaklagu\` — Game kuis tebak audio lagu
+▫️ \`.tebakgambar\` — Game tebak gambar visual
 ▫️ \`.tebakangka\` — Game tebak angka 1-100
-▫️ \`.tebakgambar\` — Game tebak gambar
+▫️ \`.susunkata\` — Game anagram susun kata
+▫️ \`.ww\` — Main Werewolf multiplayer
+▫️ \`.khodam <nama>\` — Cek khodam lucu
 
 💸 *EKONOMI & PERBANKAN*
 ▫️ \`.bank <jumlah>\` — Simpan poin ke bank agar aman

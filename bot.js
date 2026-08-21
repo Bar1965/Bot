@@ -2716,7 +2716,7 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
           'setname', 'setowner', 'setownerid', 'addmod', 'delmod', 'listmod',
           'ban', 'unban', 'kick', 'add', 'promote', 'demote', 'tagall', 'hidetag',
           'everyone', 'admins', 'mode', 'setmode', 'botmode', 'antilink',
-          'welcome', 'setwelcome', 'link', 'getjid', 'backup', 'eval', 'join', 'levelup', 'autolevelup', 'globallevelup', 'setlevelup', 'autodl', 'autodownload', 'listfitur', 'fiturgrup', 'groupfeatures', 'tebaklagu', 'balasmenfess', 'menfessreply', 'stopmenfess', 'closemenfess'
+          'welcome', 'setwelcome', 'link', 'getjid', 'backup', 'eval', 'join', 'levelup', 'autolevelup', 'globallevelup', 'setlevelup', 'autodl', 'autodownload', 'listfitur', 'fiturgrup', 'groupfeatures', 'tebaklagu', 'tebakbendera', 'tebaknegara', 'bendera', 'negara', 'flag', 'balasmenfess', 'menfessreply', 'stopmenfess', 'closemenfess'
         ];
 
 

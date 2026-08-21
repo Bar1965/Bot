@@ -37,6 +37,47 @@ const wordQuestions = [
   { question: 'Hewan yang menghasilkan susu', answer: 'SAPI', hint: 'Sering tinggal di peternakan.' },
   { question: 'Alat untuk memotret', answer: 'KAMERA', hint: 'Bisa berupa ponsel atau DSLR.' }
 ];
+
+const flagQuestions = [
+  { flag: '🇮🇩', country: 'INDONESIA', alias: ['INDONESIA'], hint: 'I _ _ _ _ _ S _ A', clue: 'Negara kepulauan terbesar di dunia, beribukota Jakarta/IKN, bersemboyan Bhinneka Tunggal Ika.' },
+  { flag: '🇯🇵', country: 'JEPANG', alias: ['JEPANG', 'JAPAN'], hint: 'J _ _ _ N G', clue: 'Negara di Asia Timur beribukota Tokyo, terkenal dengan julukan Negeri Sakura dan Gunung Fuji.' },
+  { flag: '🇰🇷', country: 'KOREA SELATAN', alias: ['KOREA SELATAN', 'SOUTH KOREA', 'KORSEL'], hint: 'K _ _ E A   S _ _ _ T _ N', clue: 'Negara asal K-Pop, drama Korea, dan kuliner Kimchi, beribukota di Seoul.' },
+  { flag: '🇩🇪', country: 'JERMAN', alias: ['JERMAN', 'GERMANY'], hint: 'J _ _ M _ N', clue: 'Negara di Eropa Barat beribukota Berlin, terkenal dengan industri otomotif dan festival Oktoberfest.' },
+  { flag: '🇫🇷', country: 'PRANCIS', alias: ['PRANCIS', 'PERANCIS', 'FRANCE'], hint: 'P _ _ N C _ S', clue: 'Negara di Eropa Barat dengan ikon Menara Eiffel dan Museum Louvre di Paris.' },
+  { flag: '🇧🇷', country: 'BRASIL', alias: ['BRASIL', 'BRAZIL'], hint: 'B _ _ S _ L', clue: 'Negara terbesar di Amerika Selatan, terkenal dengan tarian Samba dan hutan hujan Amazon.' },
+  { flag: '🇦🇷', country: 'ARGENTINA', alias: ['ARGENTINA'], hint: 'A _ G _ N _ _ N A', clue: 'Negara di Amerika Selatan beribukota Buenos Aires, tanah kelahiran Lionel Messi & Diego Maradona.' },
+  { flag: '🇸🇦', country: 'ARAB SAUDI', alias: ['ARAB SAUDI', 'SAUDI ARABIA', 'SAUDI'], hint: 'A _ _ B   S _ _ D I', clue: 'Negara di Timur Tengah tempat berdirinya dua kota suci Makkah dan Madinah.' },
+  { flag: '🇬🇧', country: 'INGGRIS', alias: ['INGGRIS', 'UNITED KINGDOM', 'BRITANIA RAYA', 'UK'], hint: 'I _ G _ R _ S', clue: 'Negara di Eropa beribukota London dengan ikon jam raksasa Big Ben dan Tower Bridge.' },
+  { flag: '🇺🇸', country: 'AMERIKA SERIKAT', alias: ['AMERIKA SERIKAT', 'AMERIKA', 'USA', 'US'], hint: 'A _ E _ _ K A   S _ R _ K _ T', clue: 'Negara adidaya di Amerika Utara dengan ikon Patung Liberty dan Gedung Putih (White House).' },
+  { flag: '🇨🇦', country: 'KANADA', alias: ['KANADA', 'CANADA'], hint: 'K _ N _ D A', clue: 'Negara di Amerika Utara yang benderanya memiliki lambang Daun Maple merah, beribukota Ottawa.' },
+  { flag: '🇮🇹', country: 'ITALIA', alias: ['ITALIA', 'ITALY'], hint: 'I _ A _ I A', clue: 'Negara berbentuk sepatu bot di Eropa Selatan, asal muasal Pizza, Pasta, dan Colosseum di Roma.' },
+  { flag: '🇪🇸', country: 'SPANYOL', alias: ['SPANYOL', 'SPAIN'], hint: 'S _ A _ Y _ L', clue: 'Negara di Eropa Selatan beribukota Madrid, terkenal dengan tarian Flamenco dan adu banteng Matador.' },
+  { flag: '🇳🇱', country: 'BELANDA', alias: ['BELANDA', 'NETHERLANDS', 'HOLLAND'], hint: 'B _ L _ N _ A', clue: 'Negara di Eropa yang dijuluki Negeri Kincir Angin dan Bunga Tulip, beribukota Amsterdam.' },
+  { flag: '🇦🇺', country: 'AUSTRALIA', alias: ['AUSTRALIA'], hint: 'A _ S _ R _ L _ A', clue: 'Negara benua di selatan Indonesia yang terkenal dengan hewan Kangguru dan Sydney Opera House.' },
+  { flag: '🇪🇬', country: 'MESIR', alias: ['MESIR', 'EGYPT'], hint: 'M _ S _ R', clue: 'Negara di Afrika Utara beribukota Kairo, terkenal dengan Piramida Giza, Sphinx, dan Sungai Nil.' },
+  { flag: '🇷🇺', country: 'RUSIA', alias: ['RUSIA', 'RUSSIA'], hint: 'R _ S _ A', clue: 'Negara terluas di dunia yang membentang di Eropa Timur dan Asia Utara, beribukota Moskow.' },
+  { flag: '🇮🇳', country: 'INDIA', alias: ['INDIA'], hint: 'I _ D _ A', clue: 'Negara di Asia Selatan beribukota New Delhi dengan monumen megah Taj Mahal dan industri film Bollywood.' },
+  { flag: '🇲🇾', country: 'MALAYSIA', alias: ['MALAYSIA'], hint: 'M _ L _ Y _ I A', clue: 'Negara tetangga serumpun Indonesia beribukota Kuala Lumpur dengan ikon Menara Kembar Petronas.' },
+  { flag: '🇸🇬', country: 'SINGAPURA', alias: ['SINGAPURA', 'SINGAPORE'], hint: 'S _ N _ A _ U _ A', clue: 'Negara pulau modern di Asia Tenggara yang terkenal dengan patung Merlion dan Marina Bay Sands.' },
+  { flag: '🇹🇭', country: 'THAILAND', alias: ['THAILAND'], hint: 'T _ A _ L _ N D', clue: 'Negara di Asia Tenggara beribukota Bangkok yang dijuluki Negeri Gajah Putih.' },
+  { flag: '🇻🇳', country: 'VIETNAM', alias: ['VIETNAM'], hint: 'V _ E _ N _ M', clue: 'Negara di Asia Tenggara beribukota Hanoi, terkenal dengan kuliner mie Pho dan Teluk Ha Long.' },
+  { flag: '🇵🇭', country: 'FILIPINA', alias: ['FILIPINA', 'PHILIPPINES'], hint: 'F _ L _ P _ N A', clue: 'Negara kepulauan di Asia Tenggara beribukota Manila, terkenal dengan kendaraan khas Jeepney.' },
+  { flag: '🇹🇷', country: 'TURKI', alias: ['TURKI', 'TURKEY', 'TURKIYE'], hint: 'T _ R _ I', clue: 'Negara lintas benua Eurasia beribukota Ankara, terkenal dengan kota Istanbul dan balon udara Cappadocia.' },
+  { flag: '🇲🇽', country: 'MEKSIKO', alias: ['MEKSIKO', 'MEXICO'], hint: 'M _ K _ I _ O', clue: 'Negara di Amerika Utara beribukota Mexico City, terkenal dengan kuliner Taco dan topi Sombrero.' },
+  { flag: '🇨🇭', country: 'SWISS', alias: ['SWISS', 'SWITZERLAND'], hint: 'S _ I _ S', clue: 'Negara netral di Eropa beribukota Bern, terkenal dengan Pegunungan Alpen, Cokelat, dan Jam Tangan mewah.' },
+  { flag: '🇿🇦', country: 'AFRIKA SELATAN', alias: ['AFRIKA SELATAN', 'SOUTH AFRICA'], hint: 'A _ R _ K A   S _ L _ T _ N', clue: 'Negara di ujung selatan benua Afrika berjuluk Rainbow Nation, tempat asal Nelson Mandela.' },
+  { flag: '🇨🇳', country: 'CHINA', alias: ['CHINA', 'TIONGKOK', 'TIONGHOA'], hint: 'C _ I _ A', clue: 'Negara di Asia Timur beribukota Beijing yang memiliki keajaiban dunia Tembok Raksasa (Great Wall).' },
+  { flag: '🇬🇷', country: 'YUNANI', alias: ['YUNANI', 'GREECE'], hint: 'Y _ N _ N I', clue: 'Negara di Eropa Selatan beribukota Athena, tempat lahirnya peradaban barat, filsafat, dan Olimpiade kuno.' },
+  { flag: '🇵🇹', country: 'PORTUGAL', alias: ['PORTUGAL'], hint: 'P _ R _ U _ A L', clue: 'Negara di Semenanjung Iberia Eropa beribukota Lisabon, tanah kelahiran pesepakbola Cristiano Ronaldo.' },
+  { flag: '🇦🇪', country: 'UNI EMIRAT ARAB', alias: ['UNI EMIRAT ARAB', 'UEA', 'UAE'], hint: 'U _ I   E _ I _ A T   A _ A B', clue: 'Negara federasi di Timur Tengah beribukota Abu Dhabi, rumah bagi gedung tertinggi di dunia Burj Khalifa.' },
+  { flag: '🇵🇱', country: 'POLANDIA', alias: ['POLANDIA', 'POLAND'], hint: 'P _ L _ N _ I A', clue: 'Negara di Eropa Tengah beribukota Warsawa dengan bendera putih-merah terbalik dari Indonesia.' },
+  { flag: '🇲🇨', country: 'MONAKO', alias: ['MONAKO', 'MONACO'], hint: 'M _ N _ K O', clue: 'Negara kota terkecil kedua di dunia dengan bendera merah-putih serupa Indonesia, terkenal dengan kasino & F1.' },
+  { flag: '🇳🇿', country: 'SELANDIA BARU', alias: ['SELANDIA BARU', 'NEW ZEALAND'], hint: 'S _ L _ N _ I A   B _ R U', clue: 'Negara kepulauan di Oseania beribukota Wellington, terkenal dengan suku Maori dan burung Kiwi.' },
+  { flag: '🇲🇦', country: 'MAROKO', alias: ['MAROKO', 'MOROCCO'], hint: 'M _ R _ K O', clue: 'Negara kerajaan di Afrika Utara beribukota Rabat, berjuluk Negeri Matahari Terbenam (Al-Maghrib).' },
+  { flag: '🇸🇪', country: 'SWEDIA', alias: ['SWEDIA', 'SWEDEN'], hint: 'S _ E _ I A', clue: 'Negara Skandinavia di Eropa Utara beribukota Stockholm, asal perusahaan IKEA dan Spotify.' },
+  { flag: '🇳🇴', country: 'NORWEGIA', alias: ['NORWEGIA', 'NORWAY'], hint: 'N _ R _ E _ I A', clue: 'Negara Nordik di Eropa Utara beribukota Oslo, terkenal dengan keindahan Fjord dan Midnight Sun.' }
+];
+
 const tebakLaguQuestions = [
   {
     artist: 'Sheila On 7',
@@ -228,21 +269,30 @@ async function handleRoundCommand({ sock, jid, senderNumber, messageObj, args, c
     await send(sock, jid, messageObj, 'Gunakan format `.jawab <jawaban>`.');
     return true;
   }
-  if (submitted === normalizeAnswer(round.answer)) {
+  const isMatch = (round.alias && Array.isArray(round.alias))
+    ? round.alias.some(a => normalizeAnswer(a) === submitted)
+    : (submitted === normalizeAnswer(round.answer));
+
+  if (isMatch) {
     round.isAnswered = true;
     if (round.timeout) clearTimeout(round.timeout);
     activeRounds.delete(key);
     
-    const pointsReward = round.type === 'tebaklagu' ? 25 : 20;
-    const xpReward = round.type === 'tebaklagu' ? 50 : 30;
+    const pointsReward = round.type === 'tebaklagu' ? 25 : (round.type === 'tebakbendera' ? 20 : 20);
+    const xpReward = round.type === 'tebaklagu' ? 50 : (round.type === 'tebakbendera' ? 35 : 30);
     
     const profile = await db.awardGamePoints(senderNumber, pointsReward, true);
     await db.addMessageXp(senderNumber, xpReward);
     
     const userTag = `@${senderNumber.split('@')[0]}`;
-    const congratsMsg = round.type === 'tebaklagu'
-      ? `🎉 *TEBAKAN LAGU TEPAT SEKALI!* 🎵\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nSelamat ${userTag}! Jawaban yang benar adalah: *${round.answer}* (${round.artist})\n\n🎁 *Hadiah:* +${pointsReward} Poin Game & +${xpReward} XP!\n💰 Total Poin Kamu: *${profile.points}*\n\nKetik \`.tebaklagu\` untuk ronde musik selanjutnya!`
-      : `🎉 *Jawaban benar!*\nSelamat ${userTag}, +${pointsReward} poin & +${xpReward} XP untuk kamu. Total poin: *${profile.points}*\n\nKetik .quiz untuk ronde berikutnya.`;
+    let congratsMsg = '';
+    if (round.type === 'tebaklagu') {
+      congratsMsg = `🎉 *TEBAKAN LAGU TEPAT SEKALI!* 🎵\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nSelamat ${userTag}! Jawaban yang benar adalah: *${round.answer}* (${round.artist})\n\n🎁 *Hadiah:* +${pointsReward} Poin Game & +${xpReward} XP!\n💰 Total Poin Kamu: *${profile.points}*\n\nKetik \`.tebaklagu\` untuk ronde musik selanjutnya!`;
+    } else if (round.type === 'tebakbendera') {
+      congratsMsg = `🎉 *TEBAKAN BENDERA BENAR!* 🚩\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nSelamat ${userTag}! Negara yang tepat adalah: *${round.flag} ${round.country}*\n\n🎁 *Hadiah:* +${pointsReward} Poin Game & +${xpReward} XP!\n💰 Total Poin Kamu: *${profile.points}*\n\nKetik \`.tebakbendera\` untuk tebak negara berikutnya!`;
+    } else {
+      congratsMsg = `🎉 *Jawaban benar!*\nSelamat ${userTag}, +${pointsReward} poin & +${xpReward} XP untuk kamu. Total poin: *${profile.points}*\n\nKetik .quiz untuk ronde berikutnya.`;
+    }
       
     await sock.sendMessage(jid, { text: congratsMsg, mentions: [senderNumber] }, { quoted: messageObj });
   } else {
@@ -255,6 +305,39 @@ async function startRound({ sock, jid, senderNumber, messageObj, isFromGroup, ty
   const key = scopeKey(jid, senderNumber, isFromGroup);
   if (activeRounds.has(key)) {
     await send(sock, jid, messageObj, 'Masih ada game aktif. Jawab dulu dengan `.jawab <jawaban>` atau ketik `.hint`.');
+    return true;
+  }
+
+  if (type === 'tebakbendera') {
+    const item = randomItem(flagQuestions);
+    const round = {
+      type: 'tebakbendera',
+      flag: item.flag,
+      country: item.country,
+      answer: item.country,
+      alias: item.alias,
+      clue: item.clue,
+      hint: item.hint,
+      expiresAt: Date.now() + ROUND_DURATION_MS
+    };
+    activeRounds.set(key, round);
+    scheduleRoundExpiry({ sock, jid, messageObj, key, round });
+
+    const promptText = 
+`🌍 *GAME TEBAK BENDERA & NEGARA* 🚩
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Tebak nama negara dari bendera dan petunjuk berikut!
+
+🚩 *Bendera:* ${item.flag}
+📝 *Petunjuk:* ${item.clue}
+💡 *Pola Huruf:* \`${item.hint}\`
+⏳ *Waktu:* 2 Menit
+🎁 *Hadiah:* +35 XP & +20 Poin Game
+
+👉 *Cara Menjawab:* Ketik \`.jawab <nama negara>\` atau langsung ketik nama negaranya di grup!
+👉 *Petunjuk Tambahan:* Ketik \`.hint\``;
+
+    await send(sock, jid, messageObj, promptText);
     return true;
   }
 
@@ -314,11 +397,15 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
   const command = String(cleanCmd || '').toLowerCase();
   const scope = scopeKey(jid, senderNumber, isFromGroup);
 
-  // Deteksi Jawaban Langsung Game Aktif (Quiz, Tebak Kata, Tebak Emoji, Tebak Lagu)
+  // Deteksi Jawaban Langsung Game Aktif (Quiz, Tebak Kata, Tebak Emoji, Tebak Lagu, Tebak Bendera)
   const activeGameRound = activeRounds.get(scope);
   if (activeGameRound && !activeGameRound.isAnswered && text) {
     const rawAnswer = normalizeAnswer(text);
-    if (rawAnswer && rawAnswer === normalizeAnswer(activeGameRound.answer)) {
+    const isDirectMatch = (activeGameRound.alias && Array.isArray(activeGameRound.alias))
+      ? activeGameRound.alias.some(a => normalizeAnswer(a) === rawAnswer)
+      : (rawAnswer === normalizeAnswer(activeGameRound.answer));
+
+    if (rawAnswer && isDirectMatch) {
       // HANYA user yang sudah terdaftar (.daftar) yang bisa menjawab dan klaim hadiah
       const isRegUser = await db.isCustomerRegistered(senderNumber);
       if (!isRegUser && !isAdmin && !isOwner) {
@@ -332,16 +419,21 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
       if (activeGameRound.timeout) clearTimeout(activeGameRound.timeout);
       activeRounds.delete(scope);
       
-      const pointsReward = activeGameRound.type === 'tebaklagu' ? 25 : 20;
-      const xpReward = activeGameRound.type === 'tebaklagu' ? 50 : 30;
+      const pointsReward = activeGameRound.type === 'tebaklagu' ? 25 : (activeGameRound.type === 'tebakbendera' ? 20 : 20);
+      const xpReward = activeGameRound.type === 'tebaklagu' ? 50 : (activeGameRound.type === 'tebakbendera' ? 35 : 30);
       
       const profile = await db.awardGamePoints(senderNumber, pointsReward, true);
       await db.addMessageXp(senderNumber, xpReward);
       
       const userTag = `@${senderNumber.split('@')[0]}`;
-      const congratsMsg = activeGameRound.type === 'tebaklagu'
-        ? `🎉 *TEBAK LAGU TERJAWAB!* 🎶\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n👤 Pemenang: *${userTag}*\n🎵 Artis: *${activeGameRound.artist}*\n🎼 Judul Lagu: *${activeGameRound.answer}*\n🎁 Bonus: *+${pointsReward} Poin* | *+${xpReward} XP*\n💰 Total Poin: *${profile.points} Poin*`
-        : `🎉 *SELAMAT!* ${userTag} berhasil menjawab dengan benar!\n\n💡 Jawaban: *${activeGameRound.answer}*\n🎁 Hadiah: *+${pointsReward} Poin* & *+${xpReward} XP*\n💰 Total Poin: *${profile.points}*`;
+      let congratsMsg = '';
+      if (activeGameRound.type === 'tebaklagu') {
+        congratsMsg = `🎉 *TEBAK LAGU TERJAWAB!* 🎶\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n👤 Pemenang: *${userTag}*\n🎵 Artis: *${activeGameRound.artist}*\n🎼 Judul Lagu: *${activeGameRound.answer}*\n🎁 Bonus: *+${pointsReward} Poin* | *+${xpReward} XP*\n💰 Total Poin: *${profile.points} Poin*`;
+      } else if (activeGameRound.type === 'tebakbendera') {
+        congratsMsg = `🎉 *TEBAK BENDERA TERJAWAB!* 🚩\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n👤 Pemenang: *${userTag}*\n🚩 Bendera: *${activeGameRound.flag}*\n🏛️ Negara: *${activeGameRound.country}*\n🎁 Bonus: *+${pointsReward} Poin* | *+${xpReward} XP*\n💰 Total Poin: *${profile.points} Poin*`;
+      } else {
+        congratsMsg = `🎉 *SELAMAT!* ${userTag} berhasil menjawab dengan benar!\n\n💡 Jawaban: *${activeGameRound.answer}*\n🎁 Hadiah: *+${pointsReward} Poin* & *+${xpReward} XP*\n💰 Total Poin: *${profile.points}*`;
+      }
         
       await sock.sendMessage(jid, {
         text: congratsMsg,
@@ -360,10 +452,11 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
   }
 
   const knownFunCmds = [
-    'afk', 'rampok', 'curi', 'ww', 'werewolf',
+    'afk', 'rampok', 'curi', 'rob', 'ww', 'werewolf',
     'jawab', 'answer', 'hint',
     'quiz', 'trivia', 'tebakquiz', 'tebakemoji', 'emoji', 'tebakkata', 'hangman', 'kata',
     'tebaklagu', 'lagu', 'musicquiz', 'tebakmusik',
+    'tebakbendera', 'tebaknegara', 'bendera', 'negara', 'flag',
     'truth', 'dare', 'tod', 'dadu', 'dice', 'coinflip', 'koin', 'coin',
     'sambungkata', 'wordchain', 'daily', 'harian', 'reward',
     'addpoint', 'addpoints', 'tambahpoin',
@@ -417,7 +510,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
   }
 
   // Heist / Rampok System
-  if (['rampok', 'curi'].includes(command)) {
+  if (['rampok', 'curi', 'rob'].includes(command)) {
     let targetNumber = '';
     const mentionRegex = /@([0-9]{10,15})/g;
     const mentions = [...text.matchAll(mentionRegex)].map(m => m[1] + '@s.whatsapp.net');
@@ -505,7 +598,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     return await handleRoundCommand({ sock, jid, senderNumber, messageObj, args, cleanCmd: command, isFromGroup });
   }
 
-  if (isFromGroup && ['quiz', 'trivia', 'tebakquiz', 'tebakemoji', 'emoji', 'tebakkata', 'hangman', 'kata', 'tebaklagu', 'sambungkata', 'wordchain', 'truth', 'dare', 'tod', 'dadu', 'dice', 'coinflip', 'koin', 'coin', 'poll', 'voting', 'vote', 'love', 'jodoh', 'compatibility', 'slot', 'daily', 'spin', 'luckyspin', 'suit', 'pilihsuit', 'cancelsuit', 'batalsuit', 'tebakangka', 'tebak', 'tukar', 'pointshop', 'penukaran'].includes(command)) {
+  if (isFromGroup && ['quiz', 'trivia', 'tebakquiz', 'tebakemoji', 'emoji', 'tebakkata', 'hangman', 'kata', 'tebaklagu', 'tebakbendera', 'tebaknegara', 'bendera', 'negara', 'flag', 'sambungkata', 'wordchain', 'truth', 'dare', 'tod', 'dadu', 'dice', 'coinflip', 'koin', 'coin', 'poll', 'voting', 'vote', 'love', 'jodoh', 'compatibility', 'slot', 'daily', 'spin', 'luckyspin', 'suit', 'pilihsuit', 'cancelsuit', 'batalsuit', 'tebakangka', 'tebak', 'tukar', 'pointshop', 'penukaran'].includes(command)) {
     const groupSettings = await db.getGroupSettings(jid);
     if (groupSettings.bot_mode === 'sales') return false;
   }
@@ -514,6 +607,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
   if (['tebakemoji', 'emoji'].includes(command)) return await startRound({ sock, jid, senderNumber, messageObj, isFromGroup, type: 'tebakemoji' });
   if (['tebakkata', 'hangman', 'kata'].includes(command)) return await startRound({ sock, jid, senderNumber, messageObj, isFromGroup, type: 'tebakkata' });
   if (['tebaklagu', 'lagu', 'musicquiz', 'tebakmusik'].includes(command)) return await startRound({ sock, jid, senderNumber, messageObj, isFromGroup, type: 'tebaklagu' });
+  if (['tebakbendera', 'tebaknegara', 'bendera', 'negara', 'flag'].includes(command)) return await startRound({ sock, jid, senderNumber, messageObj, isFromGroup, type: 'tebakbendera' });
 
   if (['truth', 'dare', 'tod'].includes(command)) {
     if (isOnCooldown(`${scope}:truth`, 5000)) return true;

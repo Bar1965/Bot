@@ -78,6 +78,7 @@ const categories = {
     commands: [
       ['.freegames', 'Daftar semua game PC gratis 100%'],
       ['.ww / .werewolf', 'Mainkan game Werewolf/Mafia multiplayer'],
+      ['.tebakbendera / .tebaknegara', 'Game tebak bendera & nama negara dunia'],
       ['.tebaklagu', 'Game kuis tebak judul lagu dari potongan musik audio'],
       ['.afk <alasan>', 'Set status AFK (Auto-reply saat di-mention)'],
       ['.slot [taruhan]', 'Spin judi slot machine virtual'],
@@ -90,6 +91,8 @@ const categories = {
       ['.quiz / .trivia', 'Kuis pilihan ganda'],
       ['.tebakemoji', 'Tebak arti emoji'],
       ['.tebakkata', 'Tebak kata dari petunjuk'],
+      ['.tebakgambar', 'Tebak gambar dari teka-teki visual'],
+      ['.susunkata', 'Menyusun huruf menjadi kata yang benar'],
       ['.jawab <jawaban>', 'Jawab game yang aktif'],
       ['.hint', 'Minta petunjuk game'],
       ['.sambungkata', 'Game sambung kata grup'],
