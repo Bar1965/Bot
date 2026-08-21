@@ -3439,38 +3439,40 @@ async function runHorseRace(sock, jid, messageObj, session) {
   const winningIndex = Math.floor(Math.random() * session.racers.length);
   const winningHorse = session.racers[winningIndex];
 
-  const trackLength = 10;
+  const trackLength = 6;
   const generateTrack = (step) => {
     let lines = [];
     session.racers.forEach((r, idx) => {
       let progress = 0;
       if (step === 1) {
-        progress = Math.floor(Math.random() * 3) + 1;
+        progress = Math.floor(Math.random() * 2) + 1;
       } else if (step === 2) {
-        progress = Math.floor(Math.random() * 4) + 4;
+        progress = Math.floor(Math.random() * 2) + 3;
       } else {
-        progress = (idx === winningIndex) ? trackLength : Math.min(trackLength - 1, Math.floor(Math.random() * 3) + 6);
+        progress = (idx === winningIndex) ? trackLength : Math.min(trackLength - 1, Math.floor(Math.random() * 2) + 4);
       }
-      const before = "═".repeat(progress);
-      const after = "─".repeat(Math.max(0, trackLength - progress));
-      const runner = (progress >= trackLength) ? "🏇🏁" : "🏃‍♀️";
-      const cleanName = r.name.length > 14 ? r.name.slice(0, 13) + '.' : r.name;
-      const paddedName = cleanName.padEnd(14, ' ');
-      lines.push(`${r.id}. ${paddedName} [${before}${runner}${after}]`);
+
+      let trackStr = "";
+      if (step === 3 && idx === winningIndex) {
+        trackStr = `🟩🟩🟩🟩🟩🟩 🏆🥇 *JUARA!*`;
+      } else {
+        const green = "🟩".repeat(progress);
+        const white = "⬜".repeat(Math.max(0, trackLength - progress));
+        trackStr = `${green}🏃‍♀️${white} 🏁`;
+      }
+
+      lines.push(`*${r.id}. ${r.emoji} ${r.name}*\n└ ${trackStr}`);
     });
-    return lines.join('\n');
+    return lines.join('\n\n');
   };
 
   const frame1 = 
 `🏁 *GERBANG START TERBUKA — UMA MUSUME DERBY!* 🏇💨
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Seluruh Uma Musume melesat kencang dari gerbang start!
+Seluruh Uma Musume melesat kencang dari garis start!
 
-\`\`\`
-No. Nama Uma       Lintasan
-───────────────────────────────
 ${generateTrack(1)}
-\`\`\`
+
 _Status: Lap 1/3 (Start Dash)_`;
 
   const frame2 = 
@@ -3478,11 +3480,8 @@ _Status: Lap 1/3 (Start Dash)_`;
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Persaingan sengit memperebutkan posisi terdepan!
 
-\`\`\`
-No. Nama Uma       Lintasan
-───────────────────────────────
 ${generateTrack(2)}
-\`\`\`
+
 _Status: Lap 2/3 (Final Corner)_`;
 
   // Kirim Pesan Frame 1 (Single Live Message)
@@ -3526,11 +3525,7 @@ _Status: Lap 2/3 (Final Corner)_`;
   const finalResult = 
 `🏆 *HASIL AKHIR UMA MUSUME DERBY* 🏁
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-\`\`\`
-No. Nama Uma       Lintasan
-───────────────────────────────
 ${generateTrack(3)}
-\`\`\`
 
 🥇 *JUARA 1:* ${winningHorse.emoji} *${winningHorse.name}* (No. ${winningHorse.id})!
 💰 Payout Pemenang: *${session.payoutMultiplier}x Lipat*
