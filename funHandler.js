@@ -593,17 +593,16 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
       await send(sock, jid, messageObj, "❌ Fitur pencurian/pembobolan poin (.steal) hanya bisa dimainkan di dalam grup!");
       return true;
     }
-    let targetNumber = '';
-    const mentionRegex = /@([0-9]{10,15})/g;
-    const mentions = [...text.matchAll(mentionRegex)].map(m => m[1] + '@s.whatsapp.net');
-    
-    if (mentions.length > 0) {
-      targetNumber = mentions[0];
-    } else if (messageObj?.message?.extendedTextMessage?.contextInfo?.participant) {
-      targetNumber = messageObj.message.extendedTextMessage.contextInfo.participant;
-    } else if (args[1]) {
+    const contextInfo = messageObj?.message?.extendedTextMessage?.contextInfo;
+    const mentions = contextInfo?.mentionedJid || [];
+    let targetNumber = mentions[0] || contextInfo?.participant;
+
+    if (!targetNumber && args[1]) {
       const cleanNum = args[1].replace(/[^0-9]/g, '');
-      if (cleanNum.length > 5) targetNumber = cleanNum + '@s.whatsapp.net';
+      if (cleanNum.length > 5) {
+        const custMatch = await db.getQuery("SELECT customer_jid FROM game_profiles WHERE customer_jid LIKE ? OR customer_jid LIKE ? LIMIT 1", [`%${cleanNum}%`, `${cleanNum}@%`]);
+        targetNumber = custMatch?.customer_jid || `${cleanNum}@s.whatsapp.net`;
+      }
     }
 
     await handleStealHeist(sock, jid, messageObj, senderNumber, targetNumber);
@@ -2017,32 +2016,55 @@ export async function handleStealHeist(sock, jid, m, senderNumber, targetNumber)
     return true;
   }
 
-  const profilePerampok = await db.getGameProfile(senderNumber);
-  const profileKorban = await db.getGameProfile(targetNumber);
+  let resolvedTarget = targetNumber;
+  let profileKorban = await db.getGameProfile(resolvedTarget);
+  if (!profileKorban || profileKorban.points <= 0) {
+    const targetDigits = resolvedTarget.replace(/[^0-9]/g, '');
+    if (targetDigits.length > 5) {
+      const altProf = await db.getQuery("SELECT * FROM game_profiles WHERE (customer_jid LIKE ? OR customer_jid LIKE ?) AND points > 0 ORDER BY points DESC LIMIT 1", [`%${targetDigits}%`, `${targetDigits}@%`]);
+      if (altProf) {
+        resolvedTarget = altProf.customer_jid;
+        profileKorban = altProf;
+      }
+    }
+  }
 
-  if (!profilePerampok || profilePerampok.points < 50) {
-    await send(sock, jid, m, "❌ Modal kamu kurang! Kamu butuh minimal *50 Poin* sebagai modal jaminan denda jika tertangkap polisi.");
+  let resolvedSender = senderNumber;
+  let profilePerampok = await db.getGameProfile(resolvedSender);
+  if (!profilePerampok || profilePerampok.points <= 0) {
+    const senderDigits = resolvedSender.replace(/[^0-9]/g, '');
+    if (senderDigits.length > 5) {
+      const altProf = await db.getQuery("SELECT * FROM game_profiles WHERE (customer_jid LIKE ? OR customer_jid LIKE ?) AND points > 0 ORDER BY points DESC LIMIT 1", [`%${senderDigits}%`, `${senderDigits}@%`]);
+      if (altProf) {
+        resolvedSender = altProf.customer_jid;
+        profilePerampok = altProf;
+      }
+    }
+  }
+
+  if (!profilePerampok || profilePerampok.points < 10) {
+    await send(sock, jid, m, "❌ Modal kamu kurang! Kamu butuh minimal *10 Poin* sebagai jaminan denda jika tertangkap polisi.\n\nKetik `.daily` untuk mengambil poin gratis!");
     return true;
   }
 
-  if (!profileKorban || profileKorban.points < 100) {
-    await send(sock, jid, m, "❌ Target terlalu miskin (Poin < 100). Jangan mem-bully member yang sedang merintis!");
+  if (!profileKorban || profileKorban.points < 20) {
+    await send(sock, jid, m, "❌ Target memiliki poin terlalu sedikit (Poin < 20). Cari target lain yang brankasnya lebih berisi!");
     return true;
   }
 
   const challenge = generateStealChallenge();
   const expiresAt = now + STEAL_TIMEOUT_MS;
 
-  const senderCust = await db.getCustomerByPhone(senderNumber);
-  const targetCust = await db.getCustomerByPhone(targetNumber);
-  const senderPhone = senderNumber.split('@')[0];
-  const targetPhone = targetNumber.split('@')[0];
+  const senderCust = await db.getCustomerByPhone(resolvedSender);
+  const targetCust = await db.getCustomerByPhone(resolvedTarget);
+  const senderPhone = resolvedSender.split('@')[0];
+  const targetPhone = resolvedTarget.split('@')[0];
   const senderLabel = senderCust?.nama ? `*${senderCust.nama}* (@${senderPhone})` : `@${senderPhone}`;
   const targetLabel = targetCust?.nama ? `*${targetCust.nama}* (@${targetPhone})` : `@${targetPhone}`;
 
   const session = {
-    senderNumber,
-    targetNumber,
+    senderNumber: resolvedSender,
+    targetNumber: resolvedTarget,
     senderLabel,
     targetLabel,
     jid,
