@@ -389,10 +389,10 @@ export async function handleUndercover(sock, jid, senderNumber, messageObj, args
 
 🎭 *Daftar Peran Rahasia (Diacak via DM WhatsApp):*
 ▫️ 🧑‍🌾 *Civilian (Warga)*: Mendapat kata asli.
-▫️ 🕵️ *Undercover (Penyamar)*: Mendapat kata mirip tapi berbeda!
+▫️ 🕵️ *Undercover / Impostor*: 1 Orang (3–6 Pemain) | 2 Orang (7–8 Pemain)!
 ▫️ 🤍 *Mr. White (Blank)*: Tidak dapat kata, pura-pura tahu!
-▫️ 🤡 *Si Badut (Jester)* (5+ Pemain): Ingin di-vote keluar untuk menang solo!
-▫️ 🔍 *Detektif Intel* (6+ Pemain): Bisa DM bot \`.intip @member\` untuk lacak penyamar!
+▫️ 🤡 *Si Badut (Jester)* (4+ Pemain): Ingin di-vote keluar untuk menang solo!
+▫️ 🔍 *Detektif Intel* (4+ Pemain): Bisa DM bot \`.intip @member\` untuk lacak penyamar!
 
 🃏 *Power Cards Shop:* Ketik \`.undercover card\` untuk melihat kartu aksi khusus!
 
@@ -460,9 +460,10 @@ async function startUndercoverGame(sock, jid, senderNumber, messageObj) {
   session.alivePlayers = [...shuffled];
 
   const count = shuffled.length;
-  // Pool peran Impostor: 1 orang
-  const underPool = ['UNDERCOVER', 'ASSASSIN', 'FRAMER', 'SABOTEUR'];
-  const underRole = underPool[Math.floor(Math.random() * underPool.length)];
+  // Pool peran Impostor
+  const underPool = ['UNDERCOVER', 'ASSASSIN', 'FRAMER', 'SABOTEUR'].sort(() => 0.5 - Math.random());
+  const underRole1 = underPool[0];
+  const underRole2 = underPool[1];
 
   // Pool peran Netral: 1 orang
   const neutralPool = ['MRWHITE', 'JESTER', 'BUNGLON'];
@@ -476,54 +477,62 @@ async function startUndercoverGame(sock, jid, senderNumber, messageObj) {
 
   if (count === 3) {
     // 3 Pemain: 1 Impostor, 2 Warga Biasa
-    assignedRoles.push(underRole, 'CIVILIAN', 'CIVILIAN');
+    assignedRoles.push(underRole1, 'CIVILIAN', 'CIVILIAN');
   } else if (count === 4) {
     // 4 Pemain: 1 Impostor, 1 Netral, 1 Warga Spesial, 1 Warga Biasa
-    assignedRoles.push(underRole, neutralRole, specialCivPool[0], 'CIVILIAN');
+    assignedRoles.push(underRole1, neutralRole, specialCivPool[0], 'CIVILIAN');
   } else if (count === 5) {
     // 5 Pemain: 1 Impostor, 1 Netral, 1 Warga Spesial, 2 Warga Biasa
-    assignedRoles.push(underRole, neutralRole, specialCivPool[0], 'CIVILIAN', 'CIVILIAN');
+    assignedRoles.push(underRole1, neutralRole, specialCivPool[0], 'CIVILIAN', 'CIVILIAN');
   } else if (count === 6) {
     // 6 Pemain: 1 Impostor, 1 Netral, 1 Warga Spesial, 3 Warga Biasa
-    assignedRoles.push(underRole, neutralRole, specialCivPool[0], 'CIVILIAN', 'CIVILIAN', 'CIVILIAN');
+    assignedRoles.push(underRole1, neutralRole, specialCivPool[0], 'CIVILIAN', 'CIVILIAN', 'CIVILIAN');
   } else if (count === 7) {
-    // 7 Pemain: 1 Impostor, 1 Netral, 2 Warga Spesial, 3 Warga Biasa
-    assignedRoles.push(underRole, neutralRole, specialCivPool[0], specialCivPool[1], 'CIVILIAN', 'CIVILIAN', 'CIVILIAN');
+    // 7 Pemain (7+): 2 Impostor, 1 Netral, 1 Warga Spesial, 3 Warga Biasa
+    assignedRoles.push(underRole1, underRole2, neutralRole, specialCivPool[0], 'CIVILIAN', 'CIVILIAN', 'CIVILIAN');
   } else {
-    // 8 Pemain: 1 Impostor, 1 Netral, 2 Warga Spesial, 4 Warga Biasa
-    assignedRoles.push(underRole, neutralRole, specialCivPool[0], specialCivPool[1], 'CIVILIAN', 'CIVILIAN', 'CIVILIAN', 'CIVILIAN');
+    // 8 Pemain (7+): 2 Impostor, 1 Netral, 2 Warga Spesial, 3 Warga Biasa
+    assignedRoles.push(underRole1, underRole2, neutralRole, specialCivPool[0], specialCivPool[1], 'CIVILIAN', 'CIVILIAN', 'CIVILIAN');
   }
 
   for (let i = 0; i < count; i++) {
     const p = shuffled[i];
     const role = assignedRoles[i];
+    const partnerJid = (count >= 7 && (i === 0 || i === 1)) ? (i === 0 ? shuffled[1] : shuffled[0]) : null;
+    const partnerPhone = partnerJid ? partnerJid.split('@')[0] : '';
+    const partnerMsg = partnerJid ? `\n🤝 *Rekan Penyamar Anda:* @${partnerPhone} (Kalian satu kubu dan memegang kata yang sama!)` : '';
+    const mentions = partnerJid ? [partnerJid] : [];
 
     if (role === 'ASSASSIN') {
       session.playerRoles.set(p, { role: 'ASSASSIN', word: pair.undercover, isAlive: true, clue: '', hasBullet: true, cards: new Set() });
       try {
         await sock.sendMessage(p, { 
-          text: `🗡️ *PERAN ANDA: ASSASSIN (PEMBUNUH BAYARAN)* 🩸\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.undercover}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Misi Khusus:* Anda adalah eksekutor rahasia kubu penyamar!\n🎯 *Sniper Senyap (1x Pakai):*\nKirim DM ke bot ini: \`.tembak @member\` (atau \`.tembak <nomor>\`) untuk mengeksekusi musuh tanpa perlu voting!`
+          text: `🗡️ *PERAN ANDA: ASSASSIN (PEMBUNUH BAYARAN)* 🩸\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.undercover}*\n🏷️ Kategori: ${pair.category}${partnerMsg}\n\n⚠️ *Misi Khusus:* Anda adalah eksekutor rahasia kubu penyamar!\n🎯 *Sniper Senyap (1x Pakai):*\nKirim DM ke bot ini: \`.tembak @member\` (atau \`.tembak <nomor>\`) untuk mengeksekusi musuh tanpa perlu voting!`,
+          mentions
         });
       } catch (e) {}
     } else if (role === 'FRAMER') {
       session.playerRoles.set(p, { role: 'FRAMER', word: pair.undercover, isAlive: true, clue: '', hasFramed: false, cards: new Set() });
       try {
         await sock.sendMessage(p, { 
-          text: `🗣️ *PERAN ANDA: FRAMER (TUKANG FITNAH)* 🎭\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.undercover}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Skill Fitnah (1x Pakai via DM):*\nKirim DM ke bot: \`.fitnah @member\` (atau \`.fitnah <nomor>\`)\n\n🎯 *Efek Fitnah:*\n1. Memanipulasi laporan Detektif: Jika target diintip Detektif, dia akan terlihat sebagai **BUKAN WARGA (PENYAMAR/IMPOSTOR)**!\n2. Di fase voting ronde ini, target otomatis mendapatkan **+1 Suara Kutukan Tambahan**!`
+          text: `🗣️ *PERAN ANDA: FRAMER (TUKANG FITNAH)* 🎭\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.undercover}*\n🏷️ Kategori: ${pair.category}${partnerMsg}\n\n⚠️ *Skill Fitnah (1x Pakai via DM):*\nKirim DM ke bot: \`.fitnah @member\` (atau \`.fitnah <nomor>\`)\n\n🎯 *Efek Fitnah:*\n1. Memanipulasi laporan Detektif: Jika target diintip Detektif, dia akan terlihat sebagai **BUKAN WARGA (PENYAMAR/IMPOSTOR)**!\n2. Di fase voting ronde ini, target otomatis mendapatkan **+1 Suara Kutukan Tambahan**!`,
+          mentions
         });
       } catch (e) {}
     } else if (role === 'SABOTEUR') {
       session.playerRoles.set(p, { role: 'SABOTEUR', word: pair.undercover, isAlive: true, clue: '', cards: new Set() });
       try {
         await sock.sendMessage(p, { 
-          text: `🦹 *PERAN ANDA: SABOTEUR (PENYABOT INTEL)* ⚡\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.undercover}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Skill Sabotase:* Tiap ronde Anda bisa meretas peran pemain via DM:\n👉 Ketik: \`.hack @member\` (atau \`.sabotase <nomor>\`) untuk mengintip peran target!`
+          text: `🦹 *PERAN ANDA: SABOTEUR (PENYABOT INTEL)* ⚡\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.undercover}*\n🏷️ Kategori: ${pair.category}${partnerMsg}\n\n⚠️ *Skill Sabotase:* Tiap ronde Anda bisa meretas peran pemain via DM:\n👉 Ketik: \`.hack @member\` (atau \`.sabotase <nomor>\`) untuk mengintip peran target!`,
+          mentions
         });
       } catch (e) {}
     } else if (role === 'UNDERCOVER') {
       session.playerRoles.set(p, { role: 'UNDERCOVER', word: pair.undercover, isAlive: true, clue: '', hasBullet: true, cards: new Set() });
       try {
         await sock.sendMessage(p, { 
-          text: `🎭 *PERAN ANDA: UNDERCOVER (PENYAMAR)* 🕵️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.undercover}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Misi Anda:* Berikan petunjuk yang mengecoh agar dikira warga sipil! Jangan sebutkan kata rahasiamu.\n🔫 *Peluru Racun Rahasia (1x Pakai):*\nAnda bisa mengeksekusi 1 pemain tanpa vote!\n👉 Kirim DM ke bot ini: \`.tembak @member\` (atau \`.tembak <nomor>\`)`
+          text: `🎭 *PERAN ANDA: UNDERCOVER (PENYAMAR)* 🕵️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.undercover}*\n🏷️ Kategori: ${pair.category}${partnerMsg}\n\n⚠️ *Misi Anda:* Berikan petunjuk yang mengecoh agar dikira warga sipil! Jangan sebutkan kata rahasiamu.\n🔫 *Peluru Racun Rahasia (1x Pakai):*\nAnda bisa mengeksekusi 1 pemain tanpa vote!\n👉 Kirim DM ke bot ini: \`.tembak @member\` (atau \`.tembak <nomor>\`)`,
+          mentions
         });
       } catch (e) {}
     } else if (role === 'MRWHITE') {
@@ -1936,6 +1945,7 @@ Undercover adalah game deduksi sosial berbasis kata rahasia via DM WhatsApp & di
 Peran khusus dibagikan secara *ACAK & DINAMIS* di setiap permainan!
 
 📜 *ATURAN DINAMIS & SISTEM RONDE:*
+👥 *Komposisi Impostor:* **1 Penyamar** (3–6 Pemain) | **2 Penyamar** (7–8 Pemain).
 ⏱️ *Durasi Waktu:* 25 Detik Petunjuk (Ronde 1-3) & 35 Detik Voting.
 🚫 *Batas Vote Skip:* Maksimal **2x per game**. Setelah 2x, wajib memilih target eliminasi.
 💀 *Zona Merah (Sudden Death):* Mulai **Ronde 4 ke atas** (Petunjuk dipercepat jadi 15 detik & \`.vote skip\` dikunci).
