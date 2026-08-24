@@ -13,7 +13,7 @@ import { handleBankEconomy } from './bankEconomy.js';
 import { activeRounds, startRound, handleRoundCommand, surrenderRound, ROUND_DURATION_MS, scheduleRoundExpiry } from './triviaEngine.js';
 import { activeStealSessions, profileText, handleStealHeist, handleStealAnswer } from './rpgSystem.js';
 import { activeJailbreakSessions, handleJailbreak, handleJailbreakAnswer, handleTebusNapi } from './jailbreak.js';
-import { activeUndercoverGames, handleUndercover, handleUndercoverClue } from './undercover.js';
+import { activeUndercoverGames, handleUndercover, handleUndercoverClue, handleUndercoverVote, handleMrWhiteGuess } from './undercover.js';
 import { activeQuizTournaments, handleQuizTournament, handleTournamentAnswer } from './quizTournament.js';
 import { jidNormalizedUser } from '@whiskeysockets/baileys';
 
@@ -126,7 +126,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     'jawab', 'answer', 'hint', 'nyerah', 'surrender', 'menyerah',
     'quiz', 'trivia', 'tebakquiz', 'tebakemoji', 'emoji', 'tebakkata', 'hangman', 'kata',
     'family100', 'f100', 'caklontong', 'tts',
-    'undercover', 'sus', 'impostor', 'joinundercover', 'startundercover',
+    'undercover', 'sus', 'impostor', 'joinundercover', 'startundercover', 'tebakwarga', 'v',
     'cerdascermat', 'kuisturnamen', 'quizbattle', 'joincerdascermat', 'startcerdascermat',
     'jailbreak', 'kabur', 'bobolpenjara', 'tebus', 'bebasinnapi',
     'duel', 'terimaduel', 'gasduel', 'tolakduel', 'tembak', 'dor',
@@ -374,6 +374,36 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
   // Game Undercover / Impostor Kata
   if (['undercover', 'sus', 'impostor', 'joinundercover', 'startundercover'].includes(command)) {
     return await handleUndercover(sock, jid, senderNumber, messageObj, args, command, isFromGroup);
+  }
+
+  // Voting Undercover / Werewolf (.vote / .v)
+  if (['vote', 'v'].includes(command)) {
+    if (activeUndercoverGames.has(jid) && activeUndercoverGames.get(jid).status === 'VOTING_PHASE') {
+      const target = messageObj.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0] || args[1];
+      return await handleUndercoverVote(sock, jid, senderNumber, messageObj, target);
+    }
+    if (ww.activeWwGames.has(jid) && ww.activeWwGames.get(jid).status === 'DAY') {
+      const target = messageObj.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0] || args[1];
+      const wwRes = await ww.handleWwDayVote(sock, jid, senderNumber, messageObj, target);
+      if (wwRes) return true;
+    }
+    if ((text || '').includes('|')) {
+      const parts = text.slice(command.length + 1).trim().split('|').map(part => part.trim()).filter(Boolean);
+      if (parts.length < 3 || parts.length > 13) {
+        await send(sock, jid, messageObj, 'Format: `.poll Pertanyaan | Opsi 1 | Opsi 2`\nMinimal 2 opsi, maksimal 12 opsi.');
+        return true;
+      }
+      await sock.sendMessage(jid, { poll: { name: parts[0], values: parts.slice(1), selectableCount: 1 } });
+      return true;
+    }
+    await send(sock, jid, messageObj, "❌ Saat ini tidak ada sesi voting game (Undercover / Werewolf) aktif di grup ini.\n\nUntuk membuat polling WhatsApp biasa, gunakan format:\n`.poll Pertanyaan | Opsi 1 | Opsi 2`");
+    return true;
+  }
+
+  // Tebak Kata Warga untuk Mr. White (.tebakwarga <kata>)
+  if (['tebakwarga'].includes(command)) {
+    const guess = args.slice(1).join(' ').trim();
+    return await handleMrWhiteGuess(sock, jid, senderNumber, messageObj, guess);
   }
 
   // Turnamen Battle Royale Cerdas Cermat
@@ -1078,7 +1108,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     return true;
   }
 
-  if (['poll', 'voting', 'vote'].includes(command)) {
+  if (['poll', 'voting'].includes(command)) {
     const parts = text.slice(command.length).trim().split('|').map(part => part.trim()).filter(Boolean);
     if (parts.length < 3 || parts.length > 13) {
       await send(sock, jid, messageObj, 'Format: `.poll Pertanyaan | Opsi 1 | Opsi 2`\nMinimal 2 opsi, maksimal 12 opsi.');

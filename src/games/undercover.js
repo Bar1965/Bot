@@ -290,7 +290,7 @@ export async function handleUndercoverClue(sock, jid, senderNumber, messageObj, 
   }
 }
 
-async function handleUndercoverVote(sock, jid, senderNumber, messageObj, targetJid) {
+export async function handleUndercoverVote(sock, jid, senderNumber, messageObj, targetJid) {
   const session = activeUndercoverGames.get(jid);
   if (!session || session.status !== 'VOTING_PHASE') {
     await send(sock, jid, messageObj, "❌ Saat ini bukan fase voting Undercover.");
@@ -302,13 +302,25 @@ async function handleUndercoverVote(sock, jid, senderNumber, messageObj, targetJ
     return true;
   }
 
-  let resolvedTarget = targetJid;
-  if (resolvedTarget && !resolvedTarget.includes('@')) {
-    resolvedTarget = `${resolvedTarget.replace(/\D/g, '')}@s.whatsapp.net`;
+  // Cari target dari mention contextInfo atau quoted msg jika targetJid belum ada
+  let rawTarget = targetJid ||
+    messageObj.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0] ||
+    messageObj.message?.extendedTextMessage?.contextInfo?.participant;
+
+  let resolvedTarget = null;
+  if (rawTarget) {
+    if (session.alivePlayers.includes(rawTarget)) {
+      resolvedTarget = rawTarget;
+    } else {
+      const targetDigits = String(rawTarget).replace(/\D/g, '');
+      if (targetDigits.length > 5) {
+        resolvedTarget = session.alivePlayers.find(p => p.replace(/\D/g, '').includes(targetDigits) || targetDigits.includes(p.replace(/\D/g, '')));
+      }
+    }
   }
 
   if (!resolvedTarget || !session.alivePlayers.includes(resolvedTarget)) {
-    await send(sock, jid, messageObj, "⚠️ Target vote tidak valid atau sudah gugur! Tag pemain yang masih hidup.");
+    await send(sock, jid, messageObj, "⚠️ Target vote tidak valid atau sudah gugur!\n_Contoh:_ `.vote @member` (Tag salah satu pemain yang masih hidup).");
     return true;
   }
 
@@ -318,7 +330,10 @@ async function handleUndercoverVote(sock, jid, senderNumber, messageObj, targetJ
   }
 
   session.votes.set(senderNumber, resolvedTarget);
-  await send(sock, jid, messageObj, `🗳️ @${senderNumber.split('@')[0]} telah memberikan vote! (${session.votes.size}/${session.alivePlayers.length} suara)`, { mentions: [senderNumber] });
+  const voterPhone = senderNumber.split('@')[0];
+  const targetPhone = resolvedTarget.split('@')[0];
+
+  await send(sock, jid, messageObj, `🗳️ @${voterPhone} mem-vote @${targetPhone}! (${session.votes.size}/${session.alivePlayers.length} suara)`, { mentions: [senderNumber, resolvedTarget] });
 
   if (session.votes.size >= session.alivePlayers.length) {
     if (session.timeout) clearTimeout(session.timeout);
@@ -385,7 +400,7 @@ async function processUndercoverVotes(sock, jid, messageObj) {
   await evaluateUndercoverWin(sock, jid, messageObj);
 }
 
-async function handleMrWhiteGuess(sock, jid, senderNumber, messageObj, guess) {
+export async function handleMrWhiteGuess(sock, jid, senderNumber, messageObj, guess) {
   const session = activeUndercoverGames.get(jid);
   if (!session || session.status !== 'MR_WHITE_GUESS' || session.mrWhiteGuessPending !== senderNumber) {
     return false;
