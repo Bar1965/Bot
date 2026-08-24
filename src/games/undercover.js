@@ -75,6 +75,10 @@ export async function handleUndercover(sock, jid, senderNumber, messageObj, args
 
   const subCmd = (args[1] || '').toLowerCase();
 
+  if (['role', 'roles', 'panduan', 'help', 'bantuan'].includes(subCmd) || command === 'roleundercover') {
+    return await showUndercoverRoleGuide(sock, jid, messageObj);
+  }
+
   if (['join', 'ikut'].includes(subCmd) || command === 'joinundercover') {
     return await joinUndercoverLobby(sock, jid, senderNumber, messageObj);
   }
@@ -631,19 +635,33 @@ async function startNextUndercoverRound(sock, jid, messageObj, isFirstRound = fa
 
   let roundHeader = '';
   if (isFirstRound) {
+    const roleCounts = {};
+    for (const [, r] of session.playerRoles.entries()) {
+      roleCounts[r.role] = (roleCounts[r.role] || 0) + 1;
+    }
+    const roleSummary = [
+      roleCounts.CIVILIAN ? `🧑‍🌾 ${roleCounts.CIVILIAN} Warga Sipil` : null,
+      roleCounts.UNDERCOVER ? `🕵️ ${roleCounts.UNDERCOVER} Undercover` : null,
+      roleCounts.MRWHITE ? `🤍 ${roleCounts.MRWHITE} Mr. White` : null,
+      roleCounts.JESTER ? `🤡 ${roleCounts.JESTER} Si Badut` : null,
+      roleCounts.DETECTIVE ? `🔍 ${roleCounts.DETECTIVE} Detektif` : null
+    ].filter(Boolean).join(' | ');
+
     roundHeader = 
 `🎮 *UNDERCOVER RESMI DIMULAI — RONDE 1* 🕵️
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🤫 *Kata rahasia telah dikirim ke DM WhatsApp masing-masing!*
-🏷️ Kategori: *${session.pair.category}*
-💰 Total Prizepool: *${totalPot.toLocaleString('id-ID')} Poin*
+🏷️ *Kategori:* ${session.pair.category}
+💰 *Total Prizepool:* *${totalPot.toLocaleString('id-ID')} Poin*
+🎭 *Komposisi Peran:* ${roleSummary}
 🎲 *Tantangan Ronde:* *${mod.name}* (${mod.desc})
 
 📋 *Urutan Giliran Pemain:*
 ${session.alivePlayers.map((p, i) => `${i + 1}. @${p.split('@')[0]}`).join('\n')}
 
 👉 *Giliran Pertama:* @${currentTurnPlayer.split('@')[0]} (Waktu 35s)
-_Ketik 1 kalimat petunjuk katamu di grup ini!_`;
+_Ketik 1 kalimat petunjuk katamu di grup ini!_
+💡 _Ketik \`.undercover role\` untuk melihat panduan lengkap peran._`;
   } else {
     roundHeader = 
 `🔄 *UNDERCOVER — MASUK RONDE ${session.round}* 🕵️
@@ -668,4 +686,49 @@ _Ketik petunjuk barumu di grup!_`;
   }, CLUE_TIMEOUT_MS);
 
   await send(sock, jid, messageObj, roundHeader, { mentions: session.alivePlayers });
+}
+
+export async function showUndercoverRoleGuide(sock, jid, messageObj) {
+  const guide = 
+`🎭 *PANDUAN LENGKAP PERAN GAME UNDERCOVER* 🕵️
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Undercover adalah game deduksi sosial berbasis kata rahasia via DM WhatsApp & diskusi di grup (3–8 pemain).
+
+👥 *DAFTAR LENGKAP PERAN RAHASIA:*
+
+1. 🧑‍🌾 *Civilian (Warga Sipil)* [Mayoritas]
+▫️ *Kata Rahasia:* Menerima Kata Asli (misal: "Kopi").
+▫️ *Misi:* Berikan petunjuk yang akurat agar sesama warga tahu kamu teman, jangan sampai dicurigai, dan temukan penyamar!
+▫️ *Kemenangan:* Jika seluruh Undercover & Mr. White berhasil dieliminasi.
+
+2. 🕵️ *Undercover (Penyamar)* [1 Orang]
+▫️ *Kata Rahasia:* Menerima Kata Mirip tapi Berbeda (misal: "Teh").
+▫️ *Misi:* Berikan petunjuk samar/mengecoh agar dikira warga sipil, cari tahu kata asli warga, dan bertahan sampai akhir!
+▫️ *Kemenangan:* Jika jumlah Penyamar (Undercover + Mr. White) sama atau lebih banyak dari sisa Warga.
+
+3. 🤍 *Mr. White (Blank / Hantu)* [Game 4+ Pemain]
+▫️ *Kata Rahasia:* TIDAK ADA KATA (Blank / Kosong).
+▫️ *Misi:* Pura-pura tahu dengan menyimak petunjuk pemain sebelumnya!
+▫️ *Skill Spesial:* Jika di-vote keluar, diberi 30 detik untuk menebak kata warga (\`.tebakwarga <kata>\`). Jika tebakan benar ➔ MENANG INSTAN & SAPU BERSIH HADIAH!
+
+4. 🤡 *Si Badut (Jester / Karbit)* [Game 5+ Pemain]
+▫️ *Kata Rahasia:* Menerima Kata Asli Warga.
+▫️ *Misi Gila:* Sengaja berakting aneh/mencurigakan agar di-vote keluar oleh grup!
+▫️ *Kemenangan Solo:* Jika berhasil di-vote keluar di Ronde 1 atau 2 ➔ MENANG SOLO & mencuri seluruh pot taruhan!
+
+5. 🔍 *Detektif Intel* [Game 6+ Pemain]
+▫️ *Kata Rahasia:* Menerima Kata Asli Warga.
+▫️ *Tugas:* Memimpin warga sipil membongkar penyamar.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📌 *PERINTAH UTAMA:*
+• \`.undercover [taruhan]\` — Buka lobi permainan (Default 30 Poin)
+• \`.joinundercover\` — Bergabung ke lobi
+• \`.startundercover\` — Memulai permainan (Minimal 3 orang)
+• \`.vote [nomor/@member]\` — Vote eliminasi di fase voting
+• \`.tebakwarga <kata>\` — Khusus Mr. White saat gugur
+• \`.undercover role\` — Tampilkan panduan peran ini`;
+
+  await send(sock, jid, messageObj, guide);
+  return true;
 }
