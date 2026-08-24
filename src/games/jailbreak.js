@@ -193,16 +193,16 @@ export async function handleTebusNapi(sock, jid, senderNumber, messageObj, targe
     return true;
   }
 
-  const tebusCost = 100;
+  const tebusCost = 1000;
   const senderProf = await db.getGameProfile(senderNumber);
   if ((senderProf?.points || 0) < tebusCost) {
-    await send(sock, jid, messageObj, `❌ Poin kamu tidak cukup untuk membayar jaminan pengacara! Butuh *${tebusCost} Poin* (Poin kamu: *${senderProf?.points || 0}*).`);
+    await send(sock, jid, messageObj, `❌ Poin kamu tidak cukup untuk membayar uang jaminan pengacara! Butuh *${tebusCost.toLocaleString('id-ID')} Poin* (Poin kamu: *${(senderProf?.points || 0).toLocaleString('id-ID')}*).`);
     return true;
   }
 
   await db.deductGamePoints(senderNumber, tebusCost);
   await db.clearGameJail(targetNumber);
-  await db.addMessageXp(senderNumber, 40);
+  await db.addMessageXp(senderNumber, 100);
 
   const senderPhone = senderNumber.split('@')[0];
   const targetPhone = targetNumber.split('@')[0];
@@ -216,10 +216,10 @@ export async function handleTebusNapi(sock, jid, senderNumber, messageObj, targe
   const successMsg = 
 `⚖️ *SURAT PEMBEBASAN BERSYARAT DITERBITKAN!* 🏛️
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Pahlawan penyelamat ${senderTag} telah membayar uang jaminan pengacara sebesar *${tebusCost} Poin* untuk membebaskan ${targetTag}!
+Pahlawan penyelamat ${senderTag} telah membayar uang jaminan pengacara sebesar *${tebusCost.toLocaleString('id-ID')} Poin* untuk membebaskan ${targetTag}!
 
 ✨ *Status Napi:* **BEBAS SEKETIKA** 🟢
-🎁 *Kebaikan:* +40 XP untuk penjamin!
+🎁 *Kebaikan Penjamin:* +100 XP & Penghormatan Grup!
 
 _Terima kasih atas solidaritas sesama member!_`;
 
