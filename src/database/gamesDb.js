@@ -1,6 +1,6 @@
 import { runQuery, getQuery, allQuery, withTransaction, normalizePhoneDigits } from './connection.js';
 
-import { addLog, getOrCreateCustomer, getCustomerMembershipProfile } from './userDb.js';
+import { addLog, getOrCreateCustomer, getCustomerMembershipProfile, getSettings } from './userDb.js';
 
 
 // --- FUNGSI GAME, XP, DAN REWARD HARIAN ---
@@ -290,16 +290,33 @@ export async function claimGameDaily(customerJid, today, reward = 25) {
 
 export async function getGameLeaderboard(limit = 10) {
   const safeLimit = Math.max(1, Math.min(50, Number.parseInt(limit, 10) || 10));
-  return await allQuery(
+  let ownerDigits = '';
+  try {
+    const settings = await getSettings();
+    const ownerJid = (settings?.ownerJid || '').trim();
+    ownerDigits = normalizePhoneDigits(ownerJid);
+  } catch (e) {}
+
+  let rows = await allQuery(
     `SELECT g.customer_jid, COALESCE(g.points, 0) AS points, COALESCE(g.level, 1) AS level, COALESCE(g.games_won, 0) AS games_won, COALESCE(g.games_played, 0) AS games_played,
-            COALESCE(c.nama, 'Member') AS customer_nama
+            COALESCE(c.nama, 'Member') AS customer_nama, c.role
      FROM game_profiles g
      INNER JOIN customers c ON c.nomor = g.customer_jid
-     WHERE c.profile_completed = 1
+     WHERE c.profile_completed = 1 AND UPPER(COALESCE(c.role, 'MEMBER')) != 'OWNER'
      ORDER BY COALESCE(g.points, 0) DESC, COALESCE(g.level, 1) DESC, COALESCE(g.games_won, 0) DESC
      LIMIT ?`,
-    [safeLimit]
+    [safeLimit + 10]
   );
+
+  // Filter out any row matching owner phone digits
+  if (ownerDigits && ownerDigits.length > 5) {
+    rows = rows.filter(r => {
+      const rDigits = normalizePhoneDigits(r.customer_jid || '');
+      return !rDigits.includes(ownerDigits) && !ownerDigits.includes(rDigits);
+    });
+  }
+
+  return rows.slice(0, safeLimit);
 }
 
 export async function resetGameLeaderboard() {
