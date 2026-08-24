@@ -644,21 +644,30 @@ export async function handleUndercoverSkip(sock, jid, senderNumber, messageObj, 
 
   // 2. JIKA SEDANG DI FASE VOTING (VOTING_PHASE)
   if (session.status === 'VOTING_PHASE') {
-    return await handleUndercoverVote(sock, jid, senderNumber, messageObj, 'SKIP');
+    return await handleUndercoverVote(sock, session.jid || jid, senderNumber, messageObj, 'SKIP');
   }
 
   return false;
 }
 
 export async function handleUndercoverVote(sock, jid, senderNumber, messageObj, targetJid) {
-  const session = activeUndercoverGames.get(jid);
+  let session = activeUndercoverGames.get(jid);
+  if (!session) {
+    for (const s of activeUndercoverGames.values()) {
+      if (s.playerRoles?.has(senderNumber)) {
+        session = s;
+        break;
+      }
+    }
+  }
+
   if (!session || session.status !== 'VOTING_PHASE') {
     await send(sock, jid, messageObj, "❌ Saat ini bukan fase voting Undercover.");
     return true;
   }
 
   if (!session.alivePlayers.includes(senderNumber)) {
-    await send(sock, jid, messageObj, "❌ Pemain yang sudah gugur tidak dapat memberikan suara!");
+    await send(sock, jid, messageObj, "❌ Pemain yang sudah gugur/mati tidak dapat memberikan suara!");
     return true;
   }
 
@@ -666,7 +675,7 @@ export async function handleUndercoverVote(sock, jid, senderNumber, messageObj, 
     messageObj.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0] ||
     messageObj.message?.extendedTextMessage?.contextInfo?.participant;
 
-  const isSkipVote = ['skip', '0', 'lewat', 'abstain', 'pass'].includes(String(rawTarget || '').trim().toLowerCase());
+  const isSkipVote = ['skip', '0', 'lewat', 'abstain', 'pass', 'voteskip'].includes(String(rawTarget || '').trim().toLowerCase());
   let resolvedTarget = null;
 
   if (isSkipVote) {
@@ -686,12 +695,12 @@ export async function handleUndercoverVote(sock, jid, senderNumber, messageObj, 
   }
 
   if (!resolvedTarget || (resolvedTarget !== 'SKIP' && !session.alivePlayers.includes(resolvedTarget))) {
-    await send(sock, jid, messageObj, `⚠️ Target vote tidak valid!\n👉 *Cara Vote:* Ketik \`.vote @member\`, nomor urut \`.vote [1-${session.alivePlayers.length}]\`, atau \`.vote skip\` (Abstain)`);
+    await send(sock, jid, messageObj, `⚠️ Target vote tidak valid atau sudah mati!\n👉 *Cara Vote:* Ketik \`.vote @member\`, nomor urut \`.vote [1-${session.alivePlayers.length}]\`, atau \`.vote skip\` (Abstain)`);
     return true;
   }
 
   if (resolvedTarget === senderNumber) {
-    await send(sock, jid, messageObj, "⚠️ Kamu tidak bisa mem-vote dirimu sendiri! Jika ingin abstain/lewati eliminasi, ketik `.vote skip`.");
+    await send(sock, jid, messageObj, "⚠️ Kamu tidak bisa mem-vote dirimu sendiri! Jika ingin melewati eliminasi ronde ini, ketik `.vote skip`.");
     return true;
   }
 
@@ -700,15 +709,15 @@ export async function handleUndercoverVote(sock, jid, senderNumber, messageObj, 
   const isGolden = session.goldenVoters?.has(senderNumber);
 
   if (resolvedTarget === 'SKIP') {
-    await send(sock, jid, messageObj, `🗳️ @${voterPhone} memilih untuk **SKIP / ABSTAIN**! ${isGolden ? '🌟 *(Golden Vote x2)*' : ''} (${session.votes.size}/${session.alivePlayers.length} suara)`, { mentions: [senderNumber] });
+    await send(sock, session.jid, messageObj, `🗳️ @${voterPhone} memilih untuk **SKIP / ABSTAIN**! ${isGolden ? '🌟 *(Golden Vote x2)*' : ''} (${session.votes.size}/${session.alivePlayers.length} suara)`, { mentions: [senderNumber] });
   } else {
     const targetPhone = resolvedTarget.split('@')[0];
-    await send(sock, jid, messageObj, `🗳️ @${voterPhone} mem-vote @${targetPhone}! ${isGolden ? '🌟 *(Golden Vote x2)*' : ''} (${session.votes.size}/${session.alivePlayers.length} suara)`, { mentions: [senderNumber, resolvedTarget] });
+    await send(sock, session.jid, messageObj, `🗳️ @${voterPhone} mem-vote @${targetPhone}! ${isGolden ? '🌟 *(Golden Vote x2)*' : ''} (${session.votes.size}/${session.alivePlayers.length} suara)`, { mentions: [senderNumber, resolvedTarget] });
   }
 
   if (session.votes.size >= session.alivePlayers.length) {
     if (session.timeout) clearTimeout(session.timeout);
-    await processUndercoverVotes(sock, jid, messageObj);
+    await processUndercoverVotes(sock, session.jid, messageObj);
   }
   return true;
 }
@@ -745,6 +754,13 @@ async function processUndercoverVotes(sock, jid, messageObj) {
     return await startNextUndercoverRound(sock, jid, messageObj);
   }
 
+  // Cek jika target dilindungi oleh GUARDIAN (Bodyguard)
+  if (session.guardedPlayer === eliminated) {
+    session.guardedPlayer = null;
+    await send(sock, jid, messageObj, `🛡️ *GUARDIAN MENYELAMATKAN DARI EKSEKUSI!* 🛡️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n@${eliminated.split('@')[0]} seharusnya dieksekusi oleh voting grup, namun Bodyguard/Guardian berhasil melindunginya dari maut! Eksekusi dibatalkan ronde ini.`, { mentions: [eliminated] });
+    return await startNextUndercoverRound(sock, jid, messageObj);
+  }
+
   // Cek jika target memiliki Rompi Anti-Peluru (Shield Card)
   if (session.shieldedPlayers?.has(eliminated)) {
     session.shieldedPlayers.delete(eliminated);
@@ -758,15 +774,7 @@ async function processUndercoverVotes(sock, jid, messageObj) {
   eliminatedRole.isAlive = false;
 
   const elimPhone = eliminated.split('@')[0];
-  const roleName = eliminatedRole.role === 'UNDERCOVER' 
-    ? '🕵️ UNDERCOVER (PENYAMAR)' 
-    : eliminatedRole.role === 'MRWHITE' 
-    ? '🤍 MR. WHITE (BLANK)' 
-    : eliminatedRole.role === 'JESTER' 
-    ? '🤡 SI BADUT (JESTER)' 
-    : eliminatedRole.role === 'DETECTIVE'
-    ? '🔍 DETEKTIF INTEL'
-    : '🧑‍🌾 WARGA SIPIL';
+  const roleName = getRoleBadge(eliminatedRole.role);
 
   await send(sock, jid, messageObj, `☠️ *@${elimPhone}* resmi dieliminasi dari grup dengan ${maxVotes} suara!\n🎭 Peran Terbuka: *${roleName}*`, { mentions: [eliminated] });
 
@@ -813,21 +821,31 @@ _Seluruh pot taruhan disapu bersih oleh Si Badut!_`;
 }
 
 export async function handleMrWhiteGuess(sock, jid, senderNumber, messageObj, guess) {
-  // Cari sesi aktif di mana senderNumber adalah MRWHITE
   let targetSession = null;
   for (const s of activeUndercoverGames.values()) {
-    if (s.playerRoles?.has(senderNumber) && s.playerRoles.get(senderNumber).role === 'MRWHITE' && (s.alivePlayers?.includes(senderNumber) || s.mrWhiteGuessPending === senderNumber)) {
+    if (s.playerRoles?.has(senderNumber)) {
       targetSession = s;
       break;
     }
   }
 
-  if (!targetSession) {
+  if (!targetSession || (targetSession.status !== 'CLUE_PHASE' && targetSession.status !== 'VOTING_PHASE' && targetSession.status !== 'MR_WHITE_GUESS')) {
     if (activeUndercoverGames.has(jid)) {
       await send(sock, jid, messageObj, "❌ Hanya Mr. White yang dapat menebak kata warga dengan `.tebakwarga <kata>`!");
       return true;
     }
     return false;
+  }
+
+  const senderRoleData = targetSession.playerRoles.get(senderNumber);
+  if (!senderRoleData || senderRoleData.role !== 'MRWHITE') {
+    await send(sock, jid, messageObj, "❌ Anda bukan Mr. White di game ini!");
+    return true;
+  }
+
+  if (!targetSession.alivePlayers.includes(senderNumber) && targetSession.mrWhiteGuessPending !== senderNumber) {
+    await send(sock, jid, messageObj, "❌ Anda sudah gugur/mati dan kesempatan menebak kata telah berakhir!");
+    return true;
   }
 
   const gameJid = targetSession.jid;
@@ -1079,19 +1097,30 @@ _Ketik petunjuk barumu di grup! (Atau .skip)_`;
 export async function handleDetectiveCheck(sock, jid, senderNumber, messageObj, targetParam) {
   let targetSession = null;
   for (const s of activeUndercoverGames.values()) {
-    if (s.playerRoles?.has(senderNumber) && s.playerRoles.get(senderNumber).role === 'DETECTIVE' && s.playerRoles.get(senderNumber).isAlive) {
+    if (s.playerRoles?.has(senderNumber)) {
       targetSession = s;
       break;
     }
   }
 
-  if (!targetSession) {
-    await send(sock, jid, messageObj, "❌ Anda bukan Detektif aktif di game Undercover yang sedang berjalan!");
+  if (!targetSession || (targetSession.status !== 'CLUE_PHASE' && targetSession.status !== 'VOTING_PHASE')) {
+    await send(sock, jid, messageObj, "❌ Tidak ada sesi game Undercover aktif yang Anda ikuti!");
+    return true;
+  }
+
+  const senderRoleData = targetSession.playerRoles.get(senderNumber);
+  if (!senderRoleData || senderRoleData.role !== 'DETECTIVE') {
+    await send(sock, jid, messageObj, "❌ Anda bukan Detektif di game ini!");
+    return true;
+  }
+
+  if (!targetSession.alivePlayers.includes(senderNumber) || !senderRoleData.isAlive) {
+    await send(sock, jid, messageObj, "❌ Anda sudah gugur/mati dan tidak dapat menggunakan kemampuan intip!");
     return true;
   }
 
   if (targetSession.detectiveChecksThisRound?.has(senderNumber)) {
-    await send(sock, jid, messageObj, "⚠️ Anda sudah menggunakan kemampuan intip di ronde ini!");
+    await send(sock, jid, messageObj, "⚠️ Anda sudah menggunakan kemampuan intip di ronde ini! Tunggu hingga ronde berikutnya.");
     return true;
   }
 
@@ -1111,7 +1140,7 @@ export async function handleDetectiveCheck(sock, jid, senderNumber, messageObj, 
   }
 
   if (!resolvedTarget || !targetSession.alivePlayers.includes(resolvedTarget)) {
-    await send(sock, jid, messageObj, `⚠️ Target tidak valid!\n👉 *Format:* \`.intip @member\` atau nomor urut \`.intip [1-${targetSession.alivePlayers.length}]\``);
+    await send(sock, jid, messageObj, `⚠️ Target tidak valid atau sudah mati!\n👉 *Format:* \`.intip @member\` atau nomor urut \`.intip [1-${targetSession.alivePlayers.length}]\``);
     return true;
   }
 
@@ -1136,14 +1165,25 @@ export async function handleDetectiveCheck(sock, jid, senderNumber, messageObj, 
 export async function handleGuardianProtect(sock, jid, senderNumber, messageObj, targetParam) {
   let targetSession = null;
   for (const s of activeUndercoverGames.values()) {
-    if (s.playerRoles?.has(senderNumber) && s.playerRoles.get(senderNumber).role === 'GUARDIAN' && s.playerRoles.get(senderNumber).isAlive) {
+    if (s.playerRoles?.has(senderNumber)) {
       targetSession = s;
       break;
     }
   }
 
-  if (!targetSession) {
-    await send(sock, jid, messageObj, "❌ Anda bukan Guardian/Bodyguard aktif di game Undercover yang sedang berjalan!");
+  if (!targetSession || (targetSession.status !== 'CLUE_PHASE' && targetSession.status !== 'VOTING_PHASE')) {
+    await send(sock, jid, messageObj, "❌ Tidak ada sesi game Undercover aktif yang Anda ikuti!");
+    return true;
+  }
+
+  const senderRoleData = targetSession.playerRoles.get(senderNumber);
+  if (!senderRoleData || senderRoleData.role !== 'GUARDIAN') {
+    await send(sock, jid, messageObj, "❌ Anda bukan Guardian/Bodyguard di game ini!");
+    return true;
+  }
+
+  if (!targetSession.alivePlayers.includes(senderNumber) || !senderRoleData.isAlive) {
+    await send(sock, jid, messageObj, "❌ Anda sudah gugur/mati dan tidak dapat menggunakan kemampuan perlindungan!");
     return true;
   }
 
@@ -1163,7 +1203,7 @@ export async function handleGuardianProtect(sock, jid, senderNumber, messageObj,
   }
 
   if (!resolvedTarget || !targetSession.alivePlayers.includes(resolvedTarget)) {
-    await send(sock, jid, messageObj, `⚠️ Target tidak valid!\n👉 *Format:* \`.lindung @member\` atau nomor urut \`.lindung [1-${targetSession.alivePlayers.length}]\``);
+    await send(sock, jid, messageObj, `⚠️ Target tidak valid atau sudah mati!\n👉 *Format:* \`.lindung @member\` atau nomor urut \`.lindung [1-${targetSession.alivePlayers.length}]\``);
     return true;
   }
 
@@ -1177,14 +1217,25 @@ export async function handleGuardianProtect(sock, jid, senderNumber, messageObj,
 export async function handleSilencerSilence(sock, jid, senderNumber, messageObj, targetParam) {
   let targetSession = null;
   for (const s of activeUndercoverGames.values()) {
-    if (s.playerRoles?.has(senderNumber) && s.playerRoles.get(senderNumber).role === 'SILENCER' && s.playerRoles.get(senderNumber).isAlive) {
+    if (s.playerRoles?.has(senderNumber)) {
       targetSession = s;
       break;
     }
   }
 
-  if (!targetSession) {
-    await send(sock, jid, messageObj, "❌ Anda bukan Silencer aktif di game Undercover yang sedang berjalan!");
+  if (!targetSession || (targetSession.status !== 'CLUE_PHASE' && targetSession.status !== 'VOTING_PHASE')) {
+    await send(sock, jid, messageObj, "❌ Tidak ada sesi game Undercover aktif yang Anda ikuti!");
+    return true;
+  }
+
+  const senderRoleData = targetSession.playerRoles.get(senderNumber);
+  if (!senderRoleData || senderRoleData.role !== 'SILENCER') {
+    await send(sock, jid, messageObj, "❌ Anda bukan Silencer di game ini!");
+    return true;
+  }
+
+  if (!targetSession.alivePlayers.includes(senderNumber) || !senderRoleData.isAlive) {
+    await send(sock, jid, messageObj, "❌ Anda sudah gugur/mati dan tidak dapat membungkam pemain!");
     return true;
   }
 
@@ -1204,7 +1255,7 @@ export async function handleSilencerSilence(sock, jid, senderNumber, messageObj,
   }
 
   if (!resolvedTarget || !targetSession.alivePlayers.includes(resolvedTarget)) {
-    await send(sock, jid, messageObj, `⚠️ Target tidak valid!\n👉 *Format:* \`.silence @member\` atau \`.silence [1-${targetSession.alivePlayers.length}]\``);
+    await send(sock, jid, messageObj, `⚠️ Target tidak valid atau sudah mati!\n👉 *Format:* \`.silence @member\` atau \`.silence [1-${targetSession.alivePlayers.length}]\``);
     return true;
   }
 
@@ -1218,14 +1269,25 @@ export async function handleSilencerSilence(sock, jid, senderNumber, messageObj,
 export async function handleSaboteurHack(sock, jid, senderNumber, messageObj, targetParam) {
   let targetSession = null;
   for (const s of activeUndercoverGames.values()) {
-    if (s.playerRoles?.has(senderNumber) && s.playerRoles.get(senderNumber).role === 'SABOTEUR' && s.playerRoles.get(senderNumber).isAlive) {
+    if (s.playerRoles?.has(senderNumber)) {
       targetSession = s;
       break;
     }
   }
 
-  if (!targetSession) {
-    await send(sock, jid, messageObj, "❌ Anda bukan Saboteur aktif di game Undercover yang sedang berjalan!");
+  if (!targetSession || (targetSession.status !== 'CLUE_PHASE' && targetSession.status !== 'VOTING_PHASE')) {
+    await send(sock, jid, messageObj, "❌ Tidak ada sesi game Undercover aktif yang Anda ikuti!");
+    return true;
+  }
+
+  const senderRoleData = targetSession.playerRoles.get(senderNumber);
+  if (!senderRoleData || senderRoleData.role !== 'SABOTEUR') {
+    await send(sock, jid, messageObj, "❌ Anda bukan Saboteur di game ini!");
+    return true;
+  }
+
+  if (!targetSession.alivePlayers.includes(senderNumber) || !senderRoleData.isAlive) {
+    await send(sock, jid, messageObj, "❌ Anda sudah gugur/mati dan tidak dapat meretas status!");
     return true;
   }
 
@@ -1245,7 +1307,7 @@ export async function handleSaboteurHack(sock, jid, senderNumber, messageObj, ta
   }
 
   if (!resolvedTarget || !targetSession.alivePlayers.includes(resolvedTarget)) {
-    await send(sock, jid, messageObj, `⚠️ Target tidak valid!\n👉 *Format:* \`.hack @member\` atau \`.hack [1-${targetSession.alivePlayers.length}]\``);
+    await send(sock, jid, messageObj, `⚠️ Target tidak valid atau sudah mati!\n👉 *Format:* \`.hack @member\` atau \`.hack [1-${targetSession.alivePlayers.length}]\``);
     return true;
   }
 
@@ -1265,7 +1327,7 @@ export async function handleSaboteurHack(sock, jid, senderNumber, messageObj, ta
 export async function handleUndercoverShoot(sock, jid, senderNumber, messageObj, args = []) {
   let targetSession = null;
   for (const s of activeUndercoverGames.values()) {
-    if (s.alivePlayers?.includes(senderNumber)) {
+    if (s.playerRoles?.has(senderNumber)) {
       targetSession = s;
       break;
     }
@@ -1278,6 +1340,11 @@ export async function handleUndercoverShoot(sock, jid, senderNumber, messageObj,
   const senderRoleData = targetSession.playerRoles.get(senderNumber);
   if (!senderRoleData || !['SHERIFF', 'UNDERCOVER', 'ASSASSIN'].includes(senderRoleData.role)) {
     await send(sock, jid, messageObj, "❌ Peran Anda tidak memiliki senjata untuk menembak!");
+    return true;
+  }
+
+  if (!targetSession.alivePlayers.includes(senderNumber) || !senderRoleData.isAlive) {
+    await send(sock, jid, messageObj, "❌ Anda sudah gugur/mati dan tidak dapat menembak!");
     return true;
   }
 
@@ -1306,7 +1373,7 @@ export async function handleUndercoverShoot(sock, jid, senderNumber, messageObj,
   }
 
   if (!resolvedTarget || !targetSession.alivePlayers.includes(resolvedTarget)) {
-    await send(sock, jid, messageObj, `⚠️ Target tembakan tidak valid!\n👉 *Format:* \`.tembak @member\` atau nomor urut \`.tembak [1-${targetSession.alivePlayers.length}]\``);
+    await send(sock, jid, messageObj, `⚠️ Target tembakan tidak valid atau sudah mati!\n👉 *Format:* \`.tembak @member\` atau nomor urut \`.tembak [1-${targetSession.alivePlayers.length}]\``);
     return true;
   }
 
