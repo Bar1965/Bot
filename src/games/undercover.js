@@ -1151,6 +1151,21 @@ _Mr. White menyapu bersih seluruh pot taruhan permainan!_`;
   }
 }
 
+export function getPlayerRoleData(session, targetJid) {
+  if (!session || !session.playerRoles || !targetJid) return null;
+  if (session.playerRoles.has(targetJid)) {
+    return session.playerRoles.get(targetJid);
+  }
+  const cleanTargetDigits = String(targetJid).replace(/\D/g, '');
+  for (const [p, data] of session.playerRoles.entries()) {
+    const cleanP = String(p).replace(/\D/g, '');
+    if (cleanTargetDigits && cleanP && (cleanTargetDigits === cleanP || db.isPhoneMatch(p, targetJid))) {
+      return data;
+    }
+  }
+  return null;
+}
+
 export function isUndercoverRole(role) {
   return ['UNDERCOVER', 'ASSASSIN', 'FRAMER', 'SABOTEUR'].includes(role);
 }
@@ -1183,17 +1198,17 @@ export async function checkUndercoverWinCondition(sock, jid) {
   const session = activeUndercoverGames.get(jid);
   if (!session) return false;
 
-  const aliveUndercover = session.alivePlayers.filter(p => isUndercoverRole(session.playerRoles.get(p)?.role));
-  const aliveMrWhite = session.alivePlayers.filter(p => session.playerRoles.get(p)?.role === 'MRWHITE');
-  const aliveCivilians = session.alivePlayers.filter(p => isCivilianRole(session.playerRoles.get(p)?.role));
-  const aliveBunglon = session.alivePlayers.filter(p => session.playerRoles.get(p)?.role === 'BUNGLON');
+  const aliveUndercover = session.alivePlayers.filter(p => isUndercoverRole(getPlayerRoleData(session, p)?.role));
+  const aliveMrWhite = session.alivePlayers.filter(p => getPlayerRoleData(session, p)?.role === 'MRWHITE');
+  const aliveCivilians = session.alivePlayers.filter(p => isCivilianRole(getPlayerRoleData(session, p)?.role));
+  const aliveBunglon = session.alivePlayers.filter(p => getPlayerRoleData(session, p)?.role === 'BUNGLON');
 
   const totalPrize = session.buyIn * session.players.length;
 
   // 1. Seluruh Penyamar & Mr White Mati -> Warga Sipil (+ Bunglon yang masih hidup) Menang!
   if (aliveUndercover.length === 0 && aliveMrWhite.length === 0) {
     if (session.timeout) clearTimeout(session.timeout);
-    const winningCivilians = session.players.filter(p => isCivilianRole(session.playerRoles.get(p)?.role));
+    const winningCivilians = session.players.filter(p => isCivilianRole(getPlayerRoleData(session, p)?.role));
     const allWinners = [...winningCivilians, ...aliveBunglon];
     const prizePerWinner = Math.floor(totalPrize / Math.max(1, allWinners.length));
 
@@ -1225,7 +1240,7 @@ Seluruh penyamar berhasil dieliminasi!
   // 2. Undercover >= Warga Sipil -> Undercover (+ surviving Mr White & Bunglon) Menang!
   if ((aliveUndercover.length + aliveMrWhite.length) >= aliveCivilians.length) {
     if (session.timeout) clearTimeout(session.timeout);
-    const winningUndercovers = session.players.filter(p => isUndercoverRole(session.playerRoles.get(p)?.role));
+    const winningUndercovers = session.players.filter(p => isUndercoverRole(getPlayerRoleData(session, p)?.role));
     const allWinners = [...winningUndercovers, ...aliveMrWhite, ...aliveBunglon];
     const prizePerWinner = Math.floor(totalPrize / Math.max(1, allWinners.length));
 
@@ -1502,9 +1517,9 @@ export async function handleDetectiveCheck(sock, jid, senderNumber, messageObj, 
   senderRoleData.hasUsedIntel = true;
   saveUndercoverSessions();
 
-  const targetRole = targetSession.playerRoles.get(resolvedTarget);
-  const isFramed = targetSession.framedPlayer === resolvedTarget;
-  const isCiv = isCivilianRole(targetRole.role) && !isFramed;
+  const targetRole = getPlayerRoleData(targetSession, resolvedTarget);
+  const isFramed = targetSession.framedPlayer && (targetSession.framedPlayer === resolvedTarget || db.isPhoneMatch(targetSession.framedPlayer, resolvedTarget));
+  const isCiv = targetRole && isCivilianRole(targetRole.role) && !isFramed;
 
   const report = isCiv 
     ? `🔍 *LAPORAN INTEL DETEKTIF:*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n👤 Target: @${resolvedTarget.split('@')[0]}\n🟢 Status: *WARGA SIPIL (CIVILIAN)* 🛡️\n\n_Target adalah sekutu warga yang aman!_`
@@ -1523,7 +1538,7 @@ export async function handleGuardianProtect(sock, jid, senderNumber, messageObj,
     return true;
   }
 
-  const senderRoleData = targetSession.playerRoles.get(resolvedSender);
+  const senderRoleData = getPlayerRoleData(targetSession, resolvedSender);
   if (!senderRoleData || senderRoleData.role !== 'GUARDIAN') {
     await send(sock, jid, messageObj, "❌ Anda bukan Guardian/Bodyguard di game ini!");
     return true;
@@ -1558,7 +1573,7 @@ export async function handleFramerFrame(sock, jid, senderNumber, messageObj, tar
     return true;
   }
 
-  const senderRoleData = targetSession.playerRoles.get(resolvedSender);
+  const senderRoleData = getPlayerRoleData(targetSession, resolvedSender);
   if (!senderRoleData || senderRoleData.role !== 'FRAMER') {
     await send(sock, jid, messageObj, "❌ Anda bukan Framer di game ini!");
     return true;
@@ -1613,7 +1628,7 @@ export async function handleSaboteurHack(sock, jid, senderNumber, messageObj, ta
     return true;
   }
 
-  const senderRoleData = targetSession.playerRoles.get(resolvedSender);
+  const senderRoleData = getPlayerRoleData(targetSession, resolvedSender);
   if (!senderRoleData || senderRoleData.role !== 'SABOTEUR') {
     await send(sock, jid, messageObj, "❌ Anda bukan Saboteur di game ini!");
     return true;
@@ -1631,13 +1646,13 @@ export async function handleSaboteurHack(sock, jid, senderNumber, messageObj, ta
     return true;
   }
 
-  const targetRoleData = targetSession.playerRoles.get(resolvedTarget);
+  const targetRoleData = getPlayerRoleData(targetSession, resolvedTarget);
   const targetPhone = resolvedTarget.split('@')[0];
   const isVip = ['SHERIFF', 'DETECTIVE', 'GUARDIAN'].includes(targetRoleData?.role);
 
   const report = isVip
-    ? `🦹 *HASIL RETASAN SABOTEUR:* ⚡\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n👤 Target: @${targetPhone}\n🚨 Status Intel: *WARGA SPESIAL / VIP BERBAHAYA!* (${getRoleBadge(targetRoleData.role)})\n\n_Target memegang kemampuan khusus, segera habisi dia!_`
-    : `🦹 *HASIL RETASAN SABOTEUR:* ⚡\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n👤 Target: @${targetPhone}\n🛡️ Status Intel: *${getRoleBadge(targetRoleData.role)}*\n\n_Target tidak memiliki senjata berbahaya._`;
+    ? `🦹 *HASIL RETASAN SABOTEUR:* ⚡\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n👤 Target: @${targetPhone}\n🚨 Status Intel: *WARGA SPESIAL / VIP BERBAHAYA!* (${getRoleBadge(targetRoleData?.role)})\n\n_Target memegang kemampuan khusus, segera habisi dia!_`
+    : `🦹 *HASIL RETASAN SABOTEUR:* ⚡\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n👤 Target: @${targetPhone}\n🛡️ Status Intel: *${getRoleBadge(targetRoleData?.role)}*\n\n_Target tidak memiliki senjata berbahaya._`;
 
   await send(sock, jid, messageObj, report, { mentions: [resolvedTarget] });
   return true;
@@ -1651,7 +1666,7 @@ export async function handleUndercoverShoot(sock, jid, senderNumber, messageObj,
     return false;
   }
 
-  const senderRoleData = targetSession.playerRoles.get(resolvedSender);
+  const senderRoleData = getPlayerRoleData(targetSession, resolvedSender);
   if (!senderRoleData || !['SHERIFF', 'UNDERCOVER', 'ASSASSIN'].includes(senderRoleData.role)) {
     await send(sock, jid, messageObj, "❌ Peran Anda tidak memiliki senjata untuk menembak!");
     return true;
@@ -1678,7 +1693,7 @@ export async function handleUndercoverShoot(sock, jid, senderNumber, messageObj,
     return true;
   }
 
-  if (resolvedTarget === resolvedSender) {
+  if (resolvedTarget === resolvedSender || db.isPhoneMatch(resolvedTarget, resolvedSender)) {
     await send(sock, jid, messageObj, "⚠️ Anda tidak bisa menembak diri sendiri!");
     return true;
   }
@@ -1689,10 +1704,11 @@ export async function handleUndercoverShoot(sock, jid, senderNumber, messageObj,
   const gameJid = targetSession.jid;
   const senderPhone = resolvedSender.split('@')[0];
   const targetPhone = resolvedTarget.split('@')[0];
-  const targetRoleData = targetSession.playerRoles.get(resolvedTarget);
+  const targetRoleData = getPlayerRoleData(targetSession, resolvedTarget);
 
   // Cek jika target dilindungi Guardian
-  if (targetSession.guardedPlayer === resolvedTarget) {
+  const isGuarded = targetSession.guardedPlayer && (targetSession.guardedPlayer === resolvedTarget || db.isPhoneMatch(targetSession.guardedPlayer, resolvedTarget));
+  if (isGuarded) {
     targetSession.guardedPlayer = null;
     saveUndercoverSessions();
 
@@ -1713,29 +1729,29 @@ Seseorang mencoba melepaskan tembakan ke arah @${targetPhone}, namun Bodyguard/G
 
   // 1. JIKA PENEMBAK ADALAH SHERIFF (KOBOI)
   if (senderRoleData.role === 'SHERIFF') {
-    const isEnemy = isUndercoverRole(targetRoleData.role) || isNeutralRole(targetRoleData.role);
+    const isEnemy = targetRoleData ? (isUndercoverRole(targetRoleData.role) || isNeutralRole(targetRoleData.role)) : false;
 
     if (isEnemy) {
       // Sasaran tepat! Musuh tewas!
       deadPlayer = resolvedTarget;
-      targetSession.alivePlayers = targetSession.alivePlayers.filter(p => p !== resolvedTarget);
-      targetRoleData.isAlive = false;
+      targetSession.alivePlayers = targetSession.alivePlayers.filter(p => p !== resolvedTarget && !db.isPhoneMatch(p, resolvedTarget));
+      if (targetRoleData) targetRoleData.isAlive = false;
 
       const hitMsg = 
 `💥 *DORRR! TEMBAKAN REVOLVER SHERIFF!* 🤠🔫
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Sheriff @${senderPhone} melepaskan tembakan revolver ke arah @${targetPhone}!
 ☠️ @${targetPhone} **TEWAS DI TEMPAT** tanpa perlu voting!
-🎭 Peran Terbuka: *${getRoleBadge(targetRoleData.role)}*`;
+🎭 Peran Terbuka: *${getRoleBadge(targetRoleData?.role)}*`;
 
       await send(sock, gameJid, null, hitMsg, { mentions: [resolvedSender, resolvedTarget] });
       if (jid !== gameJid) {
-        await send(sock, jid, messageObj, `🎯 Tembakan Anda berhasil! @${targetPhone} (${getRoleBadge(targetRoleData.role)}) telah tewas!`);
+        await send(sock, jid, messageObj, `🎯 Tembakan Anda berhasil! @${targetPhone} (${getRoleBadge(targetRoleData?.role)}) telah tewas!`);
       }
     } else {
       // SALAH SASARAN! Menembak Warga / Sekutu -> Sheriff Suicide!
       deadPlayer = resolvedSender;
-      targetSession.alivePlayers = targetSession.alivePlayers.filter(p => p !== resolvedSender);
+      targetSession.alivePlayers = targetSession.alivePlayers.filter(p => p !== resolvedSender && !db.isPhoneMatch(p, resolvedSender));
       senderRoleData.isAlive = false;
 
       const suicideMsg = 
@@ -1754,15 +1770,15 @@ Sheriff @${senderPhone} melepaskan tembakan ke arah Warga @${targetPhone}!
   // 2. JIKA PENEMBAK ADALAH UNDERCOVER ATAU ASSASSIN
   else if (['UNDERCOVER', 'ASSASSIN'].includes(senderRoleData.role)) {
     deadPlayer = resolvedTarget;
-    targetSession.alivePlayers = targetSession.alivePlayers.filter(p => p !== resolvedTarget);
-    targetRoleData.isAlive = false;
+    targetSession.alivePlayers = targetSession.alivePlayers.filter(p => p !== resolvedTarget && !db.isPhoneMatch(p, resolvedTarget));
+    if (targetRoleData) targetRoleData.isAlive = false;
 
     const killMsg = 
 `🩸 *PEMBUNUHAN RAHASIA DI MALAM HARI!* 🕵️🗡️
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Terdengar suara letupan tembakan senyap di kejauhan...
 ☠️ @${targetPhone} **DITEMUKAN TEWAS** secara misterius!
-🎭 Peran Terbuka: *${getRoleBadge(targetRoleData.role)}*`;
+🎭 Peran Terbuka: *${getRoleBadge(targetRoleData?.role)}*`;
 
     await send(sock, gameJid, null, killMsg, { mentions: [resolvedTarget] });
     if (jid !== gameJid) {
