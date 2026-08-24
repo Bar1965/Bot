@@ -656,7 +656,11 @@ async function advanceClueTurn(sock, jid, messageObj) {
   const isSuddenDeath = session.round >= 4;
   const turnTimeoutMs = isSuddenDeath ? 15 * 1000 : (session.modifier?.name?.includes('Speed') ? 15 * 1000 : CLUE_TIMEOUT_MS);
 
-  const turnMsg = `✅ Petunjuk diterima!\n\n👉 *Giliran Selanjutnya:* @${nextPlayer.split('@')[0]} (Pemain ${session.turnIndex + 1}/${session.alivePlayers.length})\n⏳ *Waktu:* ${Math.round(turnTimeoutMs / 1000)} Detik\n_Tulis 1 kalimat petunjuk katamu di grup ini! ${isSuddenDeath ? '🚫 (Vote Skip Dikunci)' : '(Atau ketik `.skip` untuk melewati giliran)'}_`;
+  const modInfo = session.modifier 
+    ? `\n\n🎲 *TANTANGAN RONDE INI:* *${session.modifier.name}*\n📝 *Aturan:* _${session.modifier.desc}_\n` 
+    : '';
+
+  const turnMsg = `✅ Petunjuk diterima!${modInfo}\n👉 *Giliran Selanjutnya:* @${nextPlayer.split('@')[0]} (Pemain ${session.turnIndex + 1}/${session.alivePlayers.length})\n⏳ *Waktu:* ${Math.round(turnTimeoutMs / 1000)} Detik\n_Tulis 1 kalimat petunjuk katamu di grup ini! ${isSuddenDeath ? '🚫 (Vote Skip Dikunci)' : '(Atau ketik `.skip` untuk melewati giliran)'}_`;
 
   session.timeout = setTimeout(async () => {
     if (!activeUndercoverGames.has(jid)) return;
@@ -1356,7 +1360,12 @@ Warga sipil kehabisan waktu dan gagal membongkar penyamar hingga akhir Ronde 7!
 🏷️ *Kategori:* ${session.pair.category}
 💰 *Total Prizepool:* *${totalPot.toLocaleString('id-ID')} Poin*
 🎭 *Komposisi Peran:* ${roleSummary}
-🎲 *Tantangan Ronde:* *${mod.name}* (${mod.desc})
+
+╔══════════════════════════════╗
+🎲 *TANTANGAN KHUSUS RONDE 1:*
+👉 *${mod.name}*
+📝 *Aturan:* ${mod.desc}
+╚══════════════════════════════╝
 
 📜 *ATURAN GAME TERBARU:*
 ⏱️ *Durasi:* 25s Petunjuk, 35s Voting
@@ -1367,7 +1376,7 @@ Warga sipil kehabisan waktu dan gagal membongkar penyamar hingga akhir Ronde 7!
 📋 *Urutan Giliran Pemain:*
 ${session.alivePlayers.map((p, i) => `${i + 1}. @${p.split('@')[0]}`).join('\n')}
 
-👉 *Giliran Pertama:* @${currentTurnPlayer.split('@')[0]} (Waktu 25s)
+👉 *Giliran Pertama:* @${currentTurnPlayer.split('@')[0]} (Waktu ${Math.round(turnTimeoutMs / 1000)}s)
 _Ketik 1 kalimat petunjuk katamu di grup ini! (Atau .skip)_
 💡 _Ketik \`.undercover role\` untuk membaca panduan peran._`;
   } else if (isSuddenDeath) {
@@ -1379,7 +1388,12 @@ _Ketik 1 kalimat petunjuk katamu di grup ini! (Atau .skip)_
 • Opsi \`.vote skip\` **DIKUNCI / DILARANG** (Wajib ada yang dieksekusi)!
 • Batas akhir game: Ronde 7 (Penyamar menang jika selamat).
 
-🎲 *Tantangan Ronde:* *${mod.name}* (${mod.desc})
+╔══════════════════════════════╗
+🎲 *TANTANGAN KHUSUS RONDE ${session.round}:*
+👉 *${mod.name}*
+📝 *Aturan:* ${mod.desc}
+╚══════════════════════════════╝
+
 👥 *Pemain Bertahan (${session.alivePlayers.length}):*
 ${session.alivePlayers.map((p, i) => `${i + 1}. @${p.split('@')[0]}`).join('\n')}
 
@@ -1389,11 +1403,16 @@ _Ketik petunjuk barumu di grup!_`;
     roundHeader = 
 `🔄 *UNDERCOVER — MASUK RONDE ${session.round}* 🕵️
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🎲 *Tantangan Ronde:* *${mod.name}* (${mod.desc})
+╔══════════════════════════════╗
+🎲 *TANTANGAN KHUSUS RONDE ${session.round}:*
+👉 *${mod.name}*
+📝 *Aturan:* ${mod.desc}
+╚══════════════════════════════╝
+
 👥 *Pemain Bertahan (${session.alivePlayers.length}):*
 ${session.alivePlayers.map((p, i) => `${i + 1}. @${p.split('@')[0]}`).join('\n')}
 
-👉 *Giliran:* @${currentTurnPlayer.split('@')[0]} (Waktu 25s)
+👉 *Giliran:* @${currentTurnPlayer.split('@')[0]} (Waktu ${Math.round(turnTimeoutMs / 1000)}s)
 _Ketik petunjuk barumu di grup! (Atau .skip)_`;
   }
 
