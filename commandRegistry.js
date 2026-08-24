@@ -79,6 +79,8 @@ const categories = {
       ['.freegames', 'Daftar semua game PC gratis 100%'],
       ['.undercover / .sus [taruhan]', 'Game deduksi sosial kata rahasia via DM WhatsApp'],
       ['.undercover role', 'Panduan lengkap peran dan cara main game Undercover'],
+      ['.undercover card', 'Toko kartu aksi khusus (Shield, Golden Vote, Lakban, Radar)'],
+      ['.intip @member', 'Khusus Detektif Undercover via DM untuk melacak status pemain'],
       ['.cerdascermat [taruhan]', 'Turnamen kuis Battle Royale sistem gugur berhadiah prizepool'],
       ['.jailbreak / .kabur', 'Misi teka-teki membobol sel untuk melarikan diri dari penjara'],
       ['.tebus @napi', 'Bayar uang jaminan pengacara (1.000 Poin) untuk membebaskan teman dari penjara'],

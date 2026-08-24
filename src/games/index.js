@@ -13,7 +13,7 @@ import { handleBankEconomy } from './bankEconomy.js';
 import { activeRounds, startRound, handleRoundCommand, surrenderRound, ROUND_DURATION_MS, scheduleRoundExpiry } from './triviaEngine.js';
 import { activeStealSessions, profileText, handleStealHeist, handleStealAnswer } from './rpgSystem.js';
 import { activeJailbreakSessions, handleJailbreak, handleJailbreakAnswer, handleTebusNapi } from './jailbreak.js';
-import { activeUndercoverGames, handleUndercover, handleUndercoverClue, handleUndercoverVote, handleMrWhiteGuess } from './undercover.js';
+import { activeUndercoverGames, handleUndercover, handleUndercoverClue, handleUndercoverVote, handleMrWhiteGuess, handleDetectiveCheck } from './undercover.js';
 import { activeQuizTournaments, handleQuizTournament, handleTournamentAnswer } from './quizTournament.js';
 import { jidNormalizedUser } from '@whiskeysockets/baileys';
 
@@ -126,7 +126,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     'jawab', 'answer', 'hint', 'nyerah', 'surrender', 'menyerah',
     'quiz', 'trivia', 'tebakquiz', 'tebakemoji', 'emoji', 'tebakkata', 'hangman', 'kata',
     'family100', 'f100', 'caklontong', 'tts',
-    'undercover', 'sus', 'impostor', 'joinundercover', 'startundercover', 'tebakwarga', 'v',
+    'undercover', 'sus', 'impostor', 'joinundercover', 'startundercover', 'tebakwarga', 'intip', 'cekintip', 'v',
     'cerdascermat', 'kuisturnamen', 'quizbattle', 'joincerdascermat', 'startcerdascermat',
     'jailbreak', 'kabur', 'bobolpenjara', 'tebus', 'bebasinnapi',
     'duel', 'terimaduel', 'gasduel', 'tolakduel', 'tembak', 'dor',
@@ -404,6 +404,12 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
   if (['tebakwarga'].includes(command)) {
     const guess = args.slice(1).join(' ').trim();
     return await handleMrWhiteGuess(sock, jid, senderNumber, messageObj, guess);
+  }
+
+  // Detektif Undercover (.intip @member)
+  if (['intip', 'cekintip'].includes(command)) {
+    const target = messageObj.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0] || args[1];
+    return await handleDetectiveCheck(sock, jid, senderNumber, messageObj, target);
   }
 
   // Turnamen Battle Royale Cerdas Cermat

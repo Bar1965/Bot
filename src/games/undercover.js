@@ -5,56 +5,92 @@ export const activeUndercoverGames = new Map();
 const CLUE_TIMEOUT_MS = 35 * 1000;
 const VOTE_TIMEOUT_MS = 60 * 1000;
 
-// Database Pasangan Kata Relatable & Seru (60+ Pasang Kata)
+// Database Pasangan Kata Super Relatable, Meme, Gaming & Pop Culture (100+ Pasangan Kata)
 const WORD_PAIRS = [
-  // Kuliner & Jajanan
+  // 🍜 Kuliner, Jajanan & Minuman
   { civilian: 'INDOMIE', undercover: 'MIE SEDAAP', category: '🍜 Kuliner / Mie Instan' },
-  { civilian: 'NASI PADANG', undercover: 'NASI UDUK', category: '🍛 Makanan Khas' },
+  { civilian: 'MIE GACOAN', undercover: 'MIE JEBEW', category: '🌶️ Kuliner Mie Pedas' },
+  { civilian: 'NASI PADANG', undercover: 'NASI UDUK', category: '🍛 Masakan Tradisional' },
   { civilian: 'KOPI SUSU', undercover: 'BOBA MILK', category: '🧋 Minuman Kekinian' },
   { civilian: 'TAHU BULAT', undercover: 'CIRENG', category: '🥟 Jajanan Gorengan' },
   { civilian: 'MARTABAK MANIS', undercover: 'TERANG BULAN', category: '🥞 Makanan Manis' },
-  { civilian: 'AYAM GEPREK', undercover: 'AYAM PENYET', category: '🍗 Olahan Ayam' },
+  { civilian: 'AYAM GEPREK', undercover: 'AYAM PENYET', category: '🍗 Olahan Ayam Pedas' },
   { civilian: 'ES TEH MANIS', undercover: 'ES JERUK', category: '🍹 Minuman Warung' },
   { civilian: 'BAKSO', undercover: 'MIE AYAM', category: '🍲 Makanan Berkuah' },
   { civilian: 'SATE MADURA', undercover: 'SATE PADANG', category: '🍢 Kuliner Sate' },
-  { civilian: 'RENDANG', undercover: 'GULAI', category: '🥘 Masakan Daging' },
-  { civilian: 'SEBLAK', undercover: 'BASO ACI', category: '🌶️ Jajanan Pedas' },
+  { civilian: 'RENDANG', undercover: 'GULAI', category: '🥘 Masakan Daging Padang' },
+  { civilian: 'SEBLAK', undercover: 'BASO ACI', category: '🌶️ Jajanan Pedas Bandung' },
   { civilian: 'PECEL LELE', undercover: 'BEBEK GORENG', category: '🍱 Kuliner Kaki Lima' },
   { civilian: 'ES KRIM', undercover: 'COKELAT', category: '🍦 Makanan Penutup' },
-  { civilian: 'PIZZA', undercover: 'BURGER', category: '🍔 Fast Food' },
+  { civilian: 'PIZZA', undercover: 'BURGER', category: '🍔 Fast Food Barat' },
   { civilian: 'ROTI BAKAR', undercover: 'PISANG GORENG', category: '🍞 Camilan Malam' },
+  { civilian: 'RICHEESE FACTORY', undercover: 'KFC', category: '🍗 Restoran Cepat Saji' },
+  { civilian: 'BATAGOR', undercover: 'SIOMAY', category: '🥟 Jajanan Bumbu Kacang' },
+  { civilian: 'ES CENDOL', undercover: 'ES DAWET', category: '🍧 Minuman Tradisional Segar' },
+  { civilian: 'AQUA', undercover: 'LE MINERALE', category: '💧 Air Mineral Kemasan' },
+  { civilian: 'KERUPUK PUTIH', undercover: 'KERUPUK KULIT', category: '🥢 Kerupuk Pelengkap' },
+  { civilian: 'SOP KAKI KAMBING', undercover: 'TONGSENG', category: '🍲 Masakan Olahan Kambing' },
+  { civilian: 'KEBAB', undercover: 'SHAWARMA', category: '🌯 Kuliner Khas Timur Tengah' },
+  { civilian: 'MIXUE', undercover: 'MOMOYO', category: '🍦 Gerai Es Krim Viral' },
 
-  // Kehidupan, Romansa & Budaya Modern
-  { civilian: 'KOSAN', undercover: 'KONTRAKAN', category: '🏠 Tempat Tinggal' },
-  { civilian: 'SKRIPSI', undercover: 'TUGAS AKHIR', category: '🎓 Perjuangan Kampus' },
-  { civilian: 'DOSEN PEMBIMBING', undercover: 'HRD KANTOR', category: '👔 Sosok Penguji' },
+  // 🎮 Gaming, Hiburan & Pop Culture
+  { civilian: 'MOBILE LEGENDS', undercover: 'FREE FIRE', category: '🎮 Game Mobile Populer' },
+  { civilian: 'VALORANT', undercover: 'CS:GO (COUNTER-STRIKE)', category: '🔫 Game Tactical FPS PC' },
+  { civilian: 'GENSHIN IMPACT', undercover: 'HONKAI STAR RAIL', category: '✨ Game Gacha Anime' },
+  { civilian: 'PLAYSTATION', undercover: 'XBOX', category: '🎮 Konsol Game Rumah' },
+  { civilian: 'MINECRAFT', undercover: 'ROBLOX', category: '🧱 Game Sandbox Dunia Kreatif' },
+  { civilian: 'GTA V', undercover: 'CYBERPUNK 2077', category: '🌆 Game Open World' },
+  { civilian: 'NETFLIX', undercover: 'YOUTUBE PREMIUM', category: '🎬 Layanan Streaming Video' },
+  { civilian: 'SPOTIFY', undercover: 'APPLE MUSIC', category: '🎵 Layanan Musik Streaming' },
+  { civilian: 'DRAKOR', undercover: 'ANIME', category: '📺 Serial Tontonan Favorit' },
+  { civilian: 'BIOSKOP', undercover: 'HOME THEATER', category: '🍿 Tempat Nonton Film' },
+  { civilian: 'CONAN EDOGAWA', undercover: 'SHERLOCK HOLMES', category: '🕵️ Karakter Detektif Terkenal' },
+  { civilian: 'NARUTO', undercover: 'SASUKE', category: '🍥 Karakter Ninja Anime' },
+  { civilian: 'DORAEMON', undercover: 'SHINCHAN', category: '🐱 Serial Kartun Masa Kecil' },
+
+  // 🏠 Kehidupan, Romansa & Budaya Modern
+  { civilian: 'KOSAN', undercover: 'KONTRAKAN', category: '🏠 Tempat Tinggal Sewa' },
+  { civilian: 'SKRIPSI', undercover: 'TUGAS AKHIR', category: '🎓 Perjuangan Mahasiswa Akhir' },
+  { civilian: 'DOSEN PEMBIMBING', undercover: 'HRD KANTOR', category: '👔 Sosok Penguji Karir' },
   { civilian: 'MANTAN', undercover: 'GEBETAN', category: '💔 Hubungan Asmara' },
-  { civilian: 'SHOPEE', undercover: 'TOKOPEDIA', category: '🛍️ Belanja Online' },
-  { civilian: 'WHATSAPP', undercover: 'TELEGRAM', category: '💬 Aplikasi Chat' },
-  { civilian: 'INSTAGRAM', undercover: 'TIKTOK', category: '📱 Media Sosial' },
-  { civilian: 'OJEK ONLINE', undercover: 'TAKSI', category: '🛵 Transportasi Umum' },
-  { civilian: 'BEGADANG', undercover: 'OVERTHINKING', category: '🌙 Kebiasaan Malam' },
-  { civilian: 'GAJIAN', undercover: 'THR', category: '💵 Rezeki Finansial' },
-  { civilian: 'WARKOP', undercover: 'KAFE AESTHETIC', category: '☕ Tempat Nongkrong' },
-  { civilian: 'BIOSKOP', undercover: 'NETFLIX', category: '🎬 Nonton Film' },
   { civilian: 'PACARAN', undercover: 'HTS (HUBUNGAN TANPA STATUS)', category: '💘 Status Percintaan' },
-  { civilian: 'PULANG KAMPUNG', undercover: 'LIBURAN', category: '🧳 Perjalanan Jauh' },
-  { civilian: 'KRL', undercover: 'MRT', category: '🚆 Kereta Komuter' },
+  { civilian: 'DATING APP', undercover: 'KENALAN DI DM IG', category: '📱 Cara Mencari Jodoh Online' },
+  { civilian: 'KONDANGAN', undercover: 'REUNI SEKOLAH', category: '👗 Acara Kumpul Formal' },
+  { civilian: 'BEGADANG', undercover: 'OVERTHINKING', category: '🌙 Kebiasaan Larut Malam' },
+  { civilian: 'PINJOL', undercover: 'PAYLATER', category: '💳 Hutang Digital Cepat' },
+  { civilian: 'GAJI UMR', undercover: 'FREELANCE', category: '💵 Sumber Penghasilan Kerja' },
+  { civilian: 'THR', undercover: 'BONUS TAHUNAN', category: '🎁 Rezeki Finansial Tambahan' },
+  { civilian: 'WARKOP', undercover: 'KAFE AESTHETIC', category: '☕ Tempat Nongkrong Santai' },
+  { civilian: 'SHOPEE', undercover: 'TOKOPEDIA', category: '🛍️ E-Commerce Belanja Online' },
+  { civilian: 'INDOMARET', undercover: 'ALFAMART', category: '🏪 Jaringan Minimarket' },
+  { civilian: 'WHATSAPP', undercover: 'TELEGRAM', category: '💬 Aplikasi Pesan Singkat' },
+  { civilian: 'INSTAGRAM', undercover: 'TIKTOK', category: '📱 Media Sosial Konten Video' },
+  { civilian: 'OJEK ONLINE', undercover: 'TAKSI', category: '🛵 Transportasi Umum Perjalanan' },
+  { civilian: 'PULANG KAMPUNG', undercover: 'LIBURAN', category: '🧳 Perjalanan Jarak Jauh' },
+  { civilian: 'KRL', undercover: 'MRT', category: '🚆 Transportasi Kereta Cepat' },
+  { civilian: 'KARCIS PARKIR', undercover: 'HELM HILANG', category: '🛵 Derita Parkir Motor' },
+  { civilian: 'SATPOL PP', undercover: 'PEDAGANG KAKI LIMA', category: '👮 Drama Jalanan' },
+  { civilian: 'STNK', undercover: 'BPKB', category: '📄 Dokumen Kepemilikan Kendaraan' },
+  { civilian: 'IPHONE', undercover: 'HP ANDROID', category: '📱 Perangkat Smartphone' },
 
-  // Hewan, Alam & Profesi
-  { civilian: 'KUCING', undercover: 'HARIMAU', category: '🐾 Keluarga Kucing' },
-  { civilian: 'SINGA', undercover: 'SERIGALA', category: '🐺 Predator Liar' },
-  { civilian: 'PESAWAT', undercover: 'HELIKOPTER', category: '✈️ Angkutan Udara' },
-  { civilian: 'PANTAI', undercover: 'GUNUNG', category: '🏞️ Objek Wisata' },
-  { civilian: 'GITAR', undercover: 'BIOLA', category: '🎻 Alat Musik Petik/Gesek' },
-  { civilian: 'MOBIL', undercover: 'MOTOR', category: '🚗 Kendaraan Bermotor' },
-  { civilian: 'BANTAL', undercover: 'GULING', category: '🛏️ Perlengkapan Kamar' },
+  // 🐾 Hewan, Alam, Profesi & Benda
+  { civilian: 'KUCING', undercover: 'HARIMAU', category: '🐾 Keluarga Hewan Kucing' },
+  { civilian: 'SINGA', undercover: 'SERIGALA', category: '🐺 Predator Buas Liar' },
+  { civilian: 'PESAWAT', undercover: 'HELIKOPTER', category: '✈️ Transportasi Angkutan Udara' },
+  { civilian: 'PANTAI', undercover: 'GUNUNG', category: '🏞️ Destinasi Liburan Alam' },
+  { civilian: 'GITAR', undercover: 'BIOLA', category: '🎻 Alat Musik Senar' },
+  { civilian: 'MOBIL', undercover: 'MOTOR', category: '🚗 Kendaraan Bermotor Jalan Raya' },
+  { civilian: 'BANTAL', undercover: 'GULING', category: '🛏️ Perlengkapan Tidur Nyenyak' },
   { civilian: 'KACAMATA', undercover: 'LENSA KONTAK', category: '👓 Alat Bantu Penglihatan' },
-  { civilian: 'DOMPET', undercover: 'REKENING BANK', category: '💳 Tempat Simpan Uang' },
-  { civilian: 'DOKTER', undercover: 'PERAWAT', category: '🏥 Tenaga Medis' },
-  { civilian: 'POLISI', undercover: 'SATPAM', category: '👮 Penegak Keamanan' },
-  { civilian: 'PENSIL', undercover: 'PULPEN', category: '✏️ Alat Menulis' },
-  { civilian: 'SUPERMARKET', undercover: 'PASAR TRADISIONAL', category: '🛒 Tempat Belanja' }
+  { civilian: 'DOMPET', undercover: 'REKENING BANK', category: '💳 Tempat Simpan Saldo Uang' },
+  { civilian: 'DOKTER', undercover: 'PERAWAT', category: '🏥 Profesi Medis Rumah Sakit' },
+  { civilian: 'POLISI', undercover: 'SATPAM', category: '👮 Petugas Keamanan' },
+  { civilian: 'PENSIL', undercover: 'PULPEN', category: '✏️ Alat Tulis Kantor' },
+  { civilian: 'SUPERMARKET', undercover: 'PASAR TRADISIONAL', category: '🛒 Tempat Belanja Belanjaan' },
+  { civilian: 'PAYUNG', undercover: 'JAS HUJAN', category: '🌧️ Perlengkapan Musim Hujan' },
+  { civilian: 'JAM TANGAN', undercover: 'JAM DINDING', category: '⏱️ Alat Penunjuk Waktu' },
+  { civilian: 'LAPTOP', undercover: 'KOMPUTER PC', category: '💻 Perangkat Komputasi Kerja' },
+  { civilian: 'SEPATU FUTSAL', undercover: 'SEPATU BOLA', category: '⚽ Perlengkapan Olahraga Sepakbola' }
 ];
 
 // Chaos Modifier / Tantangan Ronde Unik
@@ -77,6 +113,14 @@ export async function handleUndercover(sock, jid, senderNumber, messageObj, args
 
   if (['role', 'roles', 'panduan', 'help', 'bantuan'].includes(subCmd) || command === 'roleundercover') {
     return await showUndercoverRoleGuide(sock, jid, messageObj);
+  }
+
+  if (['card', 'cards', 'kartu', 'item'].includes(subCmd)) {
+    return await handleUndercoverCardShop(sock, jid, senderNumber, messageObj, args);
+  }
+
+  if (['stats', 'profil', 'stat'].includes(subCmd)) {
+    return await showUndercoverStats(sock, jid, senderNumber, messageObj);
   }
 
   if (['join', 'ikut'].includes(subCmd) || command === 'joinundercover') {
@@ -143,11 +187,15 @@ export async function handleUndercover(sock, jid, senderNumber, messageObj, args
     modifier: null,
     players: [senderNumber],
     playerLabels: [hostLabel],
-    playerRoles: new Map(), // jid -> { role: 'CIVILIAN'|'UNDERCOVER'|'MRWHITE'|'JESTER'|'DETECTIVE', word: string, isAlive: boolean, clue: string }
+    playerRoles: new Map(), // jid -> { role: 'CIVILIAN'|'UNDERCOVER'|'MRWHITE'|'JESTER'|'DETECTIVE', word: string, isAlive: boolean, clue: string, cards: Set }
     turnIndex: 0,
     alivePlayers: [],
     votes: new Map(),
     mrWhiteGuessPending: null,
+    detectiveChecksThisRound: new Set(),
+    silencedPlayers: new Set(), // jid -> max 1 word
+    shieldedPlayers: new Set(), // jid -> immune 1 vote death
+    goldenVoters: new Set(), // jid -> vote count = 2
     timeout: null
   };
 
@@ -163,18 +211,20 @@ export async function handleUndercover(sock, jid, senderNumber, messageObj, args
   activeUndercoverGames.set(jid, session);
 
   const lobbyMsg = 
-`🕵️ *LOBBY UNDERCOVER ULTRA — SOCIAL DEDUCTION* 🎭
+`🕵️ *LOBBY UNDERCOVER ULTRA 2.0 — SOCIAL DEDUCTION* 🎭
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 👑 *Host:* ${hostLabel}
 👥 *Pemain (1/8):* ${hostLabel}
 💰 *Taruhan:* *${buyIn} Poin* / orang
 
-🎭 *Daftar Peran Rahasia (Diacak via DM):*
+🎭 *Daftar Peran Rahasia (Diacak via DM WhatsApp):*
 ▫️ 🧑‍🌾 *Civilian (Warga)*: Mendapat kata asli.
 ▫️ 🕵️ *Undercover (Penyamar)*: Mendapat kata mirip tapi berbeda!
 ▫️ 🤍 *Mr. White (Blank)*: Tidak dapat kata, pura-pura tahu!
-▫️ 🤡 *Si Badut (Jester)* (Game 5+ Orang): Ingin di-vote keluar untuk menang solo!
-▫️ 🔍 *Detektif Intel* (Game 6+ Orang): Bisa mengintip status 1 pemain via DM!
+▫️ 🤡 *Si Badut (Jester)* (5+ Pemain): Ingin di-vote keluar untuk menang solo!
+▫️ 🔍 *Detektif Intel* (6+ Pemain): Bisa DM bot \`.intip @member\` untuk lacak penyamar!
+
+🃏 *Power Cards Shop:* Ketik \`.undercover card\` untuk melihat kartu aksi khusus!
 
 👉 Ketik \`.joinundercover\` untuk bergabung!
 🚀 Host ketik \`.startundercover\` jika sudah siap (Minimal 3 pemain).`;
@@ -231,7 +281,7 @@ async function startUndercoverGame(sock, jid, senderNumber, messageObj) {
     await db.deductGamePoints(p, session.buyIn);
   }
 
-  // Pilih pasangan kata acak
+  // Pilih pasangan kata acak dari 100+ kata
   const pair = WORD_PAIRS[Math.floor(Math.random() * WORD_PAIRS.length)];
   session.pair = pair;
 
@@ -240,36 +290,46 @@ async function startUndercoverGame(sock, jid, senderNumber, messageObj) {
   session.alivePlayers = [...shuffled];
 
   const count = shuffled.length;
-  const undercoverJid = shuffled[0];
-  const mrWhiteJid = count >= 4 ? shuffled[1] : null;
-  const jesterJid = count >= 5 ? shuffled[2] : null;
-  const detectiveJid = count >= 6 ? shuffled[3] : null;
+  // 6+ pemain -> Duo Undercover
+  const undercoverJid1 = shuffled[0];
+  const undercoverJid2 = count >= 6 ? shuffled[1] : null;
+  const mrWhiteJid = count >= 4 ? (count >= 6 ? shuffled[2] : shuffled[1]) : null;
+  const jesterJid = count >= 5 ? (count >= 6 ? shuffled[3] : shuffled[2]) : null;
+  const detectiveJid = count >= 7 ? shuffled[4] : (count === 6 ? shuffled[3] : null);
+
+  const undercovers = [undercoverJid1, undercoverJid2].filter(Boolean);
 
   for (const p of shuffled) {
-    if (p === undercoverJid) {
-      session.playerRoles.set(p, { role: 'UNDERCOVER', word: pair.undercover, isAlive: true, clue: '' });
+    if (undercovers.includes(p)) {
+      session.playerRoles.set(p, { role: 'UNDERCOVER', word: pair.undercover, isAlive: true, clue: '', cards: new Set() });
+      const partnerText = undercovers.length > 1 
+        ? `\n🤝 *Rekan Penyamar Anda:* @${undercovers.find(u => u !== p).split('@')[0]} (Bekerjasamalah!)` 
+        : '';
       try {
-        await sock.sendMessage(p, { text: `🎭 *PERAN ANDA: UNDERCOVER (PENYAMAR)* 🕵️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.undercover}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Misi Anda:* Berikan petunjuk yang mengecoh agar dikira warga sipil! Jangan sebutkan kata rahasiamu secara langsung.` });
+        await sock.sendMessage(p, { 
+          text: `🎭 *PERAN ANDA: UNDERCOVER (PENYAMAR)* 🕵️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.undercover}*\n🏷️ Kategori: ${pair.category}${partnerText}\n\n⚠️ *Misi Anda:* Berikan petunjuk yang mengecoh agar dikira warga sipil! Jangan sebutkan kata rahasiamu secara langsung.`,
+          mentions: undercovers.length > 1 ? [undercovers.find(u => u !== p)] : []
+        });
       } catch (e) {}
     } else if (p === mrWhiteJid) {
-      session.playerRoles.set(p, { role: 'MRWHITE', word: '', isAlive: true, clue: '' });
+      session.playerRoles.set(p, { role: 'MRWHITE', word: '', isAlive: true, clue: '', cards: new Set() });
       try {
-        await sock.sendMessage(p, { text: `🤍 *PERAN ANDA: MR. WHITE (BLANK)* 👻\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia: *TIDAK ADA KATA (BLANK)*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Misi Anda:* Anda tidak punya kata! Dengarkan petunjuk orang lain, pura-pura tahu, dan tebak kata warga jika Anda di-vote keluar!` });
+        await sock.sendMessage(p, { text: `🤍 *PERAN ANDA: MR. WHITE (BLANK)* 👻\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia: *TIDAK ADA KATA (BLANK)*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Misi Anda:* Anda tidak punya kata! Dengarkan petunjuk orang lain, pura-pura tahu, dan tebak kata warga (\`.tebakwarga <kata>\`) jika Anda di-vote keluar!` });
       } catch (e) {}
     } else if (p === jesterJid) {
-      session.playerRoles.set(p, { role: 'JESTER', word: pair.civilian, isAlive: true, clue: '' });
+      session.playerRoles.set(p, { role: 'JESTER', word: pair.civilian, isAlive: true, clue: '', cards: new Set() });
       try {
-        await sock.sendMessage(p, { text: `🤡 *PERAN ANDA: SI BADUT (JESTER / KARBIT)* 🃏\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia: *${pair.civilian}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Misi Anda:* Buat diri Anda DICURIGAI dan DI-VOTE KELUAR oleh grup! Jika Anda berhasil dieliminasi di Ronde 1 atau 2, Anda MENANG SOLO dan mencuri seluruh pot taruhan!` });
+        await sock.sendMessage(p, { text: `🤡 *PERAN ANDA: SI BADUT (JESTER / KARBIT)* 🃏\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia: *${pair.civilian}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Misi Gila Anda:* Buat diri Anda DICURIGAI dan DI-VOTE KELUAR oleh grup! Jika Anda berhasil dieliminasi di Ronde 1 atau 2, Anda MENANG SOLO dan mencuri seluruh pot taruhan!` });
       } catch (e) {}
     } else if (p === detectiveJid) {
-      session.playerRoles.set(p, { role: 'DETECTIVE', word: pair.civilian, isAlive: true, clue: '' });
+      session.playerRoles.set(p, { role: 'DETECTIVE', word: pair.civilian, isAlive: true, clue: '', cards: new Set() });
       try {
-        await sock.sendMessage(p, { text: `🔍 *PERAN ANDA: DETEKTIF INTEL (DETECTIVE)* 🕵️‍♂️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.civilian}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Misi Anda:* Temukan penyamar! Anda bisa mengintip peran pemain lain dengan membalas pesan DM ini:\n👉 Ketik: \`.cek @member\`` });
+        await sock.sendMessage(p, { text: `🔍 *PERAN ANDA: DETEKTIF INTEL (DETECTIVE)* 🕵️‍♂️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.civilian}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Misi & Skill Intel:* Anda bisa mengintip identitas 1 pemain per ronde dengan mengirim pesan DM ke bot ini:\n👉 Ketik: \`.intip @member\` (atau \`.intip <nomor urut>\`)` });
       } catch (e) {}
     } else {
-      session.playerRoles.set(p, { role: 'CIVILIAN', word: pair.civilian, isAlive: true, clue: '' });
+      session.playerRoles.set(p, { role: 'CIVILIAN', word: pair.civilian, isAlive: true, clue: '', cards: new Set() });
       try {
-        await sock.sendMessage(p, { text: `🧑‍🌾 *PERAN ANDA: WARGA SIPIL (CIVILIAN)* 🛡️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.civilian}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Misi Anda:* Berikan petunjuk yang akurat, temukan sang penyamar (Undercover), dan jangan sampai salah vote!` });
+        await sock.sendMessage(p, { text: `🧑‍🌾 *PERAN ANDA: WARGA SIPIL (CIVILIAN)* 🛡️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.civilian}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Misi Anda:* Berikan petunjuk yang akurat bagi sesama warga, temukan sang penyamar (Undercover), dan jangan sampai salah vote!` });
       } catch (e) {}
     }
   }
@@ -295,6 +355,15 @@ export async function handleUndercoverClue(sock, jid, senderNumber, messageObj, 
   if (pRole?.word && cleanClue.toUpperCase().includes(pRole.word)) {
     await send(sock, jid, messageObj, "❌ DILARANG menyebutkan kata rahasia Anda secara langsung dalam petunjuk! Tulis deskripsi/kiasan lain.");
     return true;
+  }
+
+  // Cek jika pemain terkena Lakban (Silence Card)
+  if (session.silencedPlayers?.has(senderNumber)) {
+    const wordCount = cleanClue.split(/\s+/).length;
+    if (wordCount > 1) {
+      await send(sock, jid, messageObj, `🤐 *MULUTMU DILAKBAN!* Kamu terkena Kartu Lakban, sehingga HANYA boleh memberi petunjuk *1 KATA* saja! Coba lagi.`);
+      return true;
+    }
   }
 
   // Cek jika modifier adalah 3 Kata
@@ -325,7 +394,7 @@ export async function handleUndercoverClue(sock, jid, senderNumber, messageObj, 
       voteList += `${i + 1}. @${p.split('@')[0]}: _"${roleData.clue}"_\n`;
     });
     voteList += `\n💬 *Diskusikan siapa penyamarnya!*
-👉 Ketik: \`.vote @member\` atau \`.vote [1-${session.alivePlayers.length}] (nomor urut)\`
+👉 Ketik: \`.vote [nomor / @member]\` untuk mengeliminasi tersangka!
 ⏳ Waktu voting: 60 detik.`;
 
     session.timeout = setTimeout(async () => {
@@ -421,8 +490,9 @@ export async function handleUndercoverVote(sock, jid, senderNumber, messageObj, 
   session.votes.set(senderNumber, resolvedTarget);
   const voterPhone = senderNumber.split('@')[0];
   const targetPhone = resolvedTarget.split('@')[0];
+  const isGolden = session.goldenVoters?.has(senderNumber);
 
-  await send(sock, jid, messageObj, `🗳️ @${voterPhone} mem-vote @${targetPhone}! (${session.votes.size}/${session.alivePlayers.length} suara)`, { mentions: [senderNumber, resolvedTarget] });
+  await send(sock, jid, messageObj, `🗳️ @${voterPhone} mem-vote @${targetPhone}! ${isGolden ? '🌟 *(Golden Vote x2)*' : ''} (${session.votes.size}/${session.alivePlayers.length} suara)`, { mentions: [senderNumber, resolvedTarget] });
 
   if (session.votes.size >= session.alivePlayers.length) {
     if (session.timeout) clearTimeout(session.timeout);
@@ -436,8 +506,9 @@ async function processUndercoverVotes(sock, jid, messageObj) {
   if (!session) return;
 
   const voteCounts = new Map();
-  for (const [, target] of session.votes.entries()) {
-    voteCounts.set(target, (voteCounts.get(target) || 0) + 1);
+  for (const [voter, target] of session.votes.entries()) {
+    const weight = session.goldenVoters?.has(voter) ? 2 : 1;
+    voteCounts.set(target, (voteCounts.get(target) || 0) + weight);
   }
 
   let maxVotes = 0;
@@ -456,6 +527,13 @@ async function processUndercoverVotes(sock, jid, messageObj) {
 
   if (isTie || !eliminated) {
     await send(sock, jid, messageObj, `⚖️ *HASIL VOTING SERI / IMBANG!* Tidak ada yang dieliminasi ronde ini. Permainan dilanjutkan ke ronde berikutnya!`);
+    return await startNextUndercoverRound(sock, jid, messageObj);
+  }
+
+  // Cek jika target memiliki Rompi Anti-Peluru (Shield Card)
+  if (session.shieldedPlayers?.has(eliminated)) {
+    session.shieldedPlayers.delete(eliminated);
+    await send(sock, jid, messageObj, `🛡️ *ROMPI ANTI-PELURU AKTIF!* @${eliminated.split('@')[0]} berhasil selamat dari eksekusi vote berkat Rompi Pelindung! Eksekusi dibatalkan ronde ini.`, { mentions: [eliminated] });
     return await startNextUndercoverRound(sock, jid, messageObj);
   }
 
@@ -625,6 +703,8 @@ async function startNextUndercoverRound(sock, jid, messageObj, isFirstRound = fa
   session.round++;
   session.status = 'CLUE_PHASE';
   session.turnIndex = 0;
+  session.detectiveChecksThisRound?.clear();
+  session.silencedPlayers?.clear(); // Reset silence per round
 
   // Pilih Tantangan Ronde Unik
   const mod = ROUND_MODIFIERS[Math.floor(Math.random() * ROUND_MODIFIERS.length)];
@@ -648,7 +728,7 @@ async function startNextUndercoverRound(sock, jid, messageObj, isFirstRound = fa
     ].filter(Boolean).join(' | ');
 
     roundHeader = 
-`🎮 *UNDERCOVER RESMI DIMULAI — RONDE 1* 🕵️
+`🎮 *UNDERCOVER ULTRA 2.0 RESMI DIMULAI — RONDE 1* 🕵️
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🤫 *Kata rahasia telah dikirim ke DM WhatsApp masing-masing!*
 🏷️ *Kategori:* ${session.pair.category}
@@ -661,7 +741,7 @@ ${session.alivePlayers.map((p, i) => `${i + 1}. @${p.split('@')[0]}`).join('\n')
 
 👉 *Giliran Pertama:* @${currentTurnPlayer.split('@')[0]} (Waktu 35s)
 _Ketik 1 kalimat petunjuk katamu di grup ini!_
-💡 _Ketik \`.undercover role\` untuk melihat panduan lengkap peran._`;
+💡 _Ketik \`.undercover role\` untuk membaca panduan peran._`;
   } else {
     roundHeader = 
 `🔄 *UNDERCOVER — MASUK RONDE ${session.round}* 🕵️
@@ -688,9 +768,194 @@ _Ketik petunjuk barumu di grup!_`;
   await send(sock, jid, messageObj, roundHeader, { mentions: session.alivePlayers });
 }
 
+// ─── 🔍 DETEKTIF INTEL VIA DM (.intip @member) ──────────────────────
+export async function handleDetectiveCheck(sock, jid, senderNumber, messageObj, targetParam) {
+  // Cari sesi aktif di mana senderNumber adalah DETECTIVE dan masih hidup
+  let targetSession = null;
+  for (const s of activeUndercoverGames.values()) {
+    if (s.playerRoles?.has(senderNumber) && s.playerRoles.get(senderNumber).role === 'DETECTIVE' && s.playerRoles.get(senderNumber).isAlive) {
+      targetSession = s;
+      break;
+    }
+  }
+
+  if (!targetSession) {
+    await send(sock, jid, messageObj, "❌ Anda bukan Detektif aktif di game Undercover yang sedang berjalan!");
+    return true;
+  }
+
+  if (targetSession.detectiveChecksThisRound?.has(senderNumber)) {
+    await send(sock, jid, messageObj, "⚠️ Anda sudah menggunakan kemampuan intip di ronde ini! Tunggu hingga ronde berikutnya.");
+    return true;
+  }
+
+  let resolvedTarget = null;
+  if (targetParam) {
+    const parsedNum = parseInt(String(targetParam).trim(), 10);
+    if (!isNaN(parsedNum) && parsedNum >= 1 && parsedNum <= targetSession.alivePlayers.length && !String(targetParam).includes('@')) {
+      resolvedTarget = targetSession.alivePlayers[parsedNum - 1];
+    } else if (targetSession.alivePlayers.includes(targetParam)) {
+      resolvedTarget = targetParam;
+    } else {
+      const targetDigits = String(targetParam).replace(/\D/g, '');
+      if (targetDigits.length > 5) {
+        resolvedTarget = targetSession.alivePlayers.find(p => p.replace(/\D/g, '').includes(targetDigits) || targetDigits.includes(p.replace(/\D/g, '')));
+      }
+    }
+  }
+
+  if (!resolvedTarget || !targetSession.alivePlayers.includes(resolvedTarget)) {
+    await send(sock, jid, messageObj, `⚠️ Target tidak valid!\n👉 *Format:* \`.intip @member\` atau \`.intip [1-${targetSession.alivePlayers.length}] (nomor urut)\``);
+    return true;
+  }
+
+  if (resolvedTarget === senderNumber) {
+    await send(sock, jid, messageObj, "⚠️ Anda tidak bisa mengintip diri sendiri!");
+    return true;
+  }
+
+  targetSession.detectiveChecksThisRound.add(senderNumber);
+  const targetRole = targetSession.playerRoles.get(resolvedTarget);
+  const isCiv = targetRole.role === 'CIVILIAN';
+
+  const report = isCiv 
+    ? `🔍 *LAPORAN INTEL DETEKTIF:*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n👤 Target: @${resolvedTarget.split('@')[0]}\n🟢 Status: *WARGA SIPIL (CIVILIAN)* 🛡️\n\n_Target adalah sekutu warga yang aman!_`
+    : `🔍 *LAPORAN INTEL DETEKTIF:*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n👤 Target: @${resolvedTarget.split('@')[0]}\n🔴 Status: *BUKAN WARGA (PENYAMAR / IMPOSTOR / BADUT)!* 🚨\n\n_Target sangat mencurigakan, arahkan warga untuk mem-votenya!_`;
+
+  await send(sock, jid, messageObj, report, { mentions: [resolvedTarget] });
+  return true;
+}
+
+// ─── 🃏 POWER CARDS SHOP (.undercover card) ──────────────────────────
+async function handleUndercoverCardShop(sock, jid, senderNumber, messageObj, args) {
+  const session = activeUndercoverGames.get(jid);
+  const cardType = (args[2] || '').toLowerCase();
+
+  const shopGuide = 
+`🃏 *TOKO KARTU AKSI UNDERCOVER (POWER CARDS)* ⚡
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Gunakan Akbar Poin untuk membeli kartu aksi trik khusus saat bermain!
+
+1. 🛡️ *Rompi Anti-Peluru (Shield)* — *50 Poin*
+   • Kebal dari 1x eliminasi voting grup!
+   • Beli: \`.undercover card shield\`
+
+2. 🎯 *Golden Vote (Double Suara)* — *35 Poin*
+   • Suara voting kamu dihitung bernilai **2 suara**!
+   • Beli: \`.undercover card gold\`
+
+3. 🤐 *Kartu Lakban (Silence)* — *30 Poin*
+   • Bungkam target agar hanya boleh memberi petunjuk **1 KATA** di ronde berikutnya!
+   • Beli: \`.undercover card silence @target\`
+
+4. 🔮 *Radar Sensor (Clue Spy)* — *40 Poin*
+   • (Khusus Undercover / Mr. White) Mengintip kategori & huruf depan kata warga via DM!
+   • Beli: \`.undercover card radar\``;
+
+  if (!cardType) {
+    await send(sock, jid, messageObj, shopGuide);
+    return true;
+  }
+
+  if (!session || session.status === 'LOBBY') {
+    await send(sock, jid, messageObj, "❌ Kartu aksi hanya bisa dibeli saat game Undercover sedang berlangsung di grup!");
+    return true;
+  }
+
+  if (!session.alivePlayers.includes(senderNumber)) {
+    await send(sock, jid, messageObj, "❌ Pemain yang sudah gugur tidak bisa membeli kartu aksi!");
+    return true;
+  }
+
+  const prof = await db.getGameProfile(senderNumber);
+  const curPoints = prof?.points || 0;
+
+  if (cardType === 'shield') {
+    if (curPoints < 50) return await send(sock, jid, messageObj, "❌ Poin tidak cukup! Butuh 50 Poin untuk Rompi Shield.");
+    await db.deductGamePoints(senderNumber, 50);
+    session.shieldedPlayers.add(senderNumber);
+    await send(sock, jid, messageObj, `🛡️ @${senderNumber.split('@')[0]} berhasil mengaktifkan *Rompi Anti-Peluru*! Kebal dari 1x vote eksekusi.`, { mentions: [senderNumber] });
+    return true;
+  }
+
+  if (cardType === 'gold') {
+    if (curPoints < 35) return await send(sock, jid, messageObj, "❌ Poin tidak cukup! Butuh 35 Poin untuk Golden Vote.");
+    await db.deductGamePoints(senderNumber, 35);
+    session.goldenVoters.add(senderNumber);
+    await send(sock, jid, messageObj, `🌟 @${senderNumber.split('@')[0]} berhasil mengaktifkan *Golden Vote (x2 Suara)* di fase voting mendatang!`, { mentions: [senderNumber] });
+    return true;
+  }
+
+  if (cardType === 'silence') {
+    const rawTarget = messageObj.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0] || args[3];
+    let resolvedTarget = null;
+    if (rawTarget) {
+      const parsedNum = parseInt(String(rawTarget).trim(), 10);
+      if (!isNaN(parsedNum) && parsedNum >= 1 && parsedNum <= session.alivePlayers.length) {
+        resolvedTarget = session.alivePlayers[parsedNum - 1];
+      } else if (session.alivePlayers.includes(rawTarget)) {
+        resolvedTarget = rawTarget;
+      }
+    }
+    if (!resolvedTarget) {
+      await send(sock, jid, messageObj, "⚠️ Tentukan target lakban! Format: `.undercover card silence @target` atau `.undercover card silence [nomor urut]`");
+      return true;
+    }
+    if (curPoints < 30) return await send(sock, jid, messageObj, "❌ Poin tidak cukup! Butuh 30 Poin untuk Kartu Lakban.");
+    await db.deductGamePoints(senderNumber, 30);
+    session.silencedPlayers.add(resolvedTarget);
+    await send(sock, jid, messageObj, `🤐 @${senderNumber.split('@')[0]} membungkam @${resolvedTarget.split('@')[0]} dengan *Kartu Lakban*! Korban hanya boleh memberikan petunjuk 1 KATA.`, { mentions: [senderNumber, resolvedTarget] });
+    return true;
+  }
+
+  if (cardType === 'radar') {
+    const roleData = session.playerRoles.get(senderNumber);
+    if (!['UNDERCOVER', 'MRWHITE'].includes(roleData?.role)) {
+      await send(sock, jid, messageObj, "❌ Kartu Radar hanya bisa digunakan oleh Undercover atau Mr. White!");
+      return true;
+    }
+    if (curPoints < 40) return await send(sock, jid, messageObj, "❌ Poin tidak cukup! Butuh 40 Poin untuk Kartu Radar.");
+    await db.deductGamePoints(senderNumber, 40);
+    const civWord = session.pair.civilian;
+    const initialChar = civWord.charAt(0).toUpperCase();
+    try {
+      await sock.sendMessage(senderNumber, { text: `🔮 *RADAR SENSOR AKTIF!* 📡\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🏷️ Kategori Kata Warga: *${session.pair.category}*\n🔤 Huruf Depan Kata Warga: *"${initialChar}"* (Panjang kata: ${civWord.length} karakter)\n\n_Gunakan petunjuk rahasia ini untuk mengecoh mereka!_` });
+      await send(sock, jid, messageObj, `🔮 @${senderNumber.split('@')[0]} berhasil mengaktifkan *Radar Sensor* (Info rahasia dikirim ke DM WhatsApp)!`, { mentions: [senderNumber] });
+    } catch (e) {}
+    return true;
+  }
+
+  await send(sock, jid, messageObj, shopGuide);
+  return true;
+}
+
+// ─── 📊 STATISTIK UNDERCOVER ─────────────────────────────────────────
+async function showUndercoverStats(sock, jid, senderNumber, messageObj) {
+  const cust = await db.getCustomerByPhone(senderNumber);
+  const name = cust?.nama || `@${senderNumber.split('@')[0]}`;
+  const prof = await db.getGameProfile(senderNumber);
+
+  const statsMsg = 
+`🕵️ *PROFIL & STATISTIK AGEN UNDERCOVER* 🎭
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+👤 Agen: *${name}*
+💰 Akbar Poin: *${(prof?.points || 0).toLocaleString('id-ID')} Poin*
+⭐ Rank Level: *Level ${prof?.level || 1}* (${prof?.xp || 0} XP)
+
+🎖️ *Gelar Agen:*
+▫️ *Master Impostor* — Penyamar Ahli Manipulasi
+▫️ *Detektif Agung* — Pelindung Warga Sipil
+▫️ *Raja Badut* — Provokator Suara Voting
+
+👉 Mainkan lebih banyak game Undercover untuk mengumpulkan poin dan menaikkan reputasimu!`;
+
+  await send(sock, jid, messageObj, statsMsg, { mentions: [senderNumber] });
+  return true;
+}
+
 export async function showUndercoverRoleGuide(sock, jid, messageObj) {
   const guide = 
-`🎭 *PANDUAN LENGKAP PERAN GAME UNDERCOVER* 🕵️
+`🎭 *PANDUAN LENGKAP PERAN GAME UNDERCOVER 2.0* 🕵️
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Undercover adalah game deduksi sosial berbasis kata rahasia via DM WhatsApp & diskusi di grup (3–8 pemain).
 
@@ -701,7 +966,7 @@ Undercover adalah game deduksi sosial berbasis kata rahasia via DM WhatsApp & di
 ▫️ *Misi:* Berikan petunjuk yang akurat agar sesama warga tahu kamu teman, jangan sampai dicurigai, dan temukan penyamar!
 ▫️ *Kemenangan:* Jika seluruh Undercover & Mr. White berhasil dieliminasi.
 
-2. 🕵️ *Undercover (Penyamar)* [1 Orang]
+2. 🕵️ *Undercover (Penyamar / Duo)* [1-2 Orang]
 ▫️ *Kata Rahasia:* Menerima Kata Mirip tapi Berbeda (misal: "Teh").
 ▫️ *Misi:* Berikan petunjuk samar/mengecoh agar dikira warga sipil, cari tahu kata asli warga, dan bertahan sampai akhir!
 ▫️ *Kemenangan:* Jika jumlah Penyamar (Undercover + Mr. White) sama atau lebih banyak dari sisa Warga.
@@ -718,7 +983,7 @@ Undercover adalah game deduksi sosial berbasis kata rahasia via DM WhatsApp & di
 
 5. 🔍 *Detektif Intel* [Game 6+ Pemain]
 ▫️ *Kata Rahasia:* Menerima Kata Asli Warga.
-▫️ *Tugas:* Memimpin warga sipil membongkar penyamar.
+▫️ *Skill Intel:* Kirim pesan DM ke bot \`.intip @member\` untuk melacak status pemain lain!
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📌 *PERINTAH UTAMA:*
@@ -727,6 +992,8 @@ Undercover adalah game deduksi sosial berbasis kata rahasia via DM WhatsApp & di
 • \`.startundercover\` — Memulai permainan (Minimal 3 orang)
 • \`.vote [nomor/@member]\` — Vote eliminasi di fase voting
 • \`.tebakwarga <kata>\` — Khusus Mr. White saat gugur
+• \`.intip @member\` — Khusus Detektif via DM ke bot
+• \`.undercover card\` — Buka Toko Kartu Aksi Khusus
 • \`.undercover role\` — Tampilkan panduan peran ini`;
 
   await send(sock, jid, messageObj, guide);
