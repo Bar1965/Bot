@@ -4,13 +4,13 @@ import { sendInteractiveButtons } from '../../bot.js';
 import { getPremiumBenefits } from '../../premiumHandler.js';
 import * as ww from '../../werewolfGame.js';
 import { send, isOnCooldown, randomItem, normalizeAnswer, scopeKey } from './helpers.js';
-import { activeFamily100, activeCakLontong, startFamily100, handleFamily100Answer, startCakLontong, handleCakLontongAnswer } from './family100.js';
+import { activeFamily100, activeCakLontong, startFamily100, handleFamily100Answer, surrenderFamily100, startCakLontong, handleCakLontongAnswer, surrenderCakLontong } from './family100.js';
 import { activeDuels, pendingDuels, handleDuelCommand, handleDuelAction } from './duelRoulette.js';
 import { activeBlackjackGames, handleBlackjack } from './blackjack.js';
 import { activeBankHeists, handleBankHeist } from './bankHeist.js';
 import { activeHorseRaces, handleHorseRace } from './umaDerby.js';
 import { handleBankEconomy } from './bankEconomy.js';
-import { activeRounds, startRound, handleRoundCommand, ROUND_DURATION_MS, scheduleRoundExpiry } from './triviaEngine.js';
+import { activeRounds, startRound, handleRoundCommand, surrenderRound, ROUND_DURATION_MS, scheduleRoundExpiry } from './triviaEngine.js';
 import { activeStealSessions, profileText, handleStealHeist, handleStealAnswer } from './rpgSystem.js';
 import { jidNormalizedUser } from '@whiskeysockets/baileys';
 
@@ -104,7 +104,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
 
   const knownFunCmds = [
     'afk', 'steal', 'maling', 'copet', 'rampok', 'curi', 'rob', 'hack', 'ww', 'werewolf',
-    'jawab', 'answer', 'hint',
+    'jawab', 'answer', 'hint', 'nyerah', 'surrender', 'menyerah',
     'quiz', 'trivia', 'tebakquiz', 'tebakemoji', 'emoji', 'tebakkata', 'hangman', 'kata',
     'family100', 'f100', 'caklontong', 'tts',
     'duel', 'terimaduel', 'gasduel', 'tolakduel', 'tembak', 'dor',
@@ -273,6 +273,59 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     return true;
   }
 
+
+  // --- UNIVERSAL GAME SURRENDER (.nyerah / .surrender / .menyerah) ---
+  if (['nyerah', 'surrender', 'menyerah'].includes(command)) {
+    // 1. Cek Trivia / Quiz / Tebak Kata / Tebak Emoji / Tebak Lagu / Tebak Bendera
+    if (activeRounds.has(scope)) {
+      return await surrenderRound({ sock, jid, senderNumber, messageObj, isFromGroup });
+    }
+
+    // 2. Cek Cak Lontong
+    if (activeCakLontong.has(scope)) {
+      return await surrenderCakLontong(sock, jid, messageObj, scope);
+    }
+
+    // 3. Cek Family 100
+    if (activeFamily100.has(scope)) {
+      return await surrenderFamily100(sock, jid, messageObj, scope);
+    }
+
+    // 4. Cek Tebak Gambar
+    if (entertainment.activeGames.has(jid)) {
+      const game = entertainment.activeGames.get(jid);
+      game.isAnswered = true;
+      if (game.timeout) clearTimeout(game.timeout);
+      entertainment.activeGames.delete(jid);
+      await send(sock, jid, messageObj, `🏳️ *MENYERAH — TEBAK GAMBAR* 🖼️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n💡 Jawaban yang benar: *${game.answer}*\n\n_Ketik \`.tebakgambar\` untuk bermain lagi._`);
+      return true;
+    }
+
+    // 5. Cek Tebak Angka
+    const gameKeyAngka = jid + '_angka';
+    if (entertainment.activeGames.has(gameKeyAngka)) {
+      const game = entertainment.activeGames.get(gameKeyAngka);
+      game.isAnswered = true;
+      if (game.timeout) clearTimeout(game.timeout);
+      entertainment.activeGames.delete(gameKeyAngka);
+      await send(sock, jid, messageObj, `🏳️ *MENYERAH — TEBAK ANGKA* 🔢\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🔢 Angka rahasia yang benar: *${game.target || game.answer}*\n💰 Total Pot Jackpot Tersimpan: *${game.pot || 200} Poin*\n\n_Ketik \`.tebakangka\` untuk memulai ronde baru._`);
+      return true;
+    }
+
+    // 6. Cek Susun Kata
+    const gameKeySusun = jid + '_susunkata';
+    if (entertainment.activeGames.has(gameKeySusun)) {
+      const game = entertainment.activeGames.get(gameKeySusun);
+      game.isAnswered = true;
+      if (game.timeout) clearTimeout(game.timeout);
+      entertainment.activeGames.delete(gameKeySusun);
+      await send(sock, jid, messageObj, `🏳️ *MENYERAH — SUSUN KATA* 🔠\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🔠 Kata yang benar adalah: *${game.answer}*\n\n_Ketik \`.susunkata\` untuk bermain lagi._`);
+      return true;
+    }
+
+    await send(sock, jid, messageObj, "❌ Tidak ada sesi game tebakan yang sedang aktif di chat ini.");
+    return true;
+  }
 
   const roundCommands = ['jawab', 'answer', 'hint'];
   if (roundCommands.includes(command)) {

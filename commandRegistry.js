@@ -105,6 +105,7 @@ const categories = {
       ['.susunkata', 'Menyusun huruf menjadi kata yang benar'],
       ['.jawab <jawaban>', 'Jawab game yang aktif'],
       ['.hint', 'Minta petunjuk game'],
+      ['.nyerah', 'Menyerah dan buka kunci jawaban game tebakan aktif'],
       ['.sambungkata', 'Game sambung kata grup'],
       ['.truth / .dare', 'Truth or Dare'],
       ['.dadu / .coinflip', 'Lempar dadu atau koin'],

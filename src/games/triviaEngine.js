@@ -198,6 +198,22 @@ async function handleRoundCommand({ sock, jid, senderNumber, messageObj, args, c
     await send(sock, jid, messageObj, `💡 Petunjuk: ${round.hint}`);
     return true;
   }
+  if (['nyerah', 'surrender', 'menyerah'].includes(cleanCmd)) {
+    round.isAnswered = true;
+    if (round.timeout) clearTimeout(round.timeout);
+    activeRounds.delete(key);
+
+    let surrenderMsg = '';
+    if (round.type === 'tebaklagu') {
+      surrenderMsg = `🏳️ *MENYERAH — TEBAK LAGU* 🎵\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🎤 Artis: *${round.artist}*\n🎼 Judul Lagu: *${round.answer}*\n\n_Ketik \`.tebaklagu\` untuk memainkan lagu lain._`;
+    } else if (round.type === 'tebakbendera') {
+      surrenderMsg = `🏳️ *MENYERAH — TEBAK BENDERA* 🚩\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🚩 Bendera: *${round.flag}*\n🏛️ Negara: *${round.country}* (*${round.answer}*)\n\n_Ketik \`.tebakbendera\` untuk tebak negara lain._`;
+    } else {
+      surrenderMsg = `🏳️ *KAMU MENYERAH!* 🏳️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n💡 Jawaban yang benar adalah: *${round.answer}*\n\n_Ketik \`.${round.type || 'quiz'}\` untuk bermain lagi._`;
+    }
+    await send(sock, jid, messageObj, surrenderMsg);
+    return true;
+  }
   const submitted = normalizeAnswer(args.slice(1).join(' '));
   if (!submitted) {
     await send(sock, jid, messageObj, 'Gunakan format `.jawab <jawaban>`.');
@@ -327,4 +343,25 @@ Dengarkan potongan musik audio di atas dan tebak judul lagunya!
   return true;
 }
 
-export { ROUND_DURATION_MS, scheduleRoundExpiry, startRound, handleRoundCommand, maskSongTitle, quizQuestions, emojiQuestions, wordQuestions, flagQuestions, tebakLaguQuestions };
+async function surrenderRound({ sock, jid, senderNumber, messageObj, isFromGroup }) {
+  const key = scopeKey(jid, senderNumber, isFromGroup);
+  const round = activeRounds.get(key);
+  if (!round) return false;
+
+  round.isAnswered = true;
+  if (round.timeout) clearTimeout(round.timeout);
+  activeRounds.delete(key);
+
+  let surrenderMsg = '';
+  if (round.type === 'tebaklagu') {
+    surrenderMsg = `🏳️ *MENYERAH — TEBAK LAGU* 🎵\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🎤 Artis: *${round.artist}*\n🎼 Judul Lagu: *${round.answer}*\n\n_Ketik \`.tebaklagu\` untuk memainkan lagu lain._`;
+  } else if (round.type === 'tebakbendera') {
+    surrenderMsg = `🏳️ *MENYERAH — TEBAK BENDERA* 🚩\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🚩 Bendera: *${round.flag}*\n🏛️ Negara: *${round.country}* (*${round.answer}*)\n\n_Ketik \`.tebakbendera\` untuk tebak negara lain._`;
+  } else {
+    surrenderMsg = `🏳️ *KAMU MENYERAH!* 🏳️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n💡 Jawaban yang benar adalah: *${round.answer}*\n\n_Ketik \`.${round.type || 'quiz'}\` untuk bermain lagi._`;
+  }
+  await send(sock, jid, messageObj, surrenderMsg);
+  return true;
+}
+
+export { ROUND_DURATION_MS, scheduleRoundExpiry, startRound, handleRoundCommand, surrenderRound, maskSongTitle, quizQuestions, emojiQuestions, wordQuestions, flagQuestions, tebakLaguQuestions };

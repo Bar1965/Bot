@@ -328,4 +328,31 @@ async function handleCakLontongAnswer(sock, jid, messageObj, senderNumber, text,
 }
 
 
-export { startFamily100, handleFamily100Answer, startCakLontong, handleCakLontongAnswer };
+async function surrenderFamily100(sock, jid, messageObj, scope) {
+  const session = activeFamily100.get(scope);
+  if (!session) return false;
+  if (session.timeout) clearTimeout(session.timeout);
+  activeFamily100.delete(scope);
+
+  let msg = `🏳️ *MENYERAH — FAMILY 100* 🏳️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📋 Soal: *${session.question}*\n\n*Semua Jawaban:*\n`;
+  session.answers.forEach((a, i) => {
+    const status = a.solved ? `✅ (${a.solverTag})` : '❌';
+    msg += `${i + 1}. *${a.name}* [${a.score} Poin] ${status}\n`;
+  });
+  msg += `\n_Ketik \`.family100\` untuk bermain ronde baru._`;
+  await send(sock, jid, messageObj, msg);
+  return true;
+}
+
+async function surrenderCakLontong(sock, jid, messageObj, scope) {
+  const session = activeCakLontong.get(scope);
+  if (!session) return false;
+  if (session.timeout) clearTimeout(session.timeout);
+  activeCakLontong.delete(scope);
+
+  const msg = `🏳️ *MENYERAH — CAK LONTONG* 🤣\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n❓ Soal: *${session.question}*\n💡 Jawaban: *${session.answer}*\n💬 *Alasan Cak Lontong:*\n"${session.reason}"\n\n_Ketik \`.caklontong\` untuk bermain lagi._`;
+  await send(sock, jid, messageObj, msg);
+  return true;
+}
+
+export { startFamily100, handleFamily100Answer, surrenderFamily100, startCakLontong, handleCakLontongAnswer, surrenderCakLontong };
