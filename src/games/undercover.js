@@ -773,36 +773,84 @@ _Seluruh pot taruhan disapu bersih oleh Si Badut!_`;
 }
 
 export async function handleMrWhiteGuess(sock, jid, senderNumber, messageObj, guess) {
-  const session = activeUndercoverGames.get(jid);
-  if (!session || session.status !== 'MR_WHITE_GUESS' || session.mrWhiteGuessPending !== senderNumber) {
+  // Cari sesi aktif di mana senderNumber adalah MRWHITE
+  let targetSession = null;
+  for (const s of activeUndercoverGames.values()) {
+    if (s.playerRoles?.has(senderNumber) && s.playerRoles.get(senderNumber).role === 'MRWHITE' && (s.alivePlayers?.includes(senderNumber) || s.mrWhiteGuessPending === senderNumber)) {
+      targetSession = s;
+      break;
+    }
+  }
+
+  if (!targetSession) {
+    if (activeUndercoverGames.has(jid)) {
+      await send(sock, jid, messageObj, "❌ Hanya Mr. White yang dapat menebak kata warga dengan `.tebakwarga <kata>`!");
+      return true;
+    }
     return false;
   }
 
-  if (session.timeout) clearTimeout(session.timeout);
+  const gameJid = targetSession.jid;
+  const senderPhone = senderNumber.split('@')[0];
+
+  if (!guess) {
+    await send(sock, jid, messageObj, "⚠️ Masukkan kata tebakanmu!\n*Contoh:* `.tebakwarga Kopi`");
+    return true;
+  }
+
+  if (targetSession.timeout && targetSession.status === 'MR_WHITE_GUESS') {
+    clearTimeout(targetSession.timeout);
+  }
 
   const cleanGuess = normalizeAnswer(guess);
-  const correctCivWord = normalizeAnswer(session.pair.civilian);
+  const correctCivWord = normalizeAnswer(targetSession.pair.civilian);
 
   if (cleanGuess === correctCivWord) {
-    const totalPrize = session.buyIn * session.players.length;
+    const totalPrize = targetSession.buyIn * targetSession.players.length;
     await db.addGamePoints(senderNumber, totalPrize);
     await db.addMessageXp(senderNumber, 150);
 
     const winMsg = 
-`🏆 *MR. WHITE MENANG TELAK!* 🤍
+`🏆 *MR. WHITE BERHASIL MENEBAK KATA WARGA!* 🤍
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🎉 @${senderNumber.split('@')[0]} berhasil menebak kata warga: *${session.pair.civilian}*!
-💰 Hadiah Kemenangan: *+${totalPrize.toLocaleString('id-ID')} Poin* & *+150 XP*!
+🎉 @${senderPhone} menebak: *"${guess}"* (BENAR!)
+💰 Mr. White MENANG SOLO & Meraup: *+${totalPrize.toLocaleString('id-ID')} Poin* & *+150 XP*!
 
-💡 Kata Warga: *${session.pair.civilian}*
-🤫 Kata Undercover: *${session.pair.undercover}*`;
+💡 Kata Warga: *${targetSession.pair.civilian}*
+🤫 Kata Undercover: *${targetSession.pair.undercover}*
 
-    activeUndercoverGames.delete(jid);
-    await send(sock, jid, messageObj, winMsg, { mentions: [senderNumber] });
+_Mr. White menyapu bersih seluruh pot taruhan permainan!_`;
+
+    activeUndercoverGames.delete(gameJid);
+    await send(sock, gameJid, messageObj, winMsg, { mentions: [senderNumber] });
+    if (jid !== gameJid) {
+      await send(sock, jid, messageObj, `🎉 Tebakan Anda BENAR (*${guess}*)! Anda memenangkan permainan!`);
+    }
     return true;
   } else {
-    await send(sock, jid, messageObj, `❌ Tebakan Mr. White salah (*${guess}*)!`);
-    await evaluateUndercoverWin(sock, jid, messageObj);
+    // Tebakan SALAH! Langsung beritahu grup dengan notifikasi jelas
+    const failMsg = 
+`❌ *TEBAKAN MR. WHITE GAGAL!* 🤍
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+@${senderPhone} mencoba menebak kata warga dengan: *"${guess}"* (SALAH!)`;
+
+    await send(sock, gameJid, messageObj, failMsg, { mentions: [senderNumber] });
+    if (jid !== gameJid) {
+      await send(sock, jid, messageObj, `❌ Tebakan Anda (*${guess}*) SALAH!`);
+    }
+
+    if (targetSession.status === 'MR_WHITE_GUESS') {
+      await evaluateUndercoverWin(sock, gameJid, messageObj);
+    } else {
+      // Jika Mr. White menebak di tengah game dan salah -> Mr. White langsung gugur!
+      targetSession.alivePlayers = targetSession.alivePlayers.filter(p => p !== senderNumber);
+      const roleData = targetSession.playerRoles.get(senderNumber);
+      if (roleData) roleData.isAlive = false;
+
+      const deathMsg = `☠️ Karena salah menebak kata warga di tengah permainan, Mr. White @${senderPhone} **TEWAS TERELIMINASI**!`;
+      await send(sock, gameJid, messageObj, deathMsg, { mentions: [senderNumber] });
+      await evaluateUndercoverWin(sock, gameJid, messageObj);
+    }
     return true;
   }
 }
