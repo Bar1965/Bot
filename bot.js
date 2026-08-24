@@ -950,6 +950,14 @@ export async function startBot(onSocketReady) {
         console.warn('[CASAKU] Fulfillment Worker not started:', fwErr.message);
       }
 
+      // Pulihkan sesi game Undercover yang sedang berjalan jika ada restart/update
+      try {
+        const { restoreUndercoverSessions } = await import('./src/games/undercover.js');
+        await restoreUndercoverSessions(sock);
+      } catch (recErr) {
+        console.warn('[UNDERCOVER] Restore error:', recErr.message);
+      }
+
       if (onSocketReady) {
         onSocketReady(sock);
       }

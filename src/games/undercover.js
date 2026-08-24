@@ -1,9 +1,173 @@
+import fs from 'fs';
+import path from 'path';
 import * as db from '../../database.js';
 import { send, normalizeAnswer } from './helpers.js';
 
 export const activeUndercoverGames = new Map();
-const CLUE_TIMEOUT_MS = 35 * 1000;
-const VOTE_TIMEOUT_MS = 60 * 1000;
+const CLUE_TIMEOUT_MS = 25 * 1000; // 25 detik
+const VOTE_TIMEOUT_MS = 35 * 1000; // 35 detik
+const MAX_ROUNDS = 7; // Batas maksimal 7 ronde
+const MAX_SKIPS = 2; // Maksimal 2x vote skip per game
+
+const STATE_FILE = path.join(process.cwd(), 'data', 'undercover_state.json');
+
+export function saveUndercoverSessions() {
+  try {
+    const dir = path.dirname(STATE_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+    const serialized = [];
+    for (const [jid, s] of activeUndercoverGames.entries()) {
+      if (s.status === 'LOBBY') continue;
+      
+      const rolesObj = {};
+      for (const [p, r] of s.playerRoles.entries()) {
+        rolesObj[p] = {
+          ...r,
+          cards: r.cards ? Array.from(r.cards) : []
+        };
+      }
+
+      serialized.push({
+        jid,
+        buyIn: s.buyIn,
+        players: s.players,
+        playerLabels: s.playerLabels,
+        alivePlayers: s.alivePlayers,
+        pair: s.pair,
+        round: s.round,
+        status: s.status,
+        turnIndex: s.turnIndex,
+        skipCount: s.skipCount || 0,
+        modifier: s.modifier,
+        guardedPlayer: s.guardedPlayer || null,
+        framedPlayer: s.framedPlayer || null,
+        mrWhiteGuessPending: s.mrWhiteGuessPending || null,
+        goldenVoters: s.goldenVoters ? Array.from(s.goldenVoters) : [],
+        shieldedPlayers: s.shieldedPlayers ? Array.from(s.shieldedPlayers) : [],
+        silencedPlayers: s.silencedPlayers ? Array.from(s.silencedPlayers) : [],
+        votes: s.votes ? Array.from(s.votes.entries()) : [],
+        playerRoles: rolesObj
+      });
+    }
+
+    fs.writeFileSync(STATE_FILE, JSON.stringify(serialized, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('[UNDERCOVER] Gagal menyimpan state game:', err.message);
+  }
+}
+
+export async function restoreUndercoverSessions(sock) {
+  try {
+    if (!fs.existsSync(STATE_FILE)) return;
+    const content = fs.readFileSync(STATE_FILE, 'utf-8');
+    if (!content) return;
+    const data = JSON.parse(content);
+    if (!Array.isArray(data) || data.length === 0) return;
+
+    for (const item of data) {
+      const rolesMap = new Map();
+      for (const [p, r] of Object.entries(item.playerRoles || {})) {
+        rolesMap.set(p, {
+          ...r,
+          cards: new Set(r.cards || [])
+        });
+      }
+
+      const votesMap = new Map(item.votes || []);
+      const goldenSet = new Set(item.goldenVoters || []);
+      const shieldSet = new Set(item.shieldedPlayers || []);
+      const silenceSet = new Set(item.silencedPlayers || []);
+
+      const session = {
+        jid: item.jid,
+        buyIn: item.buyIn,
+        players: item.players,
+        playerLabels: item.playerLabels,
+        alivePlayers: item.alivePlayers,
+        pair: item.pair,
+        round: item.round,
+        status: item.status,
+        turnIndex: item.turnIndex,
+        skipCount: item.skipCount || 0,
+        modifier: item.modifier,
+        guardedPlayer: item.guardedPlayer,
+        framedPlayer: item.framedPlayer,
+        mrWhiteGuessPending: item.mrWhiteGuessPending,
+        goldenVoters: goldenSet,
+        shieldedPlayers: shieldSet,
+        silencedPlayers: silenceSet,
+        votes: votesMap,
+        playerRoles: rolesMap,
+        timeout: null
+      };
+
+      activeUndercoverGames.set(item.jid, session);
+
+      // Re-arm timer & pulihkan sesi permainan di grup!
+      if (session.status === 'CLUE_PHASE') {
+        const currentTurn = session.alivePlayers[session.turnIndex] || session.alivePlayers[0];
+        const isSuddenDeath = session.round >= 4;
+        const turnTimeoutMs = isSuddenDeath ? 15 * 1000 : (session.modifier?.name?.includes('Speed') ? 15 * 1000 : CLUE_TIMEOUT_MS);
+        
+        await send(sock, item.jid, null, `🔄 *GAME UNDERCOVER DIPULIHKAN DARI UPDATE!* 🕵️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nPermainan Ronde ${session.round} otomatis dilanjutkan!\n👉 *Giliran Petunjuk:* @${currentTurn.split('@')[0]} (Waktu: ${Math.round(turnTimeoutMs / 1000)}s)\n_Ketik petunjukmu di grup!_`, { mentions: [currentTurn] });
+        
+        session.timeout = setTimeout(async () => {
+          if (!activeUndercoverGames.has(item.jid)) return;
+          const cur = activeUndercoverGames.get(item.jid);
+          if (cur.status === 'CLUE_PHASE' && cur.alivePlayers[cur.turnIndex] === currentTurn) {
+            const pRole = cur.playerRoles.get(currentTurn);
+            if (pRole) pRole.clue = '(Melewatkan giliran / AFK)';
+            await send(sock, item.jid, null, `⌛ @${currentTurn.split('@')[0]} kehabisan waktu memberi petunjuk! Giliran dialihkan ke pemain berikutnya.`, { mentions: [currentTurn] });
+            cur.turnIndex++;
+            saveUndercoverSessions();
+            if (cur.turnIndex < cur.alivePlayers.length) {
+              await advanceClueTurn(sock, item.jid, null);
+            } else {
+              cur.status = 'VOTING_PHASE';
+              cur.votes.clear();
+              saveUndercoverSessions();
+              let voteList = `🗳️ *SEMUA PETUNJUK SELESAI — FASE VOTING!* ⚖️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+              cur.alivePlayers.forEach((p, i) => {
+                const roleData = cur.playerRoles.get(p);
+                voteList += `${i + 1}. @${p.split('@')[0]}: _"${roleData.clue || '-'}"_\n`;
+              });
+              const isSd = cur.round >= 4;
+              voteList += `\n💬 *Diskusikan siapa penyamarnya!*
+👉 *Pilihan Vote:*
+• Ketik: \`.vote [nomor / @member]\` untuk mengeliminasi tersangka
+${isSd ? '🚫 *(Zona Merah: Vote Skip Dikunci)*' : '• Ketik: \`.vote skip\` untuk **Abstain**'}
+⏳ Waktu voting: 35 detik.`;
+              await send(sock, item.jid, null, voteList, { mentions: cur.alivePlayers });
+            }
+          }
+        }, turnTimeoutMs);
+      } else if (session.status === 'VOTING_PHASE') {
+        const isSd = session.round >= 4;
+        let voteList = `🔄 *GAME UNDERCOVER DIPULIHKAN (FASE VOTING)!* 🗳️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+        session.alivePlayers.forEach((p, i) => {
+          const roleData = session.playerRoles.get(p);
+          voteList += `${i + 1}. @${p.split('@')[0]}: _"${roleData.clue || '-'}"_\n`;
+        });
+        voteList += `\n👉 *Pilihan Vote:*
+• Ketik: \`.vote [nomor / @member]\` untuk mengeliminasi tersangka
+${isSd ? '🚫 *(Zona Merah: Vote Skip Dikunci)*' : '• Ketik: \`.vote skip\` untuk **Abstain**'}
+⏳ Waktu voting: 35 detik.`;
+        await send(sock, item.jid, null, voteList, { mentions: session.alivePlayers });
+
+        session.timeout = setTimeout(async () => {
+          if (!activeUndercoverGames.has(item.jid)) return;
+          const cur = activeUndercoverGames.get(item.jid);
+          if (cur.status === 'VOTING_PHASE') {
+            await processUndercoverVotes(sock, item.jid, null);
+          }
+        }, VOTE_TIMEOUT_MS);
+      }
+    }
+  } catch (err) {
+    console.error('[UNDERCOVER] Gagal memulihkan state game:', err.message);
+  }
+}
 
 // Database Pasangan Kata Super Relatable, Meme, Gaming & Pop Culture (100+ Pasangan Kata)
 const WORD_PAIRS = [
@@ -157,6 +321,7 @@ export async function handleUndercover(sock, jid, senderNumber, messageObj, args
     }
     if (session.timeout) clearTimeout(session.timeout);
     activeUndercoverGames.delete(jid);
+    saveUndercoverSessions();
     await send(sock, jid, messageObj, "🛑 Permainan Undercover berhasil dibatalkan.");
     return true;
   }
@@ -208,6 +373,7 @@ export async function handleUndercover(sock, jid, senderNumber, messageObj, args
     const cur = activeUndercoverGames.get(jid);
     if (cur.status === 'LOBBY') {
       activeUndercoverGames.delete(jid);
+      saveUndercoverSessions();
       await send(sock, jid, messageObj, `⌛ *LOBI UNDERCOVER KEDALUWARSA!* Game dibatalkan karena tidak dimulai dalam 90 detik.`);
     }
   }, 90 * 1000);
@@ -409,6 +575,7 @@ async function startUndercoverGame(sock, jid, senderNumber, messageObj) {
     }
   }
 
+  saveUndercoverSessions();
   await startNextUndercoverRound(sock, jid, messageObj, true);
   return true;
 }
@@ -445,6 +612,7 @@ export async function handleUndercoverClue(sock, jid, senderNumber, messageObj, 
   if (session.timeout) clearTimeout(session.timeout);
 
   session.turnIndex++;
+  saveUndercoverSessions();
 
   if (session.turnIndex < session.alivePlayers.length) {
     await advanceClueTurn(sock, jid, messageObj);
@@ -453,7 +621,9 @@ export async function handleUndercoverClue(sock, jid, senderNumber, messageObj, 
     // Seluruh pemain sudah memberi petunjuk -> Masuk ke FASE VOTING
     session.status = 'VOTING_PHASE';
     session.votes.clear();
+    saveUndercoverSessions();
 
+    const isSuddenDeath = session.round >= 4;
     let voteList = `🗳️ *SEMUA PETUNJUK SELESAI — FASE VOTING!* ⚖️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
     session.alivePlayers.forEach((p, i) => {
       const roleData = session.playerRoles.get(p);
@@ -462,8 +632,8 @@ export async function handleUndercoverClue(sock, jid, senderNumber, messageObj, 
     voteList += `\n💬 *Diskusikan siapa penyamarnya!*
 👉 *Pilihan Vote:*
 • Ketik: \`.vote [nomor / @member]\` untuk mengeliminasi tersangka
-• Ketik: \`.vote skip\` (atau \`.skip\`) untuk **Abstain / Melewati Eliminasi**
-⏳ Waktu voting: 60 detik.`;
+${isSuddenDeath ? '🚫 *(Zona Merah: Vote Skip Dikunci)*' : `• Ketik: \`.vote skip\` (atau \`.skip\`) untuk **Abstain** (Sisa Kuota: ${Math.max(0, MAX_SKIPS - (session.skipCount || 0))}/2)`}
+⏳ Waktu voting: 35 detik.`;
 
     session.timeout = setTimeout(async () => {
       if (!activeUndercoverGames.has(jid)) return;
@@ -485,9 +655,10 @@ async function advanceClueTurn(sock, jid, messageObj) {
   const nextPlayer = session.alivePlayers[session.turnIndex];
   if (!nextPlayer) return;
 
-  const turnTimeoutMs = session.modifier?.name?.includes('Speed') ? 20 * 1000 : CLUE_TIMEOUT_MS;
+  const isSuddenDeath = session.round >= 4;
+  const turnTimeoutMs = isSuddenDeath ? 15 * 1000 : (session.modifier?.name?.includes('Speed') ? 15 * 1000 : CLUE_TIMEOUT_MS);
 
-  const turnMsg = `✅ Petunjuk diterima!\n\n👉 *Giliran Selanjutnya:* @${nextPlayer.split('@')[0]} (Pemain ${session.turnIndex + 1}/${session.alivePlayers.length})\n⏳ *Waktu:* ${Math.round(turnTimeoutMs / 1000)} Detik\n_Tulis 1 kalimat petunjuk katamu di grup ini! (Atau ketik \`.skip\` untuk melewati giliran)_`;
+  const turnMsg = `✅ Petunjuk diterima!\n\n👉 *Giliran Selanjutnya:* @${nextPlayer.split('@')[0]} (Pemain ${session.turnIndex + 1}/${session.alivePlayers.length})\n⏳ *Waktu:* ${Math.round(turnTimeoutMs / 1000)} Detik\n_Tulis 1 kalimat petunjuk katamu di grup ini! ${isSuddenDeath ? '🚫 (Vote Skip Dikunci)' : '(Atau ketik `.skip` untuk melewati giliran)'}_`;
 
   session.timeout = setTimeout(async () => {
     if (!activeUndercoverGames.has(jid)) return;
@@ -497,17 +668,30 @@ async function advanceClueTurn(sock, jid, messageObj) {
       if (pRole) pRole.clue = '(Melewatkan giliran / AFK)';
       await send(sock, jid, messageObj, `⌛ @${nextPlayer.split('@')[0]} kehabisan waktu memberi petunjuk! Giliran dialihkan ke pemain berikutnya.`, { mentions: [nextPlayer] });
       cur.turnIndex++;
+      saveUndercoverSessions();
       if (cur.turnIndex < cur.alivePlayers.length) {
         await advanceClueTurn(sock, jid, messageObj);
       } else {
         cur.status = 'VOTING_PHASE';
         cur.votes.clear();
+        saveUndercoverSessions();
+
+        const isSd = cur.round >= 4;
         let voteList = `🗳️ *SEMUA PETUNJUK SELESAI — FASE VOTING!* ⚖️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
         cur.alivePlayers.forEach((p, i) => {
           const roleData = cur.playerRoles.get(p);
           voteList += `${i + 1}. @${p.split('@')[0]}: _"${roleData.clue}"_\n`;
         });
-        voteList += `\n👉 Ketik: \`.vote [nomor / @member]\` atau \`.vote skip\` (Abstain)!\n⏳ Waktu voting: 60 detik.`;
+        voteList += `\n👉 Ketik: \`.vote [nomor / @member]\` ${isSd ? '🚫 *(Zona Merah: Vote Skip Dikunci)*' : `atau \`.vote skip\` (Abstain, Sisa Kuota: ${Math.max(0, MAX_SKIPS - (cur.skipCount || 0))}/2)`}!\n⏳ Waktu voting: 35 detik.`;
+        
+        cur.timeout = setTimeout(async () => {
+          if (!activeUndercoverGames.has(jid)) return;
+          const cur2 = activeUndercoverGames.get(jid);
+          if (cur2.status === 'VOTING_PHASE') {
+            await processUndercoverVotes(sock, jid, messageObj);
+          }
+        }, VOTE_TIMEOUT_MS);
+
         await send(sock, jid, messageObj, voteList, { mentions: cur.alivePlayers });
       }
     }
@@ -523,8 +707,8 @@ export async function handleUndercoverSkip(sock, jid, senderNumber, messageObj, 
   // 1. JIKA SEDANG DI FASE PETUNJUK (CLUE_PHASE)
   if (session.status === 'CLUE_PHASE') {
     const currentTurnPlayer = session.alivePlayers[session.turnIndex];
-    const isCurrentTurn = senderNumber === currentTurnPlayer;
-    const isHost = senderNumber === session.host;
+    const isCurrentTurn = senderNumber === currentTurnPlayer || db.isPhoneMatch(senderNumber, currentTurnPlayer);
+    const isHost = senderNumber === session.host || db.isPhoneMatch(senderNumber, session.host);
     const isPrivileged = isHost || isAdmin || isOwner;
 
     if (!session.skipVotes) session.skipVotes = new Set();
@@ -539,17 +723,22 @@ export async function handleUndercoverSkip(sock, jid, senderNumber, messageObj, 
       await send(sock, jid, messageObj, `⏩ @${currentTurnPlayer.split('@')[0]} memilih untuk **MELEWATKAN GILIRAN (SKIP)**! Giliran dialihkan ke pemain berikutnya...`, { mentions: [currentTurnPlayer] });
 
       session.turnIndex++;
+      saveUndercoverSessions();
+
       if (session.turnIndex < session.alivePlayers.length) {
         await advanceClueTurn(sock, jid, messageObj);
       } else {
         session.status = 'VOTING_PHASE';
         session.votes.clear();
+        saveUndercoverSessions();
+
+        const isSd = session.round >= 4;
         let voteList = `🗳️ *SEMUA PETUNJUK SELESAI — FASE VOTING!* ⚖️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
         session.alivePlayers.forEach((p, i) => {
           const roleData = session.playerRoles.get(p);
           voteList += `${i + 1}. @${p.split('@')[0]}: _"${roleData.clue}"_\n`;
         });
-        voteList += `\n👉 Ketik: \`.vote [nomor / @member]\` atau \`.vote skip\` (Abstain)!\n⏳ Waktu voting: 60 detik.`;
+        voteList += `\n👉 Ketik: \`.vote [nomor / @member]\` ${isSd ? '🚫 *(Zona Merah: Vote Skip Dikunci)*' : `atau \`.vote skip\` (Abstain, Sisa Kuota: ${Math.max(0, MAX_SKIPS - (session.skipCount || 0))}/2)`}!\n⏳ Waktu voting: 35 detik.`;
 
         session.timeout = setTimeout(async () => {
           if (!activeUndercoverGames.has(jid)) return;
@@ -572,17 +761,22 @@ export async function handleUndercoverSkip(sock, jid, senderNumber, messageObj, 
       await send(sock, jid, messageObj, `⏩ *FORCE SKIP:* Giliran @${currentTurnPlayer.split('@')[0]} dilewati oleh Host/Admin!`, { mentions: [currentTurnPlayer] });
 
       session.turnIndex++;
+      saveUndercoverSessions();
+
       if (session.turnIndex < session.alivePlayers.length) {
         await advanceClueTurn(sock, jid, messageObj);
       } else {
         session.status = 'VOTING_PHASE';
         session.votes.clear();
+        saveUndercoverSessions();
+
+        const isSd = session.round >= 4;
         let voteList = `🗳️ *SEMUA PETUNJUK SELESAI — FASE VOTING!* ⚖️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
         session.alivePlayers.forEach((p, i) => {
           const roleData = session.playerRoles.get(p);
           voteList += `${i + 1}. @${p.split('@')[0]}: _"${roleData.clue}"_\n`;
         });
-        voteList += `\n👉 Ketik: \`.vote [nomor / @member]\` atau \`.vote skip\` (Abstain)!\n⏳ Waktu voting: 60 detik.`;
+        voteList += `\n👉 Ketik: \`.vote [nomor / @member]\` ${isSd ? '🚫 *(Zona Merah: Vote Skip Dikunci)*' : `atau \`.vote skip\` (Abstain, Sisa Kuota: ${Math.max(0, MAX_SKIPS - (session.skipCount || 0))}/2)`}!\n⏳ Waktu voting: 35 detik.`;
 
         session.timeout = setTimeout(async () => {
           if (!activeUndercoverGames.has(jid)) return;
@@ -595,7 +789,7 @@ export async function handleUndercoverSkip(sock, jid, senderNumber, messageObj, 
         await send(sock, jid, messageObj, voteList, { mentions: session.alivePlayers });
       }
       return true;
-    } else if (session.alivePlayers.includes(senderNumber)) {
+    } else if (session.alivePlayers.some(p => p === senderNumber || db.isPhoneMatch(p, senderNumber))) {
       // Vote skip bersama oleh pemain lain
       session.skipVotes.add(senderNumber);
       const needed = Math.min(2, session.alivePlayers.length - 1);
@@ -608,17 +802,22 @@ export async function handleUndercoverSkip(sock, jid, senderNumber, messageObj, 
         await send(sock, jid, messageObj, `⏩ *VOTE SKIP BERHASIL:* Giliran @${currentTurnPlayer.split('@')[0]} dilewati karena tidak merespons!`, { mentions: [currentTurnPlayer] });
 
         session.turnIndex++;
+        saveUndercoverSessions();
+
         if (session.turnIndex < session.alivePlayers.length) {
           await advanceClueTurn(sock, jid, messageObj);
         } else {
           session.status = 'VOTING_PHASE';
           session.votes.clear();
+          saveUndercoverSessions();
+
+          const isSd = session.round >= 4;
           let voteList = `🗳️ *SEMUA PETUNJUK SELESAI — FASE VOTING!* ⚖️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
           session.alivePlayers.forEach((p, i) => {
             const roleData = session.playerRoles.get(p);
             voteList += `${i + 1}. @${p.split('@')[0]}: _"${roleData.clue}"_\n`;
           });
-          voteList += `\n👉 Ketik: \`.vote [nomor / @member]\` atau \`.vote skip\` (Abstain)!\n⏳ Waktu voting: 60 detik.`;
+          voteList += `\n👉 Ketik: \`.vote [nomor / @member]\` ${isSd ? '🚫 *(Zona Merah: Vote Skip Dikunci)*' : `atau \`.vote skip\` (Abstain, Sisa Kuota: ${Math.max(0, MAX_SKIPS - (session.skipCount || 0))}/2)`}!\n⏳ Waktu voting: 35 detik.`;
 
           session.timeout = setTimeout(async () => {
             if (!activeUndercoverGames.has(jid)) return;
@@ -649,7 +848,7 @@ export async function handleUndercoverVote(sock, jid, senderNumber, messageObj, 
   let session = activeUndercoverGames.get(jid);
   if (!session) {
     for (const s of activeUndercoverGames.values()) {
-      if (s.playerRoles?.has(senderNumber)) {
+      if (s.playerRoles?.has(senderNumber) || Array.from(s.playerRoles.keys()).some(p => db.isPhoneMatch(p, senderNumber))) {
         session = s;
         break;
       }
@@ -661,7 +860,8 @@ export async function handleUndercoverVote(sock, jid, senderNumber, messageObj, 
     return true;
   }
 
-  if (!session.alivePlayers.includes(senderNumber)) {
+  const resolvedVoter = session.alivePlayers.find(p => p === senderNumber || db.isPhoneMatch(p, senderNumber));
+  if (!resolvedVoter) {
     await send(sock, jid, messageObj, "❌ Pemain yang sudah gugur/mati tidak dapat memberikan suara!");
     return true;
   }
@@ -674,6 +874,14 @@ export async function handleUndercoverVote(sock, jid, senderNumber, messageObj, 
   let resolvedTarget = null;
 
   if (isSkipVote) {
+    if (session.round >= 4) {
+      await send(sock, jid, messageObj, "🚨 *ZONA MERAH (SUDDEN DEATH)!* Mulai Ronde 4, opsi vote skip telah dikunci. Seluruh pemain wajib memilih salah satu tersangka untuk dieksekusi!");
+      return true;
+    }
+    if ((session.skipCount || 0) >= MAX_SKIPS) {
+      await send(sock, jid, messageObj, "❌ *KUOTA VOTE SKIP HABIS!* Vote skip hanya dapat digunakan maksimal 2x per game (Sudah terpakai 2/2). Silakan pilih tersangka!");
+      return true;
+    }
     resolvedTarget = 'SKIP';
   } else if (rawTarget) {
     const parsedNum = parseInt(String(rawTarget).trim(), 10);
@@ -683,31 +891,34 @@ export async function handleUndercoverVote(sock, jid, senderNumber, messageObj, 
       resolvedTarget = rawTarget;
     } else {
       const targetDigits = String(rawTarget).replace(/\D/g, '');
-      if (targetDigits.length > 5) {
-        resolvedTarget = session.alivePlayers.find(p => p.replace(/\D/g, '').includes(targetDigits) || targetDigits.includes(p.replace(/\D/g, '')));
+      if (targetDigits.length >= 4) {
+        resolvedTarget = session.alivePlayers.find(p => db.isPhoneMatch(p, targetDigits) || p.replace(/\D/g, '').includes(targetDigits) || targetDigits.includes(p.replace(/\D/g, '')));
       }
     }
   }
 
   if (!resolvedTarget || (resolvedTarget !== 'SKIP' && !session.alivePlayers.includes(resolvedTarget))) {
-    await send(sock, jid, messageObj, `⚠️ Target vote tidak valid atau sudah mati!\n👉 *Cara Vote:* Ketik \`.vote @member\`, nomor urut \`.vote [1-${session.alivePlayers.length}]\`, atau \`.vote skip\` (Abstain)`);
+    const isSd = session.round >= 4;
+    await send(sock, jid, messageObj, `⚠️ Target vote tidak valid atau sudah mati!\n👉 *Cara Vote:* Ketik \`.vote @member\`, nomor urut \`.vote [1-${session.alivePlayers.length}]\`${isSd ? '' : ' atau `.vote skip` (Abstain)'}`);
     return true;
   }
 
-  if (resolvedTarget === senderNumber) {
-    await send(sock, jid, messageObj, "⚠️ Kamu tidak bisa mem-vote dirimu sendiri! Jika ingin melewati eliminasi ronde ini, ketik `.vote skip`.");
+  if (resolvedTarget === resolvedVoter) {
+    await send(sock, jid, messageObj, `⚠️ Kamu tidak bisa mem-vote dirimu sendiri! ${session.round >= 4 ? 'Wajib pilih pemain lain!' : 'Jika ingin abstain, ketik `.vote skip`.'}`);
     return true;
   }
 
-  session.votes.set(senderNumber, resolvedTarget);
-  const voterPhone = senderNumber.split('@')[0];
-  const isGolden = session.goldenVoters?.has(senderNumber);
+  session.votes.set(resolvedVoter, resolvedTarget);
+  saveUndercoverSessions();
+
+  const voterPhone = resolvedVoter.split('@')[0];
+  const isGolden = session.goldenVoters?.has(resolvedVoter);
 
   if (resolvedTarget === 'SKIP') {
-    await send(sock, session.jid, messageObj, `🗳️ @${voterPhone} memilih untuk **SKIP / ABSTAIN**! ${isGolden ? '🌟 *(Golden Vote x2)*' : ''} (${session.votes.size}/${session.alivePlayers.length} suara)`, { mentions: [senderNumber] });
+    await send(sock, session.jid, messageObj, `🗳️ @${voterPhone} memilih untuk **SKIP / ABSTAIN**! ${isGolden ? '🌟 *(Golden Vote x2)*' : ''} (${session.votes.size}/${session.alivePlayers.length} suara)`, { mentions: [resolvedVoter] });
   } else {
     const targetPhone = resolvedTarget.split('@')[0];
-    await send(sock, session.jid, messageObj, `🗳️ @${voterPhone} mem-vote @${targetPhone}! ${isGolden ? '🌟 *(Golden Vote x2)*' : ''} (${session.votes.size}/${session.alivePlayers.length} suara)`, { mentions: [senderNumber, resolvedTarget] });
+    await send(sock, session.jid, messageObj, `🗳️ @${voterPhone} mem-vote @${targetPhone}! ${isGolden ? '🌟 *(Golden Vote x2)*' : ''} (${session.votes.size}/${session.alivePlayers.length} suara)`, { mentions: [resolvedVoter, resolvedTarget] });
   }
 
   if (session.votes.size >= session.alivePlayers.length) {
@@ -750,10 +961,15 @@ async function processUndercoverVotes(sock, jid, messageObj) {
   }
 
   if (isTie || !eliminated || eliminated === 'SKIP') {
+    if (eliminated === 'SKIP') {
+      session.skipCount = (session.skipCount || 0) + 1;
+    }
     const reasonMsg = eliminated === 'SKIP' 
-      ? `⚖️ *HASIL VOTING TERBANYAK ADALAH SKIP / ABSTAIN!* Tidak ada pemain yang dieliminasi ronde ini.`
+      ? `⚖️ *HASIL VOTING TERBANYAK ADALAH SKIP / ABSTAIN!* Tidak ada pemain yang dieliminasi ronde ini. (Penggunaan Skip: ${session.skipCount}/2)`
       : `⚖️ *HASIL VOTING SERI / IMBANG!* Tidak ada yang dieliminasi ronde ini.`;
-    await send(sock, jid, messageObj, `${reasonMsg} Permainan dilanjutkan ke ronde berikutnya!`);
+    
+    await send(sock, jid, messageObj, `${reasonMsg}\nPermainan dilanjutkan ke ronde berikutnya!`);
+    saveUndercoverSessions();
     return await startNextUndercoverRound(sock, jid, messageObj);
   }
 
@@ -761,6 +977,7 @@ async function processUndercoverVotes(sock, jid, messageObj) {
   if (session.guardedPlayer === eliminated) {
     session.guardedPlayer = null;
     await send(sock, jid, messageObj, `🛡️ *GUARDIAN MENYELAMATKAN DARI EKSEKUSI!* 🛡️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n@${eliminated.split('@')[0]} seharusnya dieksekusi oleh voting grup, namun Bodyguard/Guardian berhasil melindunginya dari maut! Eksekusi dibatalkan ronde ini.`, { mentions: [eliminated] });
+    saveUndercoverSessions();
     return await startNextUndercoverRound(sock, jid, messageObj);
   }
 
@@ -768,6 +985,7 @@ async function processUndercoverVotes(sock, jid, messageObj) {
   if (session.shieldedPlayers?.has(eliminated)) {
     session.shieldedPlayers.delete(eliminated);
     await send(sock, jid, messageObj, `🛡️ *ROMPI ANTI-PELURU AKTIF!* @${eliminated.split('@')[0]} berhasil selamat dari eksekusi vote berkat Rompi Pelindung! Eksekusi dibatalkan ronde ini.`, { mentions: [eliminated] });
+    saveUndercoverSessions();
     return await startNextUndercoverRound(sock, jid, messageObj);
   }
 
@@ -780,6 +998,7 @@ async function processUndercoverVotes(sock, jid, messageObj) {
   const roleName = getRoleBadge(eliminatedRole.role);
 
   await send(sock, jid, messageObj, `☠️ *@${elimPhone}* resmi dieliminasi dari grup dengan ${maxVotes} suara!\n🎭 Peran Terbuka: *${roleName}*`, { mentions: [eliminated] });
+  saveUndercoverSessions();
 
   // 1. Cek Kemenangan Spesial JESTER (Si Badut Menang Solo jika di-vote di ronde 1 atau 2)
   if (eliminatedRole.role === 'JESTER' && session.round <= 2) {
@@ -799,6 +1018,7 @@ async function processUndercoverVotes(sock, jid, messageObj) {
 _Seluruh pot taruhan disapu bersih oleh Si Badut!_`;
 
     activeUndercoverGames.delete(jid);
+    saveUndercoverSessions();
     await send(sock, jid, messageObj, jesterWinMsg, { mentions: [eliminated] });
     return;
   }
@@ -807,6 +1027,7 @@ _Seluruh pot taruhan disapu bersih oleh Si Badut!_`;
   if (eliminatedRole.role === 'MRWHITE') {
     session.status = 'MR_WHITE_GUESS';
     session.mrWhiteGuessPending = eliminated;
+    saveUndercoverSessions();
     await send(sock, jid, messageObj, `🤍 *MR. WHITE DIBERI KESEMPATAN TERAKHIR!* 🤍\n@${elimPhone} memiliki 30 detik untuk menebak kata warga sipil!\n👉 Ketik: \`.tebakwarga <kata>\``, { mentions: [eliminated] });
 
     session.timeout = setTimeout(async () => {
@@ -883,6 +1104,7 @@ export async function handleMrWhiteGuess(sock, jid, senderNumber, messageObj, gu
 _Mr. White menyapu bersih seluruh pot taruhan permainan!_`;
 
     activeUndercoverGames.delete(gameJid);
+    saveUndercoverSessions();
     await send(sock, gameJid, null, winMsg, { mentions: [resolvedSender] });
     if (jid !== gameJid) {
       await send(sock, jid, messageObj, `🎉 Tebakan Anda BENAR (*${guess}*)! Anda memenangkan permainan!`);
@@ -902,6 +1124,7 @@ _Mr. White menyapu bersih seluruh pot taruhan permainan!_`;
 
     if (targetSession.status === 'MR_WHITE_GUESS') {
       targetSession.mrWhiteGuessPending = null;
+      saveUndercoverSessions();
       const isWon = await checkUndercoverWinCondition(sock, gameJid);
       if (!isWon) {
         await startNextUndercoverRound(sock, gameJid, null, false);
@@ -977,6 +1200,7 @@ Seluruh penyamar berhasil dieliminasi!
 👥 Warga Pemenang: ${winningCivilians.map(c => `@${c.split('@')[0]}`).join(', ')}`;
 
     activeUndercoverGames.delete(jid);
+    saveUndercoverSessions();
     await send(sock, jid, null, winMsg, { mentions: allWinners });
     return true;
   }
@@ -1008,6 +1232,7 @@ Penyamar berhasil mengecoh seluruh warga sipil hingga akhir!
 💰 Hadiah Tiap Pemenang: *+${prizePerWinner.toLocaleString('id-ID')} Poin* & *+120 XP*!`;
 
     activeUndercoverGames.delete(jid);
+    saveUndercoverSessions();
     await send(sock, jid, null, winMsg, { mentions: allWinners });
     return true;
   }
@@ -1019,7 +1244,46 @@ async function startNextUndercoverRound(sock, jid, messageObj, isFirstRound = fa
   const session = activeUndercoverGames.get(jid);
   if (!session) return;
 
-  session.round++;
+  if (!isFirstRound) {
+    session.round++;
+  } else {
+    session.round = 1;
+    session.skipCount = 0;
+  }
+
+  // 1. Cek jika mencapai batas maksimal ronde (Max 7 Ronde)
+  if (session.round > MAX_ROUNDS) {
+    if (session.timeout) clearTimeout(session.timeout);
+    const totalPrize = session.buyIn * session.players.length;
+    const winningUndercovers = session.players.filter(p => isUndercoverRole(session.playerRoles.get(p)?.role));
+    const aliveMrWhite = session.alivePlayers.filter(p => session.playerRoles.get(p)?.role === 'MRWHITE');
+    const aliveBunglon = session.alivePlayers.filter(p => session.playerRoles.get(p)?.role === 'BUNGLON');
+    const allWinners = [...winningUndercovers, ...aliveMrWhite, ...aliveBunglon];
+    const prizePerWinner = Math.floor(totalPrize / Math.max(1, allWinners.length));
+
+    for (const w of allWinners) {
+      await db.addGamePoints(w, prizePerWinner);
+      await db.addMessageXp(w, 150);
+    }
+
+    const maxRoundWinMsg = 
+`⌛ *BATAS MAKSIMAL 7 RONDE TERCAPAI!* 🕵️👑
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Warga sipil kehabisan waktu dan gagal membongkar penyamar hingga akhir Ronde 7!
+🏆 *UNDERCOVER MENANG SURVIVAL! (SURVIVAL VICTORY)* 🎭
+
+💡 Kata Warga: *${session.pair.civilian}*
+🤫 Kata Undercover: *${session.pair.undercover}*
+
+🎁 Hadiah Tiap Pemenang: *+${prizePerWinner.toLocaleString('id-ID')} Poin* & *+150 XP*!
+🏆 Pemenang: ${allWinners.map(w => `@${w.split('@')[0]}`).join(', ')}`;
+
+    activeUndercoverGames.delete(jid);
+    saveUndercoverSessions();
+    await send(sock, jid, null, maxRoundWinMsg, { mentions: allWinners });
+    return;
+  }
+
   session.status = 'CLUE_PHASE';
   session.turnIndex = 0;
   session.detectiveChecksThisRound?.clear();
@@ -1030,6 +1294,8 @@ async function startNextUndercoverRound(sock, jid, messageObj, isFirstRound = fa
 
   const currentTurnPlayer = session.alivePlayers[session.turnIndex];
   const totalPot = session.buyIn * session.players.length;
+  const isSuddenDeath = session.round >= 4;
+  const turnTimeoutMs = isSuddenDeath ? 15 * 1000 : (mod.name?.includes('Speed') ? 15 * 1000 : CLUE_TIMEOUT_MS);
 
   let roundHeader = '';
   if (isFirstRound) {
@@ -1060,12 +1326,33 @@ async function startNextUndercoverRound(sock, jid, messageObj, isFirstRound = fa
 🎭 *Komposisi Peran:* ${roleSummary}
 🎲 *Tantangan Ronde:* *${mod.name}* (${mod.desc})
 
+📜 *ATURAN GAME TERBARU:*
+⏱️ *Durasi:* 25s Petunjuk, 35s Voting
+🚫 *Batas Vote Skip:* Maksimal 2x per permainan
+💀 *Zona Merah (Sudden Death):* Mulai Ronde 4+ (Waktu 15s & Vote Skip Dikunci!)
+⏳ *Batas Ronde:* Maksimal 7 Ronde (Jika R7 usai ➔ Penyamar Menang Survival!)
+
 📋 *Urutan Giliran Pemain:*
 ${session.alivePlayers.map((p, i) => `${i + 1}. @${p.split('@')[0]}`).join('\n')}
 
-👉 *Giliran Pertama:* @${currentTurnPlayer.split('@')[0]} (Waktu 35s)
+👉 *Giliran Pertama:* @${currentTurnPlayer.split('@')[0]} (Waktu 25s)
 _Ketik 1 kalimat petunjuk katamu di grup ini! (Atau .skip)_
 💡 _Ketik \`.undercover role\` untuk membaca panduan peran._`;
+  } else if (isSuddenDeath) {
+    roundHeader = 
+`🚨 *ZONA MERAH / SUDDEN DEATH DIAKTIFKAN — RONDE ${session.round}* ☠️
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️ *PERINGATAN ZONA MERAH:*
+• Waktu giliran petunjuk dipercepat jadi **15 Detik**!
+• Opsi \`.vote skip\` **DIKUNCI / DILARANG** (Wajib ada yang dieksekusi)!
+• Batas akhir game: Ronde 7 (Penyamar menang jika selamat).
+
+🎲 *Tantangan Ronde:* *${mod.name}* (${mod.desc})
+👥 *Pemain Bertahan (${session.alivePlayers.length}):*
+${session.alivePlayers.map((p, i) => `${i + 1}. @${p.split('@')[0]}`).join('\n')}
+
+👉 *Giliran:* @${currentTurnPlayer.split('@')[0]} (Waktu 15s)
+_Ketik petunjuk barumu di grup!_`;
   } else {
     roundHeader = 
 `🔄 *UNDERCOVER — MASUK RONDE ${session.round}* 🕵️
@@ -1074,20 +1361,48 @@ _Ketik 1 kalimat petunjuk katamu di grup ini! (Atau .skip)_
 👥 *Pemain Bertahan (${session.alivePlayers.length}):*
 ${session.alivePlayers.map((p, i) => `${i + 1}. @${p.split('@')[0]}`).join('\n')}
 
-👉 *Giliran:* @${currentTurnPlayer.split('@')[0]} (Waktu 35s)
+👉 *Giliran:* @${currentTurnPlayer.split('@')[0]} (Waktu 25s)
 _Ketik petunjuk barumu di grup! (Atau .skip)_`;
   }
+
+  saveUndercoverSessions();
 
   session.timeout = setTimeout(async () => {
     if (!activeUndercoverGames.has(jid)) return;
     const cur = activeUndercoverGames.get(jid);
     if (cur.status === 'CLUE_PHASE' && cur.alivePlayers[cur.turnIndex] === currentTurnPlayer) {
       const pRole = cur.playerRoles.get(currentTurnPlayer);
-      if (pRole) pRole.clue = '(Melewatkan giliran)';
+      if (pRole) pRole.clue = '(Melewatkan giliran / AFK)';
+      await send(sock, jid, messageObj, `⌛ @${currentTurnPlayer.split('@')[0]} kehabisan waktu memberi petunjuk! Giliran dialihkan ke pemain berikutnya.`, { mentions: [currentTurnPlayer] });
       cur.turnIndex++;
-      await advanceClueTurn(sock, jid, messageObj);
+      saveUndercoverSessions();
+      if (cur.turnIndex < cur.alivePlayers.length) {
+        await advanceClueTurn(sock, jid, messageObj);
+      } else {
+        cur.status = 'VOTING_PHASE';
+        cur.votes.clear();
+        saveUndercoverSessions();
+
+        const isSd = cur.round >= 4;
+        let voteList = `🗳️ *SEMUA PETUNJUK SELESAI — FASE VOTING!* ⚖️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+        cur.alivePlayers.forEach((p, i) => {
+          const roleData = cur.playerRoles.get(p);
+          voteList += `${i + 1}. @${p.split('@')[0]}: _"${roleData.clue || '-'}"_\n`;
+        });
+        voteList += `\n👉 Ketik: \`.vote [nomor / @member]\` ${isSd ? '🚫 *(Zona Merah: Vote Skip Dikunci)*' : `atau \`.vote skip\` (Abstain, Sisa Kuota: ${Math.max(0, MAX_SKIPS - (cur.skipCount || 0))}/2)`}!\n⏳ Waktu voting: 35 detik.`;
+
+        cur.timeout = setTimeout(async () => {
+          if (!activeUndercoverGames.has(jid)) return;
+          const cur2 = activeUndercoverGames.get(jid);
+          if (cur2.status === 'VOTING_PHASE') {
+            await processUndercoverVotes(sock, jid, messageObj);
+          }
+        }, VOTE_TIMEOUT_MS);
+
+        await send(sock, jid, messageObj, voteList, { mentions: cur.alivePlayers });
+      }
     }
-  }, CLUE_TIMEOUT_MS);
+  }, turnTimeoutMs);
 
   await send(sock, jid, messageObj, roundHeader, { mentions: session.alivePlayers });
 }
@@ -1168,6 +1483,8 @@ export async function handleDetectiveCheck(sock, jid, senderNumber, messageObj, 
   }
 
   senderRoleData.hasUsedIntel = true;
+  saveUndercoverSessions();
+
   const targetRole = targetSession.playerRoles.get(resolvedTarget);
   const isFramed = targetSession.framedPlayer === resolvedTarget;
   const isCiv = isCivilianRole(targetRole.role) && !isFramed;
@@ -1208,6 +1525,8 @@ export async function handleGuardianProtect(sock, jid, senderNumber, messageObj,
   }
 
   targetSession.guardedPlayer = resolvedTarget;
+  saveUndercoverSessions();
+
   const targetPhone = resolvedTarget.split('@')[0];
   await send(sock, jid, messageObj, `🛡️ *PERLINDUNGAN GUARDIAN AKTIF!* 🔰\nAnda berhasil menugaskan pengawalan ketat untuk @${targetPhone} di ronde ini. Jika dia diserang/dieksekusi, nyawanya akan terselamatkan!`, { mentions: [resolvedTarget] });
   return true;
@@ -1252,6 +1571,8 @@ export async function handleFramerFrame(sock, jid, senderNumber, messageObj, tar
 
   senderRoleData.hasFramed = true;
   targetSession.framedPlayer = resolvedTarget;
+  saveUndercoverSessions();
+
   const targetPhone = resolvedTarget.split('@')[0];
 
   const successMsg = 
@@ -1346,6 +1667,8 @@ export async function handleUndercoverShoot(sock, jid, senderNumber, messageObj,
   }
 
   senderRoleData.hasBullet = false;
+  saveUndercoverSessions();
+
   const gameJid = targetSession.jid;
   const senderPhone = resolvedSender.split('@')[0];
   const targetPhone = resolvedTarget.split('@')[0];
@@ -1354,6 +1677,8 @@ export async function handleUndercoverShoot(sock, jid, senderNumber, messageObj,
   // Cek jika target dilindungi Guardian
   if (targetSession.guardedPlayer === resolvedTarget) {
     targetSession.guardedPlayer = null;
+    saveUndercoverSessions();
+
     const blockMsg = 
 `🛡️ *SERANGAN DIGAGALKAN OLEH GUARDIAN!* 🛡️
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1428,6 +1753,8 @@ Terdengar suara letupan tembakan senyap di kejauhan...
     }
   }
 
+  saveUndercoverSessions();
+
   // Evaluasi kondisi kemenangan game
   const isGameOver = await checkUndercoverWinCondition(sock, gameJid);
   if (isGameOver) return true;
@@ -1437,6 +1764,9 @@ Terdengar suara letupan tembakan senyap di kejauhan...
     if (targetSession.turnIndex >= targetSession.alivePlayers.length) {
       targetSession.status = 'VOTING_PHASE';
       targetSession.votes.clear();
+      saveUndercoverSessions();
+
+      const isSd = targetSession.round >= 4;
       let voteList = `🗳️ *SEMUA PETUNJUK SELESAI — FASE VOTING!* ⚖️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
       targetSession.alivePlayers.forEach((p, i) => {
         const roleData = targetSession.playerRoles.get(p);
@@ -1445,8 +1775,17 @@ Terdengar suara letupan tembakan senyap di kejauhan...
       voteList += `\n💬 *Diskusikan siapa penyamarnya!*
 👉 *Pilihan Vote:*
 • Ketik: \`.vote [nomor / @member]\` untuk mengeliminasi tersangka
-• Ketik: \`.vote skip\` (atau \`.skip\`) untuk **Abstain / Melewati Eliminasi**
-⏳ Waktu voting: 60 detik.`;
+${isSd ? '🚫 *(Zona Merah: Vote Skip Dikunci)*' : `• Ketik: \`.vote skip\` (atau \`.skip\`) untuk **Abstain** (Sisa Kuota: ${Math.max(0, MAX_SKIPS - (targetSession.skipCount || 0))}/2)`}
+⏳ Waktu voting: 35 detik.`;
+
+      targetSession.timeout = setTimeout(async () => {
+        if (!activeUndercoverGames.has(gameJid)) return;
+        const cur = activeUndercoverGames.get(gameJid);
+        if (cur.status === 'VOTING_PHASE') {
+          await processUndercoverVotes(sock, gameJid, messageObj);
+        }
+      }, VOTE_TIMEOUT_MS);
+
       await send(sock, gameJid, null, voteList, { mentions: targetSession.alivePlayers });
     }
   }
@@ -1583,12 +1922,18 @@ async function showUndercoverStats(sock, jid, senderNumber, messageObj) {
 
 export async function showUndercoverRoleGuide(sock, jid, messageObj) {
   const guide = 
-`🎭 *PANDUAN LENGKAP PERAN GAME UNDERCOVER 2.0 (RANDOM ROLES)* 🕵️
+`🎭 *PANDUAN LENGKAP PERAN & ATURAN UNDERCOVER 2.0* 🕵️
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Undercover adalah game deduksi sosial berbasis kata rahasia via DM WhatsApp & diskusi di grup (3–8 pemain).
 Peran khusus dibagikan secara *ACAK & DINAMIS* di setiap permainan!
 
-👥 *DAFTAR LENGKAP SEMUA PERAN:*
+📜 *ATURAN DINAMIS & SISTEM RONDE:*
+⏱️ *Durasi Waktu:* 25 Detik Petunjuk (Ronde 1-3) & 35 Detik Voting.
+🚫 *Batas Vote Skip:* Maksimal **2x per game**. Setelah 2x, wajib memilih target eliminasi.
+💀 *Zona Merah (Sudden Death):* Mulai **Ronde 4 ke atas** (Petunjuk dipercepat jadi 15 detik & \`.vote skip\` dikunci).
+⏳ *Batas Maksimal Ronde:* **Maksimal 7 Ronde**. Jika sampai Ronde 7 selesai penyamar belum tereliminasi, Penyamar otomatis menang (*Survival Victory*)!
+
+👥 *DAFTAR LENGKAP PERAN:*
 
 🛡️ *1. KUBU WARGA (CIVILIANS):*
 ▫️ 🧑‍🌾 *Civilian:* Menerima kata asli, mencari penyamar.
@@ -1619,7 +1964,7 @@ Peran khusus dibagikan secara *ACAK & DINAMIS* di setiap permainan!
 • \`.fitnah @member\` — (Framer via DM) Jebak target & beri +1 vote kutukan
 • \`.hack @member\` — (Saboteur via DM) Retas peran sasaran
 • \`.vote [nomor/@member]\` — Vote eliminasi di fase voting
-• \`.vote skip\` / \`.skip\` — Vote abstain melewati eliminasi
+• \`.vote skip\` / \`.skip\` — Vote abstain melewati eliminasi (Maks 2x/game)
 • \`.tebakwarga <kata>\` — Khusus Mr. White
 • \`.undercover card\` — Toko Kartu Aksi Khusus
 • \`.undercover role\` — Tampilkan panduan ini`;
