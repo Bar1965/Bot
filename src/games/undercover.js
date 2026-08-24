@@ -341,10 +341,10 @@ async function startUndercoverGame(sock, jid, senderNumber, messageObj) {
           });
         } catch (e) {}
       } else if (undercoverRole === 'SILENCER') {
-        session.playerRoles.set(p, { role: 'SILENCER', word: pair.undercover, isAlive: true, clue: '', cards: new Set() });
+        session.playerRoles.set(p, { role: 'SILENCER', word: pair.undercover, isAlive: true, clue: '', hasSilenced: false, cards: new Set() });
         try {
           await sock.sendMessage(p, { 
-            text: `🤐 *PERAN ANDA: SILENCER (PENYUSUP BAYANGAN)* 👤\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.undercover}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Skill Pembungkaman:* Tiap ronde Anda bisa membungkam 1 pemain via DM:\n👉 Ketik: \`.silence @member\` (atau \`.bungkam <nomor>\`). Korban hanya boleh memberikan petunjuk 1 KATA!`
+            text: `🤐 *PERAN ANDA: SILENCER (PENYUSUP BAYANGAN)* 👤\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.undercover}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Skill Pembungkaman (1x Pakai):* Anda bisa membungkam 1 pemain via DM:\n👉 Ketik: \`.silence @member\` (atau \`.bungkam <nomor>\`). Saat gilirannya tiba, bot akan otomatis menyensor petunjuknya secara total sehingga target tidak bisa memberi info ke warga!`
           });
         } catch (e) {}
       } else if (undercoverRole === 'SABOTEUR') {
@@ -390,9 +390,9 @@ async function startUndercoverGame(sock, jid, senderNumber, messageObj) {
           await sock.sendMessage(p, { text: `🤠 *PERAN ANDA: KOBOI / SHERIFF (PENEMBAK)* 🔫\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.civilian}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Misi & Senjata Revolver (1x Pakai):*\nAnda adalah penegak hukum bersenjata warga!\n👉 Kirim DM ke bot ini: \`.tembak @member\` (atau \`.tembak <nomor>\`)\n\n🎯 *HUKUM TEMBAKAN:*\n• Jika sasaran adalah **Undercover**, **Mr. White**, atau **Si Badut** ➔ Target **TEWAS SEKETIKA**!\n• 💀 **JIKA SALAH SASARAN** menembak Warga Sipil/Sekutu ➔ **ANDA SENDIRI YANG TEWAS DI TEMPAT (Suicide)** karena rasa bersalah!` });
         } catch (e) {}
       } else if (activeSpecialCiv === 'DETECTIVE') {
-        session.playerRoles.set(p, { role: 'DETECTIVE', word: pair.civilian, isAlive: true, clue: '', cards: new Set() });
+        session.playerRoles.set(p, { role: 'DETECTIVE', word: pair.civilian, isAlive: true, clue: '', hasUsedIntel: false, cards: new Set() });
         try {
-          await sock.sendMessage(p, { text: `🔍 *PERAN ANDA: DETEKTIF INTEL (DETECTIVE)* 🕵️‍♂️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.civilian}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Misi & Skill Intel:* Tiap ronde bisa kirim pesan DM ke bot: \`.intip @member\` (atau \`.intip <nomor>\`) untuk mengetahui apakah target adalah Warga Asli atau Bukan Warga!` });
+          await sock.sendMessage(p, { text: `🔍 *PERAN ANDA: DETEKTIF INTEL (DETECTIVE)* 🕵️‍♂️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.civilian}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Skill Intel (1x Pakai — Mulai Ronde 2):*\nKirim pesan DM ke bot: \`.intip @member\` (atau \`.intip <nomor>\`) untuk mengetahui apakah target adalah Warga Asli atau Bukan Warga!\n💡 *Catatan:* Skill ini baru terbuka setelah melewati Ronde 1 (Mulai Ronde 2 ke atas).` });
         } catch (e) {}
       } else {
         // GUARDIAN / BODYGUARD
@@ -432,13 +432,13 @@ export async function handleUndercoverClue(sock, jid, senderNumber, messageObj, 
     return true;
   }
 
-  // Cek jika pemain terkena Lakban (Silence Card)
+  // Cek jika pemain terkena Silencer / Lakban
   if (session.silencedPlayers?.has(senderNumber)) {
-    const wordCount = cleanClue.split(/\s+/).length;
-    if (wordCount > 1) {
-      await send(sock, jid, messageObj, `🤐 *MULUTMU DILAKBAN!* Kamu terkena Kartu Lakban, sehingga HANYA boleh memberi petunjuk *1 KATA* saja! Coba lagi.`);
-      return true;
-    }
+    try {
+      await sock.sendMessage(jid, { delete: messageObj.key });
+    } catch (e) {}
+    await send(sock, jid, messageObj, `🤐 @${senderNumber.split('@')[0]}, mulutmu telah dibungkam oleh Silencer sehingga petunjukmu disensor total pada ronde ini!`, { mentions: [senderNumber] });
+    return true;
   }
 
   // Cek jika modifier adalah 3 Kata
@@ -469,7 +469,9 @@ export async function handleUndercoverClue(sock, jid, senderNumber, messageObj, 
       voteList += `${i + 1}. @${p.split('@')[0]}: _"${roleData.clue}"_\n`;
     });
     voteList += `\n💬 *Diskusikan siapa penyamarnya!*
-👉 Ketik: \`.vote [nomor / @member]\` untuk mengeliminasi tersangka!
+👉 *Pilihan Vote:*
+• Ketik: \`.vote [nomor / @member]\` untuk mengeliminasi tersangka
+• Ketik: \`.vote skip\` (atau \`.skip\`) untuk **Abstain / Melewati Eliminasi**
 ⏳ Waktu voting: 60 detik.`;
 
     session.timeout = setTimeout(async () => {
@@ -490,6 +492,45 @@ async function advanceClueTurn(sock, jid, messageObj) {
   if (!session) return;
 
   const nextPlayer = session.alivePlayers[session.turnIndex];
+  if (!nextPlayer) return;
+
+  // Jika giliran berikutnya adalah pemain yang dibungkam Silencer -> Langsung sensor dan skip gilirannya!
+  if (session.silencedPlayers?.has(nextPlayer)) {
+    const pRole = session.playerRoles.get(nextPlayer);
+    if (pRole) pRole.clue = '🤐 (Disensor Total oleh Silencer)';
+
+    await send(sock, jid, messageObj, `🤐 *KORBAN PEMBUNGKAMAN!* 🔇\n@${nextPlayer.split('@')[0]} telah dibungkam oleh Silencer! Giliran petunjuknya dilewati dan disensor total!`, { mentions: [nextPlayer] });
+
+    session.turnIndex++;
+    if (session.turnIndex < session.alivePlayers.length) {
+      return await advanceClueTurn(sock, jid, messageObj);
+    } else {
+      session.status = 'VOTING_PHASE';
+      session.votes.clear();
+      let voteList = `🗳️ *SEMUA PETUNJUK SELESAI — FASE VOTING!* ⚖️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+      session.alivePlayers.forEach((p, i) => {
+        const roleData = session.playerRoles.get(p);
+        voteList += `${i + 1}. @${p.split('@')[0]}: _"${roleData.clue}"_\n`;
+      });
+      voteList += `\n💬 *Diskusikan siapa penyamarnya!*
+👉 *Pilihan Vote:*
+• Ketik: \`.vote [nomor / @member]\` untuk mengeliminasi tersangka
+• Ketik: \`.vote skip\` (atau \`.skip\`) untuk **Abstain / Melewati Eliminasi**
+⏳ Waktu voting: 60 detik.`;
+
+      session.timeout = setTimeout(async () => {
+        if (!activeUndercoverGames.has(jid)) return;
+        const cur = activeUndercoverGames.get(jid);
+        if (cur.status === 'VOTING_PHASE') {
+          await processUndercoverVotes(sock, jid, messageObj);
+        }
+      }, VOTE_TIMEOUT_MS);
+
+      await send(sock, jid, messageObj, voteList, { mentions: session.alivePlayers });
+      return true;
+    }
+  }
+
   const turnTimeoutMs = session.modifier?.name?.includes('Speed') ? 20 * 1000 : CLUE_TIMEOUT_MS;
 
   const turnMsg = `✅ Petunjuk diterima!\n\n👉 *Giliran Selanjutnya:* @${nextPlayer.split('@')[0]} (Pemain ${session.turnIndex + 1}/${session.alivePlayers.length})\n⏳ *Waktu:* ${Math.round(turnTimeoutMs / 1000)} Detik\n_Tulis 1 kalimat petunjuk katamu di grup ini! (Atau ketik \`.skip\` untuk melewati giliran)_`;
@@ -1119,8 +1160,15 @@ export async function handleDetectiveCheck(sock, jid, senderNumber, messageObj, 
     return true;
   }
 
-  if (targetSession.detectiveChecksThisRound?.has(senderNumber)) {
-    await send(sock, jid, messageObj, "⚠️ Anda sudah menggunakan kemampuan intip di ronde ini! Tunggu hingga ronde berikutnya.");
+  // 1. Batasan Ronde: Hanya bisa dipakai setelah melewati Ronde 1 (Mulai Ronde 2 ke atas)
+  if (targetSession.round < 2) {
+    await send(sock, jid, messageObj, "⏳ *KEMAMPUAN TERKUNCI!* Detektif baru bisa mengintip peran setelah melewati Ronde 1 (Mulai Ronde 2 ke atas).");
+    return true;
+  }
+
+  // 2. Batasan Pemakaian: Hanya 1x seumur permainan
+  if (senderRoleData.hasUsedIntel) {
+    await send(sock, jid, messageObj, "❌ Anda sudah menggunakan kemampuan intip Anda (Maksimal 1x per game)!");
     return true;
   }
 
@@ -1149,7 +1197,7 @@ export async function handleDetectiveCheck(sock, jid, senderNumber, messageObj, 
     return true;
   }
 
-  targetSession.detectiveChecksThisRound.add(senderNumber);
+  senderRoleData.hasUsedIntel = true;
   const targetRole = targetSession.playerRoles.get(resolvedTarget);
   const isCiv = isCivilianRole(targetRole.role);
 
@@ -1239,6 +1287,11 @@ export async function handleSilencerSilence(sock, jid, senderNumber, messageObj,
     return true;
   }
 
+  if (senderRoleData.hasSilenced) {
+    await send(sock, jid, messageObj, "❌ Anda sudah menggunakan kemampuan pembungkaman (Maksimal 1x per game)!");
+    return true;
+  }
+
   let resolvedTarget = null;
   if (targetParam) {
     const parsedNum = parseInt(String(targetParam).trim(), 10);
@@ -1259,9 +1312,15 @@ export async function handleSilencerSilence(sock, jid, senderNumber, messageObj,
     return true;
   }
 
+  if (resolvedTarget === senderNumber) {
+    await send(sock, jid, messageObj, "⚠️ Anda tidak bisa membungkam diri sendiri!");
+    return true;
+  }
+
+  senderRoleData.hasSilenced = true;
   targetSession.silencedPlayers.add(resolvedTarget);
   const targetPhone = resolvedTarget.split('@')[0];
-  await send(sock, jid, messageObj, `🤐 *PEMBUNGKAMAN BERHASIL!* @${targetPhone} telah dibungkam dan hanya boleh memberikan petunjuk 1 KATA pada gilirannya!`, { mentions: [resolvedTarget] });
+  await send(sock, jid, messageObj, `🤐 *PEMBUNGKAMAN BERHASIL!* 🔇\nTarget @${targetPhone} berhasil dibungkam total! Saat gilirannya tiba, bot akan otomatis menyensor petunjuknya sehingga dia tidak bisa memberikan informasi ke warga.`, { mentions: [resolvedTarget] });
   return true;
 }
 
@@ -1602,13 +1661,13 @@ Peran khusus dibagikan secara *ACAK & DINAMIS* di setiap permainan!
 🛡️ *1. KUBU WARGA (CIVILIANS):*
 ▫️ 🧑‍🌾 *Civilian:* Menerima kata asli, mencari penyamar.
 ▫️ 🤠 *Koboi / Sheriff:* 1x Peluru Revolver (\`.tembak @member\` via DM). Tembak musuh = MATI! Salah tembak warga = KAU SENDIRI YANG TEWAS (Suicide)!
-▫️ 🔍 *Detektif Intel:* 1x Intip per ronde (\`.intip @member\` via DM) untuk mengecek apakah target adalah Warga atau Bukan Warga.
+▫️ 🔍 *Detektif Intel:* 1x Intip per game seumur hidup (\`.intip @member\` via DM). Hanya bisa digunakan mulai *Ronde 2 ke atas*!
 ▫️ 🛡️ *Guardian (Bodyguard):* 1x Lindungi per ronde (\`.lindung @member\` via DM). Jika target ditembak/dieksekusi, nyawanya SELAMAT!
 
 🕵️ *2. KUBU PENYAMAR (IMPOSTORS):*
 ▫️ 🕵️ *Undercover:* Menerima kata mirip, 1x Peluru Racun (\`.tembak @member\` via DM).
 ▫️ 🗡️ *Assassin:* Eksekutor maut, 1x Sniper (\`.tembak @member\` via DM) mematikan musuh seketika!
-▫️ 🤐 *Silencer:* Pembungkam bayangan (\`.silence @member\` via DM). Korban hanya boleh memberi petunjuk 1 kata!
+▫️ 🤐 *Silencer:* Pembungkam bayangan 1x per game (\`.silence @member\` via DM). Giliran target disensor & dilewati total oleh bot!
 ▫️ 🦹 *Saboteur:* Peretas status (\`.hack @member\` via DM). Mengintip peran target untuk membidik warga VIP!
 
 🎭 *3. KUBU NETRAL (NEUTRALS):*
@@ -1623,11 +1682,12 @@ Peran khusus dibagikan secara *ACAK & DINAMIS* di setiap permainan!
 • \`.startundercover\` — Memulai permainan (Minimal 3 orang)
 • \`.skip\` — Lewati giliran petunjuk / vote skip
 • \`.tembak @member\` — (Koboi/Undercover/Assassin via DM) Eksekusi sasaran
-• \`.intip @member\` — (Detektif via DM) Lacak status pemain
+• \`.intip @member\` — (Detektif via DM, mulai Ronde 2) Lacak status pemain
 • \`.lindung @member\` — (Guardian via DM) Lindungi pemain dari maut
-• \`.silence @member\` — (Silencer via DM) Bungkam pemain jadi 1 kata
+• \`.silence @member\` — (Silencer via DM) Sensor total petunjuk sasaran
 • \`.hack @member\` — (Saboteur via DM) Retas peran sasaran
 • \`.vote [nomor/@member]\` — Vote eliminasi di fase voting
+• \`.vote skip\` / \`.skip\` — Vote abstain melewati eliminasi
 • \`.tebakwarga <kata>\` — Khusus Mr. White
 • \`.undercover card\` — Toko Kartu Aksi Khusus
 • \`.undercover role\` — Tampilkan panduan ini`;
