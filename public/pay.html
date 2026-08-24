@@ -505,6 +505,11 @@
         document.getElementById('amountDisplay').textContent = 'Rp' + rawAmount.toLocaleString('id-ID');
 
         // Render Items
+        // Halaman ini publik — siapa pun yang punya Order ID bisa membukanya, jadi setiap
+        // nilai dari server harus di-escape sebelum masuk innerHTML.
+        const escapeHtml = (v) => String(v === null || v === undefined ? '' : v)
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
         const itemsContainer = document.getElementById('itemsList');
         itemsContainer.innerHTML = '';
         (inv.items || []).forEach(item => {
@@ -512,7 +517,7 @@
           row.className = 'item-row';
           row.innerHTML = `
             <div>
-              <div class="item-name">${item.nama}</div>
+              <div class="item-name">${escapeHtml(item.nama)}</div>
               <div class="item-sub">Qty: ${item.qty} × Rp${item.harga.toLocaleString('id-ID')}</div>
             </div>
             <div class="item-price">Rp${item.subtotal.toLocaleString('id-ID')}</div>

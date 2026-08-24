@@ -110,7 +110,7 @@ function daysLeft(expiresAt) {
 // ============================================================
 // COMMAND HANDLER
 // ============================================================
-export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj, args, cleanCmd, isAdmin, isOwner, isPrefixCmd }) {
+export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj, args, cleanCmd, isAdmin, isOwner, isStoreAdmin = false, isPrefixCmd }) {
   const isPrefix = isPrefixCmd !== undefined 
     ? isPrefixCmd 
     : (args?.[0]?.startsWith('.') || args?.[0]?.startsWith('/') || args?.[0]?.startsWith('#'));
@@ -560,8 +560,9 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
 
   // ─── ADMIN: .setpremium / .revokepremium / .listpremium ─────────
   if (['setpremium', 'revokepremium', 'listpremium'].includes(cmd)) {
-    if (!isAdmin && !isOwner) {
-      await sock.sendMessage(jid, { text: "❌ Perintah ini hanya dapat dijalankan oleh Admin atau Owner." }, { quoted: messageObj });
+    // Memberi tier premium bernilai uang, jadi wajib Admin Toko — bukan sekadar admin grup WA.
+    if (!isStoreAdmin && !isOwner) {
+      await sock.sendMessage(jid, { text: "❌ Perintah ini hanya dapat dijalankan oleh *Admin Toko* atau *Owner*. Status admin grup WhatsApp saja tidak cukup." }, { quoted: messageObj });
       return true;
     }
 

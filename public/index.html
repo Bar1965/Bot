@@ -2836,7 +2836,7 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
           <td style="text-align:center; white-space:nowrap;">
             <button onclick="openOrderModal('${order.order_id}')" class="btn-ghost" style="font-size:0.6875rem;">Detail / Aksi</button>
             <a href="/pay/${order.order_id}" target="_blank" class="btn-ghost" style="font-size:0.6875rem; margin-left: 4px; color: var(--accent-light); text-decoration:none;" title="Buka Web Invoice">🔗 Invoice</a>
-            <button onclick="openCustomerChatFromOrder('${order.customer_nomor}')" class="btn-ghost" style="font-size:0.6875rem; margin-left: 4px;">💬 Chat</button>
+            <button onclick="openCustomerChatFromOrder('${escapeHtml(order.customer_nomor)}')" class="btn-ghost" style="font-size:0.6875rem; margin-left: 4px;">💬 Chat</button>
             <button onclick="deleteSingleOrder('${order.order_id}')" class="btn-ghost" title="Hapus Order" style="font-size:0.6875rem; margin-left: 4px; color: var(--color-rose);">🗑️ Hapus</button>
           </td>
         `;
@@ -2895,7 +2895,7 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
 
         let voucherBtn = '';
         if (p.delivery_type === 'AUTO' && role !== 'CS') {
-          voucherBtn = `<button onclick="openVoucherModal('${p.kode}')" class="btn-ghost" style="width:100%;font-size:0.6875rem;color:var(--accent-light);border-color:rgba(16,185,129,0.15);background:rgba(16,185,129,0.05);">🔑 Kelola Stok Voucher</button>`;
+          voucherBtn = `<button onclick="openVoucherModal('${escapeHtml(p.kode)}')" class="btn-ghost" style="width:100%;font-size:0.6875rem;color:var(--accent-light);border-color:rgba(16,185,129,0.15);background:rgba(16,185,129,0.05);">🔑 Kelola Stok Voucher</button>`;
         }
 
         const brandBadge = p.brand_category ? `<span class="badge-indigo" style="font-size:0.6875rem;padding:2px 6px;border-radius:4px;">${escapeHtml(p.brand_category)}</span>` : '';
@@ -2931,9 +2931,9 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
             ${voucherBtn}
             ${role === 'CS' ? '' : `
               <div style="display:flex;gap:8px;">
-                <button onclick="handleTriggerRestockBroadcast('${p.kode}')" class="btn-ghost" style="flex:1;font-size:0.6875rem;color:var(--color-amber);border-color:rgba(245,158,11,0.2);background:rgba(245,158,11,0.05);" title="Kirim Notifikasi Restok ke Subscriber">📢 Restok</button>
-                <button onclick="openProductModal('${p.kode}')" class="btn-ghost" style="flex:1;font-size:0.6875rem;">✏️ Edit</button>
-                <button onclick="handleDeleteProduct('${p.kode}')" class="btn-danger" style="padding:8px;" title="Hapus Produk">🗑️</button>
+                <button onclick="handleTriggerRestockBroadcast('${escapeHtml(p.kode)}')" class="btn-ghost" style="flex:1;font-size:0.6875rem;color:var(--color-amber);border-color:rgba(245,158,11,0.2);background:rgba(245,158,11,0.05);" title="Kirim Notifikasi Restok ke Subscriber">📢 Restok</button>
+                <button onclick="openProductModal('${escapeHtml(p.kode)}')" class="btn-ghost" style="flex:1;font-size:0.6875rem;">✏️ Edit</button>
+                <button onclick="handleDeleteProduct('${escapeHtml(p.kode)}')" class="btn-danger" style="padding:8px;" title="Hapus Produk">🗑️</button>
               </div>
             `}
           </div>
@@ -2985,14 +2985,14 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
       customers.forEach(c => {
         const tr = document.createElement('tr');
         tr.innerHTML = `
-          <td style="font-weight:600;color:var(--text-secondary);">${c.nama}</td>
-          <td style="font-family:monospace;font-size:0.6875rem;color:var(--text-muted);">${formatPhoneNumber(c.nomor)}</td>
+          <td style="font-weight:600;color:var(--text-secondary);">${escapeHtml(c.nama)}</td>
+          <td style="font-family:monospace;font-size:0.6875rem;color:var(--text-muted);">${escapeHtml(formatPhoneNumber(c.nomor))}</td>
           <td style="text-align:center;font-weight:700;color:var(--accent-light);">Rp${c.total_spend.toLocaleString('id-ID')}</td>
           <td style="text-align:right;font-weight:600;color:var(--text-muted);">${c.total_orders} order</td>
           <td style="text-align:center;"><span class="status-badge ${getTierBadge(c.tier)}">${c.tier}</span></td>
           <td style="text-align:center;"><span class="status-badge badge-default">${c.role || 'MEMBER'}</span></td>
           <td style="text-align:center;"><span class="status-badge ${c.account_status === 'BANNED' ? 'badge-rose' : 'badge-emerald'}">${c.account_status || 'ACTIVE'}</span></td>
-          <td style="text-align:center;"><button onclick="openCustomerModal('${c.nomor}')" class="btn-ghost" style="font-size:0.6875rem;">Lihat Riwayat</button></td>
+          <td style="text-align:center;"><button onclick="openCustomerModal('${escapeHtml(c.nomor)}')" class="btn-ghost" style="font-size:0.6875rem;">Lihat Riwayat</button></td>
         `;
         tbody.appendChild(tr);
       });
@@ -3158,8 +3158,8 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
         <tr>
           <td style="font-size:1rem;text-align:center;">${medals[i] || `<span style="color:var(--text-muted);">${i+1}</span>`}</td>
           <td>
-            <div style="font-weight:700;font-size:0.8125rem;color:var(--text-primary);">${p.nama}</div>
-            <div style="font-size:0.6875rem;color:var(--text-muted);font-family:monospace;">${p.kode}</div>
+            <div style="font-weight:700;font-size:0.8125rem;color:var(--text-primary);">${escapeHtml(p.nama)}</div>
+            <div style="font-size:0.6875rem;color:var(--text-muted);font-family:monospace;">${escapeHtml(p.kode)}</div>
           </td>
           <td style="text-align:right;font-weight:700;color:var(--accent-light);">${p.total_qty} qty</td>
           <td style="text-align:right;font-weight:700;color:var(--text-primary);">Rp${(p.total_revenue||0).toLocaleString('id-ID')}</td>
@@ -3183,7 +3183,7 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
           <tr>
             <td style="font-size:1rem;text-align:center;">${medals[i] || `<span style="color:var(--text-muted);">${i+1}</span>`}</td>
             <td>
-              <div style="font-weight:700;font-size:0.8125rem;color:var(--text-primary);">${c.nama}</div>
+              <div style="font-weight:700;font-size:0.8125rem;color:var(--text-primary);">${escapeHtml(c.nama)}</div>
               <div style="font-size:0.6875rem;color:var(--text-muted);">Terakhir: ${lastOrder}</div>
             </td>
             <td style="text-align:center;font-weight:700;color:var(--color-blue);">${c.total_orders}x</td>
@@ -3653,7 +3653,7 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
         const itemDiv = document.createElement('div');
         itemDiv.style.cssText = 'display:flex;justify-content:space-between;font-size:0.75rem;padding:4px 0;border-bottom:1px solid var(--border-subtle);';
         itemDiv.innerHTML = `
-          <span style="color:var(--text-muted);font-weight:500;">${item.produk_nama} (x${item.qty})</span>
+          <span style="color:var(--text-muted);font-weight:500;">${escapeHtml(item.produk_nama)} (x${item.qty})</span>
           <span style="font-weight:700;color:var(--text-secondary);">Rp${item.subtotal.toLocaleString('id-ID')}</span>
         `;
         listContainer.appendChild(itemDiv);
@@ -3860,12 +3860,12 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
 
         const tr = document.createElement('tr');
         tr.innerHTML = `
-          <td style="font-weight:600;color:var(--text-secondary);">${u.username}</td>
+          <td style="font-weight:600;color:var(--text-secondary);">${escapeHtml(u.username)}</td>
           <td><span class="status-badge ${roleBadge}">${u.role}</span></td>
           <td style="text-align:center;">
             <div style="display:flex;align-items:center;justify-content:center;gap:6px;">
-              <button onclick="changeUserPasswordPrompt('${u.username}')" class="btn-ghost" style="font-size:0.625rem;">Ubah Sandi</button>
-              <button onclick="handleDeleteUser('${u.username}')" ${isSelf ? 'disabled style="opacity:0.3;cursor:not-allowed;"' : ''} class="btn-danger" style="font-size:0.625rem;">Hapus</button>
+              <button onclick="changeUserPasswordPrompt('${escapeHtml(u.username)}')" class="btn-ghost" style="font-size:0.625rem;">Ubah Sandi</button>
+              <button onclick="handleDeleteUser('${escapeHtml(u.username)}')" ${isSelf ? 'disabled style="opacity:0.3;cursor:not-allowed;"' : ''} class="btn-danger" style="font-size:0.625rem;">Hapus</button>
             </div>
           </td>
         `;

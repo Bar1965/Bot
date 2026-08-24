@@ -124,6 +124,7 @@ export function createCustomerHandler(ctx = {}) {
   };
 
   return async function handleCustomerMessage(jid, senderNumber, messageObj, text, isFromGroup = false, actor = {}) {
+    try { fs.appendFileSync('./tmp/trace.log', new Date().toISOString() + '  A-customerHandler-masuk  ' + JSON.stringify({ teks: text, adaGambar: !!messageObj?.message?.imageMessage }) + '\n'); } catch (_) {}
     const textLower = (text || '').toLowerCase();
     const cleanText = (text || '').replace(/^[./#]/, '').trim();
     const cleanTextLower = textLower.replace(/^[./#]/, '').trim();
@@ -415,6 +416,48 @@ Ketik *bayar* atau klik tombol *Bayar QRIS Langsung* di bawah untuk langsung mem
       return true;
     }
 
+    // --- FITUR GANTI NAMA (.gantinama / .ubahnama / .setname / .rename) ---
+    if (['gantinama', 'ubahnama', 'setname', 'rename'].includes(cleanCmd)) {
+      const mentioned = messageObj.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0];
+      const isTargetOther = Boolean(mentioned) || (args[1] && args[1].startsWith('62') && args.length > 2);
+
+      let targetJid = senderNumber;
+      let requestedName = '';
+
+      if (isTargetOther && (actor.isAdmin || actor.isOwner)) {
+        targetJid = mentioned || (args[1].includes('@') ? jidNormalizedUser(args[1]) : `${args[1].replace(/\D/g, '')}@s.whatsapp.net`);
+        requestedName = args.slice(2).join(' ').trim();
+      } else {
+        requestedName = args.slice(1).join(' ').trim();
+      }
+
+      if (!requestedName) {
+        const adminExample = (actor.isAdmin || actor.isOwner) ? '\n_Khusus Admin/Owner:_ `.gantinama @user <Nama Baru>`' : '';
+        await sock.sendMessage(responseJid, {
+          text: `📌 *PANDUAN GANTI NAMA PROFIL*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n👉 *Format:* \`.gantinama <Nama Baru Kamu>\`\n_Contoh:_ \`.gantinama Akbar Pratama\`${adminExample}`
+        });
+        return true;
+      }
+
+      try {
+        const result = await db.updateCustomerName(targetJid, requestedName, senderNumber);
+        const isSelf = targetJid === senderNumber;
+        const targetMention = targetJid.split('@')[0];
+
+        const replyText = isSelf
+          ? `✅ *NAMA PROFIL BERHASIL DIUBAH!* ✨\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n🏷️ Nama Lama: *${result.oldName}*\n✨ Nama Baru: *${result.newName}*\n📱 Nomor: *@${targetMention}*\n🏆 Tier Member: *${result.profile.tier}*\n\n_Ketik \`.profil\` untuk melihat profil lengkap kamu._`
+          : `✅ *NAMA MEMBER BERHASIL DIUBAH OLEH ADMIN!* ✨\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n👤 Member: *@${targetMention}*\n🏷️ Nama Lama: *${result.oldName}*\n✨ Nama Baru: *${result.newName}*\n🏆 Tier: *${result.profile.tier}*`;
+
+        await sock.sendMessage(responseJid, {
+          text: replyText,
+          mentions: [targetJid]
+        });
+      } catch (error) {
+        await sock.sendMessage(responseJid, { text: `❌ Gagal mengubah nama: ${error.message}` });
+      }
+      return true;
+    }
+
     const extractTargetMember = () => {
       const mentioned = messageObj.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0];
       const rawTarget = mentioned || args[1];
@@ -426,6 +469,7 @@ Ketik *bayar* atau klik tombol *Bayar QRIS Langsung* di bawah untuk langsung mem
 
   if (['profil', 'akun', 'member', 'statusakun'].includes(cleanCmd)) {
     const targetJid = extractTargetMember() || senderNumber;
+    const isSelf = targetJid === senderNumber;
     const profile = await db.getCustomerMembershipProfile(targetJid);
     const phoneNum = targetJid.split('@')[0];
 
@@ -2039,8 +2083,10 @@ Halo *${customerName}*, berikut adalah daftar voucher / akun digital dari pesana
   }
 
   // 18. MENERIMA FOTO BUKTI TRANSFER (DISIMPAN SECARA BERTIKAT YYYY/MM)
+  try { fs.appendFileSync('./tmp/trace.log', new Date().toISOString() + '  B-sampai-bagian-18  ' + JSON.stringify({ adaGambar: !!messageObj.message.imageMessage }) + '\n'); } catch (_) {}
   if (messageObj.message.imageMessage) {
     const lastOrder = await db.getCustomerLastOrder(senderNumber);
+    try { fs.appendFileSync('./tmp/trace.log', new Date().toISOString() + '  C-lastOrder  ' + JSON.stringify({ order: lastOrder?.order_id || null, status: lastOrder?.status || null }) + '\n'); } catch (_) {}
     if (lastOrder && lastOrder.status === 'WAITING_PAYMENT') {
       console.log('Bukti pembayaran terdeteksi. Mengunduh media...');
       const buffer = await downloadMediaMessage(messageObj, 'buffer', {});

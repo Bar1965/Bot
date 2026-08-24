@@ -52,7 +52,7 @@ const categories = {
     title: '📥 MEDIA & CREATIVE',
     aliases: ['3', 'media', 'downloader'],
     commands: [
-      ['.tt / .ig / .fb / .yt <link>', 'Download media'],
+      ['.tt / .ig / .fb / .yt / .pin <link>', 'Download media (Foto, Slide/Carousel, Video)'],
       ['.stiker', 'Foto/video menjadi stiker'],
       ['.toimg / .tovid', 'Konversi stiker'],
       ['.qc <teks>', 'Buat quote sticker'],
@@ -155,6 +155,7 @@ const categories = {
       ['.mode <jualan/all>', 'Atur mode grup'],
       ['.tagall <pesan>', 'Mention anggota grup'],
       ['.daftar <nama>', 'Daftar profil member'],
+      ['.gantinama <nama baru>', 'Ganti nama profil member'],
       ['.profil', 'Lihat role, status, tier, level, dan poin'],
       ['.setmemberrole @user MEMBER|ADMIN', 'Ubah role member (Owner)'],
       ['.setmemberstatus @user ACTIVE|BANNED', 'Ubah status member (Admin)'],

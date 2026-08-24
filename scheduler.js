@@ -16,15 +16,33 @@ function removeExpiredBackups(backupsDir) {
   const cutoff = Date.now() - backupRetentionDays * 24 * 60 * 60 * 1000;
   const backupPattern = /^shop_backup_\d{8}_\d{6}\.db$/;
   let removed = 0;
+
+  const validBackups = [];
   for (const filename of fs.readdirSync(backupsDir)) {
     if (!backupPattern.test(filename)) continue;
     const filePath = path.join(backupsDir, filename);
-    const stats = fs.statSync(filePath);
-    if (stats.isFile() && stats.mtimeMs < cutoff) {
-      fs.unlinkSync(filePath);
-      removed += 1;
-    }
+    try {
+      const stats = fs.statSync(filePath);
+      if (stats.isFile()) {
+        validBackups.push({ filename, filePath, mtimeMs: stats.mtimeMs });
+      }
+    } catch (_) {}
   }
+
+  // Urutkan dari yang paling baru ke paling lama
+  validBackups.sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+  const MAX_BACKUPS = 15; // Simpan maksimal 15 file backup terbaru
+  validBackups.forEach((b, index) => {
+    // Hapus jika sudah melewati batas retensi hari ATAU berada di luar 15 file terbaru
+    if (b.mtimeMs < cutoff || index >= MAX_BACKUPS) {
+      try {
+        fs.unlinkSync(b.filePath);
+        removed += 1;
+      } catch (_) {}
+    }
+  });
+
   return removed;
 }
 
@@ -423,6 +441,135 @@ async function processAutoSholat(sock) {
   }
 }
 
+// Pembersih otomatis file media chat inbox (public/uploads/chat_media/)
+// Hanya menghapus file yang percakapannya sudah idle, bukan ADMIN takeover,
+// dan lebih tua dari 8 jam. Buffer 30 menit untuk mitigasi race condition.
+async function cleanupChatMedia() {
+  try {
+    const CHAT_MEDIA_DIR = path.resolve('./public/uploads/chat_media');
+    if (!fs.existsSync(CHAT_MEDIA_DIR)) return;
+
+    const now = Date.now();
+    const CUTOFF_MS       = 8 * 60 * 60 * 1000;  // 8 jam — usia minimum sebelum boleh dihapus
+    const SAFE_WINDOW_MS  = 30 * 60 * 1000;       // 30 menit — buffer mitigasi race condition
+
+    const cutoffTimestamp     = now - CUTOFF_MS;
+    const safeWindowTimestamp = now - SAFE_WINDOW_MS;
+
+    // 1. Query DB satu kali — ambil semua path yang boleh dihapus
+    //    (percakapan idle, bukan ADMIN, tidak ada pesan baru dengan path yang sama)
+    const orphanedPaths = await db.getOrphanedMediaPaths(cutoffTimestamp);
+
+    // Semua basename yang masih dirujuk messages, apa pun umur/statusnya. Sebuah file
+    // hanya "yatim sungguhan" kalau namanya tidak ada di sini sama sekali.
+    const referencedBasenames = new Set(
+      (await db.getReferencedMediaPaths()).map(p => path.basename(p))
+    );
+
+    // 2. Bangun Set of basenames untuk lookup O(1) saat scan folder
+    //    Normalisasi basename mengatasi perbedaan format path DB:
+    //    - bot.js simpan: ./public/uploads/chat_media/X.jpg
+    //    - server.js simpan: /uploads/chat_media/X.jpg
+    const deletableBasenames = new Set(orphanedPaths.map(p => path.basename(p)));
+
+    // 3. Scan folder dan tentukan file mana yang akan dihapus
+    const files = fs.readdirSync(CHAT_MEDIA_DIR);
+    const deletedBasenames = [];
+    let freedBytes = 0;
+
+    for (const filename of files) {
+      const filePath = path.join(CHAT_MEDIA_DIR, filename);
+      let stats;
+      try {
+        stats = fs.statSync(filePath);
+      } catch (_) {
+        continue; // File sudah dihapus proses lain, lewati
+      }
+      if (!stats.isFile()) continue;
+
+      // ATURAN 1: File yang dimodifikasi dalam 30 menit terakhir TIDAK BOLEH disentuh —
+      // mencegah penghapusan file yang baru di-download bot tapi belum sempat masuk DB.
+      if (stats.mtimeMs > safeWindowTimestamp) continue;
+
+      // ATURAN 2: Hapus kalau (a) percakapannya sudah idle & bukan ADMIN takeover —
+      // yaitu masuk daftar orphan dari DB, ATAU (b) file itu tidak punya baris messages
+      // sama sekali dan sudah lewat 8 jam.
+      // PENTING: syarat (b) TIDAK boleh memakai !isOrphanInDb. File dalam percakapan
+      // ADMIN sengaja dikecualikan dari daftar orphan, jadi negasinya justru akan
+      // menghapus persis file yang mau dilindungi.
+      const isOrphanInDb  = deletableBasenames.has(filename);
+      const isTrulyOrphan = !referencedBasenames.has(filename) && stats.mtimeMs < cutoffTimestamp;
+
+      if (isOrphanInDb || isTrulyOrphan) {
+        try {
+          freedBytes += stats.size;
+          fs.unlinkSync(filePath);
+          deletedBasenames.push(filename);
+        } catch (e) {
+          console.error(`[CLEANUP] ⚠️ Gagal hapus ${filename}:`, e.message);
+        }
+      }
+    }
+
+    // 4. Nullify media_path di DB agar dashboard tidak load URL yang sudah tidak ada
+    if (deletedBasenames.length > 0) {
+      const deletedSet = new Set(deletedBasenames);
+      // Filter hanya path dari DB yang base name-nya berhasil dihapus
+      const pathsToNullify = orphanedPaths.filter(p => deletedSet.has(path.basename(p)));
+      if (pathsToNullify.length > 0) {
+        await db.nullifyMediaPaths(pathsToNullify);
+      }
+
+      const freedMB = (freedBytes / (1024 * 1024)).toFixed(2);
+      console.log(`[CLEANUP] 🗑️ Media chat dibersihkan: ${deletedBasenames.length} file dihapus, ${freedMB} MB dibebaskan.`);
+      try {
+        await db.addLog('SYSTEM', `Auto-cleanup media chat: ${deletedBasenames.length} file dihapus, ${freedMB} MB dibebaskan.`);
+      } catch (_) {}
+    } else {
+      console.log(`[CLEANUP] ✅ Tidak ada media chat yang perlu dibersihkan.`);
+    }
+  } catch (err) {
+    console.error('[CLEANUP ERROR] Gagal membersihkan media chat:', err.message);
+  }
+}
+
+// Pembersih folder kerja media (tmp/). mediaHandler menulis file sementara di sini
+// dan biasanya menghapusnya sendiri, tapi kalau prosesnya mati di tengah jalan
+// (ffmpeg timeout, bot di-restart) file-nya tertinggal selamanya: folder ini tidak
+// pernah disapu oleh cleanupChatMedia. Hanya file lebih tua dari 8 jam yang dihapus,
+// jadi job media yang sedang berjalan mustahil terganggu. Subfolder tidak disentuh
+// (mis. tmp/bot-runtime/ yang menyimpan log).
+function cleanupTmpDir() {
+  try {
+    const TMP_DIR = path.resolve('./tmp');
+    if (!fs.existsSync(TMP_DIR)) return;
+
+    const cutoffTimestamp = Date.now() - 8 * 60 * 60 * 1000;
+    let deleted = 0;
+    let freedBytes = 0;
+
+    for (const filename of fs.readdirSync(TMP_DIR)) {
+      const filePath = path.join(TMP_DIR, filename);
+      let stats;
+      try { stats = fs.statSync(filePath); } catch (_) { continue; }
+      if (!stats.isFile()) continue;
+      if (stats.mtimeMs >= cutoffTimestamp) continue;
+      try {
+        fs.unlinkSync(filePath);
+        deleted++;
+        freedBytes += stats.size;
+      } catch (_) {}
+    }
+
+    if (deleted > 0) {
+      const freedMB = (freedBytes / (1024 * 1024)).toFixed(2);
+      console.log(`[CLEANUP] 🗑️ Sisa file media di tmp/ dibersihkan: ${deleted} file, ${freedMB} MB dibebaskan.`);
+    }
+  } catch (err) {
+    console.error('[CLEANUP ERROR] Gagal membersihkan tmp/:', err.message);
+  }
+}
+
 // Pemicu scheduler utama (diekspor untuk index.js)
 export function startScheduler(sock) {
   schedulerSock = sock;
@@ -439,6 +586,12 @@ export function startScheduler(sock) {
   // Jalankan pengecekan jadwal sholat pertama kali setelah 15 detik
   setTimeout(() => processAutoSholat(schedulerSock), 15000);
 
+  // Jalankan cleanup media chat pertama kali setelah 60 detik bot online
+  setTimeout(() => cleanupChatMedia(), 60000);
+
+  // Sapu sisa file kerja di tmp/ 65 detik setelah online
+  setTimeout(() => cleanupTmpDir(), 65000);
+
   // Set interval pengecekan order setiap 5 menit
   setInterval(() => {
     processOrderAutomation(schedulerSock);
@@ -448,6 +601,12 @@ export function startScheduler(sock) {
   setInterval(() => {
     checkFreeGamesAlerts(schedulerSock);
   }, 6 * 60 * 60 * 1000);
+
+  // Set interval pembersihan otomatis media chat + folder kerja setiap 8 jam
+  setInterval(() => {
+    cleanupChatMedia();
+    cleanupTmpDir();
+  }, 8 * 60 * 60 * 1000);
 
   // Set interval pengecekan backup database setiap 1 jam
   setInterval(() => {
