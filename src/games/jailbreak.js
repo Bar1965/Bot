@@ -3,60 +3,71 @@ import { send, normalizeAnswer } from './helpers.js';
 
 export const activeJailbreakSessions = new Map();
 export const jailbreakCooldowns = new Map();
-const JAILBREAK_TIMEOUT_MS = 35 * 1000;
+const STAGE_TIMEOUT_MS = 25 * 1000;
 
-function generateJailLockChallenge() {
-  const types = ['math', 'code', 'color'];
-  const type = types[Math.floor(Math.random() * types.length)];
-
-  if (type === 'math') {
-    const n1 = Math.floor(Math.random() * 40) + 15;
-    const n2 = Math.floor(Math.random() * 30) + 10;
+function generateStageChallenge(stage) {
+  if (stage === 1) {
+    // TAHAP 1: Gembok Pintu Sel (Lockpick / Matematika PIN)
+    const n1 = Math.floor(Math.random() * 45) + 15;
+    const n2 = Math.floor(Math.random() * 35) + 12;
     const ans = (n1 + n2).toString();
     return {
-      title: 'Kombinasi Pin Gembok Elektronik',
+      stage: 1,
+      title: 'Tahap 1/3: Bobol PIN Gembok Pintu Sel 🔒',
+      story: 'Kamu menggunakan jarum kecil untuk meretas keypad pintu sel...',
       description: `Hitung kombinasi kode PIN sel: *${n1} + ${n2}*`,
       answer: ans,
-      hint: `Hasil penjumlahan ${n1} dan ${n2}`
+      hint: `Jumlah dari ${n1} dan ${n2}`
     };
   }
 
-  if (type === 'code') {
-    const words = ['VENTILASI', 'TEROWONGAN', 'KUNCI', 'SIPIR', 'BORGOL', 'GERBANG', 'HAPUSJEJAK'];
-    const word = words[Math.floor(Math.random() * words.length)];
-    const scrambled = word.split('').sort(() => 0.5 - Math.random()).join('');
+  if (stage === 2) {
+    // TAHAP 2: Hindari Sensor & Anjing Pelacak (Kode Arah Terowongan)
+    const routes = [
+      { path: 'UTARA - TIMUR - SELATAN', ans: 'UTS', hint: 'Inisial 3 arah mata angin' },
+      { path: 'BARAT - UTARA - TIMUR', ans: 'BUT', hint: 'Inisial 3 arah mata angin' },
+      { path: 'TIMUR - SELATAN - BARAT', ans: 'TSB', hint: 'Inisial 3 arah mata angin' },
+      { path: 'SELATAN - BARAT - UTARA', ans: 'SBU', hint: 'Inisial 3 arah mata angin' }
+    ];
+    const selected = routes[Math.floor(Math.random() * routes.length)];
     return {
-      title: 'Pecahkan Kode Kawat Sel Elektrik',
-      description: `Susun kata sandi kunci sel tahanan: *${scrambled}*`,
-      answer: word,
-      hint: `Kata sandi berkaitan dengan pelarian (${word.length} huruf)`
+      stage: 2,
+      title: 'Tahap 2/3: Menghindari Patroli Anjing Pelacak 🐕',
+      story: 'Pintu sel terbuka! Kamu menyelinap ke lorong bawah tanah...',
+      description: `Ketik inisial 3 arah rute terowongan aman: *${selected.path}*\n_(Contoh format: \`${selected.ans}\`)_`,
+      answer: selected.ans,
+      hint: selected.hint
     };
   }
 
+  // TAHAP 3: Potong Sirkuit Alarm Tembok Utama (Final Escape)
   const colors = [
     { seq: 'MERAH - BIRU - KUNING', ans: 'MBK' },
     { seq: 'HIJAU - PUTIH - HITAM', ans: 'HPH' },
     { seq: 'BIRU - KUNING - MERAH', ans: 'BKM' },
     { seq: 'KUNING - HIJAU - BIRU', ans: 'KHB' }
   ];
-  const selected = colors[Math.floor(Math.random() * colors.length)];
+  const selectedColor = colors[Math.floor(Math.random() * colors.length)];
   return {
-    title: 'Gunting Kabel Sirkuit Alarm',
-    description: `Potong inisial warna kabel secara berurutan: *${selected.seq}*\n_(Ketik inisial 3 huruf, misal: \`${selected.ans}\`)_`,
-    answer: selected.ans,
-    hint: `Singkatan 3 huruf depan warna: ${selected.ans}`
+    stage: 3,
+    title: 'Tahap 3/3 (FINAL): Potong Sirkuit Alarm Gerbang Utama ⚡',
+    story: 'Kamu sudah sampai di tembok pagar berduri gerbang luar!',
+    description: `Potong inisial warna kabel alarm sebelum sensor menyala: *${selectedColor.seq}*\n_(Ketik inisial 3 huruf, misal: \`${selectedColor.ans}\`)_`,
+    answer: selectedColor.ans,
+    hint: `Singkatan 3 huruf depan warna: ${selectedColor.ans}`
   };
 }
 
 export async function handleJailbreak(sock, jid, senderNumber, messageObj) {
   const jailStatus = await db.isPlayerJailed(senderNumber);
   if (!jailStatus.isJailed) {
-    await send(sock, jid, messageObj, "❌ Kamu tidak sedang di dalam penjara! Status akun kamu bebas berkeliaran.");
+    await send(sock, jid, messageObj, "❌ Kamu tidak sedang di dalam penjara! Akun kamu bebas berkeliaran.");
     return true;
   }
 
   if (activeJailbreakSessions.has(senderNumber)) {
-    await send(sock, jid, messageObj, "⚠️ Kamu sedang melakukan aksi pembobolan sel! Selesaikan tantangan yang ada sekarang.");
+    const s = activeJailbreakSessions.get(senderNumber);
+    await send(sock, jid, messageObj, `⚠️ Kamu sedang dalam misi pelarian (${s.challenge.title})! Selesaikan tantangan sekarang.`);
     return true;
   }
 
@@ -68,52 +79,33 @@ export async function handleJailbreak(sock, jid, senderNumber, messageObj) {
     return true;
   }
 
-  const challenge = generateJailLockChallenge();
-  const expiresAt = now + JAILBREAK_TIMEOUT_MS;
-
+  const challenge = generateStageChallenge(1);
   const session = {
     senderNumber,
     jid,
+    stage: 1,
     challenge,
-    expiresAt,
-    timeout: setTimeout(async () => {
-      if (!activeJailbreakSessions.has(senderNumber)) return;
-      activeJailbreakSessions.delete(senderNumber);
-      jailbreakCooldowns.set(senderNumber, Date.now() + 5 * 60 * 1000);
-
-      await db.addGameJailDuration(senderNumber, 15);
-      await db.deductGamePoints(senderNumber, 25);
-
-      const failMsg = 
-`⏰ *WAKTU PEMBOBOLAN HABIS — TERTANGKAP SIPIR!* 🚨
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Waktu 35 detikmu habis! Penjaga patroli mendapati kamu sedang mengutak-atik sel gembok!
-
-⚖️ *Hukuman Tambahan:*
-▫️ Masa Tahanan: *+15 Menit*
-▫️ Denda Sipir: *-25 Poin*
-▫️ Jawaban Gembok: *${challenge.answer}*
-
-_Jangan sembarangan berbuat onar di dalam sel!_`;
-
-      await send(sock, jid, messageObj, failMsg);
-    }, JAILBREAK_TIMEOUT_MS)
+    timeout: null
   };
+
+  session.timeout = setTimeout(async () => {
+    await handleJailbreakTimeout(sock, jid, senderNumber, messageObj);
+  }, STAGE_TIMEOUT_MS);
 
   activeJailbreakSessions.set(senderNumber, session);
 
   const startMsg = 
-`🚨 *MISI PELARIAN PENJARA (JAILBREAK)* 🏃‍♂️💨
+`🚨 *MISI PELARIAN PENJARA 3 TAHAP (PRISON BREAK)* 🏃‍♂️💨
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Kamu menyelinap ke dekat pintu sel saat sipir sedang tertidur...
+${challenge.story}
 
-🔒 *Tantangan:* ${challenge.title}
+📌 *${challenge.title}*
 📝 *Tugas:* ${challenge.description}
-⏳ *Waktu Eksekusi:* 35 Detik
+⏳ *Waktu:* 25 Detik per tahap
 💡 *Petunjuk:* ${challenge.hint}
 
-👉 *Ketik jawabanmu langsung di chat untuk membobol gembok!*
-⚠️ _Jika salah atau waktu habis, hukuman penjara bertambah +15 menit!_`;
+👉 *Ketik jawabanmu langsung di chat!*
+⚠️ _Kamu harus menuntaskan 3 tahap berturut-turut untuk bisa bebas! Jika gagal, hukuman bertambah +15 menit._`;
 
   await send(sock, jid, messageObj, startMsg);
   return true;
@@ -127,47 +119,127 @@ export async function handleJailbreakAnswer(sock, jid, senderNumber, messageObj,
   const correct = normalizeAnswer(session.challenge.answer);
 
   if (session.timeout) clearTimeout(session.timeout);
-  activeJailbreakSessions.delete(senderNumber);
 
   if (submitted === correct) {
-    await db.clearGameJail(senderNumber);
-    await db.addMessageXp(senderNumber, 50);
+    if (session.stage === 1) {
+      // LOLOS TAHAP 1 ➔ MASUK TAHAP 2
+      session.stage = 2;
+      const nextChallenge = generateStageChallenge(2);
+      session.challenge = nextChallenge;
 
-    const senderPhone = senderNumber.split('@')[0];
-    const cust = await db.getCustomerByPhone(senderNumber);
-    const userTag = cust?.nama ? `*${cust.nama}* (@${senderPhone})` : `@${senderPhone}`;
+      session.timeout = setTimeout(async () => {
+        await handleJailbreakTimeout(sock, jid, senderNumber, messageObj);
+      }, STAGE_TIMEOUT_MS);
 
-    const winMsg = 
-`🎉 *BERHASIL KABUR DARI PENJARA! (PRISON BREAK)* 🏃‍♂️💨
+      const passMsg = 
+`🔓 *TAHAP 1 LOLOS!* Gembok sel berhasil terbuka tanpa suara! 👏
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Gembok sel berhasil terbuka tanpa bunyi! ${userTag} merayap melewati pipa ventilasi dan berhasil keluar ke tempat aman!
+${nextChallenge.story}
 
-✨ *Status:* **BEBAS DARI PENJARA** 🟢
-🎁 *Reward:* +50 XP Keberanian!
+📌 *${nextChallenge.title}*
+📝 *Tugas:* ${nextChallenge.description}
+⏳ *Waktu:* 25 Detik
+💡 *Petunjuk:* ${nextChallenge.hint}
 
-_Kamu sekarang bisa kembali bermain game, judi, dan transaksi seperti biasa!_`;
+👉 *Ketik jawaban rute sekarang!*`;
 
-    await send(sock, jid, messageObj, winMsg, { mentions: [senderNumber] });
-    return true;
+      await send(sock, jid, messageObj, passMsg);
+      return true;
+    } else if (session.stage === 2) {
+      // LOLOS TAHAP 2 ➔ MASUK TAHAP 3 (FINAL)
+      session.stage = 3;
+      const finalChallenge = generateStageChallenge(3);
+      session.challenge = finalChallenge;
+
+      session.timeout = setTimeout(async () => {
+        await handleJailbreakTimeout(sock, jid, senderNumber, messageObj);
+      }, STAGE_TIMEOUT_MS);
+
+      const passMsg = 
+`🐾 *TAHAP 2 LOLOS!* Anjing pelacak terkecoh dan tidak mencium bau jejakmu! 🔥
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${finalChallenge.story}
+
+📌 *${finalChallenge.title}*
+📝 *Tugas:* ${finalChallenge.description}
+⏳ *Waktu:* 25 Detik
+💡 *Petunjuk:* ${finalChallenge.hint}
+
+👉 *Ketik urutan warna kabel untuk membuka gerbang akhir!*`;
+
+      await send(sock, jid, messageObj, passMsg);
+      return true;
+    } else {
+      // 🎉 LOLOS SELURUH 3 TAHAP (KEMENANGAN MUTLAK)
+      activeJailbreakSessions.delete(senderNumber);
+      await db.clearGameJail(senderNumber);
+      await db.addMessageXp(senderNumber, 100);
+      await db.addGamePoints(senderNumber, 50);
+
+      const senderPhone = senderNumber.split('@')[0];
+      const cust = await db.getCustomerByPhone(senderNumber);
+      const userTag = cust?.nama ? `*${cust.nama}* (@${senderPhone})` : `@${senderPhone}`;
+
+      const winMsg = 
+`🏆 *PELARIAN PENJARA SUKSES TOTAL! (MASTER PRISON ESCAPE)* 🏃‍♂️💨
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎉 *LUAR BIASA!* ${userTag} berhasil melewati ketiga pos rintangan penjara dan kabur ke hutan bebas!
+
+✨ *Status Akun:* **BEBAS SEPENUHNYA DARI PENJARA** 🟢
+🎁 *Hadiah Keberanian:* *+100 XP* & *+50 Poin Bonus*!
+
+_Seluruh fitur game, judi, dan transaksi kamu telah aktif kembali!_`;
+
+      await send(sock, jid, messageObj, winMsg, { mentions: [senderNumber] });
+      return true;
+    }
   } else {
+    // JAWABAN SALAH ➔ GAGAL & TERTANGKAP
+    activeJailbreakSessions.delete(senderNumber);
     jailbreakCooldowns.set(senderNumber, Date.now() + 5 * 60 * 1000);
     await db.addGameJailDuration(senderNumber, 15);
-    await db.deductGamePoints(senderNumber, 25);
+    await db.deductGamePoints(senderNumber, 30);
 
     const failMsg = 
-`🚨 *ALARM BERBUNYI — TERTANGKAP BASAH!* 👮‍♂️
+`🚨 *SIRENE ALARM PENJARA BERBUNYI — TERTANGKAP BASAH!* 👮‍♂️
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Kunci yang kamu masukkan SALAH! Sirkuit sel meledak dan membangunkan seluruh regu sipir!
+Aksi kamu di *${session.challenge.title}* GAGAL karena jawaban salah (*${text}*)!
+Regu sipir dan anjing pelacak mengepungmu seketika!
 
-⚖️ *Vonis Tambahan:*
+⚖️ *Vonis Hukuman:*
 ▫️ Jawaban yang benar: *${session.challenge.answer}*
-▫️ Masa Tahanan: *+15 Menit*
-▫️ Denda Tindakan Disiplin: *-25 Poin*
-▫️ Cooldown Kabur: *5 Menit*`;
+▫️ Masa Tahanan: Bertambah *+15 Menit*
+▫️ Denda Sipir: *-30 Poin*
+▫️ Cooldown Kabur: *5 Menit*
+
+_Ketik \`.tebus @kamu\` jika ada teman berbaik hati yang mau menebus jaminan pengacara (1.000 Poin)._`;
 
     await send(sock, jid, messageObj, failMsg);
     return true;
   }
+}
+
+async function handleJailbreakTimeout(sock, jid, senderNumber, messageObj) {
+  if (!activeJailbreakSessions.has(senderNumber)) return;
+  const session = activeJailbreakSessions.get(senderNumber);
+  activeJailbreakSessions.delete(senderNumber);
+  jailbreakCooldowns.set(senderNumber, Date.now() + 5 * 60 * 1000);
+
+  await db.addGameJailDuration(senderNumber, 15);
+  await db.deductGamePoints(senderNumber, 30);
+
+  const failMsg = 
+`⏰ *WAKTU TAHAP HABIS — TERTANGKAP PATROLI!* 🚨
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Waktu 25 detikmu di *${session.challenge.title}* habis! Sorotan lampu menara penjara menyorot tubuhmu!
+
+⚖️ *Hukuman:*
+▫️ Jawaban yang benar: *${session.challenge.answer}*
+▫️ Masa Tahanan: *+15 Menit*
+▫️ Denda Sipir: *-30 Poin*
+▫️ Cooldown Kabur: *5 Menit*`;
+
+  await send(sock, jid, messageObj, failMsg);
 }
 
 export async function handleTebusNapi(sock, jid, senderNumber, messageObj, targetNumber) {
