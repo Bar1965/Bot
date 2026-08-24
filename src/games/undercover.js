@@ -297,24 +297,32 @@ async function startUndercoverGame(sock, jid, senderNumber, messageObj) {
   // Sesuai arahan: Selalu 1 Undercover
   const undercoverJid = shuffled[0];
 
-  // Netral Role (Pemain index 1 jika count >= 4)
-  let neutralJid = null;
-  let neutralRole = null;
+  // Netral Role 1
+  let neutralJid1 = null;
+  let neutralRole1 = null;
+  // Netral Role 2 (Khusus 6+ pemain)
+  let neutralJid2 = null;
+  let neutralRole2 = null;
 
   if (count === 4) {
-    neutralJid = shuffled[1];
-    neutralRole = 'MRWHITE';
-  } else if (count >= 5) {
-    neutralJid = shuffled[1];
-    const neutralPool = ['MRWHITE', 'JESTER', 'BUNGLON'];
-    neutralRole = neutralPool[Math.floor(Math.random() * neutralPool.length)];
+    neutralJid1 = shuffled[1];
+    neutralRole1 = 'MRWHITE';
+  } else if (count === 5) {
+    neutralJid1 = shuffled[1];
+    const pool = ['MRWHITE', 'JESTER', 'BUNGLON'];
+    neutralRole1 = pool[Math.floor(Math.random() * pool.length)];
+  } else if (count >= 6) {
+    neutralJid1 = shuffled[1];
+    neutralRole1 = 'MRWHITE';
+    neutralJid2 = shuffled[2];
+    neutralRole2 = Math.random() < 0.5 ? 'JESTER' : 'BUNGLON';
   }
 
-  // Warga Khusus: Koboi/Sheriff (index 2 jika count >= 5)
-  const sheriffJid = count >= 5 ? shuffled[2] : null;
+  // Warga Khusus: Koboi/Sheriff
+  const sheriffJid = count >= 5 ? (count >= 6 ? shuffled[3] : shuffled[2]) : null;
 
-  // Warga Khusus: Detektif Intel (index 3 jika count >= 7)
-  const detectiveJid = count >= 7 ? shuffled[3] : null;
+  // Warga Khusus: Detektif Intel
+  const detectiveJid = count >= 7 ? shuffled[4] : null;
 
   for (const p of shuffled) {
     if (p === undercoverJid) {
@@ -324,13 +332,14 @@ async function startUndercoverGame(sock, jid, senderNumber, messageObj) {
           text: `🎭 *PERAN ANDA: UNDERCOVER (PENYAMAR)* 🕵️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.undercover}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Misi Anda:* Berikan petunjuk yang mengecoh agar dikira warga sipil! Jangan sebutkan kata rahasiamu.\n🔫 *Peluru Racun Rahasia (1x Pakai):*\nAnda bisa mengeksekusi 1 pemain tanpa vote!\n👉 Kirim DM ke bot ini: \`.tembak @member\` (atau \`.tembak <nomor>\`)`
         });
       } catch (e) {}
-    } else if (p === neutralJid) {
-      if (neutralRole === 'MRWHITE') {
+    } else if (p === neutralJid1 || p === neutralJid2) {
+      const activeNeutralRole = p === neutralJid1 ? neutralRole1 : neutralRole2;
+      if (activeNeutralRole === 'MRWHITE') {
         session.playerRoles.set(p, { role: 'MRWHITE', word: '', isAlive: true, clue: '', cards: new Set() });
         try {
           await sock.sendMessage(p, { text: `🤍 *PERAN ANDA: MR. WHITE (BLANK)* 👻\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia: *TIDAK ADA KATA (BLANK)*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Misi Anda:* Anda tidak punya kata! Dengarkan petunjuk orang lain, pura-pura tahu!\n💡 *Skill Tebak Kata:* Tebak kata warga kapan saja via DM/grup dengan \`.tebakwarga <kata>\` untuk MENANG SOLO INSTAN! Atau bertahan hidup hingga akhir bersama kubu pemenang.` });
         } catch (e) {}
-      } else if (neutralRole === 'JESTER') {
+      } else if (activeNeutralRole === 'JESTER') {
         session.playerRoles.set(p, { role: 'JESTER', word: pair.civilian, isAlive: true, clue: '', cards: new Set() });
         try {
           await sock.sendMessage(p, { text: `🤡 *PERAN ANDA: SI BADUT (JESTER)* 🃏\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia: *${pair.civilian}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Misi Gila Anda:* Buat diri Anda DICURIGAI dan DI-VOTE KELUAR oleh grup! Jika Anda berhasil dieliminasi di Ronde 1 atau 2, Anda MENANG SOLO dan mencuri seluruh pot taruhan!` });
