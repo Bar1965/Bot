@@ -141,6 +141,10 @@ export async function handleUndercover(sock, jid, senderNumber, messageObj, args
     return await handleMrWhiteGuess(sock, jid, senderNumber, messageObj, guess);
   }
 
+  if (['skip', 'lewat', 'pass'].includes(subCmd)) {
+    return await handleUndercoverSkip(sock, jid, senderNumber, messageObj);
+  }
+
   if (['cancel', 'batal'].includes(subCmd)) {
     const session = activeUndercoverGames.get(jid);
     if (!session) {
@@ -417,7 +421,7 @@ async function advanceClueTurn(sock, jid, messageObj) {
   const nextPlayer = session.alivePlayers[session.turnIndex];
   const turnTimeoutMs = session.modifier?.name?.includes('Speed') ? 20 * 1000 : CLUE_TIMEOUT_MS;
 
-  const turnMsg = `✅ Petunjuk diterima!\n\n👉 *Giliran Selanjutnya:* @${nextPlayer.split('@')[0]} (Pemain ${session.turnIndex + 1}/${session.alivePlayers.length})\n⏳ *Waktu:* ${Math.round(turnTimeoutMs / 1000)} Detik\n_Tulis 1 kalimat petunjuk katamu di grup ini!_`;
+  const turnMsg = `✅ Petunjuk diterima!\n\n👉 *Giliran Selanjutnya:* @${nextPlayer.split('@')[0]} (Pemain ${session.turnIndex + 1}/${session.alivePlayers.length})\n⏳ *Waktu:* ${Math.round(turnTimeoutMs / 1000)} Detik\n_Tulis 1 kalimat petunjuk katamu di grup ini! (Atau ketik \`.skip\` untuk melewati giliran)_`;
 
   session.timeout = setTimeout(async () => {
     if (!activeUndercoverGames.has(jid)) return;
@@ -437,13 +441,142 @@ async function advanceClueTurn(sock, jid, messageObj) {
           const roleData = cur.playerRoles.get(p);
           voteList += `${i + 1}. @${p.split('@')[0]}: _"${roleData.clue}"_\n`;
         });
-        voteList += `\n👉 Ketik: \`.vote [nomor / @member]\` untuk mengeliminasi penyamar!`;
+        voteList += `\n👉 Ketik: \`.vote [nomor / @member]\` atau \`.vote skip\` (Abstain)!\n⏳ Waktu voting: 60 detik.`;
         await send(sock, jid, messageObj, voteList, { mentions: cur.alivePlayers });
       }
     }
   }, turnTimeoutMs);
 
   await send(sock, jid, messageObj, turnMsg, { mentions: [nextPlayer] });
+}
+
+export async function handleUndercoverSkip(sock, jid, senderNumber, messageObj, text = '', isAdmin = false, isOwner = false) {
+  const session = activeUndercoverGames.get(jid);
+  if (!session) return false;
+
+  // 1. JIKA SEDANG DI FASE PETUNJUK (CLUE_PHASE)
+  if (session.status === 'CLUE_PHASE') {
+    const currentTurnPlayer = session.alivePlayers[session.turnIndex];
+    const isCurrentTurn = senderNumber === currentTurnPlayer;
+    const isHost = senderNumber === session.host;
+    const isPrivileged = isHost || isAdmin || isOwner;
+
+    if (!session.skipVotes) session.skipVotes = new Set();
+
+    if (isCurrentTurn) {
+      // Pemain yang sedang giliran skip sendiri
+      const pRole = session.playerRoles.get(currentTurnPlayer);
+      if (pRole) pRole.clue = '(Melewatkan giliran / Skip)';
+      if (session.timeout) clearTimeout(session.timeout);
+      session.skipVotes.clear();
+
+      await send(sock, jid, messageObj, `⏩ @${currentTurnPlayer.split('@')[0]} memilih untuk **MELEWATKAN GILIRAN (SKIP)**! Giliran dialihkan ke pemain berikutnya...`, { mentions: [currentTurnPlayer] });
+
+      session.turnIndex++;
+      if (session.turnIndex < session.alivePlayers.length) {
+        await advanceClueTurn(sock, jid, messageObj);
+      } else {
+        session.status = 'VOTING_PHASE';
+        session.votes.clear();
+        let voteList = `🗳️ *SEMUA PETUNJUK SELESAI — FASE VOTING!* ⚖️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+        session.alivePlayers.forEach((p, i) => {
+          const roleData = session.playerRoles.get(p);
+          voteList += `${i + 1}. @${p.split('@')[0]}: _"${roleData.clue}"_\n`;
+        });
+        voteList += `\n👉 Ketik: \`.vote [nomor / @member]\` atau \`.vote skip\` (Abstain)!\n⏳ Waktu voting: 60 detik.`;
+
+        session.timeout = setTimeout(async () => {
+          if (!activeUndercoverGames.has(jid)) return;
+          const cur = activeUndercoverGames.get(jid);
+          if (cur.status === 'VOTING_PHASE') {
+            await processUndercoverVotes(sock, jid, messageObj);
+          }
+        }, VOTE_TIMEOUT_MS);
+
+        await send(sock, jid, messageObj, voteList, { mentions: session.alivePlayers });
+      }
+      return true;
+    } else if (isPrivileged) {
+      // Host / Admin force skip AFK player
+      const pRole = session.playerRoles.get(currentTurnPlayer);
+      if (pRole) pRole.clue = '(Di-skip oleh Host/Admin)';
+      if (session.timeout) clearTimeout(session.timeout);
+      session.skipVotes.clear();
+
+      await send(sock, jid, messageObj, `⏩ *FORCE SKIP:* Giliran @${currentTurnPlayer.split('@')[0]} dilewati oleh Host/Admin!`, { mentions: [currentTurnPlayer] });
+
+      session.turnIndex++;
+      if (session.turnIndex < session.alivePlayers.length) {
+        await advanceClueTurn(sock, jid, messageObj);
+      } else {
+        session.status = 'VOTING_PHASE';
+        session.votes.clear();
+        let voteList = `🗳️ *SEMUA PETUNJUK SELESAI — FASE VOTING!* ⚖️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+        session.alivePlayers.forEach((p, i) => {
+          const roleData = session.playerRoles.get(p);
+          voteList += `${i + 1}. @${p.split('@')[0]}: _"${roleData.clue}"_\n`;
+        });
+        voteList += `\n👉 Ketik: \`.vote [nomor / @member]\` atau \`.vote skip\` (Abstain)!\n⏳ Waktu voting: 60 detik.`;
+
+        session.timeout = setTimeout(async () => {
+          if (!activeUndercoverGames.has(jid)) return;
+          const cur = activeUndercoverGames.get(jid);
+          if (cur.status === 'VOTING_PHASE') {
+            await processUndercoverVotes(sock, jid, messageObj);
+          }
+        }, VOTE_TIMEOUT_MS);
+
+        await send(sock, jid, messageObj, voteList, { mentions: session.alivePlayers });
+      }
+      return true;
+    } else if (session.alivePlayers.includes(senderNumber)) {
+      // Vote skip bersama oleh pemain lain
+      session.skipVotes.add(senderNumber);
+      const needed = Math.min(2, session.alivePlayers.length - 1);
+      if (session.skipVotes.size >= needed) {
+        const pRole = session.playerRoles.get(currentTurnPlayer);
+        if (pRole) pRole.clue = '(Di-skip oleh voting pemain lain)';
+        if (session.timeout) clearTimeout(session.timeout);
+        session.skipVotes.clear();
+
+        await send(sock, jid, messageObj, `⏩ *VOTE SKIP BERHASIL:* Giliran @${currentTurnPlayer.split('@')[0]} dilewati karena tidak merespons!`, { mentions: [currentTurnPlayer] });
+
+        session.turnIndex++;
+        if (session.turnIndex < session.alivePlayers.length) {
+          await advanceClueTurn(sock, jid, messageObj);
+        } else {
+          session.status = 'VOTING_PHASE';
+          session.votes.clear();
+          let voteList = `🗳️ *SEMUA PETUNJUK SELESAI — FASE VOTING!* ⚖️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+          session.alivePlayers.forEach((p, i) => {
+            const roleData = session.playerRoles.get(p);
+            voteList += `${i + 1}. @${p.split('@')[0]}: _"${roleData.clue}"_\n`;
+          });
+          voteList += `\n👉 Ketik: \`.vote [nomor / @member]\` atau \`.vote skip\` (Abstain)!\n⏳ Waktu voting: 60 detik.`;
+
+          session.timeout = setTimeout(async () => {
+            if (!activeUndercoverGames.has(jid)) return;
+            const cur = activeUndercoverGames.get(jid);
+            if (cur.status === 'VOTING_PHASE') {
+              await processUndercoverVotes(sock, jid, messageObj);
+            }
+          }, VOTE_TIMEOUT_MS);
+
+          await send(sock, jid, messageObj, voteList, { mentions: session.alivePlayers });
+        }
+      } else {
+        await send(sock, jid, messageObj, `🗳️ @${senderNumber.split('@')[0]} mengajukan vote skip untuk @${currentTurnPlayer.split('@')[0]} (${session.skipVotes.size}/${needed} suara diperlukan).`, { mentions: [senderNumber, currentTurnPlayer] });
+      }
+      return true;
+    }
+  }
+
+  // 2. JIKA SEDANG DI FASE VOTING (VOTING_PHASE)
+  if (session.status === 'VOTING_PHASE') {
+    return await handleUndercoverVote(sock, jid, senderNumber, messageObj, 'SKIP');
+  }
+
+  return false;
 }
 
 export async function handleUndercoverVote(sock, jid, senderNumber, messageObj, targetJid) {
@@ -462,8 +595,12 @@ export async function handleUndercoverVote(sock, jid, senderNumber, messageObj, 
     messageObj.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0] ||
     messageObj.message?.extendedTextMessage?.contextInfo?.participant;
 
+  const isSkipVote = ['skip', '0', 'lewat', 'abstain', 'pass'].includes(String(rawTarget || '').trim().toLowerCase());
   let resolvedTarget = null;
-  if (rawTarget) {
+
+  if (isSkipVote) {
+    resolvedTarget = 'SKIP';
+  } else if (rawTarget) {
     const parsedNum = parseInt(String(rawTarget).trim(), 10);
     if (!isNaN(parsedNum) && parsedNum >= 1 && parsedNum <= session.alivePlayers.length && !String(rawTarget).includes('@') && String(rawTarget).trim().length <= 2) {
       resolvedTarget = session.alivePlayers[parsedNum - 1];
@@ -477,22 +614,26 @@ export async function handleUndercoverVote(sock, jid, senderNumber, messageObj, 
     }
   }
 
-  if (!resolvedTarget || !session.alivePlayers.includes(resolvedTarget)) {
-    await send(sock, jid, messageObj, `⚠️ Target vote tidak valid!\n👉 *Cara Vote:* Ketik \`.vote @member\` atau nomor urut \`.vote [1-${session.alivePlayers.length}]\``);
+  if (!resolvedTarget || (resolvedTarget !== 'SKIP' && !session.alivePlayers.includes(resolvedTarget))) {
+    await send(sock, jid, messageObj, `⚠️ Target vote tidak valid!\n👉 *Cara Vote:* Ketik \`.vote @member\`, nomor urut \`.vote [1-${session.alivePlayers.length}]\`, atau \`.vote skip\` (Abstain)`);
     return true;
   }
 
   if (resolvedTarget === senderNumber) {
-    await send(sock, jid, messageObj, "⚠️ Kamu tidak bisa mem-vote dirimu sendiri!");
+    await send(sock, jid, messageObj, "⚠️ Kamu tidak bisa mem-vote dirimu sendiri! Jika ingin abstain/lewati eliminasi, ketik `.vote skip`.");
     return true;
   }
 
   session.votes.set(senderNumber, resolvedTarget);
   const voterPhone = senderNumber.split('@')[0];
-  const targetPhone = resolvedTarget.split('@')[0];
   const isGolden = session.goldenVoters?.has(senderNumber);
 
-  await send(sock, jid, messageObj, `🗳️ @${voterPhone} mem-vote @${targetPhone}! ${isGolden ? '🌟 *(Golden Vote x2)*' : ''} (${session.votes.size}/${session.alivePlayers.length} suara)`, { mentions: [senderNumber, resolvedTarget] });
+  if (resolvedTarget === 'SKIP') {
+    await send(sock, jid, messageObj, `🗳️ @${voterPhone} memilih untuk **SKIP / ABSTAIN**! ${isGolden ? '🌟 *(Golden Vote x2)*' : ''} (${session.votes.size}/${session.alivePlayers.length} suara)`, { mentions: [senderNumber] });
+  } else {
+    const targetPhone = resolvedTarget.split('@')[0];
+    await send(sock, jid, messageObj, `🗳️ @${voterPhone} mem-vote @${targetPhone}! ${isGolden ? '🌟 *(Golden Vote x2)*' : ''} (${session.votes.size}/${session.alivePlayers.length} suara)`, { mentions: [senderNumber, resolvedTarget] });
+  }
 
   if (session.votes.size >= session.alivePlayers.length) {
     if (session.timeout) clearTimeout(session.timeout);
@@ -525,8 +666,11 @@ async function processUndercoverVotes(sock, jid, messageObj) {
     }
   }
 
-  if (isTie || !eliminated) {
-    await send(sock, jid, messageObj, `⚖️ *HASIL VOTING SERI / IMBANG!* Tidak ada yang dieliminasi ronde ini. Permainan dilanjutkan ke ronde berikutnya!`);
+  if (isTie || !eliminated || eliminated === 'SKIP') {
+    const reasonMsg = eliminated === 'SKIP' 
+      ? `⚖️ *HASIL VOTING TERBANYAK ADALAH SKIP / ABSTAIN!* Tidak ada pemain yang dieliminasi ronde ini.`
+      : `⚖️ *HASIL VOTING SERI / IMBANG!* Tidak ada yang dieliminasi ronde ini.`;
+    await send(sock, jid, messageObj, `${reasonMsg} Permainan dilanjutkan ke ronde berikutnya!`);
     return await startNextUndercoverRound(sock, jid, messageObj);
   }
 

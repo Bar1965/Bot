@@ -13,7 +13,7 @@ import { handleBankEconomy } from './bankEconomy.js';
 import { activeRounds, startRound, handleRoundCommand, surrenderRound, ROUND_DURATION_MS, scheduleRoundExpiry } from './triviaEngine.js';
 import { activeStealSessions, profileText, handleStealHeist, handleStealAnswer } from './rpgSystem.js';
 import { activeJailbreakSessions, handleJailbreak, handleJailbreakAnswer, handleTebusNapi } from './jailbreak.js';
-import { activeUndercoverGames, handleUndercover, handleUndercoverClue, handleUndercoverVote, handleMrWhiteGuess, handleDetectiveCheck } from './undercover.js';
+import { activeUndercoverGames, handleUndercover, handleUndercoverClue, handleUndercoverVote, handleUndercoverSkip, handleMrWhiteGuess, handleDetectiveCheck } from './undercover.js';
 import { activeQuizTournaments, handleQuizTournament, handleTournamentAnswer } from './quizTournament.js';
 import { getSystemChangelog } from '../utils/changelog.js';
 import { jidNormalizedUser } from '@whiskeysockets/baileys';
@@ -127,7 +127,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     'jawab', 'answer', 'hint', 'nyerah', 'surrender', 'menyerah',
     'quiz', 'trivia', 'tebakquiz', 'tebakemoji', 'emoji', 'tebakkata', 'hangman', 'kata',
     'family100', 'f100', 'caklontong', 'tts',
-    'undercover', 'sus', 'impostor', 'joinundercover', 'startundercover', 'tebakwarga', 'intip', 'cekintip', 'v',
+    'undercover', 'sus', 'impostor', 'joinundercover', 'startundercover', 'tebakwarga', 'intip', 'cekintip', 'v', 'skip', 'lewat', 'pass', 'skipundercover',
     'cerdascermat', 'kuisturnamen', 'quizbattle', 'joincerdascermat', 'startcerdascermat',
     'jailbreak', 'kabur', 'bobolpenjara', 'tebus', 'bebasinnapi',
     'duel', 'terimaduel', 'gasduel', 'tolakduel', 'tembak', 'dor',
@@ -406,6 +406,13 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     }
     await send(sock, jid, messageObj, "❌ Saat ini tidak ada sesi voting game (Undercover / Werewolf) aktif di grup ini.\n\nUntuk membuat polling WhatsApp biasa, gunakan format:\n`.poll Pertanyaan | Opsi 1 | Opsi 2`");
     return true;
+  }
+
+  // Skip Turn / Skip Vote Undercover (.skip / .lewat / .pass / .skipundercover)
+  if (['skip', 'lewat', 'pass', 'skipundercover'].includes(command)) {
+    if (activeUndercoverGames.has(jid)) {
+      return await handleUndercoverSkip(sock, jid, senderNumber, messageObj, text, isAdmin, isOwner);
+    }
   }
 
   // Tebak Kata Warga untuk Mr. White (.tebakwarga <kata>)
