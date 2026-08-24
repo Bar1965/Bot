@@ -3,6 +3,7 @@ import { config } from '../../config.js';
 import { jidNormalizedUser, downloadMediaMessage, downloadContentFromMessage } from '@whiskeysockets/baileys';
 import { createMidtransTransaction, botState } from '../../server.js';
 import { buildCommandMenu } from '../../commandRegistry.js';
+import { getSystemChangelog } from '../utils/changelog.js';
 import * as mediaHandler from '../../mediaHandler.js';
 import * as ent from '../../entertainmentHandler.js';
 import { sendInteractiveButtons } from '../../bot.js';
@@ -164,7 +165,8 @@ export function createCustomerHandler(ctx = {}) {
     // REGISTRATION CHECK
     const exemptCustomerCmds = [
       'daftar', 'register', 'registrasi', 'owner', 'kontakowner', 'menu', 'help', 'bantuan',
-      'list', 'produk', 'katalog', 'listproduk', 'p', 'detail', 'info', 'lihat'
+      'list', 'produk', 'katalog', 'listproduk', 'p', 'detail', 'info', 'lihat',
+      'update', 'changelog', 'patchnotes', 'whatsnew', 'pembaruan'
     ];
 
     if (!exemptCustomerCmds.includes(cleanCmd) && !actor.isAdmin && !actor.isOwner) {
@@ -399,6 +401,12 @@ Ketik *bayar* atau klik tombol *Bayar QRIS Langsung* di bawah untuk langsung mem
           }
         }
       }
+    }
+
+    // --- FITUR CHANGELOG / CATATAN PEMBARUAN SISTEM ---
+    if (['update', 'changelog', 'patchnotes', 'whatsnew', 'pembaruan'].includes(cleanCmd)) {
+      await sock.sendMessage(responseJid, { text: getSystemChangelog() });
+      return true;
     }
 
     if (['daftar', 'register', 'registrasi'].includes(cleanCmd)) {

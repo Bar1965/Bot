@@ -15,6 +15,7 @@ import { activeStealSessions, profileText, handleStealHeist, handleStealAnswer }
 import { activeJailbreakSessions, handleJailbreak, handleJailbreakAnswer, handleTebusNapi } from './jailbreak.js';
 import { activeUndercoverGames, handleUndercover, handleUndercoverClue, handleUndercoverVote, handleMrWhiteGuess, handleDetectiveCheck } from './undercover.js';
 import { activeQuizTournaments, handleQuizTournament, handleTournamentAnswer } from './quizTournament.js';
+import { getSystemChangelog } from '../utils/changelog.js';
 import { jidNormalizedUser } from '@whiskeysockets/baileys';
 
 export const easterEggCooldowns = new Map();
@@ -154,6 +155,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     'tebakangka', 'tebak', 'spin', 'luckyspin',
     'suit', 'pilihsuit', 'cancelsuit', 'batalsuit',
     'tukar', 'pointshop', 'penukaran',
+    'update', 'changelog', 'patchnotes', 'whatsnew', 'pembaruan',
     'fun', 'game', 'games', 'hiburan'
   ];
 
@@ -183,6 +185,12 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     return true;
   }
   
+  // Catatan Pembaruan Sistem (Changelog & Patch Notes)
+  if (['update', 'changelog', 'patchnotes', 'whatsnew', 'pembaruan'].includes(command)) {
+    await send(sock, jid, messageObj, getSystemChangelog());
+    return true;
+  }
+
   // AFK System
   if (['afk'].includes(command)) {
     const reason = args.slice(1).join(' ').trim() || 'Tanpa alasan';

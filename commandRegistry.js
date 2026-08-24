@@ -155,6 +155,7 @@ const categories = {
     aliases: ['6', 'admin'],
     commands: [
       ['.owner', 'Kontak resmi Owner'],
+      ['.update / .changelog', 'Lihat catatan pembaruan & fitur terbaru bot'],
       ['.ping', 'Cek status dan kecepatan bot'],
       ['.listfitur / .fiturgrup', 'Lihat daftar & status fitur grup yang bisa diatur'],
       ['.autodl <on/off>', 'Aktif/nonaktifkan auto-download video TikTok & IG'],
