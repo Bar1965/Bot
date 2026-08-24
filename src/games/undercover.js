@@ -528,10 +528,10 @@ async function startUndercoverGame(sock, jid, senderNumber, messageObj) {
         });
       } catch (e) {}
     } else if (role === 'UNDERCOVER') {
-      session.playerRoles.set(p, { role: 'UNDERCOVER', word: pair.undercover, isAlive: true, clue: '', hasBullet: true, cards: new Set() });
+      session.playerRoles.set(p, { role: 'UNDERCOVER', word: pair.undercover, isAlive: true, clue: '', cards: new Set() });
       try {
         await sock.sendMessage(p, { 
-          text: `🎭 *PERAN ANDA: UNDERCOVER (PENYAMAR)* 🕵️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.undercover}*\n🏷️ Kategori: ${pair.category}${partnerMsg}\n\n⚠️ *Misi Anda:* Berikan petunjuk yang mengecoh agar dikira warga sipil! Jangan sebutkan kata rahasiamu.\n🔫 *Peluru Racun Rahasia (1x Pakai):*\nAnda bisa mengeksekusi 1 pemain tanpa vote!\n👉 Kirim DM ke bot ini: \`.tembak @member\` (atau \`.tembak <nomor>\`)`,
+          text: `🎭 *PERAN ANDA: UNDERCOVER (PENYAMAR)* 🕵️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.undercover}*\n🏷️ Kategori: ${pair.category}${partnerMsg}\n\n⚠️ *Misi Penyamaran:* Berikan petunjuk yang mengecoh agar dikira warga sipil! Manipulasi diskusi dan adu domba warga tanpa membocorkan kata rahasiamu.`,
           mentions
         });
       } catch (e) {}
@@ -1686,8 +1686,8 @@ export async function handleUndercoverShoot(sock, jid, senderNumber, messageObj,
   }
 
   const senderRoleData = getPlayerRoleData(targetSession, resolvedSender);
-  if (!senderRoleData || !['SHERIFF', 'UNDERCOVER', 'ASSASSIN'].includes(senderRoleData.role)) {
-    await send(sock, jid, messageObj, "❌ Peran Anda tidak memiliki senjata untuk menembak!");
+  if (!senderRoleData || !['SHERIFF', 'ASSASSIN'].includes(senderRoleData.role)) {
+    await send(sock, jid, messageObj, "❌ Peran Anda tidak memiliki senjata untuk menembak! Hanya Assassin & Sheriff yang dapat menembak.");
     return true;
   }
 
@@ -1786,22 +1786,22 @@ Sheriff @${senderPhone} melepaskan tembakan ke arah Warga @${targetPhone}!
       }
     }
   } 
-  // 2. JIKA PENEMBAK ADALAH UNDERCOVER ATAU ASSASSIN
-  else if (['UNDERCOVER', 'ASSASSIN'].includes(senderRoleData.role)) {
+  // 2. JIKA PENEMBAK ADALAH ASSASSIN
+  else if (senderRoleData.role === 'ASSASSIN') {
     deadPlayer = resolvedTarget;
     targetSession.alivePlayers = targetSession.alivePlayers.filter(p => p !== resolvedTarget && !db.isPhoneMatch(p, resolvedTarget));
     if (targetRoleData) targetRoleData.isAlive = false;
 
     const killMsg = 
-`🩸 *PEMBUNUHAN RAHASIA DI MALAM HARI!* 🕵️🗡️
+`🩸 *PEMBUNUHAN RAHASIA DI MALAM HARI!* 🗡️🩸
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Terdengar suara letupan tembakan senyap di kejauhan...
-☠️ @${targetPhone} **DITEMUKAN TEWAS** secara misterius!
+Terdengar suara letupan sniper senyap di kejauhan...
+☠️ @${targetPhone} **DITEMUKAN TEWAS** dibunuh Assassin!
 🎭 Peran Terbuka: *${getRoleBadge(targetRoleData?.role)}*`;
 
     await send(sock, gameJid, null, killMsg, { mentions: [resolvedTarget] });
     if (jid !== gameJid) {
-      await send(sock, jid, messageObj, `🗡️ Target @${targetPhone} (${getRoleBadge(targetRoleData.role)}) berhasil Anda bunuh!`);
+      await send(sock, jid, messageObj, `🗡️ Target @${targetPhone} (${getRoleBadge(targetRoleData?.role)}) berhasil Anda bunuh!`);
     }
   }
 
@@ -1995,8 +1995,8 @@ Peran khusus dibagikan secara *ACAK & DINAMIS* di setiap permainan!
 ▫️ 🛡️ *Guardian (Bodyguard):* 1x Lindungi per ronde (\`.lindung @member\` via DM). Jika target ditembak/dieksekusi, nyawanya SELAMAT!
 
 🕵️ *2. KUBU PENYAMAR (IMPOSTORS):*
-▫️ 🕵️ *Undercover:* Menerima kata mirip, 1x Peluru Racun (\`.tembak @member\` via DM).
-▫️ 🗡️ *Assassin:* Eksekutor maut, 1x Sniper (\`.tembak @member\` via DM) mematikan musuh seketika!
+▫️ 🕵️ *Undercover:* Menerima kata mirip, menyamar dan memanipulasi opini warga.
+▫️ 🗡️ *Assassin:* Eksekutor maut, memegang 1x Peluru Sniper (\`.tembak @member\` via DM) untuk membunuh musuh seketika!
 ▫️ 🗣️ *Framer:* Tukang fitnah 1x per game (\`.fitnah @member\` via DM). Memanipulasi hasil intip Detektif & memberi +1 suara kutukan pada target di fase vote!
 ▫️ 🦹 *Saboteur:* Peretas status (\`.hack @member\` via DM). Mengintip peran target untuk membidik warga VIP!
 
@@ -2011,7 +2011,7 @@ Peran khusus dibagikan secara *ACAK & DINAMIS* di setiap permainan!
 • \`.joinundercover\` — Bergabung ke lobi
 • \`.startundercover\` — Memulai permainan (Minimal 3 orang)
 • \`.skip\` — Lewati giliran petunjuk / vote skip
-• \`.tembak @member\` — (Koboi/Undercover/Assassin via DM) Eksekusi sasaran
+• \`.tembak @member\` — (Koboi / Assassin via DM) Eksekusi sasaran
 • \`.intip @member\` — (Detektif via DM, mulai Ronde 2) Lacak status pemain
 • \`.lindung @member\` — (Guardian via DM) Lindungi pemain dari maut
 • \`.fitnah @member\` — (Framer via DM) Jebak target & beri +1 vote kutukan
