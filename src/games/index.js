@@ -13,7 +13,7 @@ import { handleBankEconomy } from './bankEconomy.js';
 import { activeRounds, startRound, handleRoundCommand, surrenderRound, ROUND_DURATION_MS, scheduleRoundExpiry } from './triviaEngine.js';
 import { activeStealSessions, profileText, handleStealHeist, handleStealAnswer } from './rpgSystem.js';
 import { activeJailbreakSessions, handleJailbreak, handleJailbreakAnswer, handleTebusNapi } from './jailbreak.js';
-import { activeUndercoverGames, handleUndercover, handleUndercoverClue, handleUndercoverVote, handleUndercoverSkip, handleMrWhiteGuess, handleDetectiveCheck } from './undercover.js';
+import { activeUndercoverGames, handleUndercover, handleUndercoverClue, handleUndercoverVote, handleUndercoverSkip, handleUndercoverShoot, handleMrWhiteGuess, handleDetectiveCheck } from './undercover.js';
 import { activeQuizTournaments, handleQuizTournament, handleTournamentAnswer } from './quizTournament.js';
 import { getSystemChangelog } from '../utils/changelog.js';
 import { jidNormalizedUser } from '@whiskeysockets/baileys';
@@ -130,7 +130,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     'undercover', 'sus', 'impostor', 'joinundercover', 'startundercover', 'tebakwarga', 'intip', 'cekintip', 'v', 'skip', 'lewat', 'pass', 'skipundercover',
     'cerdascermat', 'kuisturnamen', 'quizbattle', 'joincerdascermat', 'startcerdascermat',
     'jailbreak', 'kabur', 'bobolpenjara', 'tebus', 'bebasinnapi',
-    'duel', 'terimaduel', 'gasduel', 'tolakduel', 'tembak', 'dor',
+    'duel', 'terimaduel', 'gasduel', 'tolakduel', 'tembak', 'shoot', 'dor',
     'blackjack', 'bj', 'hit', 'stand', 'double',
     'heist', 'rampokbank', 'joinheist', 'startheist',
     'balapkuda', 'pasangkuda', 'betkuda', 'pasang', 'bet', 'kuda', 'race', 'startbalap', 'startrace', 'cancelbalap',
@@ -440,9 +440,15 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
 
   // Duel Tembak (Russian Roulette)
   if (['duel'].includes(command)) return await handleDuelCommand(sock, jid, senderNumber, messageObj, args, isFromGroup);
-  if (['terimaduel', 'gasduel', 'gas', 'tolakduel', 'tembak', 'dor', 'pull'].includes(command)) {
+  if (['terimaduel', 'gasduel', 'gas', 'tolakduel', 'tembak', 'shoot', 'dor', 'pull'].includes(command)) {
     const isDuelHandled = await handleDuelAction(sock, jid, senderNumber, messageObj, command);
     if (isDuelHandled) return true;
+
+    // Tembakan Rahasia Undercover / Sheriff Koboi (.tembak @member / .shoot @member)
+    if (['tembak', 'shoot', 'dor'].includes(command)) {
+      const isUndercoverShot = await handleUndercoverShoot(sock, jid, senderNumber, messageObj, args);
+      if (isUndercoverShot) return true;
+    }
   }
 
   // Blackjack 21

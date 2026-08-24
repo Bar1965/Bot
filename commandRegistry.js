@@ -82,6 +82,7 @@ const categories = {
       ['.undercover card', 'Toko kartu aksi khusus (Shield, Golden Vote, Lakban, Radar)'],
       ['.intip @member', 'Khusus Detektif Undercover via DM untuk melacak status pemain'],
       ['.skip / .lewat', 'Lewati giliran petunjuk / vote abstain di game Undercover'],
+      ['.tembak @member', 'Eksekusi tembak rahasia via DM (Khusus Koboi / Undercover)'],
       ['.cerdascermat [taruhan]', 'Turnamen kuis Battle Royale sistem gugur berhadiah prizepool'],
       ['.jailbreak / .kabur', 'Misi teka-teki membobol sel untuk melarikan diri dari penjara'],
       ['.tebus @napi', 'Bayar uang jaminan pengacara (1.000 Poin) untuk membebaskan teman dari penjara'],
