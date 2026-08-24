@@ -460,113 +460,102 @@ async function startUndercoverGame(sock, jid, senderNumber, messageObj) {
   session.alivePlayers = [...shuffled];
 
   const count = shuffled.length;
-  // 1. IMPOSTOR / UNDERCOVER ROLE (Selalu 1 orang, index 0, diacak dari pool Impostor)
-  const undercoverJid = shuffled[0];
+  // Pool peran Impostor: 1 orang
   const underPool = ['UNDERCOVER', 'ASSASSIN', 'FRAMER', 'SABOTEUR'];
-  const undercoverRole = underPool[Math.floor(Math.random() * underPool.length)];
+  const underRole = underPool[Math.floor(Math.random() * underPool.length)];
 
-  // 2. NETRAL ROLE (Index 1 jika count >= 4, diacak dari pool Netral)
-  let neutralJid1 = null;
-  let neutralRole1 = null;
-  let neutralJid2 = null;
-  let neutralRole2 = null;
-
+  // Pool peran Netral: 1 orang
   const neutralPool = ['MRWHITE', 'JESTER', 'BUNGLON'];
-  if (count === 4) {
-    neutralJid1 = shuffled[1];
-    neutralRole1 = 'MRWHITE';
+  const neutralRole = neutralPool[Math.floor(Math.random() * neutralPool.length)];
+
+  // Pool Warga Spesial:
+  const specialCivPool = ['SHERIFF', 'DETECTIVE', 'GUARDIAN'].sort(() => 0.5 - Math.random());
+
+  // Buat array peran deterministik untuk setiap slot pemain [0..count-1]
+  const assignedRoles = [];
+
+  if (count === 3) {
+    // 3 Pemain: 1 Impostor, 2 Warga Biasa
+    assignedRoles.push(underRole, 'CIVILIAN', 'CIVILIAN');
+  } else if (count === 4) {
+    // 4 Pemain: 1 Impostor, 1 Netral, 1 Warga Spesial, 1 Warga Biasa
+    assignedRoles.push(underRole, neutralRole, specialCivPool[0], 'CIVILIAN');
   } else if (count === 5) {
-    neutralJid1 = shuffled[1];
-    neutralRole1 = neutralPool[Math.floor(Math.random() * neutralPool.length)];
-  } else if (count >= 6) {
-    neutralJid1 = shuffled[1];
-    neutralRole1 = 'MRWHITE';
-    neutralJid2 = shuffled[2];
-    const remNeutral = neutralPool.filter(r => r !== 'MRWHITE');
-    neutralRole2 = remNeutral[Math.floor(Math.random() * remNeutral.length)];
+    // 5 Pemain: 1 Impostor, 1 Netral, 1 Warga Spesial, 2 Warga Biasa
+    assignedRoles.push(underRole, neutralRole, specialCivPool[0], 'CIVILIAN', 'CIVILIAN');
+  } else if (count === 6) {
+    // 6 Pemain: 1 Impostor, 1 Netral, 1 Warga Spesial, 3 Warga Biasa
+    assignedRoles.push(underRole, neutralRole, specialCivPool[0], 'CIVILIAN', 'CIVILIAN', 'CIVILIAN');
+  } else if (count === 7) {
+    // 7 Pemain: 1 Impostor, 1 Netral, 2 Warga Spesial, 3 Warga Biasa
+    assignedRoles.push(underRole, neutralRole, specialCivPool[0], specialCivPool[1], 'CIVILIAN', 'CIVILIAN', 'CIVILIAN');
+  } else {
+    // 8 Pemain: 1 Impostor, 1 Netral, 2 Warga Spesial, 4 Warga Biasa
+    assignedRoles.push(underRole, neutralRole, specialCivPool[0], specialCivPool[1], 'CIVILIAN', 'CIVILIAN', 'CIVILIAN', 'CIVILIAN');
   }
 
-  // 3. WARGA SPESIAL (Diacak dari pool Special Civilians: SHERIFF, DETECTIVE, GUARDIAN)
-  const specialCivPool = ['SHERIFF', 'DETECTIVE', 'GUARDIAN'].sort(() => 0.5 - Math.random());
-  
-  // Warga Spesial 1 (jika count >= 5)
-  const specialCivJid1 = count >= 5 ? (count >= 6 ? shuffled[3] : shuffled[2]) : null;
-  const specialCivRole1 = count >= 5 ? specialCivPool[0] : null;
+  for (let i = 0; i < count; i++) {
+    const p = shuffled[i];
+    const role = assignedRoles[i];
 
-  // Warga Spesial 2 (jika count >= 7)
-  const specialCivJid2 = count >= 7 ? shuffled[4] : null;
-  const specialCivRole2 = count >= 7 ? specialCivPool[1] : null;
-
-  for (const p of shuffled) {
-    if (p === undercoverJid) {
-      if (undercoverRole === 'ASSASSIN') {
-        session.playerRoles.set(p, { role: 'ASSASSIN', word: pair.undercover, isAlive: true, clue: '', hasBullet: true, cards: new Set() });
-        try {
-          await sock.sendMessage(p, { 
-            text: `🗡️ *PERAN ANDA: ASSASSIN (PEMBUNUH BAYARAN)* 🩸\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.undercover}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Misi Khusus:* Anda adalah eksekutor rahasia kubu penyamar!\n🎯 *Sniper Senyap (1x Pakai):*\nKirim DM ke bot ini: \`.tembak @member\` (atau \`.tembak <nomor>\`) untuk mengeksekusi musuh tanpa perlu voting!`
-          });
-        } catch (e) {}
-      } else if (undercoverRole === 'FRAMER') {
-        session.playerRoles.set(p, { role: 'FRAMER', word: pair.undercover, isAlive: true, clue: '', hasFramed: false, cards: new Set() });
-        try {
-          await sock.sendMessage(p, { 
-            text: `🗣️ *PERAN ANDA: FRAMER (TUKANG FITNAH)* 🎭\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.undercover}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Skill Fitnah (1x Pakai via DM):*\nKirim DM ke bot: \`.fitnah @member\` (atau \`.fitnah <nomor>\`)\n\n🎯 *Efek Fitnah:*\n1. Memanipulasi laporan Detektif: Jika target diintip Detektif, dia akan terlihat sebagai **BUKAN WARGA (PENYAMAR/IMPOSTOR)**!\n2. Di fase voting ronde ini, target otomatis mendapatkan **+1 Suara Kutukan Tambahan**!`
-          });
-        } catch (e) {}
-      } else if (undercoverRole === 'SABOTEUR') {
-        session.playerRoles.set(p, { role: 'SABOTEUR', word: pair.undercover, isAlive: true, clue: '', cards: new Set() });
-        try {
-          await sock.sendMessage(p, { 
-            text: `🦹 *PERAN ANDA: SABOTEUR (PENYABOT INTEL)* ⚡\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.undercover}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Skill Sabotase:* Tiap ronde Anda bisa meretas peran pemain via DM:\n👉 Ketik: \`.hack @member\` (atau \`.sabotase <nomor>\`) untuk mengintip peran target!`
-          });
-        } catch (e) {}
-      } else {
-        // UNDERCOVER STANDAR
-        session.playerRoles.set(p, { role: 'UNDERCOVER', word: pair.undercover, isAlive: true, clue: '', hasBullet: true, cards: new Set() });
-        try {
-          await sock.sendMessage(p, { 
-            text: `🎭 *PERAN ANDA: UNDERCOVER (PENYAMAR)* 🕵️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.undercover}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Misi Anda:* Berikan petunjuk yang mengecoh agar dikira warga sipil! Jangan sebutkan kata rahasiamu.\n🔫 *Peluru Racun Rahasia (1x Pakai):*\nAnda bisa mengeksekusi 1 pemain tanpa vote!\n👉 Kirim DM ke bot ini: \`.tembak @member\` (atau \`.tembak <nomor>\`)`
-          });
-        } catch (e) {}
-      }
-    } else if (p === neutralJid1 || p === neutralJid2) {
-      const activeNeutralRole = p === neutralJid1 ? neutralRole1 : neutralRole2;
-      if (activeNeutralRole === 'MRWHITE') {
-        session.playerRoles.set(p, { role: 'MRWHITE', word: '', isAlive: true, clue: '', cards: new Set() });
-        try {
-          await sock.sendMessage(p, { text: `🤍 *PERAN ANDA: MR. WHITE (BLANK)* 👻\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia: *TIDAK ADA KATA (BLANK)*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Misi Anda:* Anda tidak punya kata! Dengarkan petunjuk orang lain, pura-pura tahu!\n💡 *Skill Tebak Kata:* Tebak kata warga kapan saja via DM/grup dengan \`.tebakwarga <kata>\` untuk MENANG SOLO INSTAN! Atau bertahan hidup hingga akhir bersama kubu pemenang.` });
-        } catch (e) {}
-      } else if (activeNeutralRole === 'JESTER') {
-        session.playerRoles.set(p, { role: 'JESTER', word: pair.civilian, isAlive: true, clue: '', cards: new Set() });
-        try {
-          await sock.sendMessage(p, { text: `🤡 *PERAN ANDA: SI BADUT (JESTER)* 🃏\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia: *${pair.civilian}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Misi Gila Anda:* Buat diri Anda DICURIGAI dan DI-VOTE KELUAR oleh grup! Jika Anda berhasil dieliminasi di Ronde 1 atau 2, Anda MENANG SOLO dan mencuri seluruh pot taruhan!` });
-        } catch (e) {}
-      } else {
-        // BUNGLON
-        session.playerRoles.set(p, { role: 'BUNGLON', word: pair.civilian, isAlive: true, clue: '', cards: new Set() });
-        try {
-          await sock.sendMessage(p, { text: `🦎 *PERAN ANDA: BUNGLON (NETRAL BEBAS)* 🤝\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.civilian}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Misi Bertahan Hidup:* Anda adalah pihak netral yang fleksibel. Triknya jangan sampai tereliminasi/tertembak! Jika kubu mana pun (Warga atau Undercover) menang saat Anda masih HIDUP, Anda IKUT MENANG dan mendapat bagian hadiah pot!` });
-        } catch (e) {}
-      }
-    } else if (p === specialCivJid1 || p === specialCivJid2) {
-      const activeSpecialCiv = p === specialCivJid1 ? specialCivRole1 : specialCivRole2;
-      if (activeSpecialCiv === 'SHERIFF') {
-        session.playerRoles.set(p, { role: 'SHERIFF', word: pair.civilian, isAlive: true, clue: '', hasBullet: true, cards: new Set() });
-        try {
-          await sock.sendMessage(p, { text: `🤠 *PERAN ANDA: KOBOI / SHERIFF (PENEMBAK)* 🔫\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.civilian}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Misi & Senjata Revolver (1x Pakai):*\nAnda adalah penegak hukum bersenjata warga!\n👉 Kirim DM ke bot ini: \`.tembak @member\` (atau \`.tembak <nomor>\`)\n\n🎯 *HUKUM TEMBAKAN:*\n• Jika sasaran adalah **Undercover**, **Mr. White**, atau **Si Badut** ➔ Target **TEWAS SEKETIKA**!\n• 💀 **JIKA SALAH SASARAN** menembak Warga Sipil/Sekutu ➔ **ANDA SENDIRI YANG TEWAS DI TEMPAT (Suicide)** karena rasa bersalah!` });
-        } catch (e) {}
-      } else if (activeSpecialCiv === 'DETECTIVE') {
-        session.playerRoles.set(p, { role: 'DETECTIVE', word: pair.civilian, isAlive: true, clue: '', hasUsedIntel: false, cards: new Set() });
-        try {
-          await sock.sendMessage(p, { text: `🔍 *PERAN ANDA: DETEKTIF INTEL (DETECTIVE)* 🕵️‍♂️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.civilian}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Skill Intel (1x Pakai — Mulai Ronde 2):*\nKirim pesan DM ke bot: \`.intip @member\` (atau \`.intip <nomor>\`) untuk mengetahui apakah target adalah Warga Asli atau Bukan Warga!\n💡 *Catatan:* Skill ini baru terbuka setelah melewati Ronde 1 (Mulai Ronde 2 ke atas).` });
-        } catch (e) {}
-      } else {
-        // GUARDIAN / BODYGUARD
-        session.playerRoles.set(p, { role: 'GUARDIAN', word: pair.civilian, isAlive: true, clue: '', cards: new Set() });
-        try {
-          await sock.sendMessage(p, { text: `🛡️ *PERAN ANDA: GUARDIAN (BODYGUARD PELINDUNG)* 🔰\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.civilian}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Skill Perlindungan:* Tiap ronde bisa kirim DM ke bot: \`.lindung @member\` (atau \`.guard <nomor>\`). Jika target yang Anda lindungi ditembak atau dieksekusi vote, nyawanya akan SELAMAT dari maut!` });
-        } catch (e) {}
-      }
+    if (role === 'ASSASSIN') {
+      session.playerRoles.set(p, { role: 'ASSASSIN', word: pair.undercover, isAlive: true, clue: '', hasBullet: true, cards: new Set() });
+      try {
+        await sock.sendMessage(p, { 
+          text: `🗡️ *PERAN ANDA: ASSASSIN (PEMBUNUH BAYARAN)* 🩸\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.undercover}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Misi Khusus:* Anda adalah eksekutor rahasia kubu penyamar!\n🎯 *Sniper Senyap (1x Pakai):*\nKirim DM ke bot ini: \`.tembak @member\` (atau \`.tembak <nomor>\`) untuk mengeksekusi musuh tanpa perlu voting!`
+        });
+      } catch (e) {}
+    } else if (role === 'FRAMER') {
+      session.playerRoles.set(p, { role: 'FRAMER', word: pair.undercover, isAlive: true, clue: '', hasFramed: false, cards: new Set() });
+      try {
+        await sock.sendMessage(p, { 
+          text: `🗣️ *PERAN ANDA: FRAMER (TUKANG FITNAH)* 🎭\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.undercover}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Skill Fitnah (1x Pakai via DM):*\nKirim DM ke bot: \`.fitnah @member\` (atau \`.fitnah <nomor>\`)\n\n🎯 *Efek Fitnah:*\n1. Memanipulasi laporan Detektif: Jika target diintip Detektif, dia akan terlihat sebagai **BUKAN WARGA (PENYAMAR/IMPOSTOR)**!\n2. Di fase voting ronde ini, target otomatis mendapatkan **+1 Suara Kutukan Tambahan**!`
+        });
+      } catch (e) {}
+    } else if (role === 'SABOTEUR') {
+      session.playerRoles.set(p, { role: 'SABOTEUR', word: pair.undercover, isAlive: true, clue: '', cards: new Set() });
+      try {
+        await sock.sendMessage(p, { 
+          text: `🦹 *PERAN ANDA: SABOTEUR (PENYABOT INTEL)* ⚡\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.undercover}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Skill Sabotase:* Tiap ronde Anda bisa meretas peran pemain via DM:\n👉 Ketik: \`.hack @member\` (atau \`.sabotase <nomor>\`) untuk mengintip peran target!`
+        });
+      } catch (e) {}
+    } else if (role === 'UNDERCOVER') {
+      session.playerRoles.set(p, { role: 'UNDERCOVER', word: pair.undercover, isAlive: true, clue: '', hasBullet: true, cards: new Set() });
+      try {
+        await sock.sendMessage(p, { 
+          text: `🎭 *PERAN ANDA: UNDERCOVER (PENYAMAR)* 🕵️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.undercover}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Misi Anda:* Berikan petunjuk yang mengecoh agar dikira warga sipil! Jangan sebutkan kata rahasiamu.\n🔫 *Peluru Racun Rahasia (1x Pakai):*\nAnda bisa mengeksekusi 1 pemain tanpa vote!\n👉 Kirim DM ke bot ini: \`.tembak @member\` (atau \`.tembak <nomor>\`)`
+        });
+      } catch (e) {}
+    } else if (role === 'MRWHITE') {
+      session.playerRoles.set(p, { role: 'MRWHITE', word: '', isAlive: true, clue: '', cards: new Set() });
+      try {
+        await sock.sendMessage(p, { text: `🤍 *PERAN ANDA: MR. WHITE (BLANK)* 👻\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia: *TIDAK ADA KATA (BLANK)*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Misi Anda:* Anda tidak punya kata! Dengarkan petunjuk orang lain, pura-pura tahu!\n💡 *Skill Tebak Kata:* Tebak kata warga kapan saja via DM/grup dengan \`.tebakwarga <kata>\` (atau \`.guess <kata>\`) untuk MENANG SOLO INSTAN! Atau bertahan hidup hingga akhir bersama kubu pemenang.` });
+      } catch (e) {}
+    } else if (role === 'JESTER') {
+      session.playerRoles.set(p, { role: 'JESTER', word: pair.civilian, isAlive: true, clue: '', cards: new Set() });
+      try {
+        await sock.sendMessage(p, { text: `🤡 *PERAN ANDA: SI BADUT (JESTER)* 🃏\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia: *${pair.civilian}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Misi Gila Anda:* Buat diri Anda DICURIGAI dan DI-VOTE KELUAR oleh grup! Jika Anda berhasil dieliminasi di Ronde 1 atau 2, Anda MENANG SOLO dan mencuri seluruh pot taruhan!` });
+      } catch (e) {}
+    } else if (role === 'BUNGLON') {
+      session.playerRoles.set(p, { role: 'BUNGLON', word: pair.civilian, isAlive: true, clue: '', cards: new Set() });
+      try {
+        await sock.sendMessage(p, { text: `🦎 *PERAN ANDA: BUNGLON (NETRAL BEBAS)* 🤝\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.civilian}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Misi Bertahan Hidup:* Anda adalah pihak netral yang fleksibel. Triknya jangan sampai tereliminasi/tertembak! Jika kubu mana pun (Warga atau Undercover) menang saat Anda masih HIDUP, Anda IKUT MENANG dan mendapat bagian hadiah pot!` });
+      } catch (e) {}
+    } else if (role === 'SHERIFF') {
+      session.playerRoles.set(p, { role: 'SHERIFF', word: pair.civilian, isAlive: true, clue: '', hasBullet: true, cards: new Set() });
+      try {
+        await sock.sendMessage(p, { text: `🤠 *PERAN ANDA: KOBOI / SHERIFF (PENEMBAK)* 🔫\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.civilian}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Misi & Senjata Revolver (1x Pakai):*\nAnda adalah penegak hukum bersenjata warga!\n👉 Kirim DM ke bot ini: \`.tembak @member\` (atau \`.tembak <nomor>\`)\n\n🎯 *HUKUM TEMBAKAN:*\n• Jika sasaran adalah **Undercover**, **Mr. White**, atau **Si Badut** ➔ Target **TEWAS SEKETIKA**!\n• 💀 **JIKA SALAH SASARAN** menembak Warga Sipil/Sekutu ➔ **ANDA SENDIRI YANG TEWAS DI TEMPAT (Suicide)** karena rasa bersalah!` });
+      } catch (e) {}
+    } else if (role === 'DETECTIVE') {
+      session.playerRoles.set(p, { role: 'DETECTIVE', word: pair.civilian, isAlive: true, clue: '', hasUsedIntel: false, cards: new Set() });
+      try {
+        await sock.sendMessage(p, { text: `🔍 *PERAN ANDA: DETEKTIF INTEL (DETECTIVE)* 🕵️‍♂️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.civilian}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Skill Intel (1x Pakai — Mulai Ronde 2):*\nKirim pesan DM ke bot: \`.intip @member\` (atau \`.intip <nomor>\`) untuk mengetahui apakah target adalah Warga Asli atau Bukan Warga!\n💡 *Catatan:* Skill ini baru terbuka setelah melewati Ronde 1 (Mulai Ronde 2 ke atas).` });
+      } catch (e) {}
+    } else if (role === 'GUARDIAN') {
+      session.playerRoles.set(p, { role: 'GUARDIAN', word: pair.civilian, isAlive: true, clue: '', cards: new Set() });
+      try {
+        await sock.sendMessage(p, { text: `🛡️ *PERAN ANDA: GUARDIAN (BODYGUARD PELINDUNG)* 🔰\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.civilian}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Skill Perlindungan:* Tiap ronde bisa kirim DM ke bot: \`.lindung @member\` (atau \`.guard <nomor>\`). Jika target yang Anda lindungi ditembak atau dieksekusi vote, nyawanya akan SELAMAT dari maut!` });
+      } catch (e) {}
     } else {
       session.playerRoles.set(p, { role: 'CIVILIAN', word: pair.civilian, isAlive: true, clue: '', cards: new Set() });
       try {
@@ -1067,7 +1056,10 @@ export async function handleMrWhiteGuess(sock, jid, senderNumber, messageObj, gu
     return true;
   }
 
-  if (!targetSession.alivePlayers.includes(resolvedSender) && targetSession.mrWhiteGuessPending !== resolvedSender) {
+  const isGuessAllowed = targetSession.alivePlayers.some(p => p === resolvedSender || db.isPhoneMatch(p, resolvedSender)) ||
+    (targetSession.mrWhiteGuessPending && (targetSession.mrWhiteGuessPending === resolvedSender || db.isPhoneMatch(targetSession.mrWhiteGuessPending, resolvedSender)));
+
+  if (!isGuessAllowed) {
     await send(sock, jid, messageObj, "❌ Anda sudah gugur/mati dan kesempatan menebak kata telah berakhir!");
     return true;
   }
@@ -1076,7 +1068,7 @@ export async function handleMrWhiteGuess(sock, jid, senderNumber, messageObj, gu
   const senderPhone = resolvedSender.split('@')[0];
 
   if (!guess) {
-    await send(sock, jid, messageObj, "⚠️ Masukkan kata tebakanmu!\n*Contoh:* `.tebakwarga Kopi`");
+    await send(sock, jid, messageObj, "⚠️ Masukkan kata tebakanmu!\n*Contoh:* `.tebakwarga Kopi` atau `.guess Kopi`");
     return true;
   }
 
@@ -1084,7 +1076,14 @@ export async function handleMrWhiteGuess(sock, jid, senderNumber, messageObj, gu
     clearTimeout(targetSession.timeout);
   }
 
-  const cleanGuess = normalizeAnswer(guess);
+  let cleanGuessText = String(guess || '').trim().replace(/^["']|["']$/g, '');
+  if (cleanGuessText.toLowerCase().startsWith('kata ')) {
+    cleanGuessText = cleanGuessText.slice(5).trim();
+  } else if (cleanGuessText.toLowerCase().startsWith('katanya ')) {
+    cleanGuessText = cleanGuessText.slice(8).trim();
+  }
+
+  const cleanGuess = normalizeAnswer(cleanGuessText);
   const correctCivWord = normalizeAnswer(targetSession.pair.civilian);
 
   if (cleanGuess === correctCivWord) {
@@ -1095,7 +1094,7 @@ export async function handleMrWhiteGuess(sock, jid, senderNumber, messageObj, gu
     const winMsg = 
 `🏆 *MR. WHITE BERHASIL MENEBAK KATA WARGA!* 🤍
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🎉 @${senderPhone} menebak: *"${guess}"* (BENAR!)
+🎉 @${senderPhone} menebak: *"${cleanGuessText}"* (BENAR!)
 💰 Mr. White MENANG SOLO & Meraup: *+${totalPrize.toLocaleString('id-ID')} Poin* & *+150 XP*!
 
 💡 Kata Warga: *${targetSession.pair.civilian}*
@@ -1107,7 +1106,7 @@ _Mr. White menyapu bersih seluruh pot taruhan permainan!_`;
     saveUndercoverSessions();
     await send(sock, gameJid, null, winMsg, { mentions: [resolvedSender] });
     if (jid !== gameJid) {
-      await send(sock, jid, messageObj, `🎉 Tebakan Anda BENAR (*${guess}*)! Anda memenangkan permainan!`);
+      await send(sock, jid, messageObj, `🎉 Tebakan Anda BENAR (*${cleanGuessText}*)! Anda memenangkan permainan!`);
     }
     return true;
   } else {
@@ -1115,11 +1114,11 @@ _Mr. White menyapu bersih seluruh pot taruhan permainan!_`;
     const failMsg = 
 `❌ *TEBAKAN MR. WHITE GAGAL!* 🤍
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-@${senderPhone} mencoba menebak kata warga dengan: *"${guess}"* (SALAH!)`;
+@${senderPhone} mencoba menebak kata warga dengan: *"${cleanGuessText}"* (SALAH!)`;
 
     await send(sock, gameJid, null, failMsg, { mentions: [resolvedSender] });
     if (jid !== gameJid) {
-      await send(sock, jid, messageObj, `❌ Tebakan Anda (*${guess}*) SALAH!`);
+      await send(sock, jid, messageObj, `❌ Tebakan Anda (*${cleanGuessText}*) SALAH!`);
     }
 
     if (targetSession.status === 'MR_WHITE_GUESS') {
@@ -1129,6 +1128,15 @@ _Mr. White menyapu bersih seluruh pot taruhan permainan!_`;
       if (!isWon) {
         await startNextUndercoverRound(sock, gameJid, null, false);
       }
+    } else {
+      // Jika salah menebak saat masih hidup di tengah permainan -> gugur tereliminasi
+      targetSession.alivePlayers = targetSession.alivePlayers.filter(p => p !== resolvedSender && !db.isPhoneMatch(p, resolvedSender));
+      if (senderRoleData) senderRoleData.isAlive = false;
+      saveUndercoverSessions();
+
+      const deathMsg = `☠️ Karena salah menebak kata warga di tengah permainan, Mr. White @${senderPhone} **TEWAS TERELIMINASI**!`;
+      await send(sock, gameJid, null, deathMsg, { mentions: [resolvedSender] });
+      await checkUndercoverWinCondition(sock, gameJid);
     }
     return true;
   }

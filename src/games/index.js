@@ -127,7 +127,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     'jawab', 'answer', 'hint', 'nyerah', 'surrender', 'menyerah',
     'quiz', 'trivia', 'tebakquiz', 'tebakemoji', 'emoji', 'tebakkata', 'hangman', 'kata',
     'family100', 'f100', 'caklontong', 'tts',
-    'undercover', 'sus', 'impostor', 'joinundercover', 'startundercover', 'tebakwarga', 'intip', 'cekintip', 'v', 'skip', 'lewat', 'pass', 'skipundercover', 'lindung', 'guard', 'protect', 'lindungi', 'fitnah', 'framer', 'frame', 'sabotase',
+    'undercover', 'sus', 'impostor', 'joinundercover', 'startundercover', 'tebakwarga', 'guess', 'mrwhite', 'tebakciv', 'intip', 'cekintip', 'v', 'skip', 'lewat', 'pass', 'skipundercover', 'lindung', 'guard', 'protect', 'lindungi', 'fitnah', 'framer', 'frame', 'sabotase',
     'cerdascermat', 'kuisturnamen', 'quizbattle', 'joincerdascermat', 'startcerdascermat',
     'jailbreak', 'kabur', 'bobolpenjara', 'tebus', 'bebasinnapi',
     'duel', 'terimaduel', 'gasduel', 'tolakduel', 'tembak', 'shoot', 'dor',
@@ -415,8 +415,8 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     }
   }
 
-  // Tebak Kata Warga untuk Mr. White (.tebakwarga <kata>)
-  if (['tebakwarga'].includes(command)) {
+  // Tebak Kata Warga untuk Mr. White (.tebakwarga <kata> / .guess <kata> / .mrwhite <kata>)
+  if (['tebakwarga', 'guess', 'mrwhite', 'tebakciv'].includes(command)) {
     const guess = args.slice(1).join(' ').trim();
     return await handleMrWhiteGuess(sock, jid, senderNumber, messageObj, guess);
   }
