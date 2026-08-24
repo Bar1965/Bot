@@ -148,6 +148,21 @@ export async function isPlayerJailed(customerJid) {
   return { isJailed: false, remainingMinutes: 0 };
 }
 
+export async function clearGameJail(customerJid) {
+  const res = await runQuery(
+    "UPDATE game_profiles SET jailed_until = NULL WHERE customer_jid = ?",
+    [customerJid]
+  );
+  return res.changes > 0;
+}
+
+export async function addGameJailDuration(customerJid, extraMinutes = 15) {
+  const current = await isPlayerJailed(customerJid);
+  const baseMinutes = current.isJailed ? current.remainingMinutes : 0;
+  const newMinutes = baseMinutes + extraMinutes;
+  return setGameJail(customerJid, newMinutes);
+}
+
 export async function transferPoints(senderJid, targetJid, amount, taxRate = 0.01) {
   const safeAmount = Math.max(0, Math.floor(Number(amount)));
   if (safeAmount <= 0) return { success: false, reason: 'INVALID_AMOUNT' };

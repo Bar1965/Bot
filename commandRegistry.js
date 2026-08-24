@@ -77,6 +77,10 @@ const categories = {
     aliases: ['hiburan', 'game', 'games', 'fun'],
     commands: [
       ['.freegames', 'Daftar semua game PC gratis 100%'],
+      ['.undercover / .sus [taruhan]', 'Game deduksi sosial kata rahasia via DM WhatsApp'],
+      ['.cerdascermat [taruhan]', 'Turnamen kuis Battle Royale sistem gugur berhadiah prizepool'],
+      ['.jailbreak / .kabur', 'Misi teka-teki membobol sel untuk melarikan diri dari penjara'],
+      ['.tebus @napi', 'Bayar uang jaminan pengacara untuk membebaskan teman dari penjara'],
       ['.family100 / .f100', 'Kuis survei tebak banyak kata grup'],
       ['.caklontong', 'Teka-teki logika plesetan lucu Cak Lontong'],
       ['.duel @member [taruhan]', 'Duel tembak Russian Roulette 1v1 antar member'],

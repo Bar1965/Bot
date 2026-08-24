@@ -12,11 +12,12 @@ import { activeHorseRaces, handleHorseRace } from './umaDerby.js';
 import { handleBankEconomy } from './bankEconomy.js';
 import { activeRounds, startRound, handleRoundCommand, surrenderRound, ROUND_DURATION_MS, scheduleRoundExpiry } from './triviaEngine.js';
 import { activeStealSessions, profileText, handleStealHeist, handleStealAnswer } from './rpgSystem.js';
+import { activeJailbreakSessions, handleJailbreak, handleJailbreakAnswer, handleTebusNapi } from './jailbreak.js';
+import { activeUndercoverGames, handleUndercover, handleUndercoverClue } from './undercover.js';
+import { activeQuizTournaments, handleQuizTournament, handleTournamentAnswer } from './quizTournament.js';
 import { jidNormalizedUser } from '@whiskeysockets/baileys';
 
 export const easterEggCooldowns = new Map();
-
-
 
 const missionList = [
   'Menangkan 1 quiz hari ini untuk mendapat bonus XP.',
@@ -29,6 +30,24 @@ const missionList = [
 export async function handleFunCommand({ sock, jid, senderNumber, messageObj, text, args, cleanCmd, isFromGroup = false, isAdmin = false, isOwner = false, isStoreAdmin = false, isPrefixCmd }) {
   const command = String(cleanCmd || '').toLowerCase();
   const scope = scopeKey(jid, senderNumber, isFromGroup);
+
+  // Deteksi Jawaban Misi Bobol Penjara (.jailbreak)
+  if (activeJailbreakSessions.has(senderNumber) && text && !text.startsWith('.')) {
+    const isJbProcessed = await handleJailbreakAnswer(sock, jid, senderNumber, messageObj, text);
+    if (isJbProcessed) return true;
+  }
+
+  // Deteksi Petunjuk / Clue Game Undercover Aktif
+  if (activeUndercoverGames.has(jid) && text && !text.startsWith('.')) {
+    const isUndercoverClue = await handleUndercoverClue(sock, jid, senderNumber, messageObj, text);
+    if (isUndercoverClue) return true;
+  }
+
+  // Deteksi Jawaban Turnamen Cerdas Cermat Aktif
+  if (activeQuizTournaments.has(jid) && text && !text.startsWith('.')) {
+    const isTournamentAns = await handleTournamentAnswer(sock, jid, senderNumber, messageObj, text);
+    if (isTournamentAns) return true;
+  }
 
   // Deteksi Jawaban Tantangan Pembobolan / Steal (.steal / .hack)
   if (activeStealSessions.has(senderNumber) && text && !text.startsWith('.')) {
@@ -107,6 +126,9 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     'jawab', 'answer', 'hint', 'nyerah', 'surrender', 'menyerah',
     'quiz', 'trivia', 'tebakquiz', 'tebakemoji', 'emoji', 'tebakkata', 'hangman', 'kata',
     'family100', 'f100', 'caklontong', 'tts',
+    'undercover', 'sus', 'impostor', 'joinundercover', 'startundercover',
+    'cerdascermat', 'kuisturnamen', 'quizbattle', 'joincerdascermat', 'startcerdascermat',
+    'jailbreak', 'kabur', 'bobolpenjara', 'tebus', 'bebasinnapi',
     'duel', 'terimaduel', 'gasduel', 'tolakduel', 'tembak', 'dor',
     'blackjack', 'bj', 'hit', 'stand', 'double',
     'heist', 'rampokbank', 'joinheist', 'startheist',
@@ -153,10 +175,11 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     return true;
   }
 
-  // JAIL CHECK: User yang sedang dipenjara karena gagal merampok bank tidak bisa menggunakan game
+  // JAIL CHECK: User yang sedang dipenjara hanya bisa menggunakan command pelarian .jailbreak / .kabur
   const jailStatus = await db.isPlayerJailed(senderNumber);
-  if (jailStatus.isJailed && !isAdmin && !isOwner) {
-    await send(sock, jid, messageObj, `🔒 *KAMU SEDANG DI DALAM PENJARA!* 🚨\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nKamu sedang menjalani masa tahanan selama *${jailStatus.remainingMinutes} menit* ke depan akibat tertangkap saat merampok bank.\n\nKamu tidak bisa menggunakan fitur game/transaksi hingga masa hukuman selesai.`);
+  const isJailExemptCmd = ['jailbreak', 'kabur', 'bobolpenjara'].includes(command);
+  if (jailStatus.isJailed && !isJailExemptCmd && !isAdmin && !isOwner) {
+    await send(sock, jid, messageObj, `🔒 *KAMU SEDANG DI DALAM PENJARA!* 🚨\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nKamu sedang menjalani masa tahanan selama *${jailStatus.remainingMinutes} menit* ke depan akibat tertangkap saat merampok/maling.\n\n👉 Ketik \`.jailbreak\` untuk mencoba melarikan diri dari sel, atau minta temanmu mengetik \`.tebus @kamu\`!`);
     return true;
   }
   
@@ -335,6 +358,27 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
   if (isFromGroup && ['quiz', 'trivia', 'tebakquiz', 'tebakemoji', 'emoji', 'tebakkata', 'hangman', 'kata', 'tebaklagu', 'tebakbendera', 'tebaknegara', 'bendera', 'negara', 'flag', 'sambungkata', 'wordchain', 'truth', 'dare', 'tod', 'dadu', 'dice', 'coinflip', 'koin', 'coin', 'poll', 'voting', 'vote', 'love', 'jodoh', 'compatibility', 'slot', 'daily', 'spin', 'luckyspin', 'suit', 'pilihsuit', 'cancelsuit', 'batalsuit', 'tebakangka', 'tebak', 'tukar', 'pointshop', 'penukaran'].includes(command)) {
     const groupSettings = await db.getGroupSettings(jid);
     if (groupSettings.bot_mode === 'sales') return false;
+  }
+
+  // Misi Pelarian Penjara (Jailbreak / Prison Break)
+  if (['jailbreak', 'kabur', 'bobolpenjara'].includes(command)) {
+    return await handleJailbreak(sock, jid, senderNumber, messageObj);
+  }
+
+  // Tebus / Bebaskan Teman dari Penjara
+  if (['tebus', 'bebasinnapi'].includes(command)) {
+    const target = messageObj.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0] || args[1];
+    return await handleTebusNapi(sock, jid, senderNumber, messageObj, target);
+  }
+
+  // Game Undercover / Impostor Kata
+  if (['undercover', 'sus', 'impostor', 'joinundercover', 'startundercover'].includes(command)) {
+    return await handleUndercover(sock, jid, senderNumber, messageObj, args, command, isFromGroup);
+  }
+
+  // Turnamen Battle Royale Cerdas Cermat
+  if (['cerdascermat', 'kuisturnamen', 'quizbattle', 'joincerdascermat', 'startcerdascermat'].includes(command)) {
+    return await handleQuizTournament(sock, jid, senderNumber, messageObj, args, command, isFromGroup);
   }
 
   // Family 100
