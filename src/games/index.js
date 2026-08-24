@@ -475,7 +475,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
 
     const premiumTier = await db.getPremiumTier(senderNumber);
     const benefits = getPremiumBenefits(premiumTier);
-    const maxBet = (isOwner || isAdmin) ? 1_000_000 : benefits.slotMaxBet;
+    const maxBet = (isOwner || isAdmin) ? 1_000_000 : (benefits?.slotMaxBet || 50_000);
 
     const prediction = args[1]?.toLowerCase();
     const rawBet = args[2]?.toLowerCase();
@@ -494,14 +494,14 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
 
     let bet = 10;
     if (rawBet === 'all' || rawBet === 'allin') {
-      bet = Math.max(1, currentPoints);
+      bet = Math.max(1, Math.min(maxBet, currentPoints));
     } else {
       const parsedBet = rawBet ? Number.parseInt(rawBet, 10) : 10;
       if (rawBet && (isNaN(parsedBet) || !isFinite(parsedBet) || parsedBet <= 0)) {
         await send(sock, jid, messageObj, `❌ Jumlah taruhan tidak valid: *${rawBet}*\n\nGunakan angka positif minimal 1 atau 'all'. Contoh: \`.dadu besar 50\` atau \`.dadu besar all\``);
         return true;
       }
-      bet = Math.max(1, Math.min(maxBet, parsedBet || 10));
+      bet = Math.max(1, Math.min(maxBet, isNaN(parsedBet) ? 10 : parsedBet));
     }
 
     const deductRes = await db.deductGamePoints(senderNumber, bet);
@@ -569,7 +569,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     const premiumTier = await db.getPremiumTier(senderNumber);
     const benefits = getPremiumBenefits(premiumTier);
     // Owner/Admin bebas limit max bet
-    const maxBet = (isOwner || isAdmin) ? 1_000_000 : benefits.slotMaxBet;
+    const maxBet = (isOwner || isAdmin) ? 1_000_000 : (benefits?.slotMaxBet || 50_000);
 
     const choice = args[1]?.toLowerCase();
     const rawBet = args[2]?.toLowerCase();
@@ -586,14 +586,14 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
 
     let bet = 10;
     if (rawBet === 'all' || rawBet === 'allin') {
-      bet = Math.max(1, currentPoints);
+      bet = Math.max(1, Math.min(maxBet, currentPoints));
     } else {
       const parsedBet = rawBet ? Number.parseInt(rawBet, 10) : 10;
       if (rawBet && (isNaN(parsedBet) || !isFinite(parsedBet) || parsedBet <= 0)) {
         await send(sock, jid, messageObj, `❌ Jumlah taruhan tidak valid: *${rawBet}*\n\nGunakan angka positif minimal 1 atau 'all'. Contoh: \`.coinflip heads 50\` atau \`.coinflip heads all\``);
         return true;
       }
-      bet = Math.max(1, Math.min(maxBet, parsedBet || 10));
+      bet = Math.max(1, Math.min(maxBet, isNaN(parsedBet) ? 10 : parsedBet));
     }
 
     const deductRes = await db.deductGamePoints(senderNumber, bet);
@@ -1222,7 +1222,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     const premiumTier = await db.getPremiumTier(senderNumber);
     const benefits = getPremiumBenefits(premiumTier);
     // Owner/Admin bebas limit max bet
-    const maxBet = (isOwner || isAdmin) ? 1_000_000 : benefits.slotMaxBet;
+    const maxBet = (isOwner || isAdmin) ? 1_000_000 : (benefits?.slotMaxBet || 50_000);
 
     // Ambil profil & pastikan points tidak null/NaN
     const profile = await db.getGameProfile(senderNumber);
@@ -1232,7 +1232,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     const rawBetArg = args[1]?.toLowerCase();
     let bet = 10;
     if (rawBetArg === 'all' || rawBetArg === 'allin') {
-      bet = Math.max(1, currentPoints);
+      bet = Math.max(1, Math.min(maxBet, currentPoints));
     } else {
       const parsedBet = rawBetArg ? Number.parseInt(rawBetArg, 10) : 10;
       if (rawBetArg && (isNaN(parsedBet) || !isFinite(parsedBet))) {
@@ -1240,7 +1240,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
         await send(sock, jid, messageObj, `❌ Format taruhan tidak valid: *${rawBetArg}*\n\nGunakan angka atau 'all'. Contoh: \`.slot 10\` atau \`.slot all\`\nMaksimal taruhan: *${displayMax}*`);
         return true;
       }
-      bet = Math.max(1, Math.min(maxBet, Math.abs(parsedBet || 10)));
+      bet = Math.max(1, Math.min(maxBet, Math.abs(isNaN(parsedBet) ? 10 : parsedBet)));
     }
 
     const deductRes = await db.deductGamePoints(senderNumber, bet);
