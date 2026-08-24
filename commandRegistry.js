@@ -82,7 +82,7 @@ const categories = {
       ['.undercover card', 'Toko kartu aksi khusus (Shield, Golden Vote, Lakban, Radar)'],
       ['.intip @member', 'Khusus Detektif Undercover via DM untuk melacak status pemain'],
       ['.lindung @member', 'Khusus Guardian/Bodyguard via DM untuk melindungi teman dari maut'],
-      ['.silence @member', 'Khusus Silencer via DM untuk membungkam pemain menjadi 1 kata'],
+      ['.fitnah @member', 'Khusus Framer via DM untuk memanipulasi intel Detektif & memberi +1 vote kutukan'],
       ['.hack @member', 'Khusus Saboteur via DM untuk meretas peran pemain lain'],
       ['.skip / .lewat', 'Lewati giliran petunjuk / vote abstain di game Undercover'],
       ['.tembak @member', 'Eksekusi tembak rahasia via DM (Koboi / Undercover / Assassin)'],

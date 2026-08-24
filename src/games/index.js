@@ -13,7 +13,7 @@ import { handleBankEconomy } from './bankEconomy.js';
 import { activeRounds, startRound, handleRoundCommand, surrenderRound, ROUND_DURATION_MS, scheduleRoundExpiry } from './triviaEngine.js';
 import { activeStealSessions, profileText, handleStealHeist, handleStealAnswer } from './rpgSystem.js';
 import { activeJailbreakSessions, handleJailbreak, handleJailbreakAnswer, handleTebusNapi } from './jailbreak.js';
-import { activeUndercoverGames, handleUndercover, handleUndercoverClue, handleUndercoverVote, handleUndercoverSkip, handleUndercoverShoot, handleMrWhiteGuess, handleDetectiveCheck, handleGuardianProtect, handleSilencerSilence, handleSaboteurHack } from './undercover.js';
+import { activeUndercoverGames, handleUndercover, handleUndercoverClue, handleUndercoverVote, handleUndercoverSkip, handleUndercoverShoot, handleMrWhiteGuess, handleDetectiveCheck, handleGuardianProtect, handleFramerFrame, handleSaboteurHack } from './undercover.js';
 import { activeQuizTournaments, handleQuizTournament, handleTournamentAnswer } from './quizTournament.js';
 import { getSystemChangelog } from '../utils/changelog.js';
 import { jidNormalizedUser } from '@whiskeysockets/baileys';
@@ -127,7 +127,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     'jawab', 'answer', 'hint', 'nyerah', 'surrender', 'menyerah',
     'quiz', 'trivia', 'tebakquiz', 'tebakemoji', 'emoji', 'tebakkata', 'hangman', 'kata',
     'family100', 'f100', 'caklontong', 'tts',
-    'undercover', 'sus', 'impostor', 'joinundercover', 'startundercover', 'tebakwarga', 'intip', 'cekintip', 'v', 'skip', 'lewat', 'pass', 'skipundercover', 'lindung', 'guard', 'protect', 'lindungi', 'silence', 'bungkam', 'sabotase',
+    'undercover', 'sus', 'impostor', 'joinundercover', 'startundercover', 'tebakwarga', 'intip', 'cekintip', 'v', 'skip', 'lewat', 'pass', 'skipundercover', 'lindung', 'guard', 'protect', 'lindungi', 'fitnah', 'framer', 'frame', 'sabotase',
     'cerdascermat', 'kuisturnamen', 'quizbattle', 'joincerdascermat', 'startcerdascermat',
     'jailbreak', 'kabur', 'bobolpenjara', 'tebus', 'bebasinnapi',
     'duel', 'terimaduel', 'gasduel', 'tolakduel', 'tembak', 'shoot', 'dor',
@@ -433,10 +433,10 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     return await handleGuardianProtect(sock, jid, senderNumber, messageObj, target);
   }
 
-  // Silencer Undercover (.silence @member / .bungkam @member)
-  if (['silence', 'bungkam'].includes(command)) {
+  // Framer Undercover (.fitnah @member / .frame @member)
+  if (['fitnah', 'frame', 'framer'].includes(command)) {
     const target = messageObj.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0] || args[1];
-    return await handleSilencerSilence(sock, jid, senderNumber, messageObj, target);
+    return await handleFramerFrame(sock, jid, senderNumber, messageObj, target);
   }
 
   // Saboteur Undercover (.hack @member / .sabotase @member)

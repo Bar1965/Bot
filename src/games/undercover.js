@@ -296,7 +296,7 @@ async function startUndercoverGame(sock, jid, senderNumber, messageObj) {
   const count = shuffled.length;
   // 1. IMPOSTOR / UNDERCOVER ROLE (Selalu 1 orang, index 0, diacak dari pool Impostor)
   const undercoverJid = shuffled[0];
-  const underPool = ['UNDERCOVER', 'ASSASSIN', 'SILENCER', 'SABOTEUR'];
+  const underPool = ['UNDERCOVER', 'ASSASSIN', 'FRAMER', 'SABOTEUR'];
   const undercoverRole = underPool[Math.floor(Math.random() * underPool.length)];
 
   // 2. NETRAL ROLE (Index 1 jika count >= 4, diacak dari pool Netral)
@@ -340,11 +340,11 @@ async function startUndercoverGame(sock, jid, senderNumber, messageObj) {
             text: `🗡️ *PERAN ANDA: ASSASSIN (PEMBUNUH BAYARAN)* 🩸\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.undercover}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Misi Khusus:* Anda adalah eksekutor rahasia kubu penyamar!\n🎯 *Sniper Senyap (1x Pakai):*\nKirim DM ke bot ini: \`.tembak @member\` (atau \`.tembak <nomor>\`) untuk mengeksekusi musuh tanpa perlu voting!`
           });
         } catch (e) {}
-      } else if (undercoverRole === 'SILENCER') {
-        session.playerRoles.set(p, { role: 'SILENCER', word: pair.undercover, isAlive: true, clue: '', hasSilenced: false, cards: new Set() });
+      } else if (undercoverRole === 'FRAMER') {
+        session.playerRoles.set(p, { role: 'FRAMER', word: pair.undercover, isAlive: true, clue: '', hasFramed: false, cards: new Set() });
         try {
           await sock.sendMessage(p, { 
-            text: `🤐 *PERAN ANDA: SILENCER (PENYUSUP BAYANGAN)* 👤\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.undercover}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Skill Pembungkaman (1x Pakai):* Anda bisa membungkam 1 pemain via DM:\n👉 Ketik: \`.silence @member\` (atau \`.bungkam <nomor>\`). Saat gilirannya tiba, bot akan otomatis menyensor petunjuknya secara total sehingga target tidak bisa memberi info ke warga!`
+            text: `🗣️ *PERAN ANDA: FRAMER (TUKANG FITNAH)* 🎭\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.undercover}*\n🏷️ Kategori: ${pair.category}\n\n⚠️ *Skill Fitnah (1x Pakai via DM):*\nKirim DM ke bot: \`.fitnah @member\` (atau \`.fitnah <nomor>\`)\n\n🎯 *Efek Fitnah:*\n1. Memanipulasi laporan Detektif: Jika target diintip Detektif, dia akan terlihat sebagai **BUKAN WARGA (PENYAMAR/IMPOSTOR)**!\n2. Di fase voting ronde ini, target otomatis mendapatkan **+1 Suara Kutukan Tambahan**!`
           });
         } catch (e) {}
       } else if (undercoverRole === 'SABOTEUR') {
@@ -432,15 +432,6 @@ export async function handleUndercoverClue(sock, jid, senderNumber, messageObj, 
     return true;
   }
 
-  // Cek jika pemain terkena Silencer / Lakban
-  if (session.silencedPlayers?.has(senderNumber)) {
-    try {
-      await sock.sendMessage(jid, { delete: messageObj.key });
-    } catch (e) {}
-    await send(sock, jid, messageObj, `🤐 @${senderNumber.split('@')[0]}, mulutmu telah dibungkam oleh Silencer sehingga petunjukmu disensor total pada ronde ini!`, { mentions: [senderNumber] });
-    return true;
-  }
-
   // Cek jika modifier adalah 3 Kata
   if (session.modifier?.name?.includes('3 Kata')) {
     const wordCount = cleanClue.split(/\s+/).length;
@@ -493,43 +484,6 @@ async function advanceClueTurn(sock, jid, messageObj) {
 
   const nextPlayer = session.alivePlayers[session.turnIndex];
   if (!nextPlayer) return;
-
-  // Jika giliran berikutnya adalah pemain yang dibungkam Silencer -> Langsung sensor dan skip gilirannya!
-  if (session.silencedPlayers?.has(nextPlayer)) {
-    const pRole = session.playerRoles.get(nextPlayer);
-    if (pRole) pRole.clue = '🤐 (Disensor Total oleh Silencer)';
-
-    await send(sock, jid, messageObj, `🤐 *KORBAN PEMBUNGKAMAN!* 🔇\n@${nextPlayer.split('@')[0]} telah dibungkam oleh Silencer! Giliran petunjuknya dilewati dan disensor total!`, { mentions: [nextPlayer] });
-
-    session.turnIndex++;
-    if (session.turnIndex < session.alivePlayers.length) {
-      return await advanceClueTurn(sock, jid, messageObj);
-    } else {
-      session.status = 'VOTING_PHASE';
-      session.votes.clear();
-      let voteList = `🗳️ *SEMUA PETUNJUK SELESAI — FASE VOTING!* ⚖️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
-      session.alivePlayers.forEach((p, i) => {
-        const roleData = session.playerRoles.get(p);
-        voteList += `${i + 1}. @${p.split('@')[0]}: _"${roleData.clue}"_\n`;
-      });
-      voteList += `\n💬 *Diskusikan siapa penyamarnya!*
-👉 *Pilihan Vote:*
-• Ketik: \`.vote [nomor / @member]\` untuk mengeliminasi tersangka
-• Ketik: \`.vote skip\` (atau \`.skip\`) untuk **Abstain / Melewati Eliminasi**
-⏳ Waktu voting: 60 detik.`;
-
-      session.timeout = setTimeout(async () => {
-        if (!activeUndercoverGames.has(jid)) return;
-        const cur = activeUndercoverGames.get(jid);
-        if (cur.status === 'VOTING_PHASE') {
-          await processUndercoverVotes(sock, jid, messageObj);
-        }
-      }, VOTE_TIMEOUT_MS);
-
-      await send(sock, jid, messageObj, voteList, { mentions: session.alivePlayers });
-      return true;
-    }
-  }
 
   const turnTimeoutMs = session.modifier?.name?.includes('Speed') ? 20 * 1000 : CLUE_TIMEOUT_MS;
 
@@ -773,6 +727,14 @@ async function processUndercoverVotes(sock, jid, messageObj) {
     voteCounts.set(target, (voteCounts.get(target) || 0) + weight);
   }
 
+  // Cek jika ada target yang difitnah oleh Framer (+1 suara kutukan fitnah)
+  if (session.framedPlayer && session.alivePlayers.includes(session.framedPlayer)) {
+    const cur = voteCounts.get(session.framedPlayer) || 0;
+    voteCounts.set(session.framedPlayer, cur + 1);
+    await send(sock, jid, messageObj, `🗣️ *JEJAK FITNAH TERBUKTI!* @${session.framedPlayer.split('@')[0]} terkena **+1 Suara Kutukan Tambahan** dari aksi Framer!`, { mentions: [session.framedPlayer] });
+    session.framedPlayer = null;
+  }
+
   let maxVotes = 0;
   let eliminated = null;
   let isTie = false;
@@ -955,7 +917,7 @@ _Mr. White menyapu bersih seluruh pot taruhan permainan!_`;
 }
 
 export function isUndercoverRole(role) {
-  return ['UNDERCOVER', 'ASSASSIN', 'SILENCER', 'SABOTEUR'].includes(role);
+  return ['UNDERCOVER', 'ASSASSIN', 'FRAMER', 'SABOTEUR'].includes(role);
 }
 
 export function isCivilianRole(role) {
@@ -970,7 +932,7 @@ export function getRoleBadge(role) {
   switch (role) {
     case 'UNDERCOVER': return '🕵️ UNDERCOVER (PENYAMAR)';
     case 'ASSASSIN': return '🗡️ ASSASSIN (PEMBUNUH BAYARAN)';
-    case 'SILENCER': return '🤐 SILENCER (PENYUSUP BAYANGAN)';
+    case 'FRAMER': return '🗣️ FRAMER (TUKANG FITNAH)';
     case 'SABOTEUR': return '🦹 SABOTEUR (PENYABOT INTEL)';
     case 'SHERIFF': return '🤠 KOBOI / SHERIFF';
     case 'DETECTIVE': return '🔍 DETEKTIF INTEL';
@@ -1086,7 +1048,7 @@ async function startNextUndercoverRound(sock, jid, messageObj, isFirstRound = fa
       roleCounts.GUARDIAN ? `🛡️ ${roleCounts.GUARDIAN} Guardian` : null,
       roleCounts.UNDERCOVER ? `🕵️ ${roleCounts.UNDERCOVER} Undercover` : null,
       roleCounts.ASSASSIN ? `🗡️ ${roleCounts.ASSASSIN} Assassin` : null,
-      roleCounts.SILENCER ? `🤐 ${roleCounts.SILENCER} Silencer` : null,
+      roleCounts.FRAMER ? `🗣️ ${roleCounts.FRAMER} Framer` : null,
       roleCounts.SABOTEUR ? `🦹 ${roleCounts.SABOTEUR} Saboteur` : null,
       roleCounts.MRWHITE ? `🤍 ${roleCounts.MRWHITE} Mr. White` : null,
       roleCounts.JESTER ? `🤡 ${roleCounts.JESTER} Si Badut` : null,
@@ -1199,7 +1161,8 @@ export async function handleDetectiveCheck(sock, jid, senderNumber, messageObj, 
 
   senderRoleData.hasUsedIntel = true;
   const targetRole = targetSession.playerRoles.get(resolvedTarget);
-  const isCiv = isCivilianRole(targetRole.role);
+  const isFramed = targetSession.framedPlayer === resolvedTarget;
+  const isCiv = isCivilianRole(targetRole.role) && !isFramed;
 
   const report = isCiv 
     ? `🔍 *LAPORAN INTEL DETEKTIF:*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n👤 Target: @${resolvedTarget.split('@')[0]}\n🟢 Status: *WARGA SIPIL (CIVILIAN)* 🛡️\n\n_Target adalah sekutu warga yang aman!_`
@@ -1261,8 +1224,8 @@ export async function handleGuardianProtect(sock, jid, senderNumber, messageObj,
   return true;
 }
 
-// ─── 🤐 SILENCER PEMBUNGKAM VIA DM (.silence @member / .bungkam @member) ──────
-export async function handleSilencerSilence(sock, jid, senderNumber, messageObj, targetParam) {
+// ─── 🗣️ FRAMER TUKANG FITNAH VIA DM (.fitnah @member / .frame @member) ──────
+export async function handleFramerFrame(sock, jid, senderNumber, messageObj, targetParam) {
   let targetSession = null;
   for (const s of activeUndercoverGames.values()) {
     if (s.playerRoles?.has(senderNumber)) {
@@ -1277,18 +1240,18 @@ export async function handleSilencerSilence(sock, jid, senderNumber, messageObj,
   }
 
   const senderRoleData = targetSession.playerRoles.get(senderNumber);
-  if (!senderRoleData || senderRoleData.role !== 'SILENCER') {
-    await send(sock, jid, messageObj, "❌ Anda bukan Silencer di game ini!");
+  if (!senderRoleData || senderRoleData.role !== 'FRAMER') {
+    await send(sock, jid, messageObj, "❌ Anda bukan Framer di game ini!");
     return true;
   }
 
   if (!targetSession.alivePlayers.includes(senderNumber) || !senderRoleData.isAlive) {
-    await send(sock, jid, messageObj, "❌ Anda sudah gugur/mati dan tidak dapat membungkam pemain!");
+    await send(sock, jid, messageObj, "❌ Anda sudah gugur/mati dan tidak dapat menggunakan kemampuan fitnah!");
     return true;
   }
 
-  if (senderRoleData.hasSilenced) {
-    await send(sock, jid, messageObj, "❌ Anda sudah menggunakan kemampuan pembungkaman (Maksimal 1x per game)!");
+  if (senderRoleData.hasFramed) {
+    await send(sock, jid, messageObj, "❌ Anda sudah menggunakan kemampuan fitnah (Maksimal 1x per game)!");
     return true;
   }
 
@@ -1308,19 +1271,28 @@ export async function handleSilencerSilence(sock, jid, senderNumber, messageObj,
   }
 
   if (!resolvedTarget || !targetSession.alivePlayers.includes(resolvedTarget)) {
-    await send(sock, jid, messageObj, `⚠️ Target tidak valid atau sudah mati!\n👉 *Format:* \`.silence @member\` atau \`.silence [1-${targetSession.alivePlayers.length}]\``);
+    await send(sock, jid, messageObj, `⚠️ Target tidak valid atau sudah mati!\n👉 *Format:* \`.fitnah @member\` atau nomor urut \`.fitnah [1-${targetSession.alivePlayers.length}]\``);
     return true;
   }
 
   if (resolvedTarget === senderNumber) {
-    await send(sock, jid, messageObj, "⚠️ Anda tidak bisa membungkam diri sendiri!");
+    await send(sock, jid, messageObj, "⚠️ Anda tidak bisa memfitnah diri sendiri!");
     return true;
   }
 
-  senderRoleData.hasSilenced = true;
-  targetSession.silencedPlayers.add(resolvedTarget);
+  senderRoleData.hasFramed = true;
+  targetSession.framedPlayer = resolvedTarget;
   const targetPhone = resolvedTarget.split('@')[0];
-  await send(sock, jid, messageObj, `🤐 *PEMBUNGKAMAN BERHASIL!* 🔇\nTarget @${targetPhone} berhasil dibungkam total! Saat gilirannya tiba, bot akan otomatis menyensor petunjuknya sehingga dia tidak bisa memberikan informasi ke warga.`, { mentions: [resolvedTarget] });
+
+  const successMsg = 
+`🗣️ *AKSI FITNAH BERHASIL DILANCARKAN!* 🎭
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Target @${targetPhone} berhasil Anda jebak!
+🎯 *Efek Berjalan:*
+1. Jika Detektif mengintipnya, dia akan terlihat sebagai **BUKAN WARGA (PENYAMAR/IMPOSTOR)**!
+2. Pada fase voting ronde ini, target akan otomatis mendapatkan **+1 Suara Kutukan Eksekusi**!`;
+
+  await send(sock, jid, messageObj, successMsg, { mentions: [resolvedTarget] });
   return true;
 }
 
@@ -1667,7 +1639,7 @@ Peran khusus dibagikan secara *ACAK & DINAMIS* di setiap permainan!
 🕵️ *2. KUBU PENYAMAR (IMPOSTORS):*
 ▫️ 🕵️ *Undercover:* Menerima kata mirip, 1x Peluru Racun (\`.tembak @member\` via DM).
 ▫️ 🗡️ *Assassin:* Eksekutor maut, 1x Sniper (\`.tembak @member\` via DM) mematikan musuh seketika!
-▫️ 🤐 *Silencer:* Pembungkam bayangan 1x per game (\`.silence @member\` via DM). Giliran target disensor & dilewati total oleh bot!
+▫️ 🗣️ *Framer:* Tukang fitnah 1x per game (\`.fitnah @member\` via DM). Memanipulasi hasil intip Detektif & memberi +1 suara kutukan pada target di fase vote!
 ▫️ 🦹 *Saboteur:* Peretas status (\`.hack @member\` via DM). Mengintip peran target untuk membidik warga VIP!
 
 🎭 *3. KUBU NETRAL (NEUTRALS):*
@@ -1684,7 +1656,7 @@ Peran khusus dibagikan secara *ACAK & DINAMIS* di setiap permainan!
 • \`.tembak @member\` — (Koboi/Undercover/Assassin via DM) Eksekusi sasaran
 • \`.intip @member\` — (Detektif via DM, mulai Ronde 2) Lacak status pemain
 • \`.lindung @member\` — (Guardian via DM) Lindungi pemain dari maut
-• \`.silence @member\` — (Silencer via DM) Sensor total petunjuk sasaran
+• \`.fitnah @member\` — (Framer via DM) Jebak target & beri +1 vote kutukan
 • \`.hack @member\` — (Saboteur via DM) Retas peran sasaran
 • \`.vote [nomor/@member]\` — Vote eliminasi di fase voting
 • \`.vote skip\` / \`.skip\` — Vote abstain melewati eliminasi
