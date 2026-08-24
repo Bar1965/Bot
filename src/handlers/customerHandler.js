@@ -407,6 +407,30 @@ Ketik *bayar* atau klik tombol *Bayar QRIS Langsung* di bawah untuk langsung mem
         await sock.sendMessage(responseJid, { text: 'Format: `.daftar Nama Kamu`\nContoh: `.daftar Budi Santoso`' });
         return true;
       }
+
+      // Cek apakah member sudah terdaftar sebelumnya
+      const existingCustomer = await db.getCustomerMembershipProfile(senderNumber);
+      const isAlreadyRegistered = existingCustomer && (
+        Number(existingCustomer.profile_completed || 0) === 1 || 
+        ['OWNER', 'ADMIN', 'MODERATOR'].includes(existingCustomer.role)
+      );
+
+      if (isAlreadyRegistered) {
+        const senderMention = senderNumber.split('@')[0];
+        const currentName = existingCustomer.nama || 'Pelanggan';
+        const alreadyRegisteredMsg = `⚠️ *AKUN SUDAH TERDAFTAR* ⚠️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nHalo @${senderMention}! Anda sudah terdaftar sebagai member dengan nama: *${currentName}*.\n\nJika ingin mengubah nama profil Anda, silakan gunakan perintah:\n👉 \`.gantinama ${requestedName}\`\n\n_Contoh:_ \`.gantinama ${requestedName}\`\n_Atau ketik \`.profil\` untuk melihat profil akun kamu._`;
+        
+        await sendInteractiveButtons(sock, responseJid, {
+          text: alreadyRegisteredMsg,
+          mentions: [senderNumber],
+          buttons: [
+            { type: 'copy', text: `📋 Salin .gantinama ${requestedName}`, copy_code: `.gantinama ${requestedName}` },
+            { id: '.profil', text: '👤 Lihat Profil' }
+          ]
+        });
+        return true;
+      }
+
       try {
         const profile = await db.registerCustomer(senderNumber, requestedName);
         await sock.sendMessage(responseJid, { text: `✅ *Registrasi berhasil!*\n\nNama: *${profile.nama}*\nStatus: *${profile.account_status}*\nRole: *${actor.isOwner ? 'OWNER' : profile.role}*\nTier: *${profile.tier}*\n\nKetik *.profil* untuk melihat profil lengkap.` });
