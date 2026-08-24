@@ -302,14 +302,17 @@ export async function handleUndercoverVote(sock, jid, senderNumber, messageObj, 
     return true;
   }
 
-  // Cari target dari mention contextInfo atau quoted msg jika targetJid belum ada
+  // Cari target dari mention contextInfo, quoted msg, nomor urut, atau argumen
   let rawTarget = targetJid ||
     messageObj.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0] ||
     messageObj.message?.extendedTextMessage?.contextInfo?.participant;
 
   let resolvedTarget = null;
   if (rawTarget) {
-    if (session.alivePlayers.includes(rawTarget)) {
+    const parsedNum = parseInt(String(rawTarget).trim(), 10);
+    if (!isNaN(parsedNum) && parsedNum >= 1 && parsedNum <= session.alivePlayers.length && !String(rawTarget).includes('@') && String(rawTarget).trim().length <= 2) {
+      resolvedTarget = session.alivePlayers[parsedNum - 1];
+    } else if (session.alivePlayers.includes(rawTarget)) {
       resolvedTarget = rawTarget;
     } else {
       const targetDigits = String(rawTarget).replace(/\D/g, '');
@@ -320,7 +323,7 @@ export async function handleUndercoverVote(sock, jid, senderNumber, messageObj, 
   }
 
   if (!resolvedTarget || !session.alivePlayers.includes(resolvedTarget)) {
-    await send(sock, jid, messageObj, "⚠️ Target vote tidak valid atau sudah gugur!\n_Contoh:_ `.vote @member` (Tag salah satu pemain yang masih hidup).");
+    await send(sock, jid, messageObj, `⚠️ Target vote tidak valid!\n👉 *Cara Vote:* Ketik \`.vote @member\` atau nomor urut \`.vote [1-${session.alivePlayers.length}]\``);
     return true;
   }
 
