@@ -410,7 +410,7 @@ async function joinUndercoverLobby(sock, jid, senderNumber, messageObj) {
     return true;
   }
 
-  if (session.players.includes(senderNumber)) {
+  if (session.players.some(p => p === senderNumber || db.isPhoneMatch(p, senderNumber))) {
     await send(sock, jid, messageObj, "⚠️ Kamu sudah berada di dalam lobi Undercover ini!");
     return true;
   }
