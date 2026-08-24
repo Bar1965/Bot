@@ -460,14 +460,14 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
   // Duel Tembak (Russian Roulette)
   if (['duel'].includes(command)) return await handleDuelCommand(sock, jid, senderNumber, messageObj, args, isFromGroup);
   if (['terimaduel', 'gasduel', 'gas', 'tolakduel', 'tembak', 'shoot', 'dor', 'pull'].includes(command)) {
-    const isDuelHandled = await handleDuelAction(sock, jid, senderNumber, messageObj, command);
-    if (isDuelHandled) return true;
-
-    // Tembakan Rahasia Undercover / Sheriff Koboi (.tembak @member / .shoot @member)
+    // Tembakan Rahasia Undercover / Sheriff Koboi (.tembak @member / .shoot @member / .dor <nomor>)
     if (['tembak', 'shoot', 'dor'].includes(command)) {
       const isUndercoverShot = await handleUndercoverShoot(sock, jid, senderNumber, messageObj, args);
       if (isUndercoverShot) return true;
     }
+
+    const isDuelHandled = await handleDuelAction(sock, jid, senderNumber, messageObj, command);
+    if (isDuelHandled) return true;
   }
 
   // Blackjack 21
