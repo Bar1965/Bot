@@ -19,102 +19,7 @@ const MIN_PLAYERS = 3;
 
 const STATE_FILE = path.join(process.cwd(), 'data', 'undercover_state.json');
 
-// Tema kata untuk fase voting kategori sebelum game dimulai.
-// Setiap entri WORD_PAIRS memiliki field `theme` yang cocok dengan salah satu kunci di sini.
-const THEMES = {
-  KULINER: { label: '🍜 Kuliner & Jajanan', desc: 'Makanan, minuman, jajanan warung & resto' },
-  GAMING: { label: '🎮 Gaming & Pop Culture', desc: 'Game, film, anime, musik & tontonan' },
-  SOSIAL: { label: '🏠 Kehidupan & Budaya Modern', desc: 'Kosan, asmara, kerja, aplikasi & jalanan' },
-  ALAM: { label: '🐾 Hewan, Alam, Profesi & Benda', desc: 'Hewan, tempat, pekerjaan & barang harian' }
-};
-const THEME_KEYS = Object.keys(THEMES);
-
-const WORD_PAIRS = [
-  // 🍜 Kuliner, Jajanan & Minuman
-  { civilian: 'INDOMIE', undercover: 'MIE SEDAAP', category: '🍜 Kuliner / Mie Instan', theme: 'KULINER' },
-  { civilian: 'MIE GACOAN', undercover: 'MIE JEBEW', category: '🌶️ Kuliner Mie Pedas', theme: 'KULINER' },
-  { civilian: 'NASI PADANG', undercover: 'NASI UDUK', category: '🍛 Masakan Tradisional', theme: 'KULINER' },
-  { civilian: 'KOPI SUSU', undercover: 'BOBA MILK', category: '🧋 Minuman Kekinian', theme: 'KULINER' },
-  { civilian: 'TAHU BULAT', undercover: 'CIRENG', category: '🥟 Jajanan Gorengan', theme: 'KULINER' },
-  { civilian: 'MARTABAK MANIS', undercover: 'TERANG BULAN', category: '🥞 Makanan Manis', theme: 'KULINER' },
-  { civilian: 'AYAM GEPREK', undercover: 'AYAM PENYET', category: '🍗 Olahan Ayam Pedas', theme: 'KULINER' },
-  { civilian: 'ES TEH MANIS', undercover: 'ES JERUK', category: '🍹 Minuman Warung', theme: 'KULINER' },
-  { civilian: 'BAKSO', undercover: 'MIE AYAM', category: '🍲 Makanan Berkuah', theme: 'KULINER' },
-  { civilian: 'SATE MADURA', undercover: 'SATE PADANG', category: '🍢 Kuliner Sate', theme: 'KULINER' },
-  { civilian: 'RENDANG', undercover: 'GULAI', category: '🥘 Masakan Daging Padang', theme: 'KULINER' },
-  { civilian: 'SEBLAK', undercover: 'BASO ACI', category: '🌶️ Jajanan Pedas Bandung', theme: 'KULINER' },
-  { civilian: 'PECEL LELE', undercover: 'BEBEK GORENG', category: '🍱 Kuliner Kaki Lima', theme: 'KULINER' },
-  { civilian: 'ES KRIM', undercover: 'COKELAT', category: '🍦 Makanan Penutup', theme: 'KULINER' },
-  { civilian: 'PIZZA', undercover: 'BURGER', category: '🍔 Fast Food Barat', theme: 'KULINER' },
-  { civilian: 'ROTI BAKAR', undercover: 'PISANG GORENG', category: '🍞 Camilan Malam', theme: 'KULINER' },
-  { civilian: 'RICHEESE FACTORY', undercover: 'KFC', category: '🍗 Restoran Cepat Saji', theme: 'KULINER' },
-  { civilian: 'BATAGOR', undercover: 'SIOMAY', category: '🥟 Jajanan Bumbu Kacang', theme: 'KULINER' },
-  { civilian: 'ES CENDOL', undercover: 'ES DAWET', category: '🍧 Minuman Tradisional Segar', theme: 'KULINER' },
-  { civilian: 'AQUA', undercover: 'LE MINERALE', category: '💧 Air Mineral Kemasan', theme: 'KULINER' },
-  { civilian: 'KERUPUK PUTIH', undercover: 'KERUPUK KULIT', category: '🥢 Kerupuk Pelengkap', theme: 'KULINER' },
-  { civilian: 'SOP KAKI KAMBING', undercover: 'TONGSENG', category: '🍲 Masakan Olahan Kambing', theme: 'KULINER' },
-  { civilian: 'KEBAB', undercover: 'SHAWARMA', category: '🌯 Kuliner Khas Timur Tengah', theme: 'KULINER' },
-  { civilian: 'MIXUE', undercover: 'MOMOYO', category: '🍦 Gerai Es Krim Viral', theme: 'KULINER' },
-
-  // 🎮 Gaming, Hiburan & Pop Culture
-  { civilian: 'MOBILE LEGENDS', undercover: 'FREE FIRE', category: '🎮 Game Mobile Populer', theme: 'GAMING' },
-  { civilian: 'VALORANT', undercover: 'CS:GO (COUNTER-STRIKE)', category: '🔫 Game Tactical FPS PC', theme: 'GAMING' },
-  { civilian: 'GENSHIN IMPACT', undercover: 'HONKAI STAR RAIL', category: '✨ Game Gacha Anime', theme: 'GAMING' },
-  { civilian: 'PLAYSTATION', undercover: 'XBOX', category: '🎮 Konsol Game Rumah', theme: 'GAMING' },
-  { civilian: 'MINECRAFT', undercover: 'ROBLOX', category: '🧱 Game Sandbox Dunia Kreatif', theme: 'GAMING' },
-  { civilian: 'GTA V', undercover: 'CYBERPUNK 2077', category: '🌆 Game Open World', theme: 'GAMING' },
-  { civilian: 'NETFLIX', undercover: 'YOUTUBE PREMIUM', category: '🎬 Layanan Streaming Video', theme: 'GAMING' },
-  { civilian: 'SPOTIFY', undercover: 'APPLE MUSIC', category: '🎵 Layanan Musik Streaming', theme: 'GAMING' },
-  { civilian: 'DRAKOR', undercover: 'ANIME', category: '📺 Serial Tontonan Favorit', theme: 'GAMING' },
-  { civilian: 'BIOSKOP', undercover: 'HOME THEATER', category: '🍿 Tempat Nonton Film', theme: 'GAMING' },
-  { civilian: 'CONAN EDOGAWA', undercover: 'SHERLOCK HOLMES', category: '🕵️ Karakter Detektif Terkenal', theme: 'GAMING' },
-  { civilian: 'NARUTO', undercover: 'SASUKE', category: '🍥 Karakter Ninja Anime', theme: 'GAMING' },
-  { civilian: 'DORAEMON', undercover: 'SHINCHAN', category: '🐱 Serial Kartun Masa Kecil', theme: 'GAMING' },
-
-  // 🏠 Kehidupan, Romansa & Budaya Modern
-  { civilian: 'KOSAN', undercover: 'KONTRAKAN', category: '🏠 Tempat Tinggal Sewa', theme: 'SOSIAL' },
-  { civilian: 'SKRIPSI', undercover: 'TUGAS AKHIR', category: '🎓 Perjuangan Mahasiswa Akhir', theme: 'SOSIAL' },
-  { civilian: 'DOSEN PEMBIMBING', undercover: 'HRD KANTOR', category: '👔 Sosok Penguji Karir', theme: 'SOSIAL' },
-  { civilian: 'MANTAN', undercover: 'GEBETAN', category: '💔 Hubungan Asmara', theme: 'SOSIAL' },
-  { civilian: 'PACARAN', undercover: 'HTS (HUBUNGAN TANPA STATUS)', category: '💘 Status Percintaan', theme: 'SOSIAL' },
-  { civilian: 'DATING APP', undercover: 'KENALAN DI DM IG', category: '📱 Cara Mencari Jodoh Online', theme: 'SOSIAL' },
-  { civilian: 'KONDANGAN', undercover: 'REUNI SEKOLAH', category: '👗 Acara Kumpul Formal', theme: 'SOSIAL' },
-  { civilian: 'BEGADANG', undercover: 'OVERTHINKING', category: '🌙 Kebiasaan Larut Malam', theme: 'SOSIAL' },
-  { civilian: 'PINJOL', undercover: 'PAYLATER', category: '💳 Hutang Digital Cepat', theme: 'SOSIAL' },
-  { civilian: 'GAJI UMR', undercover: 'FREELANCE', category: '💵 Sumber Penghasilan Kerja', theme: 'SOSIAL' },
-  { civilian: 'THR', undercover: 'BONUS TAHUNAN', category: '🎁 Rezeki Finansial Tambahan', theme: 'SOSIAL' },
-  { civilian: 'WARKOP', undercover: 'KAFE AESTHETIC', category: '☕ Tempat Nongkrong Santai', theme: 'SOSIAL' },
-  { civilian: 'SHOPEE', undercover: 'TOKOPEDIA', category: '🛍️ E-Commerce Belanja Online', theme: 'SOSIAL' },
-  { civilian: 'INDOMARET', undercover: 'ALFAMART', category: '🏪 Jaringan Minimarket', theme: 'SOSIAL' },
-  { civilian: 'WHATSAPP', undercover: 'TELEGRAM', category: '💬 Aplikasi Pesan Singkat', theme: 'SOSIAL' },
-  { civilian: 'INSTAGRAM', undercover: 'TIKTOK', category: '📱 Media Sosial Konten Video', theme: 'SOSIAL' },
-  { civilian: 'OJEK ONLINE', undercover: 'TAKSI', category: '🛵 Transportasi Umum Perjalanan', theme: 'SOSIAL' },
-  { civilian: 'PULANG KAMPUNG', undercover: 'LIBURAN', category: '🧳 Perjalanan Jarak Jauh', theme: 'SOSIAL' },
-  { civilian: 'KRL', undercover: 'MRT', category: '🚆 Transportasi Kereta Cepat', theme: 'SOSIAL' },
-  { civilian: 'KARCIS PARKIR', undercover: 'HELM HILANG', category: '🛵 Derita Parkir Motor', theme: 'SOSIAL' },
-  { civilian: 'SATPOL PP', undercover: 'PEDAGANG KAKI LIMA', category: '👮 Drama Jalanan', theme: 'SOSIAL' },
-  { civilian: 'STNK', undercover: 'BPKB', category: '📄 Dokumen Kepemilikan Kendaraan', theme: 'SOSIAL' },
-  { civilian: 'IPHONE', undercover: 'HP ANDROID', category: '📱 Perangkat Smartphone', theme: 'SOSIAL' },
-
-  // 🐾 Hewan, Alam, Profesi & Benda
-  { civilian: 'KUCING', undercover: 'HARIMAU', category: '🐾 Keluarga Hewan Kucing', theme: 'ALAM' },
-  { civilian: 'SINGA', undercover: 'SERIGALA', category: '🐺 Predator Buas Liar', theme: 'ALAM' },
-  { civilian: 'PESAWAT', undercover: 'HELIKOPTER', category: '✈️ Transportasi Angkutan Udara', theme: 'ALAM' },
-  { civilian: 'PANTAI', undercover: 'GUNUNG', category: '🏞️ Destinasi Liburan Alam', theme: 'ALAM' },
-  { civilian: 'GITAR', undercover: 'BIOLA', category: '🎻 Alat Musik Senar', theme: 'ALAM' },
-  { civilian: 'MOBIL', undercover: 'MOTOR', category: '🚗 Kendaraan Bermotor Jalan Raya', theme: 'ALAM' },
-  { civilian: 'BANTAL', undercover: 'GULING', category: '🛏️ Perlengkapan Tidur Nyenyak', theme: 'ALAM' },
-  { civilian: 'KACAMATA', undercover: 'LENSA KONTAK', category: '👓 Alat Bantu Penglihatan', theme: 'ALAM' },
-  { civilian: 'DOMPET', undercover: 'REKENING BANK', category: '💳 Tempat Simpan Saldo Uang', theme: 'ALAM' },
-  { civilian: 'DOKTER', undercover: 'PERAWAT', category: '🏥 Profesi Medis Rumah Sakit', theme: 'ALAM' },
-  { civilian: 'POLISI', undercover: 'SATPAM', category: '👮 Petugas Keamanan', theme: 'ALAM' },
-  { civilian: 'PENSIL', undercover: 'PULPEN', category: '✏️ Alat Tulis Kantor', theme: 'ALAM' },
-  { civilian: 'SUPERMARKET', undercover: 'PASAR TRADISIONAL', category: '🛒 Tempat Belanja Belanjaan', theme: 'ALAM' },
-  { civilian: 'PAYUNG', undercover: 'JAS HUJAN', category: '🌧️ Perlengkapan Musim Hujan', theme: 'ALAM' },
-  { civilian: 'JAM TANGAN', undercover: 'JAM DINDING', category: '⏱️ Alat Penunjuk Waktu', theme: 'ALAM' },
-  { civilian: 'LAPTOP', undercover: 'KOMPUTER PC', category: '💻 Perangkat Komputasi Kerja', theme: 'ALAM' },
-  { civilian: 'SEPATU FUTSAL', undercover: 'SEPATU BOLA', category: '⚽ Perlengkapan Olahraga Sepakbola', theme: 'ALAM' }
-];
+import { THEMES, THEME_KEYS, WORD_PAIRS } from './undercoverWords.js';
 // Chaos Modifier / Tantangan Ronde Unik
 const ROUND_MODIFIERS = [
   { name: 'Normal Clue', desc: 'Bebas memberikan petunjuk seperti biasa.' },
@@ -498,11 +403,11 @@ export async function handleUndercover(sock, jid, senderNumber, messageObj, args
 ▫️ 🧑‍🌾 *Civilian (Warga)*: Mendapat kata asli.
 ▫️ 🕵️ *Undercover / Impostor*: 1 Orang (3–5 Pemain) | 2 Orang (6–8 Pemain)!
 ▫️ 🤍 *Mr. White (Blank)*: Tidak dapat kata, pura-pura tahu! (5+ Pemain)
-▫️ 🤡 *Si Badut (Jester)* (4+ Pemain): Ingin di-vote keluar Ronde 2–3 untuk menang solo!
+▫️ 🤡 *Si Badut (Jester)* (4+ Pemain): Ingin di-vote keluar oleh grup untuk menang solo & mencuri seluruh pot!
 ▫️ 🔍 *Detektif Intel* (4+ Pemain): Bisa DM bot \`.intip @member\` untuk lacak penyamar!
 
 🗳️ *BARU — VOTING KATEGORI KATA:* Begitu game dimulai, semua pemain memilih tema kata dulu!
-🃏 *Kartu Pra-Game:* \`.undercover card shield\` (${shieldPrice} Poin) / \`card gold\` (${goldPrice} Poin) — *hanya bisa dibeli di lobi ini!*
+🃏 *Kartu Pra-Game:* \`.undercover card shield\` (${shieldPrice} Poin) / \`.undercover card gold\` (${goldPrice} Poin) — *hanya bisa dibeli di lobi ini!*
 
 👉 Ketik \`.joinundercover\` untuk bergabung!
 🚀 Host ketik \`.startundercover\` jika sudah siap (Minimal ${MIN_PLAYERS} pemain).`;
@@ -745,7 +650,7 @@ async function assignRolesAndStart(sock, jid, messageObj) {
       await dm(sock, p, `🤍 *PERAN ANDA: MR. WHITE (BLANK)* 👻\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia: *TIDAK ADA KATA (BLANK)*\n${headInfo}\n\n⚠️ *Misi Anda:* Anda tidak punya kata! Dengarkan petunjuk orang lain, pura-pura tahu!\n💡 *Skill Tebak Kata:* Tebak kata warga kapan saja via DM/grup dengan \`.tebakwarga <kata>\` untuk MENANG SOLO INSTAN! Atau bertahan hidup hingga akhir bersama kubu pemenang.`);
     } else if (role === 'JESTER') {
       session.playerRoles.set(p, { ...base, role: 'JESTER', word: pair.civilian });
-      await dm(sock, p, `🤡 *PERAN ANDA: SI BADUT (JESTER)* 🃏\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia: *${pair.civilian}*\n${headInfo}\n\n⚠️ *Misi Gila Anda:* Buat diri Anda DICURIGAI dan DI-VOTE KELUAR oleh grup di *Ronde 2 atau Ronde 3*! Jika berhasil, Anda MENANG SOLO dan mencuri seluruh pot taruhan!\n💡 _Jika gagal tapi berhasil bertahan hidup sampai game usai, taruhan Anda dikembalikan utuh._`);
+      await dm(sock, p, `🤡 *PERAN ANDA: SI BADUT (JESTER)* 🃏\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia: *${pair.civilian}*\n${headInfo}\n\n⚠️ *Misi Gila Anda:* Buat diri Anda DICURIGAI dan DI-VOTE KELUAR oleh grup! Jika berhasil di-vote keluar, Anda MENANG SOLO dan mencuri seluruh pot taruhan!\n💡 _Jika gagal tapi berhasil bertahan hidup sampai game usai, taruhan Anda dikembalikan utuh._`);
     } else if (role === 'BUNGLON') {
       session.playerRoles.set(p, { ...base, role: 'BUNGLON', word: pair.civilian });
       await dm(sock, p, `🦎 *PERAN ANDA: BUNGLON (NETRAL BEBAS)* 🤝\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤫 Kata Rahasia Anda: *${pair.civilian}*\n${headInfo}\n\n⚠️ *Misi Bertahan Hidup:* Anda adalah pihak netral yang fleksibel. Triknya jangan sampai tereliminasi/tertembak! Jika kubu mana pun (Warga atau Undercover) menang saat Anda masih HIDUP, Anda IKUT MENANG dan mendapat bagian hadiah pot!`);
@@ -1508,8 +1413,8 @@ async function processUndercoverVotes(sock, jid, messageObj) {
   await send(sock, jid, messageObj, `☠️ *${tag(eliminated)}* resmi dieliminasi dari grup dengan ${maxVotes} suara!\n🎭 Peran Terbuka: *${getRoleBadge(eliminatedRole?.role)}*`, { mentions: [eliminated] });
   saveUndercoverSessions();
 
-  // 1. Kemenangan solo Si Badut (Ronde 2 atau 3)
-  if (eliminatedRole?.role === 'JESTER' && (session.round === 2 || session.round === 3)) {
+  // 1. Kemenangan solo Si Badut (Jester Solo Win)
+  if (eliminatedRole?.role === 'JESTER') {
     try { await db.bumpUndercoverCounter(eliminated, 'jester_win'); } catch (e) {}
     return await finishGame(sock, jid, {
       headline: `🃏 *SI BADUT (JESTER) MENANG SOLO TELAK!* 🤡`,
@@ -2569,7 +2474,7 @@ Game deduksi sosial berbasis kata rahasia via DM WhatsApp & diskusi grup (${MIN_
 
 🎭 *3. KUBU NETRAL:*
 ▫️ 🤍 *Mr. White* (5+ pemain): Tanpa kata. \`.tebakwarga <kata>\` kapan saja untuk MENANG SOLO. Salah tebak saat masih hidup = langsung gugur.
-▫️ 🤡 *Si Badut (Jester):* Menang solo jika di-vote keluar di *Ronde 2 atau 3*. Jika gagal tapi selamat sampai akhir, taruhan dikembalikan.
+▫️ 🤡 *Si Badut (Jester):* Menang solo jika di-vote keluar oleh grup. Jika gagal tapi selamat sampai akhir, taruhan dikembalikan.
 ▫️ 🦎 *Bunglon:* Ikut menang bersama kubu mana pun asal masih hidup saat game usai.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
