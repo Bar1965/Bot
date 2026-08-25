@@ -1729,6 +1729,7 @@ export async function checkUndercoverWinCondition(sock, jid) {
   const aliveMrWhite = session.alivePlayers.filter(p => getPlayerRoleData(session, p)?.role === 'MRWHITE');
   const aliveCivilians = session.alivePlayers.filter(p => isCivilianRole(getPlayerRoleData(session, p)?.role));
   const aliveBunglon = session.alivePlayers.filter(p => getPlayerRoleData(session, p)?.role === 'BUNGLON');
+  const totalAlive = session.alivePlayers.length;
 
   // 1. Seluruh penyamar & Mr. White gugur ➔ Warga menang
   if (aliveUndercover.length === 0 && aliveMrWhite.length === 0) {
@@ -1744,23 +1745,34 @@ export async function checkUndercoverWinCondition(sock, jid) {
     });
   }
 
-  // 2. Jumlah penyamar hidup >= warga hidup ➔ Penyamar menang
-  //    (Mr. White TIDAK ikut dihitung di sini — dia pemain solo, bukan kubu impostor)
-  if (aliveUndercover.length > 0 && aliveUndercover.length >= aliveCivilians.length) {
+  // 2. Kemenangan Kubu Penyamar (Undercover Victory):
+  //    Penyamar HANYA menang jika:
+  //    a) Seluruh Warga Sipil sudah habis (aliveCivilians.length === 0), ATAU
+  //    b) Sisa pemain hidup <= 2 orang (misal 1v1), ATAU
+  //    c) Penyamar menguasai mayoritas mutlak dari SELURUH pemain hidup (aliveUndercover.length * 2 > totalAlive).
+  //    Jika masih ada pemain Netral dan Warga yang bisa membalikkan keadaan (misal 1 Under, 1 Netral, 1 Warga), game TETAP LANJUT!
+  const isUndercoverDominant = (aliveCivilians.length === 0) || 
+    (totalAlive <= 2 && aliveUndercover.length > 0) || 
+    (aliveUndercover.length * 2 > totalAlive);
+
+  if (aliveUndercover.length > 0 && isUndercoverDominant) {
     const underTeam = session.players.filter(p => isUndercoverRole(getPlayerRoleData(session, p)?.role));
     const bunglonText = aliveBunglon.length > 0
       ? `\n🦎 *Bunglon Berjaya:* ${aliveBunglon.map(b => tag(b)).join(', ')} (Ikut menang karena selamat!)`
       : '';
     return await finishGame(sock, jid, {
       headline: `🎭 *UNDERCOVER MENANG! (IMPOSTOR VICTORY)* 🕵️`,
-      detail: `Penyamar berhasil mengecoh seluruh warga sipil hingga jumlah mereka sepadan!${bunglonText}`,
+      detail: `Penyamar berhasil menguasai permainan dan mengeliminasi mayoritas warga!${bunglonText}`,
       winners: [...underTeam, ...aliveMrWhite, ...aliveBunglon],
       xpEach: 120
     });
   }
 
   // 3. Penyamar habis tapi Mr. White menguasai lapangan ➔ Mr. White menang solo
-  if (aliveUndercover.length === 0 && aliveMrWhite.length > 0 && aliveMrWhite.length >= aliveCivilians.length) {
+  const isMrWhiteDominant = aliveUndercover.length === 0 && aliveMrWhite.length > 0 && 
+    ((aliveCivilians.length === 0) || (totalAlive <= 2) || (aliveMrWhite.length * 2 > totalAlive));
+
+  if (isMrWhiteDominant) {
     return await finishGame(sock, jid, {
       headline: `🤍 *MR. WHITE MENANG SOLO! (BLANK VICTORY)* 👻`,
       detail: `Semua penyamar sudah gugur, tapi Mr. White justru bertahan sampai warga kehabisan orang!`,
@@ -1989,6 +2001,22 @@ export async function handleGuardianProtect(sock, jid, senderNumber, messageObj,
 }
 
 // ─── 🩺 DOKTER LAPANGAN VIA DM (.sembuhkan @member) ─────────────────
+/**
+ * Apakah pengirim benar-benar Dokter yang masih hidup di sesi Undercover aktif?
+ *
+ * Dipakai router game untuk memilah alias `.heal` / `.revive` yang dipakai
+ * bersama oleh Dokter Undercover dan Healer Raid Boss. Predikat ini tidak
+ * mengirim pesan apa pun — murni pengecekan supaya router bisa memutuskan
+ * pemilik command tanpa efek samping.
+ */
+export function isUndercoverDoctorActive(senderNumber) {
+  const { session, playerJid } = findUndercoverSessionAndPlayer(senderNumber);
+  if (!session || !SKILL_PHASES.includes(session.status)) return false;
+  const roleData = getPlayerRoleData(session, playerJid);
+  if (!roleData || roleData.role !== 'DOCTOR') return false;
+  return isAlive(session, playerJid);
+}
+
 export async function handleDoctorRevive(sock, jid, senderNumber, messageObj, targetParam) {
   const { session, playerJid: resolvedSender } = findUndercoverSessionAndPlayer(senderNumber);
 
