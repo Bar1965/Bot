@@ -85,6 +85,19 @@ export async function handleStealHeist(sock, jid, m, senderNumber, targetNumber)
     }
   }
 
+  // Power-Up Perisai Anti-Maling yang dibeli korban lewat toko poin `.tukar`.
+  // Dicek pada dua bentuk JID karena JID hasil mention bisa berbeda dengan JID
+  // yang tersimpan di profil game (LID vs nomor).
+  const shieldJids = [...new Set([targetNumber, resolvedTarget].filter(Boolean))];
+  for (const shieldJid of shieldJids) {
+    const shield = await db.getActiveBuff(shieldJid, 'STEAL_SHIELD');
+    if (shield) {
+      const sisaShield = Math.max(1, Math.ceil((Number(shield.expires_at) - now) / 60000));
+      await send(sock, jid, m, `🛡️ *GAGAL!* Target memakai *Perisai Anti-Maling* dari Toko Power-Up.\n\nPerlindungannya masih aktif *${sisaShield} menit* lagi. Cari target lain!`);
+      return true;
+    }
+  }
+
   if (!profilePerampok || profilePerampok.points < 10) {
     await send(sock, jid, m, "❌ Modal kamu kurang! Kamu butuh minimal *10 Poin* sebagai jaminan denda jika tertangkap polisi.\n\nKetik `.daily` untuk mengambil poin gratis!");
     return true;

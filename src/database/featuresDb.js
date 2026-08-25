@@ -257,6 +257,30 @@ export async function getBroadcastHistoryList() {
 
 // --- FUNGSI PENGATURAN MODERASI PER-GRUP ---
 
+/**
+ * features_config disimpan sebagai teks JSON di SQLite, tapi seluruh kode
+ * pemanggil memperlakukannya sebagai objek (`settings.features_config['tcg']`).
+ * Dua fungsi kecil ini yang menjembatani keduanya.
+ */
+function parseFeaturesConfig(raw) {
+  if (!raw) return {};
+  if (typeof raw === 'object') return raw;
+  try {
+    const v = JSON.parse(raw);
+    return (v && typeof v === 'object' && !Array.isArray(v)) ? v : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function serializeFeaturesConfig(value) {
+  try {
+    return JSON.stringify(parseFeaturesConfig(value));
+  } catch (_) {
+    return '{}';
+  }
+}
+
 export async function getGroupSettings(jid) {
   const row = await getQuery("SELECT * FROM group_settings WHERE jid = ?", [jid]);
   if (!row) {
@@ -271,15 +295,17 @@ export async function getGroupSettings(jid) {
       bot_mode: 'all',
       auto_sholat: 1,
       levelup_enabled: 1,
-      auto_dl_enabled: 1
+      auto_dl_enabled: 1,
+      features_config: {}
     };
   }
-  return { 
-    ...row, 
-    bot_mode: row.bot_mode || 'all', 
+  return {
+    ...row,
+    bot_mode: row.bot_mode || 'all',
     auto_sholat: row.auto_sholat !== undefined ? row.auto_sholat : 1,
     levelup_enabled: row.levelup_enabled !== undefined ? row.levelup_enabled : 1,
-    auto_dl_enabled: row.auto_dl_enabled !== undefined ? row.auto_dl_enabled : 1
+    auto_dl_enabled: row.auto_dl_enabled !== undefined ? row.auto_dl_enabled : 1,
+    features_config: parseFeaturesConfig(row.features_config)
   };
 }
 
@@ -287,18 +313,19 @@ export async function updateGroupSettings(jid, settingsObj) {
   const current = await getGroupSettings(jid);
   const updated = { ...current, ...settingsObj };
   await runQuery(
-    "INSERT OR REPLACE INTO group_settings (jid, welcome_enabled, welcome_msg, goodbye_enabled, goodbye_msg, anti_link, bot_mode, auto_sholat, levelup_enabled, auto_dl_enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT OR REPLACE INTO group_settings (jid, welcome_enabled, welcome_msg, goodbye_enabled, goodbye_msg, anti_link, bot_mode, auto_sholat, levelup_enabled, auto_dl_enabled, features_config) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     [
-      jid, 
-      updated.welcome_enabled ? 1 : 0, 
-      updated.welcome_msg, 
-      updated.goodbye_enabled ? 1 : 0, 
-      updated.goodbye_msg, 
-      updated.anti_link ? 1 : 0, 
-      updated.bot_mode || 'all', 
+      jid,
+      updated.welcome_enabled ? 1 : 0,
+      updated.welcome_msg,
+      updated.goodbye_enabled ? 1 : 0,
+      updated.goodbye_msg,
+      updated.anti_link ? 1 : 0,
+      updated.bot_mode || 'all',
       updated.auto_sholat !== undefined ? updated.auto_sholat : 1,
       updated.levelup_enabled !== undefined ? (updated.levelup_enabled ? 1 : 0) : 1,
-      updated.auto_dl_enabled !== undefined ? (updated.auto_dl_enabled ? 1 : 0) : 1
+      updated.auto_dl_enabled !== undefined ? (updated.auto_dl_enabled ? 1 : 0) : 1,
+      serializeFeaturesConfig(updated.features_config)
     ]
   );
   await addLog("SYSTEM", `Pengaturan grup ${jid} diperbarui dari Web Dashboard/Bot.`);

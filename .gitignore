@@ -11,3 +11,4 @@ tmp/
 ig_cookies.txt
 *-player-script.js
 *.traineddata
+data/

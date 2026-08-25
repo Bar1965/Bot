@@ -319,6 +319,12 @@ export async function initDb() {
   try {
     await runQuery(`ALTER TABLE group_settings ADD COLUMN auto_dl_enabled INTEGER DEFAULT 1`);
   } catch (e) {}
+  // Kolom ini dipakai updateGroupSettings({ features_config }) untuk sakelar
+  // per-fitur per-grup (.freegames, .tcg). Sebelumnya kolomnya tidak pernah
+  // dibuat, sehingga setiap sakelar melapor sukses tapi nilainya hilang.
+  try {
+    await runQuery(`ALTER TABLE group_settings ADD COLUMN features_config TEXT DEFAULT '{}'`);
+  } catch (e) {}
 
   // 13. Tabel coupons
   await runQuery(`
@@ -1036,6 +1042,51 @@ You can now enjoy:
   await runQuery("CREATE INDEX IF NOT EXISTS idx_customer_warnings_jid ON customer_warnings(jid)");
   await runQuery("CREATE INDEX IF NOT EXISTS idx_banned_users_expires ON banned_users(expires_at)");
 
+  // Tabel Statistik Game Undercover (win rate per kubu, streak, aksi spesial)
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS undercover_stats (
+      customer_jid TEXT PRIMARY KEY,
+      games_played INTEGER DEFAULT 0,
+      games_won INTEGER DEFAULT 0,
+      times_civilian INTEGER DEFAULT 0,
+      wins_civilian INTEGER DEFAULT 0,
+      times_impostor INTEGER DEFAULT 0,
+      wins_impostor INTEGER DEFAULT 0,
+      times_neutral INTEGER DEFAULT 0,
+      wins_neutral INTEGER DEFAULT 0,
+      mrwhite_guess_win INTEGER DEFAULT 0,
+      jester_win INTEGER DEFAULT 0,
+      sheriff_kills INTEGER DEFAULT 0,
+      assassin_kills INTEGER DEFAULT 0,
+      detective_correct INTEGER DEFAULT 0,
+      win_streak INTEGER DEFAULT 0,
+      best_streak INTEGER DEFAULT 0,
+      points_won INTEGER DEFAULT 0,
+      last_played DATETIME,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_undercover_stats_played ON undercover_stats(games_played)");
+
+  // Tabel Power-Up / Buff Pemain (toko poin `.tukar`).
+  // Satu baris per (jid, buff_type) — beli ulang memperpanjang durasi atau
+  // menambah jatah pakai, bukan membuat baris baru.
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS user_buffs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      jid TEXT NOT NULL,
+      buff_type TEXT NOT NULL,
+      multiplier REAL DEFAULT 1,
+      uses_left INTEGER DEFAULT 0,
+      expires_at INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(jid, buff_type)
+    )
+  `);
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_user_buffs_jid ON user_buffs(jid)");
+  // Buang buff kedaluwarsa yang tertinggal dari sesi sebelumnya.
+  await runQuery("DELETE FROM user_buffs WHERE expires_at IS NOT NULL AND expires_at < ?", [Date.now()]);
+
   // Cleanup & Migration untuk mencegah NULL/NaN/Non-Integer points/xp di database
   await runQuery("UPDATE game_profiles SET points = 0 WHERE points IS NULL OR typeof(points) != 'integer' OR points < 0 OR points > 1000000");
   await runQuery("UPDATE game_profiles SET xp = 0 WHERE xp IS NULL OR typeof(xp) != 'integer' OR xp < 0");
@@ -1045,4 +1096,9 @@ You can now enjoy:
   await runQuery("UPDATE game_profiles SET daily_streak = 0 WHERE daily_streak IS NULL OR typeof(daily_streak) != 'integer' OR daily_streak < 0");
   await runQuery("UPDATE loyalty SET points = 0 WHERE points IS NULL OR typeof(points) != 'integer' OR points < 0");
   await runQuery("UPDATE loyalty SET total_spent = 0 WHERE total_spent IS NULL OR typeof(total_spent) != 'integer' OR total_spent < 0");
+
+  // Tabel Arena Kartu Monster (TCG). Import dinamis mengikuti konvensi repo
+  // untuk memutus siklus: tcgDb.js mengimpor gamesDb.js.
+  const { initTcgSchema } = await import('./tcgDb.js');
+  await initTcgSchema();
 }

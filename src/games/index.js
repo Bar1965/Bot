@@ -13,9 +13,14 @@ import { handleBankEconomy } from './bankEconomy.js';
 import { activeRounds, startRound, handleRoundCommand, surrenderRound, ROUND_DURATION_MS, scheduleRoundExpiry } from './triviaEngine.js';
 import { activeStealSessions, profileText, handleStealHeist, handleStealAnswer } from './rpgSystem.js';
 import { activeJailbreakSessions, handleJailbreak, handleJailbreakAnswer, handleTebusNapi } from './jailbreak.js';
-import { activeUndercoverGames, handleUndercover, handleUndercoverClue, handleUndercoverVote, handleUndercoverSkip, handleUndercoverShoot, handleMrWhiteGuess, handleDetectiveCheck, handleGuardianProtect, handleDoctorRevive, handleFramerFrame, handleSaboteurHack } from './undercover.js';
+import { activeUndercoverGames, handleUndercover, handleUndercoverClue, handleUndercoverVote, handleUndercoverSkip, handleUndercoverShoot, handleMrWhiteGuess, handleDetectiveCheck, handleGuardianProtect, handleDoctorRevive, handleFramerFrame, handleSaboteurHack, handleUndercoverContinue, handleUndercoverSwap, handleCategoryVote } from './undercover.js';
 import { activeQuizTournaments, handleQuizTournament, handleTournamentAnswer } from './quizTournament.js';
+import { activeAuctions, handleAuctionCommand } from './mysteryAuction.js';
+import { activeMinesGames, handleMinesCommand } from './minesGame.js';
+import { activeRaids, handleRaidCommand } from './raidBoss.js';
+import { handleTcgCommand } from './tcg/index.js';
 import { getSystemChangelog } from '../utils/changelog.js';
+import { buildCommandMenu } from '../../commandRegistry.js';
 import { jidNormalizedUser } from '@whiskeysockets/baileys';
 
 export const easterEggCooldowns = new Map();
@@ -128,6 +133,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     'quiz', 'trivia', 'tebakquiz', 'tebakemoji', 'emoji', 'tebakkata', 'hangman', 'kata',
     'family100', 'f100', 'caklontong', 'tts',
     'undercover', 'sus', 'impostor', 'joinundercover', 'startundercover', 'tebakwarga', 'guess', 'mrwhite', 'tebakciv', 'intip', 'cekintip', 'v', 'skip', 'lewat', 'pass', 'skipundercover', 'lindung', 'guard', 'protect', 'lindungi', 'sembuhkan', 'revive', 'heal', 'cpr', 'obati', 'doctor', 'fitnah', 'framer', 'frame', 'sabotase',
+    'lanjut', 'gasvote', 'mulaivote', 'tukargiliran', 'swapgiliran', 'lempargiliran', 'votekategori', 'katakategori',
     'cerdascermat', 'kuisturnamen', 'quizbattle', 'joincerdascermat', 'startcerdascermat',
     'jailbreak', 'kabur', 'bobolpenjara', 'tebus', 'bebasinnapi',
     'duel', 'terimaduel', 'gasduel', 'tolakduel', 'tembak', 'shoot', 'dor',
@@ -156,7 +162,13 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     'suit', 'pilihsuit', 'cancelsuit', 'batalsuit',
     'tukar', 'pointshop', 'penukaran',
     'update', 'changelog', 'patchnotes', 'whatsnew', 'pembaruan',
-    'fun', 'game', 'games', 'hiburan'
+    'fun', 'game', 'games', 'hiburan',
+    'tcg', 'arena', 'kartumonster',
+    'lelang', 'auction', 'lelangkotak', 'bid', 'tawar', 'bidup', 'cancellelang', 'batallelang', 'infolelang', 'lelanginfo',
+    'mines', 'ranjau', 'buka', 'pick', 'cashout', 'tarikdana', 'batalmines',
+    'infomines', 'tabelmines', 'minesinfo',
+    'raid', 'worldboss', 'bos', 'joinraid', 'joinr', 'pilihrole', 'startraid', 'gasraid', 'mulairaid', 'cancelraid', 'batalraid',
+    'serang', 'atk', 'berserk', 'tameng', 'shield', 'benteng', 'heal', 'massheal', 'revive', 'sihir', 'cast', 'freeze', 'stun'
   ];
 
   if (!knownFunCmds.includes(command)) {
@@ -363,6 +375,15 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     return await handleRoundCommand({ sock, jid, senderNumber, messageObj, args, cleanCmd: command, isFromGroup });
   }
 
+  // Arena Kartu Monster (TCG). Semua sub-perintah bersarang di bawah `.tcg`
+  // supaya tidak menambah nama baru ke ruang perintah tingkat atas yang sudah padat.
+  if (['tcg', 'arena', 'kartumonster'].includes(command)) {
+    return await handleTcgCommand({
+      sock, jid, senderNumber, messageObj, args,
+      isFromGroup, isAdmin, isOwner, isStoreAdmin
+    });
+  }
+
   if (isFromGroup && ['quiz', 'trivia', 'tebakquiz', 'tebakemoji', 'emoji', 'tebakkata', 'hangman', 'kata', 'tebaklagu', 'tebakbendera', 'tebaknegara', 'bendera', 'negara', 'flag', 'sambungkata', 'wordchain', 'truth', 'dare', 'tod', 'dadu', 'dice', 'coinflip', 'koin', 'coin', 'poll', 'voting', 'vote', 'love', 'jodoh', 'compatibility', 'slot', 'daily', 'spin', 'luckyspin', 'suit', 'pilihsuit', 'cancelsuit', 'batalsuit', 'tebakangka', 'tebak', 'tukar', 'pointshop', 'penukaran'].includes(command)) {
     const groupSettings = await db.getGroupSettings(jid);
     if (groupSettings.bot_mode === 'sales') return false;
@@ -384,9 +405,33 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     return await handleUndercover(sock, jid, senderNumber, messageObj, args, command, isFromGroup);
   }
 
+  // Voting kategori kata Undercover (.votekategori / .katakategori)
+  if (['votekategori', 'katakategori'].includes(command)) {
+    if (activeUndercoverGames.has(jid)) {
+      return await handleCategoryVote(sock, jid, senderNumber, messageObj, args[1]);
+    }
+    await send(sock, jid, messageObj, "❌ Tidak ada sesi Undercover aktif di grup ini.");
+    return true;
+  }
+
+  // Tutup fase diskusi Undercover lebih cepat (.lanjut)
+  if (['lanjut', 'gasvote', 'mulaivote'].includes(command)) {
+    if (activeUndercoverGames.has(jid)) {
+      return await handleUndercoverContinue(sock, jid, senderNumber, messageObj, isAdmin, isOwner);
+    }
+    return false;
+  }
+
+  // Skill tukar giliran Undercover (.tukargiliran) — nama sengaja tidak memakai
+  // `.tukar` karena command itu sudah dipakai untuk Toko Penukaran Poin.
+  if (['tukargiliran', 'swapgiliran', 'lempargiliran'].includes(command)) {
+    return await handleUndercoverSwap(sock, jid, senderNumber, messageObj);
+  }
+
   // Voting Undercover / Werewolf (.vote / .v)
   if (['vote', 'v'].includes(command)) {
-    if (activeUndercoverGames.has(jid) && activeUndercoverGames.get(jid).status === 'VOTING_PHASE') {
+    const ucSession = activeUndercoverGames.get(jid);
+    if (ucSession && ['CATEGORY_VOTE', 'DISCUSSION_PHASE', 'VOTING_PHASE'].includes(ucSession.status)) {
       const target = messageObj.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0] || args[1];
       return await handleUndercoverVote(sock, jid, senderNumber, messageObj, target);
     }
@@ -489,6 +534,21 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
   // Balap Kuda Uma Musume Derby Multi-Betting
   if (['balapkuda', 'pasangkuda', 'betkuda', 'pasang', 'bet', 'kuda', 'race', 'startbalap', 'startrace', 'cancelbalap'].includes(command)) {
     return await handleHorseRace(sock, jid, senderNumber, messageObj, args, command, isFromGroup);
+  }
+
+  // Mystery Auction (Lelang Kotak Misteri)
+  if (['lelang', 'auction', 'lelangkotak', 'bid', 'tawar', 'bidup', 'cancellelang', 'batallelang', 'infolelang', 'lelanginfo'].includes(command)) {
+    return await handleAuctionCommand(sock, jid, senderNumber, messageObj, args, command, isFromGroup, isAdmin, isOwner);
+  }
+
+  // Ranjau Poin / Mines & Cashout
+  if (['mines', 'ranjau', 'buka', 'pick', 'cashout', 'tarikdana', 'batalmines', 'surrender', 'infomines', 'tabelmines', 'minesinfo'].includes(command)) {
+    return await handleMinesCommand(sock, jid, senderNumber, messageObj, args, command, isFromGroup);
+  }
+
+  // Raid World Boss (MMORPG Co-op)
+  if (['raid', 'worldboss', 'bos', 'joinraid', 'joinr', 'pilihrole', 'startraid', 'gasraid', 'mulairaid', 'cancelraid', 'batalraid', 'serang', 'atk', 'berserk', 'tameng', 'shield', 'benteng', 'heal', 'massheal', 'revive', 'sihir', 'cast', 'freeze', 'stun'].includes(command)) {
+    return await handleRaidCommand(sock, jid, senderNumber, messageObj, args, command, isFromGroup, isAdmin, isOwner);
   }
 
   // Bank Poin & Bunga Harian
@@ -712,7 +772,12 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     const premiumTier = await db.getPremiumTier(senderNumber);
     const benefits = getPremiumBenefits(premiumTier);
     const baseReward = 25;
-    const finalReward = Math.floor(baseReward * benefits.dailyRewardMult);
+    // Power-Up Daily Boost dari toko poin `.tukar`. Jatahnya baru dipotong kalau
+    // klaim benar-benar berhasil, supaya klaim kedua di hari yang sama tidak
+    // membakar buff pemain.
+    const dailyBuff = await db.getActiveBuff(senderNumber, 'DAILY_BOOST');
+    const dailyBoostMult = (dailyBuff && Number(dailyBuff.multiplier) > 0) ? Number(dailyBuff.multiplier) : 1;
+    const finalReward = Math.floor(baseReward * benefits.dailyRewardMult * dailyBoostMult);
     const result = await db.claimGameDaily(senderNumber, today, finalReward);
     if (!result.success) {
       await send(sock, jid, messageObj, `⏳ ${result.message}`, {
@@ -725,9 +790,13 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
       });
       return true;
     }
+    if (dailyBoostMult > 1) {
+      await db.consumeBuffUse(senderNumber, 'DAILY_BOOST');
+    }
+    const boostLabel = dailyBoostMult > 1 ? ` + Daily Boost ${dailyBoostMult}x ⚡` : '';
     const bonusLabel = benefits.dailyRewardMult > 1 ? ` (${premiumTier} Bonus ${benefits.dailyRewardMult}x 🚀)` : '';
     const safeDailyPoints = Math.max(0, Math.floor(Number(result.profile?.points) || 0));
-    await send(sock, jid, messageObj, `🎁 Hadiah harian berhasil diklaim: *+${result.reward} poin*${bonusLabel}\n🔥 Streak: *${result.streak} hari*\n💰 Total poin: *${safeDailyPoints}*`, {
+    await send(sock, jid, messageObj, `🎁 Hadiah harian berhasil diklaim: *+${result.reward} poin*${bonusLabel}${boostLabel}\n🔥 Streak: *${result.streak} hari*\n💰 Total poin: *${safeDailyPoints}*`, {
       title: '🎁 HADIAH HARIAN TERKLAIM',
       buttons: [
         { type: 'reply', text: '🏆 Leaderboard', id: '.rank' },
@@ -740,7 +809,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
 
   if (['addpoint', 'addpoints', 'addpoin', 'tambahpoin', 'tambahpoint', 'pluspoin'].includes(command)) {
     // Mencetak poin harus butuh identitas Admin Toko. isAdmin bernilai true untuk admin grup
-    // WhatsApp mana pun, dan poin bisa ditukar jadi kupon diskon toko sungguhan lewat .tukar.
+    // WhatsApp mana pun, dan poin menentukan power-up serta papan peringkat.
     if (!isStoreAdmin && !isOwner) {
       await send(sock, jid, messageObj, "❌ Perintah penambahan poin ini khusus untuk *Admin Toko* atau *Owner*. Status admin grup WhatsApp saja tidak cukup.");
       return true;
@@ -1500,8 +1569,6 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
       const roll = Math.random() * 100;
       let outcome = "";
       let winAmount = 0;
-      let isCoupon = false;
-      let couponCode = "";
 
       if (roll < 45) {
         outcome = "💥 *ZONK!* Poin taruhanmu hangus. Tetap semangat, coba lagi! 💪";
@@ -1519,9 +1586,10 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
         outcome = "👑 *JACKPOT 10X!!!* Selamat, kamu memenangkan 10x lipat taruhan! 🎉🎉";
         winAmount = Math.floor(bet * 10);
       } else {
-        isCoupon = true;
-        winAmount = bet;
-        outcome = "🎟️ *GRAND PRIZE: VOUCHER BELANJA!!!* 🎟️\n\nSelamat! Kamu memenangkan *Voucher Diskon Belanja 10%* secara GRATIS! Kode voucher belanja unik telah dikirimkan ke DM kamu. Silakan cek chat pribadi bot!";
+        // Hadiah puncak dulunya kupon diskon toko (bernilai rupiah asli). Diganti
+        // jackpot poin supaya Akbar Poin tidak bisa dicetak jadi uang.
+        outcome = "🌟 *MEGA JACKPOT 25X!!!* 🌟\n\nRoda berhenti tepat di kotak emas! Kamu memenangkan *25x lipat* taruhan!";
+        winAmount = Math.floor(bet * 25);
       }
 
       if (winAmount > 0) {
@@ -1534,41 +1602,10 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
       resultText += `👤 Player: *@${senderNumber.split('@')[0]}*\n`;
       resultText += `💸 Taruhan: *${bet} Poin*\n\n`;
       resultText += `${outcome}\n\n`;
-      if (!isCoupon) {
-        resultText += `💰 Perubahan Poin: *${winAmount >= bet ? '+' : ''}${winAmount - bet} Poin*\n`;
-        resultText += `🏆 Sisa Poin Sekarang: *${newPoints} Poin*`;
-      } else {
-        resultText += `🏆 Poin Kamu Dikembalikan: *+${bet} Poin*`;
-      }
+      resultText += `💰 Perubahan Poin: *${winAmount >= bet ? '+' : ''}${winAmount - bet} Poin*\n`;
+      resultText += `🏆 Sisa Poin Sekarang: *${newPoints} Poin*`;
 
       await sock.sendMessage(jid, { text: resultText, edit: spinMsg.key, mentions: [senderNumber] });
-
-      if (isCoupon) {
-        try {
-          const rand = Math.floor(1000 + Math.random() * 9000);
-          couponCode = `SPIN10-${rand}`;
-          const expires = new Date();
-          expires.setDate(expires.getDate() + 3); // 3 hari
-          await db.addCoupon(couponCode, 'percent', 10, 20000, 1, expires.toISOString());
-
-          const dmText = `🎟️ *VOUCHER DISKON WHEEL OF FORTUNE AKBAR STORE* 🎟️
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Selamat! Kamu mendapatkan kupon diskon eksklusif dari memutar Lucky Spin:
-
-👉 Kode Kupon: *${couponCode}*
-📈 Diskon: *10%*
-🛡️ Minimal Belanja: *Rp20.000*
-⏳ Masa Berlaku: *3 Hari* (s/d ${expires.toLocaleDateString('id-ID')})
-
-Gunakan kupon ini saat checkout belanja di bot dengan mengetik:
-*.kupon ${couponCode}* sebelum melakukan tagihan pembayaran!`;
-
-          await sock.sendMessage(senderNumber, { text: dmText });
-        } catch (couponErr) {
-          console.error("Gagal membuat kupon spin:", couponErr);
-        }
-      }
     }, 1800);
 
     return true;
@@ -1776,93 +1813,160 @@ Gunakan kupon ini saat checkout belanja di bot dengan mengetik:
     return true;
   }
 
-  // --- REWARD SHOP: Point Exchange ---
+  // --- TOKO POWER-UP: tukar Akbar Poin jadi buff dalam game ---
+  // Poin sengaja TIDAK bisa ditukar jadi kupon atau premium lagi. Premium hanya
+  // dibeli dengan uang asli lewat saldo deposit (.deposit), jadi Akbar Poin murni
+  // jadi skor + power-up dan tidak punya nilai rupiah sama sekali.
   if (command === 'tukar' || command === 'pointshop' || command === 'penukaran') {
     const option = parseInt(args[1], 10);
     const profile = await db.getGameProfile(senderNumber);
-    const currentPoints = profile.points || 0;
+    const currentPoints = Math.max(0, Math.floor(Number(profile?.points) || 0));
+    const JAM = 60 * 60 * 1000;
 
-    const exchangeRates = [
-      { id: 1, name: "🎟️ Kupon Diskon Belanja 10%", cost: 2000, desc: "Potongan diskon 10% untuk transaksi produk (Min Belanja Rp20k, Maks Potongan Rp10k)." },
-      { id: 2, name: "🥈 Status Premium Silver (3 Hari)", cost: 3000, desc: "Meningkatkan limit all-in game & bonus harian." },
-      { id: 3, name: "🥇 Status Premium Gold (7 Hari)", cost: 6000, desc: "Meningkatkan bonus harian dan benefit premium lebih tinggi." },
-      { id: 4, name: "💎 Status Premium Diamond (30 Hari)", cost: 20000, desc: "Akses premium benefit paling tinggi." }
+    const powerUps = [
+      {
+        id: 1,
+        name: '⚡ XP Booster 2x',
+        cost: 500,
+        buff: 'XP_BOOST',
+        multiplier: 2,
+        durationMs: 24 * JAM,
+        desc: 'Semua XP dari chat grup & kemenangan game jadi 2x lipat selama 24 jam. Naik level jauh lebih cepat.'
+      },
+      {
+        id: 2,
+        name: '🎁 Daily Boost 3x',
+        cost: 300,
+        buff: 'DAILY_BOOST',
+        multiplier: 3,
+        uses: 1,
+        desc: 'Klaim `.daily` berikutnya dikali 3 (sekali pakai, bisa ditumpuk dengan bonus premium).'
+      },
+      {
+        id: 3,
+        name: '🛡️ Perisai Anti-Maling',
+        cost: 400,
+        buff: 'STEAL_SHIELD',
+        multiplier: 1,
+        durationMs: 24 * JAM,
+        desc: 'Kebal dari `.steal` / `.rampok` member lain selama 24 jam.'
+      },
+      {
+        id: 4,
+        name: '🔓 Surat Bebas Penjara',
+        cost: 350,
+        instant: 'FREE_JAIL',
+        desc: 'Langsung bebas dari penjara game tanpa menunggu masa tahanan habis.'
+      }
     ];
 
-    if (isNaN(option) || option < 1 || option > exchangeRates.length) {
-      let shopText = `🛒 *POINT EXCHANGE / PENUKARAN REWARD* 🛒\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
-      shopText += `👤 Akun Kamu: *@${senderNumber.split('@')[0]}*\n`;
-      shopText += `💰 Saldo Poin: *${currentPoints} Poin*\n\n`;
-      shopText += `*Daftar Hadiah Yang Tersedia:*\n`;
-      
-      exchangeRates.forEach(r => {
-        shopText += `*${r.id}. ${r.name}*\n`;
-        shopText += `▫️ Harga: *${r.cost} Poin*\n`;
-        shopText += `▫️ Deskripsi: ${r.desc}\n\n`;
+    const sisaWaktu = (expiresAt) => {
+      const ms = Number(expiresAt) - Date.now();
+      if (!isFinite(ms) || ms <= 0) return 'habis';
+      const jam = Math.floor(ms / JAM);
+      const menit = Math.ceil((ms % JAM) / 60000);
+      return jam > 0 ? `${jam} jam ${menit} menit` : `${menit} menit`;
+    };
+
+    if (isNaN(option) || option < 1 || option > powerUps.length) {
+      let shopText = `🛒 *TOKO POWER-UP — TUKAR AKBAR POIN* 🛒\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+      shopText += `👤 Akun: *@${senderNumber.split('@')[0]}*\n`;
+      shopText += `💰 Saldo Poin: *${currentPoints.toLocaleString('id-ID')} Poin*\n\n`;
+      shopText += `*Daftar Power-Up:*\n`;
+
+      powerUps.forEach(item => {
+        shopText += `*${item.id}. ${item.name}*\n`;
+        shopText += `▫️ Harga: *${item.cost} Poin*\n`;
+        shopText += `▫️ ${item.desc}\n\n`;
       });
 
-      shopText += `💡 *Cara Menukar:* Ketik \`.tukar [nomor]\`\n*Contoh:* \`.tukar 1\` untuk menukarkan kupon diskon.`;
+      let aktif = [];
+      try {
+        aktif = await db.listActiveBuffs(senderNumber);
+      } catch (e) {
+        aktif = [];
+      }
+
+      if (aktif.length > 0) {
+        shopText += `⚡ *Power-Up Aktif Kamu:*\n`;
+        aktif.forEach(row => {
+          const nama = powerUps.find(u => u.buff === row.buff_type)?.name || row.buff_type;
+          const detail = row.expires_at
+            ? `sisa ${sisaWaktu(row.expires_at)}`
+            : `sisa ${Math.max(0, Number(row.uses_left) || 0)}x pakai`;
+          shopText += `• ${nama} — _${detail}_\n`;
+        });
+        shopText += `\n`;
+      }
+
+      shopText += `💡 *Cara Menukar:* Ketik \`.tukar [nomor]\`\n*Contoh:* \`.tukar 1\` untuk membeli XP Booster.\n\n`;
+      shopText += `_Catatan: Akbar Poin hanya untuk power-up dalam game. Membership Premium dibeli terpisah dengan saldo deposit — ketik *.premium*._`;
 
       await send(sock, jid, messageObj, shopText, { mentions: [senderNumber] });
       return true;
     }
 
-    const selected = exchangeRates[option - 1];
+    const selected = powerUps[option - 1];
+
+    // Cek prasyarat SEBELUM poin dipotong supaya user tidak kehilangan poin
+    // untuk item yang memang tidak bisa dipakai saat ini.
+    if (selected.instant === 'FREE_JAIL') {
+      const jailStatus = await db.isPlayerJailed(senderNumber);
+      if (!jailStatus.isJailed) {
+        await send(sock, jid, messageObj, `⚠️ Kamu sedang *tidak dipenjara*, jadi Surat Bebas Penjara belum ada gunanya. Poin kamu tidak dipotong.`);
+        return true;
+      }
+    }
+
     const deductRes = await db.deductGamePoints(senderNumber, selected.cost);
     if (!deductRes.success) {
-      await send(sock, jid, messageObj, `❌ Poin kamu tidak mencukupi untuk menukar *${selected.name}* (Poin kamu: *${currentPoints} Poin*, Dibutuhkan: *${selected.cost} Poin*).`);
+      await send(sock, jid, messageObj, `❌ Poin kamu tidak cukup untuk membeli *${selected.name}*.\n\n💰 Poin kamu: *${currentPoints.toLocaleString('id-ID')} Poin*\n🏷️ Dibutuhkan: *${selected.cost} Poin*\n📉 Kurang: *${Math.max(0, selected.cost - currentPoints).toLocaleString('id-ID')} Poin*`);
       return true;
     }
 
+    const sisaPoin = Math.max(0, currentPoints - selected.cost);
+
     try {
-
-
-      if (option === 1) {
-        const rand = Math.floor(10000 + Math.random() * 90000);
-        const code = `SHOP10-${rand}`;
-        const expires = new Date();
-        expires.setDate(expires.getDate() + 7); // 7 hari
-        await db.addCoupon(code, 'percent', 10, 20000, 1, expires.toISOString());
-
-        const dmText = `🎟️ *KUPON BELANJA PENUKARAN POIN* 🎟️
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Selamat! Kamu berhasil menukarkan ${selected.cost} poin dengan kupon belanja:
-
-👉 Kode Kupon: *${code}*
-📈 Diskon: *10%*
-🛡️ Minimal Belanja: *Rp20.000*
-⏳ Masa Berlaku: *7 Hari* (s/d ${expires.toLocaleDateString('id-ID')})
-
-Gunakan kupon ini saat checkout belanja di bot dengan mengetik:
-*.kupon ${code}* sebelum melakukan tagihan pembayaran!`;
-
-        await sock.sendMessage(senderNumber, { text: dmText });
-        await send(sock, jid, messageObj, `✅ Penukaran berhasil! Kode Kupon Belanja unik diskon 10% telah dikirimkan secara pribadi ke DM kamu. Silakan periksa!`);
-
-      } else {
-        let tier = "Silver";
-        let days = 3;
-        if (option === 3) {
-          tier = "Gold";
-          days = 7;
-        } else if (option === 4) {
-          tier = "Diamond";
-          days = 30;
-        }
-
-        const res = await db.grantPremium(senderNumber, tier, days, 'POINT_SHOP');
-        await send(sock, jid, messageObj, `✅ *PENUKARAN BERHASIL!* 🎉\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nSelamat, akun kamu berhasil ditingkatkan menjadi *Premium ${tier}* selama *${days} hari*!\n\n📅 Berlaku s/d: *${new Date(res.expiresAt).toLocaleDateString('id-ID')}*\n💰 Sisa Poin Sekarang: *${currentPoints - selected.cost} Poin*`);
+      if (selected.instant === 'FREE_JAIL') {
+        await db.clearGameJail(senderNumber);
+        await send(sock, jid, messageObj, `🔓 *SURAT BEBAS PENJARA DIPAKAI!*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nKamu resmi bebas dari penjara game dan bisa langsung main lagi.\n\n💰 Sisa Poin: *${sisaPoin.toLocaleString('id-ID')} Poin*`);
+        return true;
       }
+
+      const granted = await db.grantUserBuff(senderNumber, selected.buff, {
+        multiplier: selected.multiplier || 1,
+        durationMs: selected.durationMs || 0,
+        uses: selected.uses || 0
+      });
+
+      const durasiText = granted.expiresAt
+        ? `⏳ Aktif selama: *${sisaWaktu(granted.expiresAt)}*`
+        : `🎫 Jatah pakai: *${granted.usesLeft}x*`;
+
+      await send(sock, jid, messageObj, `✅ *POWER-UP AKTIF!* 🎉\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n${selected.name}\n${selected.desc}\n\n${durasiText}\n💰 Sisa Poin: *${sisaPoin.toLocaleString('id-ID')} Poin*\n\n_Cek power-up aktif kapan saja dengan_ \`.tukar\``);
     } catch (err) {
-      await send(sock, jid, messageObj, `❌ Terjadi kesalahan saat melakukan penukaran: ${err.message}`);
+      // Kembalikan poin kalau buff gagal disimpan — jangan sampai user bayar
+      // tapi tidak dapat apa-apa.
+      await db.addGamePoints(senderNumber, selected.cost);
+      await send(sock, jid, messageObj, `❌ Gagal mengaktifkan *${selected.name}*: ${err.message}\n\n💰 Poin kamu sudah dikembalikan.`);
     }
     return true;
   }
 
-  if (['fun', 'game', 'games', 'hiburan'].includes(command) && args.length === 1) {
-    await send(sock, jid, messageObj, '🎮 *MENU HIBURAN*\n\n.freegames · .slot · .zodiak · .jodoh\n.quiz · .tebakemoji · .tebakkata\n.jawab · .hint · .sambungkata\n.truth · .dare · .dadu · .coinflip\n.torebot · .tochipmunk · .todeep\n.daily · .poin · .rank · .misi\n.poll · .love\n\nKetik `.menu hiburan` untuk panduan lengkap.');
-    return true;
+  if (['game', 'games'].includes(command) && args.length === 1) {
+    const gameMenu = buildCommandMenu('game');
+    if (gameMenu) {
+      await send(sock, jid, messageObj, gameMenu);
+      return true;
+    }
+  }
+
+  if (['fun', 'hiburan'].includes(command) && args.length === 1) {
+    const hiburanMenu = buildCommandMenu('hiburan');
+    if (hiburanMenu) {
+      await send(sock, jid, messageObj, hiburanMenu);
+      return true;
+    }
   }
 
   return false;
@@ -1883,3 +1987,6 @@ export * from './umaDerby.js';
 export * from './bankEconomy.js';
 export * from './triviaEngine.js';
 export * from './rpgSystem.js';
+export * from './mysteryAuction.js';
+export * from './minesGame.js';
+export * from './raidBoss.js';

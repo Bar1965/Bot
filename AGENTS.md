@@ -188,8 +188,12 @@ button work requires nothing beyond pointing its `id` at an existing command.
    - `groupAdminHandler.js:33-49` `adminStoreCommands` / `groupModerationCommands` / `banCommands`
 3. **Write the branch**: `if (['cmd','alias'].includes(cleanCmd)) { …; return true; }`
 4. **Register it in `commandRegistry.js`** — append `['.cmd <args>', 'Deskripsi Indonesia']` to the
-   right `categories.<key>.commands` array. This is presentation only, but it is the *sole* reason
-   a command appears in `.menu`. An unregistered command is invisible to users.
+   `items` array of the right group inside `categories.<key>.groups`. Keep the description under
+   ~45 characters: WhatsApp uses a proportional font on a narrow screen, and anything longer wraps
+   and makes the whole list look broken. A follow-up command that only works while a session is
+   running (`.hit`, `.serang`, `.vote`) belongs in that group's `inGame` array instead, not as its
+   own bullet. This is presentation only, but it is the *sole* reason a command appears in `.menu`.
+   An unregistered command is invisible to users.
 5. **Check both branches** of the router if you touched `bot.js` routing.
 6. If it must work pre-registration, add it to the relevant `exemptCommands` lists — there are
    several (`bot.js:2703`, `bot.js:1135`, `premiumHandler.js:132`, `customerHandler.js:162`).
@@ -465,6 +469,64 @@ swap in a fresh socket without duplicating intervals. Do not capture `sock` in t
 - Only `aiDailyLimit` and `monthlyVoucherRp` are actually enforced. `shopDiscountPct`,
   `resellerAccess` and `restockDmAlert` appear only in template strings — there is no discount code
   path in checkout at all.
+
+### 12a. Undercover (`src/games/undercover.js`) — the one game with a state machine
+
+`activeUndercoverGames` is a fourth registry, but unlike the three above it **persists** to
+`data/undercover_state.json` and is rehydrated by `restoreUndercoverSessions` from `bot.js`.
+
+- **Phase machine** (`session.status`), in order:
+  `LOBBY` → `CATEGORY_VOTE` → `CLUE_PHASE` → `DISCUSSION_PHASE` → `VOTING_PHASE` →
+  (`MR_WHITE_GUESS`) → back to `CLUE_PHASE` for the next round. Round 1 runs **two** clue passes
+  (`session.cluePass` 1 → 2) before discussion opens.
+- **Never inline a phase transition.** Every path goes through `announceTurn` → `advanceTurn` →
+  `finishCluePass` → `startDiscussionPhase` → `startVotingPhase` → `processUndercoverVotes` →
+  `startNextUndercoverRound`. The old file hand-duplicated the "enter voting phase" block in six
+  places and they drifted apart; that is what the refactor removed.
+- **Timer safety is `session.turnSeq`, not player identity.** `announceTurn` increments it and the
+  timeout closure bails unless `cur.turnSeq === seq`. Any new timer in the clue phase must capture
+  and check it, otherwise a stale timer fires against the wrong speaker.
+- **Deaths outside voting go through `killPlayer` + `resyncAfterDeath`.** `killPlayer` returns
+  `{idx, wasCurrent}`; it fixes `turnIndex` when the victim sat before the current speaker, and
+  `resyncAfterDeath` re-announces only when the current speaker actually died. Removing a player
+  from `alivePlayers` by hand will hang the round.
+- **The buy-in is deducted in `assignRolesAndStart`**, not when `.startundercover` is typed — a
+  cancel or restart during category voting must not burn points. `refundUndercoverSession` returns
+  both the buy-in (`session.buyInCharged`) and every card purchase (`session.cardPurchases`), and
+  runs on `.undercover cancel` and lobby expiry.
+- **Win parity excludes Mr. White**: impostors win on `aliveUndercover >= aliveCivilians`. Mr. White
+  has his own solo-survival branch. Role pools are gated by player count — no Assassin/Mr. White
+  below 5 players, no Saboteur below 6 — see `assignRolesAndStart`.
+- **Stats** live in `undercover_stats` (schema.js) and are written only via
+  `recordUndercoverResult` / `bumpUndercoverCounter` in `gamesDb.js`. The counter column name is
+  whitelisted in `UNDERCOVER_COUNTERS` — never interpolate a caller-supplied column.
+- **`.tukar` is the Power-Up shop** (see 12b). The Undercover turn-swap skill is `.tukargiliran`.
+
+### 12b. Point economy policy — Akbar Poin has no rupiah value
+
+Deliberate rule, decided by the owner: **`game_profiles.points` (Akbar Poin) must never convert
+into anything worth money.** Points are score + in-game power-ups only. Everything with real value
+is bought with real money through the deposit balance (`.deposit` → QRIS → `customers.balance`).
+
+- **Premium is bought with `customers.balance`, not points.** `PREMIUM_TIERS[*].priceRp` (Silver
+  5 000 / Gold 10 000 / Diamond 25 000, 30 days each) is deducted by `deductCustomerBalance` in
+  `.upgradepremium`. There is no `pricePoin` any more. Diamond's `monthlyVoucherRp: 10000` is kept
+  deliberately — it is safe only because Diamond costs more than the voucher pays out, so **never
+  price a tier below its own `monthlyVoucherRp`**.
+- **`.tukar` is the Power-Up shop**, not a coupon/premium exchange: XP Booster 2x (24 h),
+  Daily Boost 3x (one use), Perisai Anti-Maling (24 h), Surat Bebas Penjara (instant). The
+  Undercover turn-swap skill is `.tukargiliran`.
+- Power-ups live in `user_buffs(jid, buff_type, multiplier, uses_left, expires_at)`, one row per
+  pair, helpers `grantUserBuff` / `getActiveBuff` / `getBuffMultiplier` / `consumeBuffUse` /
+  `listActiveBuffs` in `gamesDb.js`. A row counts as active while it has time left **or** uses
+  left; `getActiveBuff` deletes it once neither holds. Enforcement hooks live in exactly three
+  places: `addMessageXp` and `awardGamePoints` (`XP_BOOST`, multiplies XP only — never points),
+  `.daily` in `src/games/index.js` (`DAILY_BOOST`, consumed only after a successful claim), and
+  `handleStealHeist` in `rpgSystem.js` (`STEAL_SHIELD`, checked against both the mention JID and
+  the resolved profile JID).
+- Lucky Spin's 1 % grand prize used to mint a real 10 % coupon; it is a 25x point jackpot now.
+- `redeemPointsForCoupon` in `gamesDb.js` still exists but is dead **on purpose** — it turns points
+  into checkout coupons. Do not wire it to a command.
 
 ## 13. Plugins
 

@@ -19,7 +19,7 @@ setInterval(() => {
 export const PREMIUM_TIERS = {
   Silver: {
     tier: 'Silver', emoji: '🥈',
-    pricePoin: 300,
+    priceRp: 5000,
     days: 30,
     benefits: {
       aiDailyLimit: 10,
@@ -39,7 +39,7 @@ export const PREMIUM_TIERS = {
   },
   Gold: {
     tier: 'Gold', emoji: '🥇',
-    pricePoin: 800,
+    priceRp: 10000,
     days: 30,
     benefits: {
       aiDailyLimit: 25,
@@ -59,7 +59,7 @@ export const PREMIUM_TIERS = {
   },
   Diamond: {
     tier: 'Diamond', emoji: '💎',
-    pricePoin: 2000,
+    priceRp: 25000,
     days: 30,
     benefits: {
       aiDailyLimit: 50,
@@ -384,7 +384,7 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
     const tierList = Object.entries(PREMIUM_TIERS).map(([key, t]) => {
       const b = t.benefits;
       return [
-        `${t.emoji} *${key}* — ${t.pricePoin} Poin / ${t.days} hari`,
+        `${t.emoji} *${key}* — Rp${t.priceRp.toLocaleString('id-ID')} / ${t.days} hari`,
         `  • AI Gemini: *${b.aiDailyLimit}x / hari*`,
         `  • Diskon belanja: *${b.shopDiscountPct}%*`,
         `  • Reseller Lapak: *${b.resellerAccess ? '✅ Aktif' : '❌'}*`,
@@ -402,6 +402,9 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
         `━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
         currentTierLabel,
         ``,
+        `💳 Premium dibayar dengan *saldo deposit* (uang asli), bukan Akbar Poin.`,
+        `Top up: *.deposit <nominal>*   |   Cek saldo: *.saldo*`,
+        ``,
         `_Ketik *.upgradepremium silver/gold/diamond* untuk upgrade!_`
       ].join('\n')
     }, { quoted: messageObj });
@@ -409,7 +412,10 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
   }
 
 
-  // ─── .upgradepremium TIER — Beli premium dengan poin ─────────
+  // ─── .upgradepremium TIER — Beli premium dengan saldo deposit ───
+  // Premium adalah produk berbayar: hanya bisa dibeli dengan uang asli lewat
+  // saldo deposit (`.deposit` → QRIS Casaku). Akbar Poin tidak pernah bisa
+  // membelinya, supaya poin hasil main game tidak punya nilai rupiah.
   if (['upgradepremium', 'buypremium', 'premium buy'].includes(cmd)) {
     const tierArg = args[1];
     const tierKey = tierArg ? tierArg.charAt(0).toUpperCase() + tierArg.slice(1).toLowerCase() : null;
@@ -422,12 +428,13 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
     }
 
     const tierInfo = PREMIUM_TIERS[tierKey];
-    const profile = await db.getGameProfile(senderNumber);
-    const currentPoints = (typeof profile?.points === 'number' && isFinite(profile.points)) ? Math.max(0, Math.floor(profile.points)) : 0;
+    const currentBalance = await db.getCustomerBalance(senderNumber);
 
-    if (currentPoints < tierInfo.pricePoin) {
+    if (currentBalance < tierInfo.priceRp) {
+      const kurang = tierInfo.priceRp - currentBalance;
+      const saranTopUp = Math.max(5000, Math.ceil(kurang / 1000) * 1000);
       await sock.sendMessage(jid, {
-        text: `❌ Poin tidak cukup!\n\n${tierInfo.emoji} ${tierKey} butuh: *${tierInfo.pricePoin} poin*\nPoin kamu: *${currentPoints}*\nKurang: *${tierInfo.pricePoin - currentPoints} poin*\n\n💡 Main game untuk kumpulkan poin!\n*.daily* *.quiz* *.slot* *.dungeon*`
+        text: `❌ *SALDO DEPOSIT TIDAK CUKUP*\n\n${tierInfo.emoji} ${tierKey} (${tierInfo.days} hari): *Rp${tierInfo.priceRp.toLocaleString('id-ID')}*\n💳 Saldo kamu: *Rp${currentBalance.toLocaleString('id-ID')}*\n📉 Kurang: *Rp${kurang.toLocaleString('id-ID')}*\n\n💡 Premium hanya bisa dibeli dengan uang asli lewat saldo deposit.\n\n📥 Top up: *.deposit ${saranTopUp}*\n💰 Cek saldo: *.saldo*`
       }, { quoted: messageObj });
       return true;
     }
@@ -449,9 +456,9 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
           `${tierInfo.emoji} *KONFIRMASI UPGRADE PREMIUM*`,
           ``,
           `Paket: *${tierKey}* (${tierInfo.days} hari)`,
-          `Harga: *${tierInfo.pricePoin} poin*`,
-          `Poin kamu: *${currentPoints}*`,
-          `Sisa setelah: *${currentPoints - tierInfo.pricePoin} poin*`,
+          `Harga: *Rp${tierInfo.priceRp.toLocaleString('id-ID')}* (dipotong dari saldo deposit)`,
+          `Saldo kamu: *Rp${currentBalance.toLocaleString('id-ID')}*`,
+          `Sisa setelah: *Rp${(currentBalance - tierInfo.priceRp).toLocaleString('id-ID')}*`,
           ``,
           `*Benefit yang didapat:*`,
           `• Daily reward *${tierInfo.benefits.dailyRewardMult}x*`,
@@ -464,13 +471,20 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
       return true;
     }
 
-    // Kurangi poin secara atomik & grant premium
-    const deductRes = await db.deductGamePoints(senderNumber, tierInfo.pricePoin);
+    // Potong saldo deposit secara atomik — deductCustomerBalance memakai guard
+    // `balance >= ?` di dalam transaksi, jadi aman dari double-spend.
+    const deductRes = await db.deductCustomerBalance(
+      senderNumber,
+      tierInfo.priceRp,
+      `Pembelian Premium ${tierKey} ${tierInfo.days} hari`
+    );
     if (!deductRes.success) {
-      await sock.sendMessage(jid, { text: `❌ Poin kamu tidak mencukupi untuk upgrade ke ${tierKey}!` }, { quoted: messageObj });
+      await sock.sendMessage(jid, {
+        text: `❌ ${deductRes.message || `Saldo deposit tidak cukup untuk membeli Premium ${tierKey}.`}`
+      }, { quoted: messageObj });
       return true;
     }
-    const newPoints = deductRes.newPoints;
+    const newBalance = deductRes.newBalance;
     const result = await db.grantPremium(senderNumber, tierKey, tierInfo.days, 'SELF');
     await db.logPremiumBenefit(senderNumber, 'UPGRADE', `${tierKey} for ${tierInfo.days} days`);
 
@@ -480,7 +494,7 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
         ``,
         `${tierInfo.emoji} Tier: *${tierKey}*`,
         `📅 Aktif hingga: *${formatExpiry(result.expiresAt)}*`,
-        `⭐ Sisa poin: *${newPoints}*`,
+        `💳 Sisa saldo deposit: *Rp${(newBalance || 0).toLocaleString('id-ID')}*`,
         ``,
         `*Benefit aktif sekarang:*`,
         `✅ Daily reward *${tierInfo.benefits.dailyRewardMult}x*`,
@@ -501,17 +515,18 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
 
     if (!current) {
       const nextCheapest = PREMIUM_TIERS.Silver;
-      const poin = profile?.points || 0;
+      const saldo = await db.getCustomerBalance(senderNumber);
       await sock.sendMessage(jid, {
         text: [
           `📊 *STATUS PREMIUM KAMU*`,
           ``,
           `🎮 Tier: *Free*`,
-          `💰 Poin kamu: *${poin}*`,
+          `💳 Saldo deposit: *Rp${saldo.toLocaleString('id-ID')}*`,
           ``,
-          `Untuk upgrade ke 🥈 Silver butuh: *${nextCheapest.pricePoin} poin*`,
-          `Kurang: *${Math.max(0, nextCheapest.pricePoin - poin)} poin*`,
+          `Untuk upgrade ke 🥈 Silver butuh: *Rp${nextCheapest.priceRp.toLocaleString('id-ID')}*`,
+          `Kurang: *Rp${Math.max(0, nextCheapest.priceRp - saldo).toLocaleString('id-ID')}*`,
           ``,
+          `Top up saldo: *.deposit <nominal>*`,
           `Lihat info lengkap: *.premium*`
         ].join('\n')
       }, { quoted: messageObj });

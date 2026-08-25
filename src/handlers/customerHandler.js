@@ -2,7 +2,7 @@ import * as db from '../../database.js';
 import { config } from '../../config.js';
 import { jidNormalizedUser, downloadMediaMessage, downloadContentFromMessage } from '@whiskeysockets/baileys';
 import { createMidtransTransaction, botState } from '../../server.js';
-import { buildCommandMenu } from '../../commandRegistry.js';
+import { buildCommandMenu, resolveCategoryId } from '../../commandRegistry.js';
 import { getSystemChangelog } from '../utils/changelog.js';
 import * as mediaHandler from '../../mediaHandler.js';
 import * as ent from '../../entertainmentHandler.js';
@@ -641,7 +641,7 @@ Ketik *bayar* atau klik tombol *Bayar QRIS Langsung* di bawah untuk langsung mem
       }
     }
 
-    if (isSalesModeGroup && ['3', 'downloader', 'media', 'hiburan', '4', 'game', 'games', 'fun'].includes(subCat)) {
+    if (isSalesModeGroup && ['3', '4', '6', '7', '8', 'downloader', 'media', 'hiburan', 'game', 'games', 'fun', 'pdf', 'premium', 'sosial', 'social'].includes(subCat)) {
       await sock.sendMessage(responseJid, { 
         text: "🛍️ *MODE JUALAN AKTIF:* Grup ini berada dalam *Mode Jualan/Toko*. Fitur media, downloader, dan game tidak diaktifkan di grup ini agar grup tetap tertib khusus jualan." 
       });
@@ -650,7 +650,35 @@ Ketik *bayar* atau klik tombol *Bayar QRIS Langsung* di bawah untuk langsung mem
 
     const organizedMenu = buildCommandMenu(subCat || 'all', { salesMode: isSalesModeGroup });
     if (organizedMenu) {
-      await sock.sendMessage(responseJid, { text: organizedMenu });
+      // Tombol navigasi disaring supaya tidak menawarkan kategori yang sedang
+      // dibuka, dan saat berada di dalam kategori tombol pertama jadi jalan
+      // pulang ke beranda menu.
+      const kategoriAktif = resolveCategoryId(subCat);
+      let quickButtons;
+
+      if (isSalesModeGroup) {
+        quickButtons = [
+          { type: 'reply', text: '🛍️ Katalog Produk', id: '.list' },
+          { type: 'reply', text: '🛒 Keranjang Saya', id: '.keranjang' },
+          { type: 'reply', text: '🏆 Hadiah Harian', id: '.daily' }
+        ];
+      } else {
+        const navigasi = [
+          { type: 'reply', text: '🛍️ Produk', id: '.menu jualan', kategori: 'jualan' },
+          { type: 'reply', text: '🎮 Game', id: '.menu game', kategori: 'game' },
+          { type: 'reply', text: '📥 Media', id: '.menu media', kategori: 'media' },
+          { type: 'reply', text: '🏆 Poin', id: '.menu reward', kategori: 'reward' }
+        ].filter(b => b.kategori !== kategoriAktif);
+
+        quickButtons = kategoriAktif
+          ? [{ type: 'reply', text: '🏠 Menu Utama', id: '.menu' }, ...navigasi.slice(0, 2)]
+          : navigasi.slice(0, 3);
+      }
+
+      await sendInteractiveButtons(sock, responseJid, {
+        text: organizedMenu,
+        buttons: quickButtons.map(({ type, text, id }) => ({ type, text, id }))
+      });
       return true;
     }
 

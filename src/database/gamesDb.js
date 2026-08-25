@@ -240,6 +240,10 @@ export async function deductGamePoints(customerJid, amount) {
 export async function awardGamePoints(customerJid, points, won = false) {
   const rawPts = Number.parseInt(points, 10);
   const safePoints = (!isFinite(rawPts) || isNaN(rawPts)) ? 0 : Math.max(0, Math.min(1000, rawPts));
+  // XP Booster hanya mengalikan XP, tidak pernah poin — poin tetap 1:1 supaya
+  // buff tidak bisa dipakai untuk menggandakan saldo poin.
+  const xpBoost = await getBuffMultiplier(customerJid, 'XP_BOOST');
+  const xpGain = Math.max(0, Math.round(safePoints * xpBoost));
   return withTransaction(async () => {
     await getGameProfile(customerJid);
     await runQuery(
@@ -247,7 +251,7 @@ export async function awardGamePoints(customerJid, points, won = false) {
        SET points = COALESCE(points, 0) + ?, xp = COALESCE(xp, 0) + ?, games_played = COALESCE(games_played, 0) + 1,
            games_won = COALESCE(games_won, 0) + ?, updated_at = CURRENT_TIMESTAMP
        WHERE customer_jid = ?`,
-      [safePoints, safePoints, won ? 1 : 0, customerJid]
+      [safePoints, xpGain, won ? 1 : 0, customerJid]
     );
     const profile = await getGameProfile(customerJid);
     const level = Math.floor(profile.xp / 100) + 1;
@@ -494,7 +498,11 @@ export async function addMessageXp(customerJid, xpAmount = 10) {
   const profile = await getGameProfile(customerJid);
   const oldXp = profile.xp || 0;
   const oldLevel = profile.level || 1;
-  const newXp = oldXp + xpAmount;
+  // Power-Up XP Booster dari toko poin `.tukar` dikalikan di sini — ini satu-satunya
+  // tempat XP chat ditambahkan, jadi cukup satu hook.
+  const xpBoost = await getBuffMultiplier(customerJid, 'XP_BOOST');
+  const grantedXp = Math.max(0, Math.round(xpAmount * xpBoost));
+  const newXp = oldXp + grantedXp;
   const newLevel = Math.floor(newXp / 100) + 1;
 
   await runQuery(
@@ -1151,6 +1159,14 @@ export async function verifyAndRewardReferral(referredNomor, purchaseAmount) {
 
 /**
  * Redeem points for a discount coupon.
+ *
+ * ⚠️ DEAD CODE — TIDAK ADA PEMANGGILNYA, DAN MEMANG SENGAJA.
+ * Fungsi ini memotong game_profiles.points (Akbar Poin hasil main game) lalu
+ * mencetak kupon diskon yang berlaku di checkout — artinya poin jadi punya nilai
+ * rupiah. Kebijakan ekonomi bot sekarang: Akbar Poin murni skor + power-up
+ * (`.tukar`), dan semua yang bernilai uang (Premium, saldo) hanya dibeli dengan
+ * uang asli lewat `.deposit`. Jangan wire fungsi ini ke command apa pun tanpa
+ * persetujuan owner — itu membuka lagi jalur cetak-uang dari grinding game.
  */
 export async function redeemPointsForCoupon(customerNomor, couponTier) {
   const couponConfig = {
@@ -1223,3 +1239,184 @@ export async function getTopGroupChatStats(groupJid, limit = 10) {
   return await allQuery("SELECT participant_jid, msg_count FROM group_chat_stats WHERE group_jid = ? ORDER BY msg_count DESC LIMIT ?", [groupJid, limit]);
 }
 
+
+
+// --- STATISTIK GAME UNDERCOVER ---
+// Kolom counter yang boleh dinaikkan lewat bumpUndercoverCounter (whitelist,
+// supaya nama kolom tidak pernah datang dari input pemain).
+const UNDERCOVER_COUNTERS = [
+  'mrwhite_guess_win',
+  'jester_win',
+  'sheriff_kills',
+  'assassin_kills',
+  'detective_correct'
+];
+
+export async function getUndercoverStats(customerJid) {
+  await runQuery("INSERT OR IGNORE INTO undercover_stats (customer_jid) VALUES (?)", [customerJid]);
+  const row = await getQuery("SELECT * FROM undercover_stats WHERE customer_jid = ?", [customerJid]);
+  if (!row) {
+    return {
+      customer_jid: customerJid,
+      games_played: 0, games_won: 0,
+      times_civilian: 0, wins_civilian: 0,
+      times_impostor: 0, wins_impostor: 0,
+      times_neutral: 0, wins_neutral: 0,
+      mrwhite_guess_win: 0, jester_win: 0,
+      sheriff_kills: 0, assassin_kills: 0, detective_correct: 0,
+      win_streak: 0, best_streak: 0, points_won: 0
+    };
+  }
+  for (const key of Object.keys(row)) {
+    if (key === 'customer_jid' || key === 'last_played' || key === 'updated_at') continue;
+    row[key] = Math.max(0, Math.floor(Number(row[key]) || 0));
+  }
+  return row;
+}
+
+/**
+ * Catat hasil satu pertandingan Undercover untuk seorang pemain.
+ * faction: 'CIVILIAN' | 'IMPOSTOR' | 'NEUTRAL'
+ */
+export async function recordUndercoverResult(customerJid, { faction = 'CIVILIAN', won = false, prize = 0 } = {}) {
+  if (!customerJid) return null;
+  const current = await getUndercoverStats(customerJid);
+
+  const factionKey = ['CIVILIAN', 'IMPOSTOR', 'NEUTRAL'].includes(faction) ? faction : 'CIVILIAN';
+  const timesCol = { CIVILIAN: 'times_civilian', IMPOSTOR: 'times_impostor', NEUTRAL: 'times_neutral' }[factionKey];
+  const winsCol = { CIVILIAN: 'wins_civilian', IMPOSTOR: 'wins_impostor', NEUTRAL: 'wins_neutral' }[factionKey];
+
+  const safePrize = Math.max(0, Math.floor(Number(prize) || 0));
+  const newStreak = won ? (current.win_streak || 0) + 1 : 0;
+  const bestStreak = Math.max(current.best_streak || 0, newStreak);
+
+  await runQuery(
+    `UPDATE undercover_stats SET
+       games_played = games_played + 1,
+       games_won = games_won + ?,
+       ${timesCol} = ${timesCol} + 1,
+       ${winsCol} = ${winsCol} + ?,
+       win_streak = ?,
+       best_streak = ?,
+       points_won = points_won + ?,
+       last_played = CURRENT_TIMESTAMP,
+       updated_at = CURRENT_TIMESTAMP
+     WHERE customer_jid = ?`,
+    [won ? 1 : 0, won ? 1 : 0, newStreak, bestStreak, safePrize, customerJid]
+  );
+
+  return await getUndercoverStats(customerJid);
+}
+
+export async function bumpUndercoverCounter(customerJid, field, amount = 1) {
+  if (!customerJid || !UNDERCOVER_COUNTERS.includes(field)) return null;
+  const safeAmount = Math.max(1, Math.floor(Number(amount) || 1));
+  await runQuery("INSERT OR IGNORE INTO undercover_stats (customer_jid) VALUES (?)", [customerJid]);
+  await runQuery(
+    `UPDATE undercover_stats SET ${field} = ${field} + ?, updated_at = CURRENT_TIMESTAMP WHERE customer_jid = ?`,
+    [safeAmount, customerJid]
+  );
+  return true;
+}
+
+export async function getUndercoverLeaderboard(limit = 10, minGames = 3) {
+  const safeLimit = Math.max(1, Math.min(50, Number.parseInt(limit, 10) || 10));
+  const safeMin = Math.max(1, Number.parseInt(minGames, 10) || 3);
+  return await allQuery(
+    `SELECT u.customer_jid,
+            COALESCE(u.games_played, 0) AS games_played,
+            COALESCE(u.games_won, 0) AS games_won,
+            COALESCE(u.best_streak, 0) AS best_streak,
+            COALESCE(u.points_won, 0) AS points_won,
+            COALESCE(c.nama, 'Member') AS customer_nama
+     FROM undercover_stats u
+     LEFT JOIN customers c ON c.nomor = u.customer_jid
+     WHERE COALESCE(u.games_played, 0) >= ?
+     ORDER BY COALESCE(u.games_won, 0) DESC,
+              (COALESCE(u.games_won, 0) * 1.0 / COALESCE(u.games_played, 1)) DESC,
+              COALESCE(u.best_streak, 0) DESC
+     LIMIT ?`,
+    [safeMin, safeLimit]
+  );
+}
+
+
+// ============================================================
+// POWER-UP / BUFF PEMAIN (dibeli dengan Akbar Poin lewat `.tukar`)
+// ============================================================
+// Buff berbasis waktu memakai kolom expires_at (epoch ms), buff sekali pakai
+// memakai uses_left. Keduanya duduk di tabel yang sama supaya pengecekan di
+// jalur game cukup satu query. Sebuah baris dianggap aktif selama masih punya
+// sisa waktu ATAU masih punya sisa jatah pakai.
+
+export async function grantUserBuff(jid, buffType, { multiplier = 1, durationMs = 0, uses = 0 } = {}) {
+  const now = Date.now();
+  const existing = await getActiveBuff(jid, buffType);
+
+  // Beli ulang saat buff masih aktif = perpanjang dari sisa waktu, bukan reset.
+  const baseExpiry = (existing && existing.expires_at && Number(existing.expires_at) > now)
+    ? Number(existing.expires_at)
+    : now;
+  const expiresAt = durationMs > 0 ? baseExpiry + durationMs : null;
+  const usesLeft = uses > 0 ? (Math.max(0, Number(existing?.uses_left) || 0) + uses) : 0;
+
+  await runQuery(
+    `INSERT INTO user_buffs (jid, buff_type, multiplier, uses_left, expires_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(jid, buff_type) DO UPDATE SET
+       multiplier = excluded.multiplier,
+       uses_left = excluded.uses_left,
+       expires_at = excluded.expires_at,
+       created_at = CURRENT_TIMESTAMP`,
+    [jid, buffType, multiplier, usesLeft, expiresAt]
+  );
+
+  return { success: true, buffType, multiplier, usesLeft, expiresAt };
+}
+
+export async function getActiveBuff(jid, buffType) {
+  const row = await getQuery("SELECT * FROM user_buffs WHERE jid = ? AND buff_type = ?", [jid, buffType]);
+  if (!row) return null;
+
+  const now = Date.now();
+  const hasTime = row.expires_at !== null && row.expires_at !== undefined && Number(row.expires_at) > now;
+  const hasUses = Number(row.uses_left) > 0;
+
+  if (!hasTime && !hasUses) {
+    await runQuery("DELETE FROM user_buffs WHERE jid = ? AND buff_type = ?", [jid, buffType]);
+    return null;
+  }
+  return row;
+}
+
+export async function getBuffMultiplier(jid, buffType) {
+  const row = await getActiveBuff(jid, buffType);
+  if (!row) return 1;
+  const mult = Number(row.multiplier);
+  return (isFinite(mult) && mult > 0) ? mult : 1;
+}
+
+// Pakai satu jatah buff sekali pakai. Mengembalikan null kalau tidak ada jatah,
+// jadi pemanggil bisa membedakan "buff dipakai" vs "tidak punya buff".
+export async function consumeBuffUse(jid, buffType) {
+  const row = await getActiveBuff(jid, buffType);
+  if (!row || Number(row.uses_left) <= 0) return null;
+
+  const remaining = Number(row.uses_left) - 1;
+  if (remaining <= 0) {
+    await runQuery("DELETE FROM user_buffs WHERE jid = ? AND buff_type = ?", [jid, buffType]);
+  } else {
+    await runQuery("UPDATE user_buffs SET uses_left = ? WHERE jid = ? AND buff_type = ?", [remaining, jid, buffType]);
+  }
+
+  const mult = Number(row.multiplier);
+  return { multiplier: (isFinite(mult) && mult > 0) ? mult : 1, remaining: Math.max(0, remaining) };
+}
+
+export async function listActiveBuffs(jid) {
+  await runQuery(
+    "DELETE FROM user_buffs WHERE (expires_at IS NULL OR expires_at <= ?) AND COALESCE(uses_left, 0) <= 0",
+    [Date.now()]
+  );
+  return allQuery("SELECT * FROM user_buffs WHERE jid = ? ORDER BY buff_type ASC", [jid]);
+}
