@@ -69,35 +69,52 @@ export const ROLE_STATS = {
     id: 'dps',
     name: 'Attacker (DPS)',
     emoji: '⚔️',
-    hp: 1000,
-    desc: 'Damage fisik besar & potensi serangan kritikal.',
+    hp: 1100,
+    desc: 'Damage fisik monster & potensi serangan kritikal mematikan (800 - 1300 DMG).',
     skills: '`.serang` / `.berserk`'
   },
   tank: {
     id: 'tank',
     name: 'Guardian (Tank)',
     emoji: '🛡️',
-    hp: 1800,
-    desc: 'Darah tebal, pasang perisai penahan damage & taunt boss.',
-    skills: '`.tameng` / `.benteng`'
+    hp: 2000,
+    desc: 'Darah tebal, pasif Iron Skin (-40% DMG), perisai tim & skill Taunt pasang badan.',
+    skills: '`.tameng` / `.taunt` / `.benteng`'
   },
   heal: {
     id: 'heal',
     name: 'Cleric (Healer)',
     emoji: '💖',
-    hp: 850,
-    desc: 'Penyembuh HP teman, revive teman gugur, & mass heal.',
+    hp: 900,
+    desc: 'Penyembuh HP andal (600 - 1100 HP), revive teman gugur (800 HP), & mass heal.',
     skills: '`.heal @teman` / `.massheal` / `.revive @teman`'
   },
   mage: {
     id: 'mage',
     name: 'Archmage (Mage)',
     emoji: '🔮',
-    hp: 750,
-    desc: 'Sihir penghancur armor & jurus freeze untuk gagalkan ultimate boss.',
+    hp: 800,
+    desc: 'Sihir penghancur armor (+35% DMG Fisik) & jurus freeze gagalkan ultimate boss.',
     skills: '`.sihir` / `.freeze`'
   }
 };
+
+/**
+ * Konteks raid di sebuah grup untuk keperluan routing command.
+ *
+ * `.heal` dan `.revive` dipakai bersama oleh Healer Raid Boss dan Dokter
+ * Undercover. Router memakai fungsi ini untuk tahu apakah command itu memang
+ * ditujukan ke raid, tanpa mengirim pesan apa pun.
+ */
+export function getRaidContext(jid, senderNumber) {
+  const session = activeRaids.get(jid);
+  if (!session) return { adaSesi: false, anggota: false, status: null };
+  return {
+    adaSesi: true,
+    anggota: session.players?.has(senderNumber) === true,
+    status: session.status
+  };
+}
 
 /**
  * Render HP Bar Visual Emoji
@@ -134,8 +151,8 @@ export async function handleRaidCommand(sock, jid, senderNumber, messageObj, arg
     return await startRaidBattle(sock, jid, senderNumber, messageObj);
   }
 
-  // 4. AKSI PERTEMPURAN (.serang, .atk, .berserk, .tameng, .shield, .benteng, .heal, .massheal, .revive, .sihir, .cast, .freeze, .stun)
-  if (['serang', 'atk', 'berserk', 'tameng', 'shield', 'benteng', 'heal', 'massheal', 'revive', 'sihir', 'cast', 'freeze', 'stun'].includes(command)) {
+  // 4. AKSI PERTEMPURAN (.serang, .atk, .berserk, .tameng, .shield, .taunt, .provokasi, .provoke, .benteng, .heal, .massheal, .revive, .sihir, .cast, .freeze, .stun)
+  if (['serang', 'atk', 'berserk', 'tameng', 'shield', 'taunt', 'provokasi', 'provoke', 'benteng', 'heal', 'massheal', 'revive', 'sihir', 'cast', 'freeze', 'stun'].includes(command)) {
     return await submitPlayerAction(sock, jid, senderNumber, messageObj, args, command);
   }
 
@@ -293,11 +310,13 @@ async function joinRaid(sock, jid, senderNumber, messageObj, args) {
     emoji: roleData.emoji,
     hp: roleData.hp,
     maxHp: roleData.hp,
+    shield: 0,
     isAlive: true,
     action: null,
     actionTarget: null,
-    cooldowns: { berserk: 0, massheal: 0, revive: 0, freeze: 0, benteng: 0 },
+    cooldowns: { berserk: 0, massheal: 0, revive: 0, freeze: 0, benteng: 0, taunt: 0 },
     shieldActive: false,
+    tauntActive: false,
     bentengActive: false,
     damageDealt: 0,
     healingDone: 0,
@@ -370,7 +389,17 @@ ${playerList}
  */
 async function submitPlayerAction(sock, jid, senderNumber, messageObj, args, command) {
   const session = activeRaids.get(jid);
-  if (!session || session.status !== 'BATTLE') return false;
+  if (!session) return false;
+
+  // Sesi masih di lobby: beri tahu, jangan diam. Command aksi seperti `.heal`
+  // sekarang dirutekan ke raid begitu ada sesi di grup ini, jadi kalau di sini
+  // balik `false` pemain tidak dapat balasan apa pun dan pesannya nyasar ke
+  // handler lain.
+  if (session.status !== 'BATTLE') {
+    await send(sock, jid, messageObj, `⏳ Pertempuran belum dimulai! Regu masih di lobby.
+👉 Ketik \`.joinraid <dps/tank/heal/mage>\` untuk bergabung, atau \`.startraid\` untuk memulai lebih cepat.`);
+    return true;
+  }
 
   const player = session.players.get(senderNumber);
   if (!player) {
@@ -402,6 +431,10 @@ async function submitPlayerAction(sock, jid, senderNumber, messageObj, args, com
   }
   if (command === 'benteng' && player.cooldowns.benteng > 0) {
     await send(sock, jid, messageObj, `⏳ Skill Benteng Pertahanan sedang cooldown selama *${player.cooldowns.benteng} ronde* lagi.`);
+    return true;
+  }
+  if (['taunt', 'provokasi', 'provoke'].includes(command) && player.cooldowns.taunt > 0) {
+    await send(sock, jid, messageObj, `⏳ Skill Taunt sedang cooldown selama *${player.cooldowns.taunt} ronde* lagi.`);
     return true;
   }
 
@@ -472,36 +505,51 @@ async function executeRoundResolution(sock, session) {
     const action = player.action || (player.roleKey === 'tank' ? 'tameng' : (player.roleKey === 'heal' ? 'heal' : 'serang'));
 
     if (action === 'serang' || action === 'atk') {
-      const isCrit = Math.random() < 0.25;
-      let dmg = Math.floor(Math.random() * 350) + 400; // 400 - 750
-      if (isCrit) dmg = Math.floor(dmg * 1.5);
-      if (boss.armorBreakTurns > 0) dmg = Math.floor(dmg * 1.25);
+      const isCrit = Math.random() < 0.35;
+      let dmg = Math.floor(Math.random() * 500) + 800; // 800 - 1300
+      if (isCrit) dmg = Math.floor(dmg * 2.0);
+      if (boss.armorBreakTurns > 0) dmg = Math.floor(dmg * 1.35);
 
       boss.hp -= dmg;
       player.damageDealt += dmg;
-      logs.push(`🗡️ ${player.emoji} *${player.name}* menebaskan pedang! *-${dmg.toLocaleString('id-ID')} HP* ${isCrit ? '💥 *(CRITICAL!)*' : ''}`);
+      logs.push(`🗡️ ${player.emoji} *${player.name}* menebaskan pedang maut! *-${dmg.toLocaleString('id-ID')} HP* ${isCrit ? '💥 *(CRITICAL 2.0x!)*' : ''}`);
 
     } else if (action === 'berserk') {
-      let dmg = Math.floor(Math.random() * 650) + 850; // 850 - 1500
-      if (boss.armorBreakTurns > 0) dmg = Math.floor(dmg * 1.25);
+      let dmg = Math.floor(Math.random() * 1500) + 2000; // 2000 - 3500
+      if (boss.armorBreakTurns > 0) dmg = Math.floor(dmg * 1.35);
 
       boss.hp -= dmg;
-      player.hp = Math.max(1, player.hp - 150);
+      player.hp = Math.max(1, player.hp - 100);
       player.damageDealt += dmg;
       player.cooldowns.berserk = 3;
-      logs.push(`🔥 ${player.emoji} *${player.name}* mengamuk dalam mode *BERSERK*! *-${dmg.toLocaleString('id-ID')} HP* ke Boss (Recoil -150 HP).`);
+      logs.push(`🔥 ${player.emoji} *${player.name}* mengamuk dalam mode *BERSERK*! *-${dmg.toLocaleString('id-ID')} HP* ke Boss (Recoil -100 HP).`);
 
     } else if (action === 'tameng' || action === 'shield') {
       player.shieldActive = true;
-      const dmg = Math.floor(Math.random() * 150) + 150;
+      const dmg = Math.floor(Math.random() * 150) + 200;
       boss.hp -= dmg;
       player.damageDealt += dmg;
-      logs.push(`🛡️ ${player.emoji} *${player.name}* membentangkan perisai baja suci! *(Menahan 70% damage ke tim)*`);
+
+      // Berikan +500 Shield HP ke seluruh anggota tim yang masih hidup
+      for (const p of players.values()) {
+        if (p.isAlive) {
+          p.shield = (p.shield || 0) + 500;
+        }
+      }
+      logs.push(`🛡️ ${player.emoji} *${player.name}* membentangkan *Perisai Suci Aegis*! *(Seluruh tim mendapat +500 Shield HP & -${dmg} HP ke Boss)*`);
+
+    } else if (['taunt', 'provokasi', 'provoke'].includes(action)) {
+      player.tauntActive = true;
+      player.cooldowns.taunt = 2;
+      const dmg = Math.floor(Math.random() * 100) + 200;
+      boss.hp -= dmg;
+      player.damageDealt += dmg;
+      logs.push(`📢 ${player.emoji} *${player.name}* melancarkan *Tantangan Provokasi (TAUNT)*! Seluruh serangan Boss ronde ini dipaksa menghajar dirinya!`);
 
     } else if (action === 'benteng') {
       player.bentengActive = true;
       player.cooldowns.benteng = 3;
-      logs.push(`🏰 ${player.emoji} *${player.name}* mendirikan *Benteng Kekebalan Absolut* untuk tim ronde ini!`);
+      logs.push(`🏰 ${player.emoji} *${player.name}* mendirikan *Benteng Kekebalan Absolut* untuk tim ronde ini! (Kekebalan 100%)`);
 
     } else if (action === 'heal') {
       // Cari target: dari mention atau cari teman dengan HP terendah
@@ -511,14 +559,14 @@ async function executeRoundResolution(sock, session) {
         target = alives[0] || player;
       }
 
-      const healAmt = Math.floor(Math.random() * 400) + 450; // 450 - 850
+      const healAmt = Math.floor(Math.random() * 500) + 600; // 600 - 1100
       const oldHp = target.hp;
       target.hp = Math.min(target.maxHp, target.hp + healAmt);
       const actualHeal = target.hp - oldHp;
       player.healingDone += actualHeal;
 
       // Beri sedikit holy damage
-      boss.hp -= 150;
+      boss.hp -= 200;
       logs.push(`💖 ${player.emoji} *${player.name}* memulihkan *+${actualHeal} HP* untuk *${target.name}* (HP: ${target.hp}/${target.maxHp}).`);
 
     } else if (action === 'massheal') {
@@ -526,13 +574,13 @@ async function executeRoundResolution(sock, session) {
       for (const p of players.values()) {
         if (p.isAlive) {
           const old = p.hp;
-          p.hp = Math.min(p.maxHp, p.hp + 300);
+          p.hp = Math.min(p.maxHp, p.hp + 450);
           totalMass += (p.hp - old);
         }
       }
       player.healingDone += totalMass;
       player.cooldowns.massheal = 3;
-      logs.push(`✨ ${player.emoji} *${player.name}* melantunkan *Doa Penyembuhan Massal*! *+300 HP* ke seluruh tim.`);
+      logs.push(`✨ ${player.emoji} *${player.name}* melantunkan *Doa Penyembuhan Massal*! *+450 HP* ke seluruh tim.`);
 
     } else if (action === 'revive') {
       let target = players.get(player.actionTarget);
@@ -543,19 +591,20 @@ async function executeRoundResolution(sock, session) {
 
       if (target) {
         target.isAlive = true;
-        target.hp = 500;
+        target.hp = 800;
+        target.shield = 0;
         player.cooldowns.revive = 4;
-        logs.push(`🕊️ ${player.emoji} *${player.name}* membangkitkan *${target.name}* dari kematian dengan 500 HP!`);
+        logs.push(`🕊️ ${player.emoji} *${player.name}* membangkitkan *${target.name}* dari kematian dengan 800 HP!`);
       } else {
         logs.push(`💖 ${player.emoji} *${player.name}* menyalurkan energi suci (tidak ada teman gugur).`);
       }
 
     } else if (action === 'sihir' || action === 'cast') {
-      let dmg = Math.floor(Math.random() * 400) + 500; // 500 - 900
+      let dmg = Math.floor(Math.random() * 250) + 450; // 450 - 700
       boss.hp -= dmg;
       boss.armorBreakTurns = 2;
       player.damageDealt += dmg;
-      logs.push(`🔮 ${player.emoji} *${player.name}* menembakkan *Meteor Arcane*! *-${dmg.toLocaleString('id-ID')} HP* & Armor Boss Pecah *(Armor Break +25% DMG)*.`);
+      logs.push(`🔮 ${player.emoji} *${player.name}* menembakkan *Meteor Arcane*! *-${dmg.toLocaleString('id-ID')} HP* & Armor Boss Pecah *(Armor Break +35% DMG Fisik)*.`);
 
     } else if (action === 'freeze' || action === 'stun') {
       boss.frozen = true;
@@ -584,67 +633,104 @@ async function executeRoundResolution(sock, session) {
     logs.push(`❄️ ${boss.emoji} *${boss.name}* membeku dan tidak dapat bergerak ronde ini!`);
     boss.frozen = false;
   } else {
-    // Cek apakah ada Tanker dengan benteng aktif
     const hasBenteng = Array.from(players.values()).some(p => p.isAlive && p.bentengActive);
-    const hasShieldTank = Array.from(players.values()).find(p => p.isAlive && p.shieldActive);
+    const tauntTank = Array.from(players.values()).find(p => p.isAlive && p.tauntActive);
 
-    // KONDISI ULTIMATE
-    if (boss.charge >= 1) {
-      logs.push(`💥 ${boss.emoji} *${boss.name}* MELEPASKAN JURUS PAMUNGKAS: *${boss.ultimateName}*!`);
-      let ultDmg = boss.attack * 2;
+    // KONDISI 1: BENTENG PERTAHANAN ABSOLUT
+    if (hasBenteng) {
+      logs.push(`🏰 Benteng Pertahanan Absolut tim menangkis 100% serangan Boss! (0 Damage).`);
+      if (boss.charge >= 1) boss.charge = 0;
 
-      if (hasBenteng) {
-        logs.push(`🏰 Benteng pertahanan tim menahan seluruh ledakan ultimate! (0 Damage).`);
+    // KONDISI 2: TANK MELAKUKAN TAUNT (PASANG BADAN)
+    } else if (tauntTank) {
+      const isUlt = boss.charge >= 1;
+      let rawDmg = isUlt ? boss.attack * 2 : Math.floor(boss.attack * 1.3);
+      // Pasif Iron Skin Tank (-40% Damage)
+      let incomingDmg = Math.floor(rawDmg * 0.6);
+
+      let absorbed = 0;
+      if (tauntTank.shield > 0) {
+        absorbed = Math.min(tauntTank.shield, incomingDmg);
+        tauntTank.shield -= absorbed;
+        incomingDmg -= absorbed;
+        tauntTank.damageAbsorbed += absorbed;
+      }
+      tauntTank.hp -= incomingDmg;
+
+      if (isUlt) {
+        logs.push(`💥 ${boss.emoji} *${boss.name}* MELEPASKAN JURUS PAMUNGKAS: *${boss.ultimateName}*!`);
+        boss.charge = 0;
+      }
+
+      logs.push(`📢 ${tauntTank.emoji} *${tauntTank.name}* pasang badan menahan seluruh amukan Boss! *(Pasif Iron Skin -40% DMG)*`);
+      if (absorbed > 0) logs.push(`🛡️ Perisai menyerap *${absorbed} DMG*!`);
+
+      if (tauntTank.hp <= 0) {
+        tauntTank.hp = 0;
+        tauntTank.isAlive = false;
+        logs.push(`💀 *${tauntTank.name}* menerima *-${incomingDmg} HP* dan GUGUR sebagai pahlawan pembela tim!`);
       } else {
-        if (hasShieldTank) {
-          ultDmg = Math.floor(ultDmg * 0.35); // Berkurang drastis
-          hasShieldTank.damageAbsorbed += ultDmg;
-          logs.push(`🛡️ Perisai *${hasShieldTank.name}* menyerap sebagian besar ledakan ultimate!`);
-        }
+        logs.push(`💢 *${tauntTank.name}* menahan *-${incomingDmg} HP* (Sisa HP: ${tauntTank.hp}/${tauntTank.maxHp}).`);
+      }
+      logs.push(`✨ Seluruh rekan tim lainnya 100% AMAN (0 Damage)!`);
+
+    // KONDISI 3: SERANGAN NORMAL / ULTIMATE KE SELURUH TIM
+    } else {
+      if (boss.charge >= 1) {
+        logs.push(`💥 ${boss.emoji} *${boss.name}* MELEPASKAN JURUS PAMUNGKAS: *${boss.ultimateName}*!`);
+        const baseUlt = boss.attack * 2;
 
         for (const p of players.values()) {
           if (p.isAlive) {
-            p.hp -= ultDmg;
+            let pDmg = (p.roleKey === 'tank') ? Math.floor(baseUlt * 0.6) : baseUlt;
+            let absorbed = 0;
+            if (p.shield > 0) {
+              absorbed = Math.min(p.shield, pDmg);
+              p.shield -= absorbed;
+              pDmg -= absorbed;
+              p.damageAbsorbed += absorbed;
+            }
+            p.hp -= pDmg;
+
+            const absorbTxt = absorbed > 0 ? ` (🛡️ ${absorbed} diserap perisai)` : '';
             if (p.hp <= 0) {
               p.hp = 0;
               p.isAlive = false;
-              logs.push(`💀 *${p.name}* terkena ${ultDmg} DMG dan GUGUR (K.O.)!`);
+              logs.push(`💀 *${p.name}* terkena ${pDmg} DMG${absorbTxt} dan GUGUR (K.O.)!`);
             } else {
-              logs.push(`💢 *${p.name}* terkena *-${ultDmg} HP* (Sisa: ${p.hp}/${p.maxHp}).`);
+              logs.push(`💢 *${p.name}* terkena *-${pDmg} HP*${absorbTxt} (Sisa: ${p.hp}/${p.maxHp}).`);
             }
           }
         }
-      }
-      boss.charge = 0;
+        boss.charge = 0;
 
-    } else {
-      // Regular Attack / Charging Ultimate
-      const shouldCharge = Math.random() < 0.35 && session.round > 1;
-      if (shouldCharge) {
-        boss.charge = 1;
-        logs.push(`⚠️ ${boss.emoji} *${boss.name}* mulai menghimpun energi kuno! 🔥 *Bersiap melancarkan ${boss.ultimateName} pada ronde berikutnya!*`);
       } else {
-        let baseDmg = boss.attack;
-        if (hasBenteng) {
-          logs.push(`🏰 Serangan biasa boss terpental oleh Benteng Pertahanan!`);
+        const shouldCharge = Math.random() < 0.35 && session.round > 1;
+        if (shouldCharge) {
+          boss.charge = 1;
+          logs.push(`⚠️ ${boss.emoji} *${boss.name}* mulai menghimpun energi kuno! 🔥 *Bersiap melancarkan ${boss.ultimateName} pada ronde berikutnya!*`);
         } else {
-          if (hasShieldTank) {
-            baseDmg = Math.floor(baseDmg * 0.35);
-            hasShieldTank.damageAbsorbed += baseDmg;
-            logs.push(`🛡️ Perisai *${hasShieldTank.name}* menyerap 65% damage serangan boss!`);
-          }
-
-          // Serang semua pemain hidup dengan split damage
           for (const p of players.values()) {
             if (p.isAlive) {
-              const personalDmg = Math.floor(baseDmg * (0.8 + Math.random() * 0.4));
-              p.hp -= personalDmg;
+              let pDmg = Math.floor(boss.attack * (0.8 + Math.random() * 0.4));
+              if (p.roleKey === 'tank') pDmg = Math.floor(pDmg * 0.6); // Pasif Iron Skin Tank
+
+              let absorbed = 0;
+              if (p.shield > 0) {
+                absorbed = Math.min(p.shield, pDmg);
+                p.shield -= absorbed;
+                pDmg -= absorbed;
+                p.damageAbsorbed += absorbed;
+              }
+              p.hp -= pDmg;
+
+              const absorbTxt = absorbed > 0 ? ` (🛡️ ${absorbed} diserap perisai)` : '';
               if (p.hp <= 0) {
                 p.hp = 0;
                 p.isAlive = false;
-                logs.push(`💀 *${p.name}* terkena ${personalDmg} DMG dan GUGUR!`);
+                logs.push(`💀 *${p.name}* terkena ${pDmg} DMG${absorbTxt} dan GUGUR!`);
               } else {
-                logs.push(`💢 *${p.name}* menerima *-${personalDmg} HP* (Sisa: ${p.hp}/${p.maxHp}).`);
+                logs.push(`💢 *${p.name}* menerima *-${pDmg} HP*${absorbTxt} (Sisa: ${p.hp}/${p.maxHp}).`);
               }
             }
           }
@@ -667,6 +753,7 @@ async function executeRoundResolution(sock, session) {
     p.action = null;
     p.actionTarget = null;
     p.shieldActive = false;
+    p.tauntActive = false;
     p.bentengActive = false;
     for (const k in p.cooldowns) {
       if (p.cooldowns[k] > 0) p.cooldowns[k]--;
@@ -677,7 +764,7 @@ async function executeRoundResolution(sock, session) {
 
   // 6. Tampilkan Status Update Ronde Berikutnya
   const playerStatus = Array.from(players.values())
-    .map(p => `${p.emoji} *${p.name}* — ${p.isAlive ? `HP: *${p.hp}/${p.maxHp}*` : '💀 *K.O.*'}`)
+    .map(p => `${p.emoji} *${p.name}* — ${p.isAlive ? `HP: *${p.hp}/${p.maxHp}* ${p.shield > 0 ? `🛡️ *(+${p.shield} Shield)*` : ''}` : '💀 *K.O.*'}`)
     .join('\n');
 
   const roundSummary = 
@@ -694,9 +781,9 @@ ${playerStatus}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 👉 *Kirim Aksi Ronde ${session.round} Sekarang (35 Detik):*
 • DPS: \`.serang\` / \`.berserk\`
-• Tank: \`.tameng\` / \`.benteng\`
+• Tank: \`.tameng\` (Shield Tim) / \`.taunt\` (Pasang Badan) / \`.benteng\`
 • Healer: \`.heal @teman\` / \`.massheal\` / \`.revive @teman\`
-• Mage: \`.sihir\` / \`.freeze\``;
+• Mage: \`.sihir\` (Armor Break) / \`.freeze\` (Stun Ultimate)`;
 
   await send(sock, groupJid, null, roundSummary, {
     title: `⚔️ RONDE ${session.round}`,

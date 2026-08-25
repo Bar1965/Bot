@@ -13,11 +13,11 @@ import { handleBankEconomy } from './bankEconomy.js';
 import { activeRounds, startRound, handleRoundCommand, surrenderRound, ROUND_DURATION_MS, scheduleRoundExpiry } from './triviaEngine.js';
 import { activeStealSessions, profileText, handleStealHeist, handleStealAnswer } from './rpgSystem.js';
 import { activeJailbreakSessions, handleJailbreak, handleJailbreakAnswer, handleTebusNapi } from './jailbreak.js';
-import { activeUndercoverGames, handleUndercover, handleUndercoverClue, handleUndercoverVote, handleUndercoverSkip, handleUndercoverShoot, handleMrWhiteGuess, handleDetectiveCheck, handleGuardianProtect, handleDoctorRevive, handleFramerFrame, handleSaboteurHack, handleUndercoverContinue, handleUndercoverSwap, handleCategoryVote } from './undercover.js';
+import { activeUndercoverGames, handleUndercover, handleUndercoverClue, handleUndercoverVote, handleUndercoverSkip, handleUndercoverShoot, handleMrWhiteGuess, handleDetectiveCheck, handleGuardianProtect, handleDoctorRevive, handleFramerFrame, handleSaboteurHack, handleUndercoverContinue, handleUndercoverSwap, handleCategoryVote, isUndercoverDoctorActive } from './undercover.js';
 import { activeQuizTournaments, handleQuizTournament, handleTournamentAnswer } from './quizTournament.js';
 import { activeAuctions, handleAuctionCommand } from './mysteryAuction.js';
 import { activeMinesGames, handleMinesCommand } from './minesGame.js';
-import { activeRaids, handleRaidCommand } from './raidBoss.js';
+import { activeRaids, handleRaidCommand, getRaidContext } from './raidBoss.js';
 import { handleTcgCommand } from './tcg/index.js';
 import { getSystemChangelog } from '../utils/changelog.js';
 import { buildCommandMenu } from '../../commandRegistry.js';
@@ -168,7 +168,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     'mines', 'ranjau', 'buka', 'pick', 'cashout', 'tarikdana', 'batalmines',
     'infomines', 'tabelmines', 'minesinfo',
     'raid', 'worldboss', 'bos', 'joinraid', 'joinr', 'pilihrole', 'startraid', 'gasraid', 'mulairaid', 'cancelraid', 'batalraid',
-    'serang', 'atk', 'berserk', 'tameng', 'shield', 'benteng', 'heal', 'massheal', 'revive', 'sihir', 'cast', 'freeze', 'stun'
+    'serang', 'atk', 'berserk', 'tameng', 'shield', 'taunt', 'provokasi', 'provoke', 'benteng', 'heal', 'massheal', 'revive', 'sihir', 'cast', 'freeze', 'stun'
   ];
 
   if (!knownFunCmds.includes(command)) {
@@ -366,6 +366,15 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
       return true;
     }
 
+    // 7. Cek Ranjau Poin / Mines
+    // `.surrender` juga terdaftar sebagai alias Mines, tapi cabang universal ini
+    // ada di atas router Mines dan selalu balik `true`, jadi dulu pemain Mines
+    // yang mengetik `.surrender` cuma dapat pesan "tidak ada sesi tebakan" dan
+    // modalnya tetap tertahan di sesi. Diarahkan ke pembatalan Mines di sini.
+    if (activeMinesGames.has(senderNumber)) {
+      return await handleMinesCommand(sock, jid, senderNumber, messageObj, args, 'batalmines', isFromGroup);
+    }
+
     await send(sock, jid, messageObj, "❌ Tidak ada sesi game tebakan yang sedang aktif di chat ini.");
     return true;
   }
@@ -479,9 +488,33 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
   }
 
   // Doctor Undercover (.sembuhkan @member / .revive @member)
+  //
+  // `heal` dan `revive` adalah alias milik dua game sekaligus: Dokter Undercover
+  // dan Healer Raid Boss. Dulu blok ini menelan keduanya karena letaknya di atas
+  // router raid dan handler Dokter selalu balik `true` (walau cuma untuk kirim
+  // pesan "tidak ada sesi Undercover"), sehingga Healer raid tidak pernah bisa
+  // memakai skill-nya. Sekarang alias bersama dipilah berdasarkan sesi yang
+  // benar-benar sedang berjalan, bukan urutan if:
+  //   1. Pengirim anggota regu raid di grup ini  -> raid.
+  //   2. Pengirim Dokter hidup di sesi Undercover -> undercover.
+  //   3. Ada sesi raid di grup ini (tapi bukan anggota) -> raid, biar pesannya
+  //      "kamu bukan anggota regu", bukan pesan Undercover yang membingungkan.
+  //   4. Sisanya -> undercover (termasuk Dokter yang main lewat DM).
+  // Alias eksklusif tiap game (.sembuhkan/.cpr/.obati vs .massheal) tidak ikut
+  // dipilah dan tetap langsung ke pemiliknya.
   if (['sembuhkan', 'revive', 'heal', 'cpr', 'obati', 'doctor'].includes(command)) {
-    const target = messageObj.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0] || args[1];
-    return await handleDoctorRevive(sock, jid, senderNumber, messageObj, target);
+    const isAliasBersama = ['heal', 'revive'].includes(command);
+    let milikRaid = false;
+
+    if (isAliasBersama && isFromGroup) {
+      const raidCtx = getRaidContext(jid, senderNumber);
+      milikRaid = raidCtx.anggota || (raidCtx.adaSesi && !isUndercoverDoctorActive(senderNumber));
+    }
+
+    if (!milikRaid) {
+      const target = messageObj.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0] || args[1];
+      return await handleDoctorRevive(sock, jid, senderNumber, messageObj, target);
+    }
   }
 
   // Framer Undercover (.fitnah @member / .frame @member)
@@ -547,7 +580,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
   }
 
   // Raid World Boss (MMORPG Co-op)
-  if (['raid', 'worldboss', 'bos', 'joinraid', 'joinr', 'pilihrole', 'startraid', 'gasraid', 'mulairaid', 'cancelraid', 'batalraid', 'serang', 'atk', 'berserk', 'tameng', 'shield', 'benteng', 'heal', 'massheal', 'revive', 'sihir', 'cast', 'freeze', 'stun'].includes(command)) {
+  if (['raid', 'worldboss', 'bos', 'joinraid', 'joinr', 'pilihrole', 'startraid', 'gasraid', 'mulairaid', 'cancelraid', 'batalraid', 'serang', 'atk', 'berserk', 'tameng', 'shield', 'taunt', 'provokasi', 'provoke', 'benteng', 'heal', 'massheal', 'revive', 'sihir', 'cast', 'freeze', 'stun'].includes(command)) {
     return await handleRaidCommand(sock, jid, senderNumber, messageObj, args, command, isFromGroup, isAdmin, isOwner);
   }
 
