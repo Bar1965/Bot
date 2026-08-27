@@ -13,15 +13,16 @@
  * BOT_VERSION. Jangan lupa `sorotan` — itu yang dibaca member di grup.
  */
 
-export const BOT_VERSION = 'v3.0.1';
+export const BOT_VERSION = 'v3.0.2';
 
 export const RIWAYAT_VERSI = [
   {
-    versi: 'v3.0.1',
-    nama: 'Bot Tidak Bisa Menendang Dirinya Sendiri',
+    versi: 'v3.0.2',
+    nama: 'Bot Tidak Bisa Menendang Dirinya Sendiri (dan Owner Tidak Bisa Ditendang Siapa Pun)',
     tanggal: '27 Agustus 2026',
     sorotan: [
       '🛡️ *Perbaikan penting:* `.kick @bot` dulu benar-benar membuat bot KELUAR dari grup. Sekarang ditolak.',
+      '👑 *Owner & Admin Toko sekarang kebal:* admin grup mana pun dulu bisa mengeluarkan Owner bot dari grupnya sendiri dengan satu perintah.',
       '🔁 Balasan ke pesan bot dan `.del` di grup juga ikut diperbaiki — dua-duanya diam-diam rusak oleh sebab yang sama.'
     ],
     rincian: [
@@ -46,10 +47,20 @@ export const RIWAYAT_VERSI = [
         ]
       },
       {
+        judul: '👑 *SIAPA BOLEH MENENDANG SIAPA*',
+        poin: [
+          '`.kick` dan `.demote` terbuka untuk *siapa pun yang jadi admin di grup WhatsApp* — bukan cuma Admin Toko.',
+          'Artinya admin grup mana pun bisa mengeluarkan Owner bot dari grupnya sendiri dengan satu perintah, dan bot yang punya hak admin akan menurutinya.',
+          '🪜 Sekarang ada tata tingkat: *Owner* boleh menyentuh siapa pun · *Admin Toko* boleh siapa pun kecuali Owner · *admin grup* boleh siapa pun kecuali Owner & Admin Toko.',
+          '🎯 Hanya `.kick` dan `.demote` yang dijaga. `.promote` pada Owner tidak merugikan, dan `.add` sasarannya justru belum ada di grup.',
+          '✅ Anggota biasa *tetap* bisa di-kick admin grup seperti sebelumnya — perisainya cuma menolak saat ada kecocokan pasti, tidak menebak.'
+        ]
+      },
+      {
         judul: '🧪 *DIUJI*',
         poin: [
-          'Uji regresi baru `npm run test:identity` — 31 pemeriksaan, semuanya lewat.',
-          'Termasuk memastikan arah sebaliknya tetap aman: anggota sungguhan *tetap bisa* di-kick admin.',
+          'Uji regresi baru `npm run test:identity` — 59 pemeriksaan, semuanya lewat.',
+          'Termasuk memastikan arah sebaliknya tetap aman: anggota sungguhan *tetap bisa* di-kick admin, dan Owner tetap bisa menindak Admin Toko.',
           'Ujinya juga menghitung jumlah jalur yang bisa mengeluarkan peserta dari grup, dan gagal kalau ada jalur baru yang lupa dipasangi penjaga.'
         ]
       }

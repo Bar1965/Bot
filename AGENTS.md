@@ -403,7 +403,40 @@ The same phone-only comparison silently broke two other things, both fixed: `isR
 `bot.js` was always false in LID groups, and `.del` computed `fromMe: false` for the bot's own
 messages so it took the "delete someone else's message" path.
 
-Run `npm run test:identity` after touching any of this — 31 checks, no database or network needed.
+### 9c. Who may kick whom — `src/utils/perisaiTarget.js`
+
+`.kick` and `.demote` are open to anyone holding **WhatsApp group admin**, not just a store admin.
+So any group admin could remove the bot's own owner from the owner's own group, or demote a store
+admin, in one command — and the bot, being an admin, would carry it out. The hierarchy is now
+enforced in one place:
+
+```
+Owner       → may touch anyone (except the bot itself, §9b)
+Admin Toko  → anyone EXCEPT the Owner
+Group admin → anyone EXCEPT the Owner and store admins
+```
+
+Only `kick` and `demote` are shielded. `promote` on the owner is harmless and `add` targets someone
+who is not in the group yet.
+
+Two rules that are easy to get backwards:
+
+- **A LID is never a phone number.** `identitasTarget()` returns `nomor: null` for a bare `@lid` and
+  only fills it from `participant.jid` or `lid_phone_map` (`db.cariNomorDariLid`). This matters
+  because `isPhoneMatch` compares with `endsWith` once both sides are ≥7 digits — feed a 15-digit
+  LID in as a phone and it can match a completely unrelated person's number. There is a test for
+  exactly this (`@lid` ending in the owner's digits must not be shielded).
+- **When the target cannot be resolved, ALLOW.** This is the opposite bias from `adalahJidBot`, and
+  deliberately so. That guard compares against identities that are always present in `sock.user`, so
+  it can refuse with confidence. Here, resolving `@lid` → phone depends on group metadata and a LID
+  map that fills in gradually; refusing on every failed lookup would break `.kick` for ordinary
+  members in LID groups, which is its normal use. The shield refuses only on a **positive** match,
+  and the whole call is wrapped in `try/catch` in the handler — a shield that throws would take all
+  group moderation down with it.
+
+`putusanPerisai()` is the pure policy and `identitasTarget()` the pure resolver; both are unit-tested
+without a database. Run `npm run test:identity` after touching any of this — 59 checks covering both
+§9b and §9c, no database or network needed.
 
 DM-vs-group is **not** a per-command flag. Three separate mechanisms:
 

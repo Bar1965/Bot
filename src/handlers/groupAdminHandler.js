@@ -11,6 +11,7 @@ import * as ent from '../../entertainmentHandler.js';
 import { sendInteractiveButtons, extractTargetJid, parseDuration, logToSystem, broadcastTagAll, triggerRestockBroadcast, checkAndNotifySubscribers, getCachedGroupMetadata } from '../../bot.js';
 import { backupDatabase } from '../../scheduler.js';
 import { adalahJidBot } from '../utils/botIdentity.js';
+import { perisaiTarget } from '../utils/perisaiTarget.js';
 
 export function createGroupAdminHandler(ctx) {
     const { sock, userPushNamesMap, messageCache, formatPhoneNumber, react, sendInteractiveButtons } = ctx;
@@ -1236,6 +1237,44 @@ ${panduanMode}`
       if (adalahJidBot(sock, targetJid, pesertaGrup)) {
         await sock.sendMessage(jid, { text: `⚠️ Ditolak: Saya tidak bisa melakukan ${cleanCmd} pada diri saya sendiri.` });
         return true;
+      }
+
+      // Perisai tata tingkat: Owner > Admin Toko > admin grup.
+      //
+      // `.kick` dan `.demote` terbuka untuk SIAPA PUN yang berstatus admin di
+      // grup WhatsApp — bukan hanya Admin Toko. Tanpa perisai ini, admin grup
+      // mana pun bisa mengeluarkan Owner bot dari grupnya sendiri dengan satu
+      // perintah, dan bot yang punya hak admin akan menurutinya.
+      //
+      // Hanya `kick` dan `demote` yang dijaga: `promote` pada Owner tidak
+      // merugikan, dan `add` sasarannya justru belum ada di grup.
+      if (['kick', 'demote'].includes(cleanCmd)) {
+        try {
+          const perisai = await perisaiTarget({
+            db,
+            targetJid,
+            peserta: pesertaGrup,
+            botSettings,
+            penyuruhOwner: isOwner,
+            ownerBawaan: config.defaults.ownerNumber,
+            adminBawaan: config.defaults.adminNumbers
+          });
+          if (perisai.dilindungi) {
+            const sebutan = perisai.alasan === 'OWNER' ? '*Owner bot*' : '*Admin Toko*';
+            await sock.sendMessage(jid, {
+              text: `🛡️ Ditolak: @${targetJid.split('@')[0]} adalah ${sebutan}.\n\n` +
+                    (perisai.alasan === 'OWNER'
+                      ? '_Hanya Owner sendiri yang bisa melakukan ini._'
+                      : '_Hanya Owner yang bisa melakukan ini pada Admin Toko._'),
+              mentions: [targetJid]
+            });
+            return true;
+          }
+        } catch (e) {
+          // Perisai yang melempar tidak boleh mematikan moderasi grup. Lihat
+          // catatan "bias saat ragu" di src/utils/perisaiTarget.js.
+          console.error('[MODERASI] Perisai sasaran gagal, perintah diteruskan:', e?.message || e);
+        }
       }
 
       try {

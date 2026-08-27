@@ -1,5 +1,5 @@
 /**
- * UJI PENJAGA IDENTITAS BOT
+ * UJI PENJAGA IDENTITAS BOT & PERISAI SASARAN MODERASI
  *
  * Menjaga satu bug spesifik supaya tidak pernah kembali: `.kick @bot` membuat
  * bot mengeluarkan dirinya sendiri dari grup.
@@ -24,6 +24,7 @@ const AKAR = path.resolve(import.meta.dirname, '..');
 const REPO = pathToFileURL(AKAR).href + '/';
 
 const { adalahJidBot, identitasBot } = await import(REPO + 'src/utils/botIdentity.js');
+const { identitasTarget, putusanPerisai, perisaiTarget } = await import(REPO + 'src/utils/perisaiTarget.js');
 
 let periksa = 0;
 const gagal = [];
@@ -131,6 +132,149 @@ const jumlahHapus = Object.values(sumber)
   .join('\n')
   .match(/groupParticipantsUpdate\([^)]*["']remove["']/g)?.length || 0;
 benar('jumlah jalur pengeluaran peserta yang diketahui', jumlahHapus, 3);
+
+// ============================================================
+// PERISAI SASARAN: OWNER > ADMIN TOKO > ADMIN GRUP
+// ============================================================
+
+const OWNER_HP = '628111222333';
+const ADMIN_HP = '628444555666';
+const OWNER_LID = '155566677788899@lid';
+
+const PESERTA_GRUP = [
+  { id: OWNER_LID, jid: `${OWNER_HP}@s.whatsapp.net`, admin: 'admin' },
+  { id: '177788899900011@lid', jid: `${ADMIN_HP}@s.whatsapp.net` },
+  { id: '133344455566677@lid', jid: '628777888999@s.whatsapp.net' },
+  { id: '628123123123@s.whatsapp.net' }
+];
+
+const ATURAN = { ownerNomor: OWNER_HP, ownerJid: '', adminNomor: [ADMIN_HP] };
+
+console.log('\n════ 7. @LID TIDAK PERNAH DIANGGAP NOMOR HP ════');
+{
+  const dariHp = identitasTarget(`${OWNER_HP}@s.whatsapp.net`);
+  benar('JID nomor HP -> nomor terbaca', dariHp.nomor, OWNER_HP);
+  benar('JID nomor HP -> bukan lid', dariHp.lid, null);
+
+  const dariLid = identitasTarget(OWNER_LID);
+  benar('@lid sendirian -> nomor TIDAK ditebak', dariLid.nomor, null);
+  benar('@lid sendirian -> lid terbaca', dariLid.lid, OWNER_LID);
+
+  const dariMeta = identitasTarget(OWNER_LID, PESERTA_GRUP);
+  benar('@lid + metadata grup -> nomor terbaca', dariMeta.nomor, OWNER_HP);
+
+  // Inti aturannya: angka LID kebetulan bisa berakhiran sama dengan nomor HP
+  // seseorang. `isPhoneMatch` memakai endsWith, jadi memperlakukan LID sebagai
+  // nomor akan melindungi orang yang sama sekali salah.
+  const lidJebakan = `99999${OWNER_HP}@lid`;
+  const jebakan = identitasTarget(lidJebakan);
+  benar('@lid berakhiran nomor Owner -> tetap bukan nomor', jebakan.nomor, null);
+  benar('@lid jebakan tidak terlindungi',
+    putusanPerisai({ identitas: jebakan, ...ATURAN }).dilindungi, false);
+}
+
+console.log('\n════ 8. TATA TINGKAT DITEGAKKAN ════');
+{
+  const owner = identitasTarget(OWNER_LID, PESERTA_GRUP);
+  const admin = identitasTarget('177788899900011@lid', PESERTA_GRUP);
+  const biasa = identitasTarget('133344455566677@lid', PESERTA_GRUP);
+
+  benar('admin grup TIDAK bisa kick Owner',
+    putusanPerisai({ identitas: owner, ...ATURAN, penyuruhOwner: false }).dilindungi, true);
+  benar('alasannya disebut OWNER',
+    putusanPerisai({ identitas: owner, ...ATURAN, penyuruhOwner: false }).alasan, 'OWNER');
+  benar('Owner BISA kick Owner (dirinya sendiri)',
+    putusanPerisai({ identitas: owner, ...ATURAN, penyuruhOwner: true }).dilindungi, false);
+
+  benar('admin grup TIDAK bisa kick Admin Toko',
+    putusanPerisai({ identitas: admin, ...ATURAN, penyuruhOwner: false }).dilindungi, true);
+  benar('alasannya disebut ADMIN_TOKO',
+    putusanPerisai({ identitas: admin, ...ATURAN, penyuruhOwner: false }).alasan, 'ADMIN_TOKO');
+  benar('Owner BISA kick Admin Toko',
+    putusanPerisai({ identitas: admin, ...ATURAN, penyuruhOwner: true }).dilindungi, false);
+
+  // Kalau bagian ini gagal, perisainya mematikan gunanya `.kick`.
+  benar('anggota biasa TETAP bisa di-kick',
+    putusanPerisai({ identitas: biasa, ...ATURAN, penyuruhOwner: false }).dilindungi, false);
+  benar('nomor tak dikenal TETAP bisa di-kick',
+    putusanPerisai({ identitas: identitasTarget('628999000111@s.whatsapp.net'), ...ATURAN }).dilindungi, false);
+
+  benar('Owner dikenali lewat ownerJid @lid tersimpan',
+    putusanPerisai({
+      identitas: identitasTarget(OWNER_LID),
+      ownerNomor: '', ownerJid: OWNER_LID, adminNomor: []
+    }).dilindungi, true);
+  benar('Owner dikenali lewat peran di tabel customers',
+    putusanPerisai({
+      identitas: identitasTarget('199999999999999@lid'),
+      ...ATURAN, peranDb: 'OWNER'
+    }).alasan, 'OWNER');
+  benar('Admin Toko dikenali lewat peran di tabel customers',
+    putusanPerisai({
+      identitas: identitasTarget('199999999999999@lid'),
+      ...ATURAN, peranDb: 'ADMIN'
+    }).alasan, 'ADMIN_TOKO');
+
+  benar('nomor 08xxx dicocokkan dengan 628xxx',
+    putusanPerisai({
+      identitas: identitasTarget('628111222333@s.whatsapp.net'),
+      ownerNomor: '08111222333', ownerJid: '', adminNomor: []
+    }).dilindungi, true);
+}
+
+console.log('\n════ 9. SAAT RAGU, JANGAN MEMATIKAN MODERASI ════');
+{
+  const setelan = { ownerNumber: OWNER_HP, adminNumbers: ADMIN_HP, ownerJid: '' };
+
+  const dbPalsu = {
+    cariNomorDariLid: async (lid) => (lid === OWNER_LID ? OWNER_HP : null),
+    getQuery: async () => null
+  };
+  const lewatPetaLid = await perisaiTarget({
+    db: dbPalsu, targetJid: OWNER_LID, peserta: null, botSettings: setelan
+  });
+  benar('peta LID menutup celah saat metadata tanpa nomor',
+    lewatPetaLid.dilindungi, true);
+
+  const dbPeran = {
+    cariNomorDariLid: async () => null,
+    getQuery: async () => ({ role: 'ADMIN' })
+  };
+  const lewatPeran = await perisaiTarget({
+    db: dbPeran, targetJid: '188888888888888@lid', peserta: null, botSettings: setelan
+  });
+  benar('peran customers menutup celah', lewatPeran.alasan, 'ADMIN_TOKO');
+
+  const dbRusak = {
+    cariNomorDariLid: async () => { throw new Error('db mati'); },
+    getQuery: async () => { throw new Error('db mati'); }
+  };
+  const saatRusak = await perisaiTarget({
+    db: dbRusak, targetJid: '188888888888888@lid', peserta: null, botSettings: setelan
+  });
+  benar('database mati tidak melempar', typeof saatRusak.dilindungi, 'boolean');
+  benar('database mati tidak memblokir moderasi', saatRusak.dilindungi, false);
+
+  const tanpaDb = await perisaiTarget({ targetJid: '188888888888888@lid', botSettings: setelan });
+  benar('tanpa db pun tidak melempar', tanpaDb.dilindungi, false);
+
+  const buram = await perisaiTarget({
+    db: { cariNomorDariLid: async () => null, getQuery: async () => null },
+    targetJid: '199999999999999@lid', peserta: PESERTA_GRUP, botSettings: setelan
+  });
+  benar('identitas tak dikenal tetap boleh di-kick', buram.dilindungi, false);
+}
+
+console.log('\n════ 10. PERISAI TERPASANG DI HANDLER ════');
+{
+  const isiHandler = sumber['src/handlers/groupAdminHandler.js'];
+  benar('handler memanggil perisaiTarget', /perisaiTarget\(/.test(isiHandler), true);
+  benar('perisai hanya untuk kick & demote',
+    /\['kick', 'demote'\]\.includes\(cleanCmd\)/.test(isiHandler), true);
+  benar('perisai dibungkus try/catch', /Perisai sasaran gagal/.test(isiHandler), true);
+}
+
+
 
 console.log('\n════════════════════════════════════════');
 console.log(`Pemeriksaan : ${periksa}`);

@@ -65,14 +65,135 @@ export async function updateUserPassword(username, newPassword) {
     "UPDATE users SET password_hash = ? WHERE username = ?",
     [hash, username.toLowerCase()]
   );
+  // Ganti password harus mencabut sesi lama, kalau tidak orang yang password-nya
+  // baru saja diganti (misalnya karena dicurigai bocor) tetap bisa memakai token
+  // 24 jamnya seolah tidak terjadi apa-apa.
+  await bumpTokenEpoch(username);
   await addLog("SYSTEM", `Password untuk akun pengguna ${username.toLowerCase()} berhasil diganti.`);
   return res;
 }
 
 export async function deleteUser(username) {
   const res = await runQuery("DELETE FROM users WHERE username = ?", [username.toLowerCase()]);
+  await bumpTokenEpoch(username);
   await addLog("SYSTEM", `Akun pengguna ${username.toLowerCase()} dihapus.`);
   return res;
+}
+
+
+// --- PETA LID <-> NOMOR HP ---
+
+/** Catat pasangan @lid dan nomor HP yang terbaca dari metadata grup. */
+export async function catatPetaLid(lidJid, phoneDigits) {
+  const lid = String(lidJid || '').trim().toLowerCase();
+  const digits = normalizePhoneDigits(phoneDigits);
+  if (!lid.endsWith('@lid') || !digits || digits.length < 8) return false;
+  await runQuery(
+    `INSERT INTO lid_phone_map (lid_jid, phone_digits, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+     ON CONFLICT(lid_jid) DO UPDATE SET phone_digits = ?, updated_at = CURRENT_TIMESTAMP`,
+    [lid, digits, digits]
+  );
+  return true;
+}
+
+/**
+ * Arah sebaliknya dari `resolveTargetJid`: dari @lid ke nomor HP.
+ *
+ * Dibutuhkan saat yang kita pegang hanyalah @lid (dari mention di grup) dan
+ * yang ingin diketahui adalah "nomor siapa ini" — misalnya untuk memeriksa
+ * apakah sasaran `.kick` ternyata Owner. Metadata grup adalah sumber utamanya;
+ * fungsi ini jaring pengaman saat baris pesertanya tidak memuat nomor HP.
+ */
+export async function cariNomorDariLid(lidJid) {
+  const lid = String(lidJid || '').trim().toLowerCase().replace(/:[0-9]+@/, '@');
+  if (!lid.endsWith('@lid')) return null;
+  const row = await getQuery("SELECT phone_digits FROM lid_phone_map WHERE lid_jid = ?", [lid]);
+  return row?.phone_digits || null;
+}
+
+/**
+ * Ubah masukan mentah dari perintah admin menjadi JID yang BENAR-BENAR dipakai
+ * orangnya, atau akui terus terang kalau tidak bisa.
+ *
+ * Sebelum ada fungsi ini, `.ban 628xxx` dan `.setpremium 628xxx` selalu merakit
+ * `628xxx@s.whatsapp.net` begitu saja, lalu membalas "✅ berhasil" — padahal 191
+ * dari 194 pelanggan tersimpan sebagai @lid, jadi baris yang ditulis tidak pernah
+ * cocok dengan siapa pun. Uang premium diterima, tier tidak pernah naik; user
+ * di-"ban" tetap bisa memakai bot seperti biasa. Tidak ada satu pun tanda gagal.
+ *
+ * Mengembalikan { jid, sumber, ditemukan }. `ditemukan: false` berarti pemanggil
+ * WAJIB menolak perintahnya, bukan melanjutkan dengan tebakan.
+ */
+export async function resolveTargetJid(masukan) {
+  const mentah = String(masukan || '').trim();
+  if (!mentah) return { jid: null, sumber: 'kosong', ditemukan: false };
+
+  // 1. Sudah berupa JID lengkap (dari mention / reply) — pakai apa adanya.
+  if (mentah.includes('@')) {
+    const bersih = mentah.replace(/:[0-9]+@/, '@').toLowerCase();
+    return { jid: bersih, sumber: 'jid', ditemukan: true };
+  }
+
+  const digits = normalizePhoneDigits(mentah);
+  if (!digits || digits.length < 8) return { jid: null, sumber: 'digit-pendek', ditemukan: false };
+
+  // 2. Cocokkan ke baris customers yang tersimpan sebagai nomor HP.
+  const semua = await allQuery("SELECT nomor FROM customers WHERE nomor LIKE '%@s.whatsapp.net'");
+  for (const c of semua) {
+    if (isPhoneMatch(c.nomor, digits)) {
+      return { jid: c.nomor, sumber: 'customers', ditemukan: true };
+    }
+  }
+
+  // 3. Cocokkan lewat peta LID yang terkumpul dari metadata grup.
+  const peta = await allQuery("SELECT lid_jid, phone_digits FROM lid_phone_map");
+  for (const p of peta) {
+    if (isPhoneMatch(p.phone_digits, digits)) {
+      return { jid: p.lid_jid, sumber: 'peta-lid', ditemukan: true };
+    }
+  }
+
+  return { jid: null, sumber: 'tidak-ketemu', ditemukan: false };
+}
+
+
+// --- PENCABUTAN TOKEN DASHBOARD ---
+//
+// JWT dashboard tidak menyimpan status apa pun di server, jadi tanpa penanda ini
+// "Logout", ganti password, dan hapus akun tidak mencabut apa pun: token yang
+// sudah dipegang tetap sah sampai 24 jamnya habis. `valid_after` adalah MILIDETIK
+// epoch — token dengan klaim `iatMs` lebih tua dari itu ditolak authenticateJWT.
+//
+// Satuannya milidetik, BUKAN detik, dan token membawa klaim `iatMs` sendiri alih-
+// alih memakai `iat` bawaan jsonwebtoken. `iat` hanya berpresisi detik, sehingga
+// token yang diterbitkan pada detik yang sama dengan pencabutan lolos begitu saja
+// (`iat < valid_after` bernilai false saat keduanya sama) — logout lalu langsung
+// mengakses ulang masih diterima. Diuji dan memang bocor; presisi milidetik
+// menutupnya tanpa mengorbankan alur "logout lalu login lagi", karena login
+// berikutnya selalu punya iatMs yang lebih besar.
+//
+// Efek samping yang disengaja: token lama yang diterbitkan SEBELUM perubahan ini
+// tidak punya klaim iatMs, jadi dianggap 0 dan ditolak begitu akunnya pernah
+// dicabut. Sesi dashboard yang sedang berjalan perlu login ulang sekali.
+
+export async function getTokenEpoch(username) {
+  const row = await getQuery(
+    "SELECT valid_after FROM auth_token_epochs WHERE username = ?",
+    [String(username || '').toLowerCase()]
+  );
+  return row ? Number(row.valid_after) || 0 : 0;
+}
+
+export async function bumpTokenEpoch(username) {
+  const nama = String(username || '').toLowerCase();
+  if (!nama) return 0;
+  const milidetik = Date.now();
+  await runQuery(
+    `INSERT INTO auth_token_epochs (username, valid_after) VALUES (?, ?)
+     ON CONFLICT(username) DO UPDATE SET valid_after = ?`,
+    [nama, milidetik, milidetik]
+  );
+  return milidetik;
 }
 
 
@@ -891,13 +1012,22 @@ export async function getPremiumTier(jid) {
   return premium ? premium.tier : 'Free';
 }
 
-export async function grantPremium(jid, tier, days, activatedBy = 'ADMIN') {
+/**
+ * @param {object} opsi
+ * @param {boolean} opsi.mulaiDariSekarang Hitung masa aktif dari SEKARANG, bukan
+ *   menumpuk di atas sisa masa aktif yang lama. Dipakai saat pemain naik tier:
+ *   sisa hari tier lama sudah dikonversi jadi hari di tier baru oleh pemanggil,
+ *   jadi kalau ditumpuk lagi hari yang sama akan terhitung dua kali.
+ */
+export async function grantPremium(jid, tier, days, activatedBy = 'ADMIN', opsi = {}) {
   const validTiers = ['Silver', 'Gold', 'Diamond'];
   if (!validTiers.includes(tier)) throw new Error(`Tier tidak valid: ${tier}`);
   const safeDays = Math.max(1, Math.min(365, Number.parseInt(days, 10) || 30));
 
   // Cek apakah sudah premium, extend dari waktu expire
-  const existing = await getQuery("SELECT expires_at FROM premium_users WHERE jid = ?", [jid]);
+  const existing = opsi.mulaiDariSekarang
+    ? null
+    : await getQuery("SELECT expires_at FROM premium_users WHERE jid = ?", [jid]);
   let newExpiry;
   if (existing && new Date(existing.expires_at) > new Date()) {
     newExpiry = new Date(existing.expires_at);
