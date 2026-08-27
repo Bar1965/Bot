@@ -5,7 +5,9 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "test:tcg": "node scripts/tcgSmokeTest.mjs",
+    "balance:tcg": "node scripts/tcgBalance.mjs"
   },
   "dependencies": {
     "@distube/ytdl-core": "^4.16.12",
