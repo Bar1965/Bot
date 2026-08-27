@@ -19,6 +19,11 @@ import {
 } from './battle.js';
 import { bufferKartu, bufferBanyakKartu } from './gambar.js';
 import { kirimDrop, resetPenghitung, statusDrop } from './drop.js';
+import {
+  catatAksi, barisGelar, labelTier, teksHadiahMusim,
+  tampilRank, tampilGelar, tampilTonggak, tampilMingguan, kelolaAbadi,
+  tawarBarter, terimaBarter, tolakBarter, adaBarterMenunggu
+} from './meta.js';
 
 // ============================================================
 // PELUANG GACHA & PITY
@@ -322,6 +327,12 @@ export async function handleTcgCommand({
     case '7':
       return await tampilMisi(sock, jid, messageObj, key, args[2]);
     case '8':
+      return await tampilRank(sock, jid, messageObj, key, args[2]);
+    case '9':
+      return await tampilGelar(sock, jid, messageObj, key, args[2]);
+    case '10':
+      return await tawarBarter(sock, jid, messageObj, key, args.slice(2), isFromGroup);
+    case '0':
       return await tampilBantuan(sock, jid, messageObj, args[2]);
 
     case 'mulai':
@@ -426,6 +437,48 @@ export async function handleTcgCommand({
     case 'cancel':
       return await tolakDuel(sock, jid, messageObj, key);
 
+    // ---- Lapisan retensi (meta.js) ----
+    case 'rank':
+    case 'peringkat':
+    case 'elo':
+      return await tampilRank(sock, jid, messageObj, key, args[2]);
+
+    case 'gelar':
+    case 'titel':
+    case 'title':
+      return await tampilGelar(sock, jid, messageObj, key, args[2]);
+
+    case 'tonggak':
+    case 'milestone':
+      return await tampilTonggak(sock, jid, messageObj, key, args[2]);
+
+    case 'mingguan':
+    case 'weekly':
+      return await tampilMingguan(sock, jid, messageObj, key, args[2]);
+
+    case 'abadi':
+    case 'endless':
+    case 'void':
+      return await kelolaAbadi(sock, jid, messageObj, key, args[2]);
+
+    case 'barter':
+    case 'trade':
+      return await tawarBarter(sock, jid, messageObj, key, args.slice(2), isFromGroup);
+
+    case 'deal':
+    case 'setuju':
+    case 'sepakat':
+      return await terimaBarter(sock, jid, messageObj, key, isFromGroup);
+
+    // `batal` menolak barter kalau ada yang menunggu, dan menolak duel kalau
+    // tidak. Dua alias terpisah (`tolak` untuk duel, `batal` untuk barter)
+    // sudah dicoba dan salah dipakai terus — pemain mengetik yang mana saja
+    // yang teringat, lalu bingung kenapa tawarannya masih menggantung.
+    case 'batal':
+      return adaBarterMenunggu(key)
+        ? await tolakBarter(sock, jid, messageObj, key)
+        : await tolakDuel(sock, jid, messageObj, key);
+
     case 'jual':
       return await jualKartu(sock, jid, messageObj, key, args[2], args[3]);
 
@@ -471,7 +524,8 @@ const SUB_DIKENAL = [
   'menu', 'bantuan', 'mulai', 'gacha', 'gacha10', 'daily', 'ransum', 'koleksi',
   'kartu', 'rate', 'keping', 'dek', 'sinergi', 'pasang', 'lepas', 'tukar',
   'menara', 'duel', 'gas', 'tolak', 'jual', 'serpih', 'serpihan',
-  'lebur', 'naik', 'misi', 'spar', 'ekspedisi', 'gerbang', 'ambil'
+  'lebur', 'naik', 'misi', 'spar', 'ekspedisi', 'gerbang', 'ambil',
+  'rank', 'gelar', 'tonggak', 'mingguan', 'abadi', 'barter', 'deal', 'batal'
 ];
 
 function jarakKata(a, b) {
@@ -522,25 +576,45 @@ function tebakSubPerintah(teks) {
  * lengkapnya tetap ada di `.tcg bantuan`.
  */
 async function tampilMenu(sock, jid, messageObj, key) {
-  const [w, hitung, deck, energi, misi] = await Promise.all([
+  const [w, hitung, deck, energi, misi, streak, rank, mingguan, tonggak, gelar] = await Promise.all([
     db.tcgGetWallet(key),
     db.tcgHitungKoleksi(key),
     db.tcgGetDeck(key),
     db.tcgGetEnergi(key),
-    db.tcgGetMisi(key)
+    db.tcgGetMisi(key),
+    db.tcgGetStreak(key),
+    db.tcgGetRank(key, { umumkan: true }),
+    db.tcgGetMisiMingguan(key),
+    db.tcgGetTonggak(key),
+    barisGelar(key)
   ]);
 
   const biayaDek = [1, 2, 3].reduce((t, s) => t + (deck[s] ? costKartu(getKartu(deck[s].card_id)) : 0), 0);
   const slotTerisi = [1, 2, 3].filter(s => deck[s]).length;
 
+  // Baris "yang bisa kamu ambil sekarang" sengaja dikumpulkan jadi satu blok.
+  // Hadiah yang menunggu tanpa diberitahukan sama saja dengan tidak ada, dan di
+  // WhatsApp pemain tidak akan mengetik enam perintah untuk memeriksanya satu
+  // per satu.
+  const siap = [
+    !streak.sudahKlaimHariIni ? '🎁 `.tcg daily` — hadiah harian belum diambil' : '',
+    misi.kepingSiapKlaim > 0 ? `🎯 \`.tcg misi klaim\` — *${fmt(misi.kepingSiapKlaim)} Keping* menunggu` : '',
+    mingguan.adaKlaim ? '📆 `.tcg mingguan klaim` — hadiah mingguan siap' : '',
+    tonggak.adaKlaim ? '🏛️ `.tcg tonggak klaim` — tonggak koleksi tercapai' : ''
+  ].filter(Boolean);
+
   const teks = [
     '🎴 *ARENA KARTU MONSTER*',
-    `Kumpulkan ${TOTAL_KARTU} monster nusantara, susun dek 3 kartu, lalu bertarung.`,
+    gelar ? `🏷️ ${gelar}` : `Kumpulkan ${TOTAL_KARTU} monster nusantara, susun dek 3 kartu, lalu bertarung.`,
     '',
     `💠 *${fmt(w.keping)}* Keping   📚 *${hitung.unik}/${TOTAL_KARTU}* jenis kartu`,
     `🃏 Dek: *${slotTerisi}/3* slot · *${biayaDek}/${db.TCG_MAX_DECK_COST}★*`,
+    `${rank.tier.emoji} ${rank.tier.nama} *${fmt(rank.poin)}* poin _(musim ${rank.musim}, sisa ${rank.sisaHari}h)_`,
+    streak.streak > 0
+      ? `🔥 Beruntun *${streak.streak} hari*${streak.sudahKlaimHariIni ? '' : ' — _klaim hari ini!_'}`
+      : '🔥 Beruntun *0* — mulai lagi dengan `.tcg daily`',
     barisEnergi(energi),
-    misi.kepingSiapKlaim > 0 ? `🎯 _Ada *${fmt(misi.kepingSiapKlaim)} Keping* misi siap diklaim!_` : '',
+    ...(siap.length ? ['', ...siap] : []),
     '',
     '━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
     '*1* · `.tcg koleksi` — lihat kartumu',
@@ -549,15 +623,21 @@ async function tampilMenu(sock, jid, messageObj, key) {
     '*4* · `.tcg ekspedisi` — kirim kartu cari harta',
     '*5* · `.tcg gerbang` — farming serpihan harian',
     '*6* · `.tcg menara` — naik lantai',
-    '*7* · `.tcg misi` — misi harian',
-    '*8* · `.tcg bantuan` — daftar perintah lengkap',
+    '*7* · `.tcg misi` — misi harian & mingguan',
+    '*8* · `.tcg rank` — peringkat musim & duel',
+    '*9* · `.tcg gelar` — gelar & tonggak koleksi',
+    '*10* · `.tcg barter` — tukar duplikat dengan teman',
+    '*0* · `.tcg bantuan` — daftar perintah lengkap',
     '━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
     '',
     hitung.unik === 0
       ? '➡️ Belum punya kartu? Ketik `.tcg mulai` untuk paket pemula gratis.'
-      : '🎁 Jangan lupa `.tcg daily` — gratis tiap hari.',
-    '',
-    '_Ketik angkanya saja, contoh `.tcg 3`._'
+      : '',
+    '_Ketik angkanya saja, contoh `.tcg 3`._',
+    // Hadiah akhir musim dibayar malas oleh `tcgGetRank`, dan menu ini adalah
+    // layar pertama yang kebanyakan orang buka. Kalau pengumumannya cuma ada di
+    // `.tcg rank`, hadiah itu akan dibayar diam-diam di sini lalu hilang.
+    teksHadiahMusim(rank.hadiahMusimLalu)
   ].filter(Boolean).join('\n');
 
   await send(sock, jid, messageObj, teks);
@@ -600,8 +680,11 @@ const BANTUAN = {
       ['.tcg menara', 'PvE 30 lantai, pakai stamina Menara'],
       ['.tcg menara lawan', 'Tantang lantai berikutnya'],
       ['.tcg gerbang', 'Gerbang elemen harian, pakai energi Gerbang'],
+      ['.tcg abadi', 'Menara Abadi — lantai tanpa ujung (terbuka sesudah lantai 30)'],
       ['.tcg duel @member [taruhan]', 'Duel PvP di grup'],
-      ['.tcg gas / .tcg tolak', 'Terima atau tolak tantangan']
+      ['.tcg gas / .tcg tolak', 'Terima atau tolak tantangan'],
+      ['.tcg rank', 'Peringkat & tier musim ini'],
+      ['.tcg rank top', 'Papan peringkat 10 besar musim ini']
     ]
   },
   naik: {
@@ -621,9 +704,22 @@ const BANTUAN = {
       ['.tcg ekspedisi', 'Kirim kartu cadangan cari Keping + serpihan'],
       ['.tcg ekspedisi <id> <jam>', `Berangkatkan kartu (${db.TCG_EKSPEDISI_DURASI.join('/')} jam)`],
       ['.tcg ekspedisi klaim', 'Ambil hasil kartu yang sudah pulang'],
-      ['.tcg misi', 'Misi harian + klaim hadiah'],
+      ['.tcg misi', 'Misi harian (diundi tiap hari) + klaim hadiah'],
+      ['.tcg mingguan', 'Misi mingguan, reset tiap Senin'],
       ['.tcg ransum', 'Tas ransum pemulih energi'],
       ['.tcg ambil <1-3>', 'Sambar kartu dari drop grup']
+    ]
+  },
+  jangka: {
+    judul: '🏷️ JANGKA PANJANG',
+    baris: [
+      ['.tcg daily', 'Hadiah harian + beruntun; tonggak di hari 3/7/14/30'],
+      ['.tcg gelar', 'Gelar permanen & syaratnya'],
+      ['.tcg gelar <id>', 'Pasang gelar di profilmu'],
+      ['.tcg tonggak', 'Hadiah tonggak jumlah jenis kartu'],
+      ['.tcg tonggak klaim', 'Ambil semua tonggak yang sudah tercapai'],
+      ['.tcg barter @member <kartumu> <kartunya>', 'Tukar duplikat di grup'],
+      ['.tcg deal / .tcg batal', 'Setujui atau tolak tawaran barter']
     ]
   }
 };
@@ -633,7 +729,9 @@ const ALIAS_BANTUAN = {
   dek: 'dek', deck: 'dek', sinergi: 'dek', formasi: 'dek',
   tarung: 'tarung', duel: 'tarung', menara: 'tarung', spar: 'tarung', gerbang: 'tarung',
   naik: 'naik', level: 'naik', upgrade: 'naik', serpihan: 'naik', jual: 'naik',
-  farming: 'farming', ekspedisi: 'farming', misi: 'farming', ransum: 'farming', drop: 'farming'
+  farming: 'farming', ekspedisi: 'farming', misi: 'farming', ransum: 'farming', drop: 'farming',
+  jangka: 'jangka', gelar: 'jangka', tonggak: 'jangka', barter: 'jangka', streak: 'jangka',
+  beruntun: 'jangka', mingguan: 'jangka', rank: 'tarung', peringkat: 'tarung', abadi: 'tarung'
 };
 
 async function tampilBantuan(sock, jid, messageObj, topikArg) {
@@ -662,6 +760,7 @@ async function tampilBantuan(sock, jid, messageObj, topikArg) {
     '`.tcg bantuan tarung` — spar, menara, gerbang, duel',
     '`.tcg bantuan naik` — level kartu, serpihan, jual',
     '`.tcg bantuan farming` — ekspedisi, misi, ransum, drop',
+    '`.tcg bantuan jangka` — beruntun, gelar, tonggak, barter',
     '',
     '━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
     '*Paling sering dipakai:*',
@@ -669,6 +768,7 @@ async function tampilBantuan(sock, jid, messageObj, topikArg) {
     '• `.tcg daily` — hadiah harian gratis',
     '• `.tcg dek` — atur formasi',
     '• `.tcg spar` — cari Keping tanpa energi',
+    '• `.tcg rank` — peringkat musim & tier',
     '',
     '_Ekonomi arena 100% mandiri (Pure 0) — tidak tersambung ke poin bot._'
   ].join('\n');
@@ -753,11 +853,10 @@ async function tarik(sock, jid, messageObj, key, jumlah) {
   const pity = await db.tcgGetPity(key);
   const baru = hasil.filter(h => h.baru).length;
 
-  try {
-    await db.tcgCatatProgresMisi(key, 'GACHA', jumlah);
-  } catch (e) {
-    console.error('[TCG] Gagal mencatat misi gacha:', e?.message || e);
-  }
+  // Dua misi berbeda menghitung tarikan (1 kartu dan 3 kartu). Keduanya selalu
+  // dilapori; hanya yang sedang jadi misi hari ini yang benar-benar terisi.
+  await catatAksi(key, 'GACHA', jumlah);
+  await catatAksi(key, 'GACHA3', jumlah);
 
   const gambar = await bufferBanyakKartu(
     hasil.map(h => ({ kartu: h.kartu, level: 1 }))
@@ -777,18 +876,24 @@ async function tarik(sock, jid, messageObj, key, jumlah) {
 }
 
 async function tarikGratis(sock, jid, messageObj, key) {
-  const res = await db.tcgKlaimGratis(key);
+  const res = await db.tcgKlaimHarian(key);
   if (!res.success) {
-    await send(sock, jid, messageObj, '⏳ Hadiah gratismu hari ini sudah diambil.\nDatang lagi besok setelah jam 00:00 WIB!');
+    const s = await db.tcgGetStreak(key);
+    await send(sock, jid, messageObj, [
+      '⏳ Hadiah harianmu sudah diambil hari ini.',
+      '',
+      `🔥 Beruntun: *${s.streak} hari*${s.terpanjang > s.streak ? ` _(rekor ${s.terpanjang})_` : ''}`,
+      `➡️ Besok: *+${fmt(db.TCG_BONUS_HARIAN_KEPING + s.bonusBerikutnya)} Keping*` +
+        (s.tonggakBerikutnya ? ` · tonggak hari ke-${s.tonggakBerikutnya.hari} tinggal *${s.tonggakBerikutnya.sisa} hari*` : ''),
+      '',
+      '_Datang lagi setelah jam 00:00 WIB. Lewat satu hari, beruntunmu kembali ke 1._'
+    ].join('\n'));
     return true;
   }
 
   const hasil = await prosesTarikan(key, 1, true);
-  try {
-    await db.tcgCatatProgresMisi(key, 'GACHA', 1);
-  } catch (e) {
-    console.error('[TCG] Gagal mencatat misi gacha harian:', e?.message || e);
-  }
+  await catatAksi(key, 'GACHA', 1);
+  await catatAksi(key, 'GACHA3', 1);
 
   // Ransum acak tiap hari — satu-satunya sumber energi tambahan yang tidak
   // perlu menunggu regen, dan sengaja tidak bisa dibeli dengan Keping.
@@ -804,15 +909,37 @@ async function tarikGratis(sock, jid, messageObj, key) {
 
   const gambar = await bufferKartu(hasil[0].kartu, 1).catch(() => null);
 
+  // Beruntun ditampilkan sebagai deretan, bukan angka. Angka "7" tidak
+  // memberi tahu apa pun; tujuh api yang menyala di sebelah tiga kotak kosong
+  // menunjukkan persis di mana pemain berdiri dan seberapa dekat tonggaknya.
+  const tonggakDekat = res.tonggakBerikutnya?.hari || 0;
+  const petaBeruntun = tonggakDekat
+    ? '🔥'.repeat(Math.min(15, res.streak)) + '▫️'.repeat(Math.max(0, Math.min(15, tonggakDekat) - res.streak))
+    : '🔥'.repeat(Math.min(15, res.streak));
+
   const teks = [
     '🎁 *HADIAH HARIAN ARENA TERKLAIM*',
     '',
     hasilTarikan(hasil),
     '',
-    `💠 Bonus Keping: *+${db.TCG_BONUS_HARIAN_KEPING}* (Total: *${fmt(res.kepingTotal)}*)`,
-    ransumTeks,
+    res.putus
+      ? `💔 Beruntunmu terputus di *${res.streakSebelum} hari* — mulai lagi dari hari ke-1.`
+      : `🔥 *BERUNTUN HARI KE-${res.streak}*${res.streak >= res.terpanjang ? ' _(rekor pribadi!)_' : ` _(rekor ${res.terpanjang})_`}`,
+    petaBeruntun,
     '',
-    '_Energi Menara & Gerbang terisi sendiri sepanjang hari — cek `.tcg ransum`._'
+    `💠 Keping: *+${fmt(res.kepingDapat)}*` +
+      (res.bonusStreak > 0 ? ` _(${res.kepingDasar} dasar + ${res.bonusStreak} bonus beruntun)_` : ''),
+    ransumTeks,
+    res.tonggak
+      ? `\n🎊 *TONGGAK HARI KE-${res.tonggak.hari}!*\n   └ ${res.tonggak.teks.join(' · ')}`
+      : '',
+    '',
+    `💰 Saldo: *${fmt(res.kepingTotal)} Keping*`,
+    '',
+    res.tonggakBerikutnya
+      ? `➡️ Besok *+${fmt(db.TCG_BONUS_HARIAN_KEPING + res.bonusBesok)} Keping* · tonggak hari ke-${res.tonggakBerikutnya.hari} tinggal *${res.tonggakBerikutnya.sisa} hari*`
+      : `➡️ Besok *+${fmt(db.TCG_BONUS_HARIAN_KEPING + res.bonusBesok)} Keping*`,
+    '_Lewat satu hari saja, beruntun kembali ke 1._'
   ].filter(Boolean).join('\n');
 
   await kirimGambar(sock, jid, messageObj, gambar, teks);
@@ -1278,7 +1405,12 @@ async function tampilMisi(sock, jid, messageObj, key, aksiArg) {
     return true;
   }
 
-  const misi = await db.tcgGetMisi(key);
+  const [misi, mingguan, streak] = await Promise.all([
+    db.tcgGetMisi(key),
+    db.tcgGetMisiMingguan(key),
+    db.tcgGetStreak(key)
+  ]);
+
   const baris = misi.daftar.map(m => {
     const tanda = m.diklaim ? '✅' : (m.selesai ? '🎁' : '⬜');
     return `${tanda} ${m.emoji} *${m.nama}*\n   └ ${Math.min(m.progres, m.target)}/${m.target} · hadiah *${fmt(m.hadiah)} Keping*`;
@@ -1288,7 +1420,7 @@ async function tampilMisi(sock, jid, messageObj, key, aksiArg) {
 
   const teks = [
     '🎯 *MISI HARIAN ARENA*',
-    `Reset tiap hari jam 00:00 WIB · hari ini: ${misi.tanggal}`,
+    `Diundi ulang tiap hari jam 00:00 WIB · hari ini: ${misi.tanggal}`,
     '',
     ...baris,
     '',
@@ -1298,7 +1430,14 @@ async function tampilMisi(sock, jid, messageObj, key, aksiArg) {
     '━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
     misi.kepingSiapKlaim > 0
       ? `💠 Siap diklaim: *${fmt(misi.kepingSiapKlaim)} Keping* — ketik \`.tcg misi klaim\``
-      : '_Belum ada yang bisa diklaim. Main dulu!_'
+      : '_Belum ada yang bisa diklaim. Main dulu!_',
+    '',
+    `📆 Misi mingguan: *${mingguan.jumlahSelesai}/${mingguan.daftar.length}* selesai${mingguan.adaKlaim ? ' — *ada hadiah siap!*' : ''} · \`.tcg mingguan\``,
+    streak.sudahKlaimHariIni
+      ? `🔥 Beruntun harian: *${streak.streak} hari* — aman untuk hari ini.`
+      : '🎁 Hadiah harian belum diambil — `.tcg daily`',
+    '',
+    '_Misi harian diacak dari kolam besar, jadi isinya berbeda tiap hari dan tiap orang._'
   ].join('\n');
 
   await send(sock, jid, messageObj, teks);
@@ -1344,6 +1483,7 @@ async function ambilKartuDrop(sock, jid, messageObj, key, nomorArg, isFromGroup)
   const kartu = getKartu(res.cardId);
   const sebelum = await db.tcgGetKartu(key, res.cardId);
   await db.tcgTambahKartu(key, res.cardId, 1);
+  await catatAksi(key, 'AMBIL', 1);
 
   const el = ELEMEN[kartu.elemen];
   const baru = !sebelum || sebelum.qty === 0;
@@ -1440,6 +1580,10 @@ async function tampilSpar(sock, jid, messageObj, key, aksiArg) {
   const aksi = String(aksiArg || '').toLowerCase();
 
   if (!['lawan', 'gas', 'fight', 'mulai'].includes(aksi)) {
+    const [rank, sisaRank] = await Promise.all([
+      db.tcgGetRank(key, { umumkan: true }),
+      db.tcgSisaSparBerperingkat(key)
+    ]);
     const teks = [
       '🥊 *SPARRING ARENA*',
       'Latih tanding melawan bayangan dek pemain lain. *Tidak memakai energi.*',
@@ -1448,11 +1592,14 @@ async function tampilSpar(sock, jid, messageObj, key, aksiArg) {
       `Jatah hadiah penuh: *${status.sisaJatahPenuh}/${db.TCG_SPAR_JATAH_PENUH}* tersisa`,
       `Hadiah menang berikutnya: *${fmt(status.hadiahBerikutnya)} Keping*`,
       '',
+      `${rank.tier.emoji} Peringkat: *${fmt(rank.poin)}* poin · sparring berperingkat tersisa *${sisaRank}/${db.TCG_RANK_MAKS_SPAR}*`,
+      '',
       `_Sesudah jatah habis, hadiah turun jadi ${Math.round(db.TCG_SPAR_RASIO_SISA * 100)}% — sparring tetap boleh, tapi tidak lagi jadi mesin uang._`,
       `_Pemilik dek yang berhasil menahanmu ikut dapat *${db.TCG_SPAR_HADIAH_BERTAHAN} Keping*._`,
       '',
-      '➜ Ketik `.tcg spar lawan` untuk mulai.'
-    ].join('\n');
+      '➜ Ketik `.tcg spar lawan` untuk mulai.',
+      teksHadiahMusim(rank.hadiahMusimLalu)
+    ].filter(Boolean).join('\n');
     await send(sock, jid, messageObj, teks);
     return true;
   }
@@ -1494,6 +1641,39 @@ async function tampilSpar(sock, jid, messageObj, key, aksiArg) {
 
   const hasil = await db.tcgCatatHasilSpar(key, menang, lawanJid);
 
+  await catatAksi(key, 'SPAR_MAIN', 1);
+  if (menang) await catatAksi(key, 'SPAR', 1);
+
+  // Sparring ikut menggerakkan peringkat, tapi dengan bobot separuh duel dan
+  // hanya untuk beberapa laga pertama tiap hari.
+  //
+  // Lawannya cuma BAYANGAN dek — orangnya sendiri tidak sedang bermain, jadi
+  // poinnya tidak boleh ikut turun; ratingnya hanya dipakai sebagai acuan
+  // kekuatan. Kalau bayangan ikut kehilangan poin, pemain aktif bisa menjatuhkan
+  // peringkat orang lain tanpa orang itu pernah menekan satu tombol pun.
+  let rankTeks = '';
+  try {
+    const sisaRank = await db.tcgSisaSparBerperingkat(key);
+    if (sisaRank > 0) {
+      const acuan = lawanJid ? (await db.tcgGetRank(lawanJid)).poin : db.TCG_POIN_AWAL;
+      const laga = await db.tcgCatatLaga(key, menang ? 1 : (sim.matchWinner === 2 ? 0 : 0.5), {
+        k: db.TCG_K_SPAR,
+        poinLawanTetap: acuan
+      });
+      await db.tcgPakaiSparBerperingkat(key);
+      if (laga?.berperingkat) {
+        const tanda = laga.delta >= 0 ? '+' : '';
+        rankTeks = `${laga.tier.emoji} Peringkat: *${fmt(laga.poin)}* _(${tanda}${laga.delta})_` +
+          (laga.naikTier ? `\n🎊 *NAIK TIER: ${labelTier(laga.tier)}!*` : '') +
+          (laga.turunTier ? `\n📉 _Turun ke ${labelTier(laga.tier)}._` : '');
+      }
+    } else {
+      rankTeks = `_Sparring berperingkat hari ini sudah habis (${db.TCG_RANK_MAKS_SPAR}/hari) — laga ini tidak mengubah poin._`;
+    }
+  } catch (e) {
+    console.error('[TCG] Gagal mencatat peringkat sparring:', e?.message || e);
+  }
+
   const teks = [
     '🥊 *HASIL SPARRING*',
     `👤 *${namaKu}* VS *${namaLawan}*`,
@@ -1511,6 +1691,7 @@ async function tampilSpar(sock, jid, messageObj, key, aksiArg) {
     menang && hasil?.hadiah
       ? `💠 Hadiah: *+${fmt(hasil.hadiah)} Keping*${hasil.penuh ? '' : ' _(jatah penuh habis)_'}  ·  Saldo: *${fmt(hasil.kepingTotal)}*`
       : '💠 Tidak ada hadiah Keping kali ini.',
+    rankTeks,
     !menang && lawanJid ? `_${namaLawan} mendapat ${db.TCG_SPAR_HADIAH_BERTAHAN} Keping karena deknya bertahan._` : ''
   ].filter(Boolean).join('\n');
 
@@ -1545,6 +1726,8 @@ async function tampilEkspedisi(sock, jid, messageObj, key, arg1, arg2) {
         '🧭 Belum ada kartu yang pulang.\n\nCek `.tcg ekspedisi` untuk melihat sisa waktunya.');
       return true;
     }
+    await catatAksi(key, 'PANEN', (res.rincian || []).length || 1);
+
     const rincian = (res.rincian || []).map(r => {
       const k = getKartu(r.cardId);
       if (!k) return null;
@@ -1580,6 +1763,7 @@ async function tampilEkspedisi(sock, jid, messageObj, key, arg1, arg2) {
     }
 
     const res = await db.tcgKirimEkspedisi(key, slotKosong, kartu.id, jam, PETA_BINTANG);
+    if (res.success) await catatAksi(key, 'EKSPEDISI', 1);
     if (!res.success) {
       const pesan = {
         SLOT_TIDAK_VALID: '⚠️ Slot ekspedisi tidak valid.',
@@ -1735,6 +1919,7 @@ async function tampilGerbang(sock, jid, messageObj, key, elemenArg) {
   const ekor = [];
   if (sim.matchWinner === 1) {
     const h = await db.tcgHadiahGerbang(key, penjaga.rarity);
+    await catatAksi(key, 'GERBANG', 1);
     ekor.push(`💠 Hadiah: *+${fmt(h.keping)} Keping* · *+${h.serpihan} Serpihan ${STAT_RARITY[h.rarity].label}*`);
     ekor.push(`Saldo: *${fmt(h.kepingTotal)} Keping*`);
   } else {
@@ -1784,7 +1969,8 @@ async function kelolaMenara(sock, jid, messageObj, key, aksiArg) {
         ? `*Tantangan berikutnya:* Lantai ${targetFloor} — _${nextInfo?.nama || 'Monster Penjaga'}_\n` +
           `   └ Hadiah: +${fmt(nextInfo?.rewardKeping || 0)} Keping` +
           (nextInfo?.rewardShards ? ` · +${nextInfo.rewardShards.jumlah} Serpihan ${STAT_RARITY[nextInfo.rewardShards.rarity].label}` : '')
-        : `🎉 *Kamu telah menaklukkan seluruh ${totalLantai} lantai Menara Penjaga!*`,
+        : `🎉 *Kamu telah menaklukkan seluruh ${totalLantai} lantai Menara Penjaga!*\n` +
+          '🌌 Lanjutkan ke *Menara Abadi* — lantai tanpa ujung: `.tcg abadi`',
       '',
       targetFloor <= totalLantai ? 'Ketik `.tcg menara lawan` untuk menantang.' : '',
       '_Menara memakai stamina Menara — terpisah dari energi Gerbang._'
@@ -1794,7 +1980,12 @@ async function kelolaMenara(sock, jid, messageObj, key, aksiArg) {
   }
 
   if (targetFloor > totalLantai) {
-    await send(sock, jid, messageObj, `👑 Selamat! Kamu sudah menamatkan seluruh ${totalLantai} lantai Menara Penjaga.`);
+    await send(sock, jid, messageObj, [
+      `👑 Selamat! Kamu sudah menamatkan seluruh ${totalLantai} lantai Menara Penjaga.`,
+      '',
+      '🌌 Petualanganmu belum selesai: *Menara Abadi* tidak punya puncak.',
+      'Ketik `.tcg abadi` untuk melihat lantai berikutnya.'
+    ].join('\n'));
     return true;
   }
 
@@ -1831,11 +2022,7 @@ async function kelolaMenara(sock, jid, messageObj, key, aksiArg) {
       return true;
     }
 
-    try {
-      await db.tcgCatatProgresMisi(key, 'MENARA', 1);
-    } catch (e) {
-      console.error('[TCG] Gagal mencatat misi menara:', e?.message || e);
-    }
+    await catatAksi(key, 'MENARA', 1);
 
     const shardBonus = floorData.rewardShards
       ? `\n✦ Serpihan: *+${floorData.rewardShards.jumlah} ${STAT_RARITY[floorData.rewardShards.rarity].label}*`
@@ -1946,15 +2133,26 @@ async function tantangDuel(sock, jid, messageObj, senderKey, args, isFromGroup) 
   // sebelum menerima — satu-satunya informasi yang boleh bocor sebelum duel.
   const biaya = [1, 2, 3].reduce((t, s) => t + (deckA[s] ? costKartu(getKartu(deckA[s].card_id)) : 0), 0);
 
+  // Tier kedua pihak ditampilkan supaya yang ditantang tahu ia sedang dipanggil
+  // oleh siapa. Duel sekarang menggeser poin musim, jadi menerima tantangan dari
+  // orang yang jauh lebih tinggi bukan lagi keputusan tanpa akibat.
+  const [rankA, rankB] = await Promise.all([
+    db.tcgGetRank(senderKey),
+    db.tcgGetRank(targetKey)
+  ]);
+
   const betInfo = bet > 0 ? `💰 Taruhan: *${fmt(bet)} Keping*` : '🤝 Duel Persahabatan (Tanpa Taruhan)';
   const teks = [
     '⚔️ *TANTANGAN DUEL ARENA KARTU 3V3!*',
     `👤 Penantang: *${challengerName}* _(dek ${biaya}/${db.TCG_MAX_DECK_COST}★)_`,
+    `   └ ${labelTier(rankA.tier)} · ${fmt(rankA.poin)} poin`,
     `🎯 Sasaran: ${targetName}`,
+    `   └ ${labelTier(rankB.tier)} · ${fmt(rankB.poin)} poin`,
     betInfo,
     '',
     `👉 ${targetName}, ketik \`.tcg gas\` untuk menerima, atau \`.tcg tolak\`!`,
-    '_Tantangan otomatis kedaluwarsa dalam 90 detik._'
+    '_Tantangan otomatis kedaluwarsa dalam 90 detik._',
+    '_Duel ini berperingkat — poin musim kedua pihak akan bergerak._'
   ].join('\n');
 
   await send(sock, jid, messageObj, teks, { mentions: [targetKey, senderKey] });
@@ -2018,11 +2216,35 @@ async function terimaDuel(sock, jid, messageObj, senderKey, isFromGroup) {
 
   // Misi DUEL hanya dicatat untuk pemenang — kalau tidak, dua orang bisa
   // bergantian mengalah untuk saling menuntaskan misi.
+  if (sim.matchWinner === 1) await catatAksi(duel.challengerKey, 'DUEL', 1);
+  else if (sim.matchWinner === 2) await catatAksi(duel.targetKey, 'DUEL', 1);
+
+  // Peringkat musiman. Elo dihitung dari sudut penantang; poin sasaran bergerak
+  // berlawanan dengan besar yang sama, jadi duel tidak pernah mencetak poin baru
+  // ke dalam sistem — ia hanya memindahkannya.
+  let rankTeks = '';
   try {
-    if (sim.matchWinner === 1) await db.tcgCatatProgresMisi(duel.challengerKey, 'DUEL', 1);
-    else if (sim.matchWinner === 2) await db.tcgCatatProgresMisi(duel.targetKey, 'DUEL', 1);
+    const laga = await db.tcgCatatLaga(
+      duel.challengerKey,
+      sim.matchWinner === 1 ? 1 : (sim.matchWinner === 2 ? 0 : 0.5),
+      { k: db.TCG_K_DUEL, lawanJid: duel.targetKey }
+    );
+    if (laga?.berperingkat) {
+      const tandaA = laga.delta >= 0 ? '+' : '';
+      const tandaB = laga.lawan.delta >= 0 ? '+' : '';
+      rankTeks = [
+        '',
+        '📊 *PERINGKAT MUSIM*',
+        `${laga.tier.emoji} ${duel.challengerName}: *${fmt(laga.poin)}* _(${tandaA}${laga.delta})_`,
+        `${laga.lawan.tier.emoji} ${targetName}: *${fmt(laga.lawan.poin)}* _(${tandaB}${laga.lawan.delta})_`
+      ].join('\n');
+    } else if (laga?.reason === 'BATAS_PASANGAN') {
+      // Batasnya diumumkan, bukan disembunyikan: dua orang yang duel berkali-kali
+      // berhak tahu kenapa poinnya berhenti bergerak.
+      rankTeks = `\n_📊 Duel ini tidak berperingkat — kalian sudah bertanding ${laga.batas}× hari ini. Poin bergerak lagi besok._`;
+    }
   } catch (e) {
-    console.error('[TCG] Gagal mencatat misi duel:', e?.message || e);
+    console.error('[TCG] Gagal mencatat peringkat duel:', e?.message || e);
   }
 
   const teks = [
@@ -2035,7 +2257,8 @@ async function terimaDuel(sock, jid, messageObj, senderKey, isFromGroup) {
     '',
     '━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
     `🏆 *PEMENANG: ${sim.winnerName.toUpperCase()} (Skor ${sim.scoreA} - ${sim.scoreB})*`,
-    hasilTaruhan
+    hasilTaruhan,
+    rankTeks
   ].filter(Boolean).join('\n');
 
   await send(sock, jid, messageObj, teks, { mentions: [duel.challengerKey, duel.targetKey] });
@@ -2131,6 +2354,7 @@ async function leburSerpihan(sock, jid, messageObj, key, rarityArg) {
     await send(sock, jid, messageObj, pesan);
     return true;
   }
+  await catatAksi(key, 'LEBUR', 1);
   await send(sock, jid, messageObj,
     `✨ *${db.TCG_SERPIHAN_PER_LEBUR} Serpihan ${STAT_RARITY[rarity].label}* dilebur jadi *1 Serpihan ${STAT_RARITY[res.rarityTujuan].label}*.`);
   return true;
@@ -2243,6 +2467,8 @@ async function naikLevel(sock, jid, messageObj, key, idArg) {
     return true;
   }
 
+  await catatAksi(key, 'NAIK', 1);
+
   const punya = await db.tcgGetKartu(key, kartu.id);
   const lama = statKartu(kartu, levelSebelum);
   const baru = statKartu(kartu, res.levelBaru);
@@ -2311,6 +2537,10 @@ async function adminCek(sock, jid, messageObj, args, isStoreAdmin, isOwner) {
   const tower = await db.tcgGetTower(target);
   const deck = await db.tcgGetDeck(target);
   const energi = await db.tcgGetEnergi(target);
+  const streak = await db.tcgGetStreak(target);
+  const rank = await db.tcgGetRank(target);
+  const abadi = await db.tcgGetAbadi(target);
+  const potret = await db.tcgPotretPemain(target, TOTAL_KARTU);
 
   const deckSummary = [1, 2, 3].map(s => {
     if (!deck[s]) return `Slot ${s}: Kosong`;
@@ -2323,7 +2553,11 @@ async function adminCek(sock, jid, messageObj, args, isStoreAdmin, isOwner) {
     '',
     `💠 Keping: *${fmt(w.keping)}*`,
     `📚 Koleksi: *${hitung.unik}/${TOTAL_KARTU}* jenis (${hitung.total} kartu)`,
-    `🏰 Menara: Lantai *${tower.highest_floor}/${TOWER_FLOORS.length}*`,
+    `🏰 Menara: Lantai *${tower.highest_floor}/${TOWER_FLOORS.length}*` +
+      (abadi.lantai > 0 ? ` · 🌌 Abadi *${abadi.lantai}* (${abadi.percobaan} percobaan)` : ''),
+    `${rank.tier.emoji} Peringkat musim ${rank.musim}: *${fmt(rank.poin)}* (${rank.menang}M-${rank.kalah}K-${rank.seri}S)`,
+    `🔥 Beruntun: *${streak.streak}* hari (rekor *${streak.terpanjang}*, total klaim ${streak.totalKlaim})`,
+    `🤝 Barter selesai: *${potret.barter}* · kartu Lv.5: *${potret.levelMaks}* · Mythic: *${potret.mythic}*`,
     barisEnergi(energi),
     `🃏 Dek: ${deckSummary}`,
     '',

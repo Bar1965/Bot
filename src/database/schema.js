@@ -27,6 +27,38 @@ export async function initDb() {
   try { await runQuery("ALTER TABLE users ADD COLUMN two_factor_secret TEXT"); } catch (e) {}
   try { await runQuery("ALTER TABLE users ADD COLUMN two_factor_enabled INTEGER DEFAULT 0"); } catch (e) {}
 
+  // 2b. Tabel Pencabutan Token Dashboard
+  // JWT dashboard berumur 24 jam dan tidak menyimpan apa pun di sisi server, jadi
+  // sebelum tabel ini ada, "Logout", ganti password, dan hapus akun cuma kosmetik:
+  // token yang sudah terlanjur dipegang tetap sah sampai jamnya habis. Baris di sini
+  // mencatat DETIK epoch batas bawah — setiap token yang `iat`-nya lebih tua ditolak.
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS auth_token_epochs (
+      username TEXT PRIMARY KEY,
+      valid_after INTEGER NOT NULL DEFAULT 0
+    )
+  `);
+
+  // 2c. Peta LID <-> Nomor HP
+  //
+  // WhatsApp sekarang mengirim pesan grup dengan identitas @lid, bukan nomor HP.
+  // Di database ini 191 dari 194 pelanggan tersimpan sebagai @lid, dan @lid TIDAK
+  // memuat nomor HP di dalamnya sama sekali. Akibatnya perintah yang menerima
+  // nomor mentah (`.ban 628xxx`, `.setpremium 628xxx`) tidak punya cara apa pun
+  // untuk menemukan orangnya.
+  //
+  // Metadata grup dari Baileys memuat KEDUANYA sekaligus (participant.id berisi
+  // @lid, participant.jid berisi nomor HP). Tabel ini menyimpan pasangan itu saat
+  // terlihat, sehingga pencarian lewat nomor HP jadi mungkin.
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS lid_phone_map (
+      lid_jid TEXT PRIMARY KEY,
+      phone_digits TEXT NOT NULL,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_lid_phone ON lid_phone_map(phone_digits)");
+
   // 3. Tabel Subscriptions (Notifikasi Stok Pelanggan)
   await runQuery(`
     CREATE TABLE IF NOT EXISTS subscriptions (
@@ -398,6 +430,9 @@ export async function initDb() {
   try { await runQuery("ALTER TABLE game_profiles ADD COLUMN last_robbed_at DATETIME"); } catch (e) { /* ignore if exists */ }
   try { await runQuery("ALTER TABLE game_profiles ADD COLUMN last_rob_time DATETIME"); } catch (e) { /* ignore if exists */ }
   try { await runQuery("ALTER TABLE game_profiles ADD COLUMN jailed_until DATETIME"); } catch (e) { /* ignore if exists */ }
+  // Dana endap: setoran baru belum kebal `.steal` selama beberapa menit.
+  try { await runQuery("ALTER TABLE game_profiles ADD COLUMN bank_pending INTEGER DEFAULT 0"); } catch (e) { /* ignore if exists */ }
+  try { await runQuery("ALTER TABLE game_profiles ADD COLUMN bank_pending_at INTEGER"); } catch (e) { /* ignore if exists */ }
 
   // Tabel AFK Users
   await runQuery(`
@@ -879,6 +914,10 @@ You can now enjoy:
   try { await runQuery("ALTER TABLE orders ADD COLUMN review_reminder_sent INTEGER DEFAULT 0"); } catch(e) {}
   try { await runQuery("ALTER TABLE orders ADD COLUMN coupon_code TEXT"); } catch(e) {}
   try { await runQuery("ALTER TABLE orders ADD COLUMN discount_amount INTEGER DEFAULT 0"); } catch(e) {}
+  // Diskon belanja premium disimpan TERPISAH dari discount_amount (kupon), karena
+  // applyCouponToOrder menimpa discount_amount dengan `SET discount_amount = ?`.
+  // Kalau digabung, memasang kupon akan diam-diam menghapus diskon premiumnya.
+  try { await runQuery("ALTER TABLE orders ADD COLUMN premium_discount INTEGER DEFAULT 0"); } catch(e) {}
   try { await runQuery("ALTER TABLE orders ADD COLUMN coupon_redeemed INTEGER DEFAULT 0"); } catch(e) {}
 
   // payment_transactions table
@@ -987,6 +1026,25 @@ You can now enjoy:
   `);
 
   await runQuery("CREATE INDEX IF NOT EXISTS idx_reseller_status ON reseller_products(status)");
+  // Tabel Pemakaian Downloader Harian
+  //
+  // Perintah unduhan (TikTok, IG, YouTube, HD upscale, screenshot web, konversi
+  // audio) sebelumnya TIDAK punya rem sama sekali: tanpa cooldown, tanpa kuota,
+  // tanpa batas paralel. Satu orang bisa menghabiskan kuota internet dan RAM
+  // komputer bot sampai habis, dan auto-downloader bahkan berjalan tanpa perlu
+  // mengetik perintah. Bentuk tabel ini sengaja menyalin ai_usage_logs supaya
+  // pola kuota harian di bot ini cuma ada satu, bukan dua yang berbeda.
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS media_usage_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      jid TEXT NOT NULL,
+      usage_date TEXT NOT NULL,
+      count INTEGER DEFAULT 0,
+      UNIQUE(jid, usage_date)
+    )
+  `);
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_media_usage_jid_date ON media_usage_logs(jid, usage_date)");
+
   await runQuery("CREATE INDEX IF NOT EXISTS idx_ai_usage_jid_date ON ai_usage_logs(jid, usage_date)");
   await runQuery("CREATE INDEX IF NOT EXISTS idx_wishlist_produk ON user_wishlists(produk_kode)");
 
@@ -1068,6 +1126,101 @@ You can now enjoy:
   `);
   await runQuery("CREATE INDEX IF NOT EXISTS idx_undercover_stats_played ON undercover_stats(games_played)");
 
+  // Tabel Statistik Raid World Boss per pemain (dipakai `.raidstats` & `.raidtop`).
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS raid_stats (
+      customer_jid TEXT PRIMARY KEY,
+      raids_joined INTEGER DEFAULT 0,
+      raids_won INTEGER DEFAULT 0,
+      total_damage INTEGER DEFAULT 0,
+      total_healing INTEGER DEFAULT 0,
+      total_absorbed INTEGER DEFAULT 0,
+      best_damage INTEGER DEFAULT 0,
+      mvp_damage INTEGER DEFAULT 0,
+      mvp_support INTEGER DEFAULT 0,
+      times_ko INTEGER DEFAULT 0,
+      points_won INTEGER DEFAULT 0,
+      kill_ignis INTEGER DEFAULT 0,
+      kill_malakor INTEGER DEFAULT 0,
+      kill_raijin INTEGER DEFAULT 0,
+      kill_leviathan INTEGER DEFAULT 0,
+      kill_erebus INTEGER DEFAULT 0,
+      last_played DATETIME,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_raid_stats_won ON raid_stats(raids_won)");
+
+  // Tabel Statistik Lelang Kotak Misteri (dipakai `.lelangstats` & `.lelangtop`).
+  // Untung bersih tidak disimpan sebagai kolom karena bisa negatif; dihitung
+  // saat query dari (total_hadiah - total_bid_dibayar - denda - biaya papan).
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS auction_stats (
+      customer_jid TEXT PRIMARY KEY,
+      lelang_diikuti INTEGER DEFAULT 0,
+      lelang_menang INTEGER DEFAULT 0,
+      total_bid_dibayar INTEGER DEFAULT 0,
+      total_hadiah INTEGER DEFAULT 0,
+      total_denda INTEGER DEFAULT 0,
+      total_biaya_papan INTEGER DEFAULT 0,
+      bid_tertinggi INTEGER DEFAULT 0,
+      jackpot_count INTEGER DEFAULT 0,
+      trap_count INTEGER DEFAULT 0,
+      zonk_count INTEGER DEFAULT 0,
+      last_played DATETIME,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_auction_stats_menang ON auction_stats(lelang_menang)");
+
+  // Riwayat Bansos Owner. Bansos mencetak nilai dari udara, jadi harus ada
+  // jejaknya — tanpa catatan tidak ada yang tahu berapa banyak yang sudah
+  // disuntikkan ke ekonomi.
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS bansos_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      jenis TEXT NOT NULL,
+      jumlah INTEGER DEFAULT 0,
+      penerima INTEGER DEFAULT 0,
+      alasan TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_bansos_log_waktu ON bansos_log(created_at)");
+
+  // Progres Raid per grup: sumber kebenaran untuk membuka Nightmare Mode
+  // (Erebus baru muncul setelah grup menumbangkan Leviathan) dan rekor grup.
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS raid_group_progress (
+      group_jid TEXT PRIMARY KEY,
+      kills_total INTEGER DEFAULT 0,
+      kill_ignis INTEGER DEFAULT 0,
+      kill_malakor INTEGER DEFAULT 0,
+      kill_raijin INTEGER DEFAULT 0,
+      kill_leviathan INTEGER DEFAULT 0,
+      kill_erebus INTEGER DEFAULT 0,
+      best_round INTEGER DEFAULT 0,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Tabel Cooldown Pemain / Grup.
+  // Cooldown dulunya hidup di Map memori, jadi restart bot me-reset semuanya —
+  // pemain bisa sengaja menunggu bot restart untuk membatalkan cooldown `.steal`
+  // atau membuang immunity korban. Disimpan di DB supaya tahan restart.
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS user_cooldowns (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      scope TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(scope, kind)
+    )
+  `);
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_user_cooldowns_scope ON user_cooldowns(scope)");
+  await runQuery("DELETE FROM user_cooldowns WHERE expires_at <= ?", [Date.now()]);
+
   // Tabel Power-Up / Buff Pemain (toko poin `.tukar`).
   // Satu baris per (jid, buff_type) — beli ulang memperpanjang durasi atau
   // menambah jatah pakai, bukan membuat baris baru.
@@ -1101,4 +1254,9 @@ You can now enjoy:
   // untuk memutus siklus: tcgDb.js mengimpor gamesDb.js.
   const { initTcgSchema } = await import('./tcgDb.js');
   await initTcgSchema();
+
+  // Lapisan retensi arena (beruntun, peringkat musim, gelar, barter). Dipanggil
+  // SESUDAH initTcgSchema karena ia meng-ALTER `tcg_profil` yang dibuat di sana.
+  const { initTcgMetaSchema } = await import('./tcgMetaDb.js');
+  await initTcgMetaSchema();
 }

@@ -5,3 +5,4 @@ export * from './storeDb.js';
 export * from './gamesDb.js';
 export * from './featuresDb.js';
 export * from './tcgDb.js';
+export * from './tcgMetaDb.js';

@@ -7,7 +7,7 @@
  */
 
 import {
-  getKartu, statKartu, ELEMEN, pengaliElemen, SKILL,
+  getKartu, statKartu, KARTU, ELEMEN, pengaliElemen, SKILL,
   costKartu, sinergiDek, PENGALI_UNGGUL, KRIT_DMG
 } from './cards.js';
 
@@ -59,8 +59,19 @@ function buatPetarung(item, nama, sinergi) {
 
   const dasar = statKartu(kartu, item.card_lv || 1);
   const sk = kartu.skill ? SKILL[kartu.skill] : null;
-  const bonusAtk = (1 + (sk?.atkBonus || 0)) * (1 + (sinergi?.atk || 0));
-  const bonusHp = (1 + (sk?.hpBonus || 0)) * (1 + (sinergi?.hp || 0));
+  // `skala` hanya dipakai penjaga Menara Abadi. Lantainya tidak punya ujung,
+  // sedangkan katalog kartu punya — tanpa pengali ini, lantai 200 akan memakai
+  // penjaga yang persis sama kuatnya dengan lantai 31.
+  //
+  // Sengaja dikalikan ke ATK dan HP dengan angka yang sama: hasil kali ATK×HP
+  // adalah daya sebenarnya di duel giliran-bergantian (AGENTS.md §12r), jadi
+  // menaikkan keduanya sama besar menaikkan daya tanpa menggeser peran kartu.
+  // Lantai-lantai awal Menara Abadi sengaja memakai skala DI BAWAH 1 — penjaga
+  // di sana bernilai 13★ melawan dek pemain yang dibatasi 10★, jadi tanpa
+  // peredam itu lantai pertamanya sudah lebih berat daripada bos akhir Menara.
+  const skala = Number(item.skala) > 0 ? Number(item.skala) : 1;
+  const bonusAtk = (1 + (sk?.atkBonus || 0)) * (1 + (sinergi?.atk || 0)) * skala;
+  const bonusHp = (1 + (sk?.hpBonus || 0)) * (1 + (sinergi?.hp || 0)) * skala;
   const hp = Math.round(dasar.hp * bonusHp);
 
   return {
@@ -789,4 +800,124 @@ export const TOWER_FLOORS = [
 
 export function getTowerFloor(floorNum) {
   return TOWER_FLOORS.find(f => f.floor === floorNum) || null;
+}
+
+
+// ============================================================
+// MENARA ABADI: LANTAI TANPA UJUNG SESUDAH LANTAI 30
+// ============================================================
+
+/**
+ * Menara Penjaga punya 30 lantai dan itu memang seharusnya berakhir — ia adalah
+ * kurikulum, bukan tempat tinggal. Masalahnya, sesudah lantai 30 tidak ada
+ * apa pun lagi: pemain paling rajin justru yang paling cepat kehabisan.
+ *
+ * Menara Abadi mengisi lubang itu. Penjaganya dibangkitkan dari nomor lantai,
+ * bukan disimpan sebagai daftar, jadi ia tidak pernah habis dan tidak menambah
+ * satu baris pun ke katalog kartu.
+ *
+ * TIGA HAL YANG MEMBUATNYA ADIL:
+ *
+ * 1. **Deterministik.** Lantai 47 selalu menghadirkan penjaga yang sama untuk
+ *    semua orang. Kalau diacak, pemain akan mengulang lantai sampai dapat
+ *    undian mudah, dan angka lantai berhenti berarti apa-apa di papan peringkat.
+ * 2. **Elemen berputar.** Tiap lantai condong ke satu elemen yang berganti tiap
+ *    lantai, jadi dek tunggal tidak bisa menembus selamanya — pemain harus
+ *    merawat lebih dari tiga kartu.
+ * 3. **Kekuatannya tumbuh, hadiahnya tidak.** Lihat `tcgHadiahAbadi`.
+ */
+const ABADI_ELIT = KARTU.filter(k => k.rarity === 'LEGENDARY' || k.rarity === 'MYTHIC');
+const ABADI_ELEMEN_URUT = Object.keys(ELEMEN);
+const ABADI_PER_ELEMEN = ABADI_ELEMEN_URUT.reduce((acc, e) => {
+  acc[e] = ABADI_ELIT.filter(k => k.elemen === e).map(k => k.id);
+  return acc;
+}, {});
+
+/**
+ * Kurva kesulitan Menara Abadi. Angka-angka ini DIUKUR, bukan dikira-kira:
+ * skrip kalibrasi mencari dek 10★ level 5 TERBAIK untuk tiap lantai (dari
+ * 31.390 dek legal, dengan counter elemen) lalu menghitung persentase menangnya
+ * atas 400 simulasi.
+ *
+ *   lantai  1 → 99 %      lantai 25 → 63 %      lantai 40 →  9 %
+ *   lantai 10 → 95 %      lantai 30 → 32 %      lantai 50 →  1 %
+ *   lantai 20 → 93 %      lantai 35 → 43 %
+ *
+ * Dua puluh lantai pertama memang longgar — itu putaran kemenangan untuk pemain
+ * yang baru menamatkan lantai 30, bukan ujian. Pertandingan yang sebenarnya ada
+ * di lantai 25-45, dan angka itu diukur dengan counter-pick sempurna tiap
+ * lantai; pemain yang memakai satu dek untuk semuanya akan berhenti jauh lebih
+ * cepat.
+ *
+ * `skala` bergerak halus dan `card_lv` bergerak lambat (tiap 12 lantai) dengan
+ * sengaja. Versi pertama menaikkan level tiap 5-6 lantai dan hasilnya adalah
+ * tembok: lantai 19 menang 85 %, lantai 20 menang 16 %, hanya karena penjaganya
+ * naik satu level.
+ */
+export const ABADI_SKALA_AWAL = 0.86;
+export const ABADI_SKALA_PER_LANTAI = 0.016;
+export const ABADI_LANTAI_PER_LEVEL = 12;
+
+/**
+ * Pengacak deterministik 32-bit.
+ *
+ * WAJIB `Math.imul`, bukan `*`. Perkalian biasa di JavaScript memakai double,
+ * jadi hasil dua bilangan 32-bit melewati 2^53 dan bit-bit rendahnya —
+ * satu-satunya yang dipakai oleh `% panjang` di bawah — dibulatkan jadi nol.
+ * Versi pertama fungsi ini memakai `*` dan menghasilkan nama lantai yang sama
+ * persis untuk SETIAP lantai.
+ */
+function acakLantai(lantai, benih) {
+  let h = (Math.imul(lantai, 2654435761) + Math.imul(benih, 40503)) >>> 0;
+  h ^= h >>> 13;
+  h = Math.imul(h, 1274126177) >>> 0;
+  h ^= h >>> 16;
+  return h >>> 0;
+}
+
+/**
+ * Nama lantai. Sengaja dirakit dari dua daftar pendek, bukan disimpan satu per
+ * satu: lantainya tak terhingga, jadi daftar nama apa pun akan kehabisan.
+ */
+const ABADI_AWALAN = ['Kabut', 'Bayang', 'Gerbang', 'Palung', 'Menara', 'Lorong', 'Puing', 'Nyala'];
+const ABADI_AKHIRAN = ['Tanpa Nama', 'Yang Runtuh', 'Sang Fajar', 'Keheningan', 'Bara Purba', 'Langit Retak', 'Sunyi Abadi', 'Arus Balik'];
+
+export function namaLantaiAbadi(lantai) {
+  const a = ABADI_AWALAN[acakLantai(lantai, 7) % ABADI_AWALAN.length];
+  const b = ABADI_AKHIRAN[acakLantai(lantai, 11) % ABADI_AKHIRAN.length];
+  return `${a} ${b}`;
+}
+
+/**
+ * Dek penjaga untuk satu lantai Menara Abadi.
+ * @param {number} lantai nomor lantai abadi (1 = lantai pertama sesudah Menara)
+ */
+export function dekAbadi(lantai) {
+  const n = Math.max(1, Math.floor(Number(lantai) || 1));
+
+  const level = Math.min(5, 2 + Math.floor((n - 1) / ABADI_LANTAI_PER_LEVEL));
+  const skala = ABADI_SKALA_AWAL + (n - 1) * ABADI_SKALA_PER_LANTAI;
+
+  const elemen = ABADI_ELEMEN_URUT[(n - 1) % ABADI_ELEMEN_URUT.length];
+  const inti = ABADI_PER_ELEMEN[elemen] || [];
+  const luar = ABADI_ELIT.filter(k => k.elemen !== elemen).map(k => k.id);
+
+  const dipakai = new Set();
+  const ambil = (daftar, benih) => {
+    const sisa = daftar.filter(id => !dipakai.has(id));
+    if (!sisa.length) return null;
+    const id = sisa[acakLantai(n, benih) % sisa.length];
+    dipakai.add(id);
+    return id;
+  };
+
+  // Dua kartu bertema, satu penyimpang. Tiga-tiganya setema akan membuat lantai
+  // ini kalah telak oleh satu dek pengalah elemen dan sisanya jadi hafalan;
+  // satu slot di luar tema memaksa dek pemain tetap punya jawaban lain.
+  const ids = [ambil(inti, 1), ambil(inti, 2), ambil(luar, 3)].filter(Boolean);
+
+  const deck = {};
+  ids.forEach((id, i) => { deck[i + 1] = { card_id: id, card_lv: level, skala }; });
+
+  return { lantai: n, nama: namaLantaiAbadi(n), level, skala, elemen, deck };
 }

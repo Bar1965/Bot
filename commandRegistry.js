@@ -94,14 +94,28 @@ const categories = {
         inGame: ['.vote', '.lanjut', '.tukargiliran']
       },
       {
-        title: '🐉 RAID & LELANG',
+        title: '🐉 RAID WORLD BOSS',
         items: [
-          ['.raid / .worldboss [boss]', 'Raid World Boss co-op 4 kelas'],
+          ['.raid / .worldboss [boss]', 'Raid co-op 5 boss, 4 kelas pemain'],
+          ['.raid list', 'Daftar boss, kelemahan & cooldown grup'],
           ['.joinraid <dps/tank/heal/mage>', 'Gabung regu & pilih kelas'],
-          ['.lelang / .auction [tipe]', 'Lelang Kotak Misteri grup'],
-          ['.bid <poin> / .bidup', 'Pasang tawaran lelang']
+          ['.statusraid', 'HP boss, kondisi regu & cooldown skill'],
+          ['.raidstats / .raidtop', 'Statistik & papan peringkat raid']
         ],
-        inGame: ['.serang', '.tameng', '.heal', '.sihir', '.cancellelang']
+        inGame: ['.serang', '.tameng', '.taunt', '.heal', '.sihir <elemen>', '.freeze']
+      },
+      {
+        title: '📦 LELANG KOTAK MISTERI',
+        items: [
+          ['.lelang / .auction [kotak]', 'Lelang kotak, isi dibocorkan 3 petunjuk'],
+          ['.lelang buta [kotak]', 'Tawaran tersegel via DM, bayar harga kedua'],
+          ['.lelang kutuk', 'Lelang terbalik: paling nekat yang menang'],
+          ['.lelang gudang', '3 lot berurutan dengan satu dompet'],
+          ['.lelang list', 'Isi gudang, stok & semua mode lelang'],
+          ['.bid <poin> / .bidup', 'Pasang tawaran (poin langsung ditahan)'],
+          ['.lelangstats / .lelangtop', 'Untung rugi & papan peringkat lelang']
+        ],
+        inGame: ['.bidup', '.infolelang', '.endus', '.gertak <poin>', '.sikut @orang', '.cancellelang']
       },
       {
         title: '🧠 KUIS & TEBAK-TEBAKAN',
@@ -122,19 +136,25 @@ const categories = {
       {
         title: '🎰 KASINO & TARUHAN',
         items: [
-          ['.bj / .blackjack [taruhan]', 'Kartu 21 lawan Dealer Bot'],
+          ['.bj / .blackjack [taruhan]', 'Kartu 21 lawan Dealer (10-5.000, ada bonus 21)'],
           ['.mines <taruhan> [1-24 bom]', 'Ranjau poin 5x5 cari multiplier'],
           ['.slot / .spin [taruhan]', 'Mesin slot & Lucky Spin Wheel'],
           ['.duel @member [taruhan]', 'Russian Roulette 1v1'],
           ['.suit @member [taruhan]', 'Suit gunting-batu-kertas'],
           ['.balapkuda', 'Pacuan kuda multi-betting grup']
         ],
-        inGame: ['.hit', '.stand', '.buka', '.cashout', '.infomines', '.pasangkuda']
+        inGame: ['.hit', '.stand', '.double', '.buka', '.cashout', '.infomines', '.pasangkuda']
       },
       {
         title: '🦹 AKSI & KOLEKSI',
         items: [
           ['.tcg', 'Arena Kartu Monster: gacha & PvP'],
+          ['.tcg daily', 'Hadiah harian Arena + beruntun & tonggak'],
+          ['.tcg rank', 'Peringkat & tier musim Arena'],
+          ['.tcg abadi', 'Menara Abadi — lantai tanpa ujung'],
+          ['.tcg barter @member', 'Tukar kartu duplikat dengan teman'],
+          ['.tcg gelar / .tcg tonggak', 'Gelar permanen & tonggak koleksi'],
+          ['.tcg ransum', 'Pakai ransum pemulih energi Arena'],
           ['.heist / .rampokbank [1-4]', 'Misi bobol brankas bank grup'],
           ['.steal / .maling @member', 'Curi poin member lain'],
           ['.jailbreak / .kabur', 'Teka-teki kabur dari penjara'],
@@ -196,7 +216,10 @@ const categories = {
         items: [
           ['.poin / .profile', 'Level, XP, ranking & saldo poin'],
           ['.daily', 'Klaim poin & XP gratis harian'],
-          ['.rank / .leaderboard', 'Papan peringkat top member'],
+          ['.lb / .rank', 'Papan peringkat — 13 kategori'],
+          ['.lb lvl / raid / lelang / tcg', 'Peringkat per kategori + posisimu'],
+          ['.lb peringkat / abadi / tcgstreak', 'Papan Arena: duel, Menara Abadi, beruntun'],
+          ['.lb kaya / menang / streak / chat', 'Sultan, juara, streak & paling aktif'],
           ['.misi', 'Misi & tantangan harian'],
           ['.badge', 'Koleksi badge pencapaian']
         ]
@@ -316,7 +339,9 @@ const categories = {
           ['.mode <jualan/all>', 'Mode grup: khusus jualan / semua'],
           ['.autodl <on/off>', 'Auto-download TikTok & IG'],
           ['.levelup <on/off>', 'Notifikasi kartu level-up'],
-          ['.tagall <pesan>', 'Mention seluruh anggota grup']
+          ['.tagall <pesan>', 'Mention seluruh anggota grup'],
+          ['.cekwarn [@user]', 'Lihat siapa mendekati ambang kick'],
+          ['.unwarn @user [1]', 'Maafkan peringatan moderasi']
         ]
       },
       {
@@ -324,7 +349,11 @@ const categories = {
         items: [
           ['.ping', 'Cek kecepatan & status server'],
           ['.owner', 'Kontak Developer & Owner bot'],
-          ['.update / .changelog', 'Catatan pembaruan bot'],
+          ['.update / .changelog', 'Catatan pembaruan bot per versi'],
+          ['.update broadcast (Owner)', 'Siarkan catatan rilis ke semua grup'],
+          ['.update on / off (Owner)', 'Atur pengumuman rilis otomatis'],
+          ['.bansos (Owner)', 'Bagi poin/keping/energi/kartu massal'],
+          ['.bansos paket / drop (Owner)', 'Paket campuran & drop kartu semua grup'],
           ['.backup', 'Backup database (Owner)']
         ]
       }

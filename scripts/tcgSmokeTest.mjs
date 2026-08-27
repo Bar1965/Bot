@@ -50,7 +50,7 @@ const {
   periksaKeseimbangan, TOTAL_KARTU
 } = await import(REPO + 'src/games/tcg/cards.js');
 const { bufferKartu, bufferBanyakKartu } = await import(REPO + 'src/games/tcg/gambar.js');
-const { simulate3v3, TOWER_FLOORS, getTowerFloor } = await import(REPO + 'src/games/tcg/battle.js');
+const { simulate3v3, TOWER_FLOORS, getTowerFloor, dekAbadi } = await import(REPO + 'src/games/tcg/battle.js');
 
 await db.openDb();
 await db.initDb();
@@ -184,7 +184,7 @@ for (const [label, args] of [
 ]) await jalankan(label, args);
 
 console.log('\n  -- pintasan angka menu --');
-for (const n of ['1', '2', '3', '4', '5', '6', '7', '8']) {
+for (const n of ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0']) {
   await jalankan(`.tcg ${n}`, ['tcg', n]);
 }
 
@@ -348,8 +348,11 @@ harus('kartu yang sama ditolak', t, 'keburu disambar');
 console.log('\n════ 9. EKONOMI ════');
 t = await jalankan('.tcg daily', ['tcg', 'daily']);
 harus('harian terklaim', t, 'HADIAH HARIAN');
+harus('beruntun hari ke-1 tampil', t, 'BERUNTUN HARI KE-1');
+harus('umpan tonggak berikutnya', t, /tonggak hari ke-\d+/);
 t = await jalankan('.tcg daily (ulang)', ['tcg', 'daily']);
 harus('menolak klaim kedua', t, 'sudah diambil');
+harus('beruntun tetap ditampilkan saat ditolak', t, /Beruntun: \*1 hari\*/);
 t = await jalankan('.tcg gacha', ['tcg', 'gacha']);
 harus('gacha jalan', t, 'TARIKAN KARTU');
 t = await jalankan('.tcg gacha10', ['tcg', 'gacha10']);
@@ -362,6 +365,369 @@ t = await jalankan('.tcg lebur common', ['tcg', 'lebur', 'common']);
 harus('lebur berhasil', t, 'dilebur jadi');
 t = await jalankan('.tcg misi klaim', ['tcg', 'misi', 'klaim']);
 harus('misi bisa diklaim', t, /HADIAH MISI TERKLAIM|Belum ada misi/);
+
+// ============================================================
+// 9b. LAPISAN RETENSI: BERUNTUN, PERINGKAT, GELAR, TONGGAK,
+//     MISI MINGGUAN, MENARA ABADI, BARTER
+// ============================================================
+console.log('\n════ 9b. RETENSI ════');
+
+// --- Beruntun harian: lanjut, putus, dan tonggak ---
+{
+  const hariIni = db.tcgTanggalHariIni();
+  const kemarin = db.tcgHariSebelum(hariIni);
+
+  // Beruntun disetel ke hari ke-2 kemarin, lalu klaim hari ini harus jadi 3
+  // DAN memicu tonggak hari ke-3. Menggeser tanggal jauh lebih jujur daripada
+  // memanggil fungsi internal: yang diuji adalah aturan kalendernya.
+  await db.runQuery(
+    "UPDATE tcg_pity SET gratis_tanggal = NULL WHERE owner_jid = ?", [A]);
+  await db.runQuery(
+    "UPDATE tcg_streak SET streak = 2, terpanjang = 2, tanggal_terakhir = ? WHERE owner_jid = ?",
+    [kemarin, A]);
+
+  t = await jalankan('.tcg daily (hari ke-3)', ['tcg', 'daily']);
+  harus('beruntun lanjut ke 3', t, 'BERUNTUN HARI KE-3');
+  harus('tonggak hari ke-3 dibayar', t, 'TONGGAK HARI KE-3');
+
+  const s3 = await db.tcgGetStreak(A);
+  benar('streak tersimpan 3', s3.streak === 3);
+  benar('bonus beruntun hari ke-3 = 20', db.tcgBonusStreak(3) === 20);
+  benar('bonus beruntun mentok di maks', db.tcgBonusStreak(999) === db.TCG_STREAK_BONUS_MAKS);
+
+  // Melewatkan satu hari harus memutus beruntun, bukan melanjutkannya.
+  await db.runQuery("UPDATE tcg_pity SET gratis_tanggal = NULL WHERE owner_jid = ?", [A]);
+  await db.runQuery(
+    "UPDATE tcg_streak SET tanggal_terakhir = ? WHERE owner_jid = ?",
+    [db.tcgHariSebelum(db.tcgHariSebelum(kemarin)), A]);
+  t = await jalankan('.tcg daily (bolong sehari)', ['tcg', 'daily']);
+  harus('beruntun putus', t, 'terputus');
+  const sPutus = await db.tcgGetStreak(A);
+  benar('beruntun kembali ke 1', sPutus.streak === 1);
+  benar('rekor terpanjang tidak ikut turun', sPutus.terpanjang >= 3);
+
+  // Baca saja tidak boleh menulis: memanggil tcgGetStreak berkali-kali tidak
+  // boleh menggeser tanggal terakhir.
+  const sebelumBaca = await db.getQuery("SELECT tanggal_terakhir, streak FROM tcg_streak WHERE owner_jid = ?", [A]);
+  await db.tcgGetStreak(A); await db.tcgGetStreak(A);
+  const sesudahBaca = await db.getQuery("SELECT tanggal_terakhir, streak FROM tcg_streak WHERE owner_jid = ?", [A]);
+  benar('membaca beruntun tidak mengubah apa pun',
+    sebelumBaca.tanggal_terakhir === sesudahBaca.tanggal_terakhir && sebelumBaca.streak === sesudahBaca.streak);
+}
+
+// --- Misi harian diundi, bukan tetap ---
+{
+  const hariIni = db.tcgTanggalHariIni();
+  const undian = db.tcgMisiHariIni(A, hariIni);
+  benar('3 misi harian diundi', undian.length === 3);
+  benar('undian stabil dalam satu hari',
+    JSON.stringify(db.tcgMisiHariIni(A, hariIni)) === JSON.stringify(undian));
+  benar('semua id misi ada di kolam',
+    undian.every(m => db.TCG_MISI_POOL.some(x => x.id === m.id)));
+  benar('tiga misi berbeda', new Set(undian.map(m => m.id)).size === 3);
+
+  // Sepanjang 60 hari, tiap keranjang harus benar-benar berotasi dan slot
+  // pertama harus selalu berisi misi yang bisa dikerjakan sendirian.
+  const soloIds = new Set(['SPAR', 'SPAR_MAIN', 'GERBANG', 'EKSPEDISI', 'PANEN']);
+  const variasi = [new Set(), new Set(), new Set()];
+  let selaluAdaSolo = true;
+  for (let d = 0; d < 60; d++) {
+    const tgl = new Date(Date.UTC(2026, 0, 1 + d)).toISOString().slice(0, 10);
+    const u = db.tcgMisiHariIni(A, tgl);
+    u.forEach((m, i) => variasi[i].add(m.id));
+    if (!u.some(m => soloIds.has(m.id))) selaluAdaSolo = false;
+  }
+  benar('keranjang 1 berotasi', variasi[0].size >= 3);
+  benar('keranjang 2 berotasi', variasi[1].size >= 3);
+  benar('keranjang 3 berotasi', variasi[2].size >= 3);
+  benar('selalu ada satu misi jalur solo', selaluAdaSolo);
+
+  // Aksi yang bukan misi hari ini diabaikan diam-diam, tidak melempar.
+  const bukanHariIni = db.TCG_MISI_POOL.find(m => !undian.some(u => u.id === m.id));
+  const r = await db.tcgCatatProgresMisi(A, bukanHariIni.id, 1);
+  benar('aksi di luar undian diabaikan diam-diam', r.baruSelesai === false);
+}
+
+// --- Misi mingguan ---
+{
+  t = await jalankan('.tcg mingguan', ['tcg', 'mingguan']);
+  harus('layar mingguan tampil', t, 'MISI MINGGUAN ARENA');
+  harus('bonus tuntas mingguan tampil', t, 'Bonus Tuntas Mingguan');
+
+  t = await jalankan('.tcg mingguan klaim (kosong)', ['tcg', 'mingguan', 'klaim']);
+  harus('menolak klaim kosong', t, /Belum ada misi mingguan|HADIAH MISI MINGGUAN/);
+
+  // Tuntaskan satu misi mingguan lewat pencatat aksi, lalu klaim.
+  const def = db.TCG_MISI_MINGGUAN.find(m => m.id === 'M_TARIK');
+  await db.tcgCatatMingguan(A, 'GACHA', def.target);
+  const m1 = await db.tcgGetMisiMingguan(A);
+  benar('progres mingguan terisi', m1.daftar.find(x => x.id === 'M_TARIK').selesai);
+  t = await jalankan('.tcg mingguan klaim', ['tcg', 'mingguan', 'klaim']);
+  harus('hadiah mingguan terbayar', t, 'HADIAH MISI MINGGUAN TERKLAIM');
+  t = await jalankan('.tcg mingguan klaim (dobel)', ['tcg', 'mingguan', 'klaim']);
+  harus('tidak bisa diklaim dua kali', t, 'Belum ada misi mingguan');
+
+  benar('kunci minggu adalah hari Senin',
+    new Date(`${db.tcgSeninMinggu()}T00:00:00Z`).getUTCDay() === 1);
+}
+
+// --- Peringkat & musim ---
+{
+  t = await jalankan('.tcg rank', ['tcg', 'rank']);
+  harus('layar peringkat tampil', t, 'PERINGKAT ARENA');
+  harus('tier tampil', t, /Perunggu|Perak|Emas|Platina|Diamond|Master|Legenda/);
+  t = await jalankan('.tcg rank top', ['tcg', 'rank', 'top']);
+  harus('papan peringkat tampil', t, /PERINGKAT ARENA — MUSIM \d+/);
+
+  benar('tier naik seiring poin', db.tcgTier(1850).id === 'LEGENDA' && db.tcgTier(0).id === 'PERUNGGU');
+  benar('reset lunak menahan lantai 800', db.tcgResetLunak(0) === 800);
+  benar('reset lunak memotong separuh jarak', db.tcgResetLunak(1800) === 1400);
+  benar('poin awal tidak bergeser saat reset', db.tcgResetLunak(1000) === 1000);
+
+  const C = '628555555555@s.whatsapp.net';
+  const sebelum = await db.tcgGetRank(A);
+  const laga = await db.tcgCatatLaga(A, 1, { k: db.TCG_K_DUEL, lawanJid: C });
+  benar('menang menaikkan poin', laga.berperingkat && laga.poin > sebelum.poin);
+  benar('poin lawan turun sebesar yang sama', laga.lawan.delta === -laga.delta);
+
+  // Batas pasangan: laga berperingkat melawan orang yang sama dibatasi per hari.
+  for (let i = 1; i < db.TCG_RANK_MAKS_PASANGAN; i++) {
+    await db.tcgCatatLaga(A, 1, { k: db.TCG_K_DUEL, lawanJid: C });
+  }
+  const lewat = await db.tcgCatatLaga(A, 1, { k: db.TCG_K_DUEL, lawanJid: C });
+  benar('laga ke-N+1 dengan lawan sama tidak berperingkat',
+    lewat.berperingkat === false && lewat.reason === 'BATAS_PASANGAN');
+
+  // Sparring tidak boleh menurunkan poin pemilik dek bayangan.
+  const bPoinSebelum = (await db.tcgGetRank(B)).poin;
+  await db.tcgCatatLaga(A, 1, { k: db.TCG_K_SPAR, poinLawanTetap: bPoinSebelum });
+  const bPoinSesudah = (await db.tcgGetRank(B)).poin;
+  benar('dek bayangan tidak kehilangan poin', bPoinSebelum === bPoinSesudah);
+
+  // Menang melawan pemain yang jauh lebih lemah tetap memberi minimal 1 poin.
+  const D = '628666666666@s.whatsapp.net';
+  await db.runQuery("UPDATE tcg_rank SET poin = 100 WHERE owner_jid = ? AND musim = ?",
+    [D, db.tcgMusimSekarang().nomor]);
+  await db.tcgGetRank(D);
+  await db.runQuery("UPDATE tcg_rank SET poin = 100 WHERE owner_jid = ? AND musim = ?",
+    [D, db.tcgMusimSekarang().nomor]);
+  const lawanLemah = await db.tcgCatatLaga(A, 1, { k: db.TCG_K_DUEL, lawanJid: D });
+  benar('menang selalu bernilai minimal +1', lawanLemah.delta >= 1);
+
+  benar('musim berjalan minimal 1', db.tcgMusimSekarang().nomor >= 1);
+  benar('hari musim di dalam rentang',
+    db.tcgMusimSekarang().hariKe >= 1 && db.tcgMusimSekarang().hariKe <= db.TCG_MUSIM_HARI);
+}
+
+// --- Pergantian musim: hadiah dibayar malas, sekali saja ---
+{
+  const E = '628777777777@s.whatsapp.net';
+  const musimIni = db.tcgMusimSekarang().nomor;
+  await db.tcgCatatProfil(E, 'Juara Musim Lalu');
+  // Baris musim sebelumnya, peringkat Master, hadiah belum diambil.
+  await db.runQuery(
+    `INSERT OR REPLACE INTO tcg_rank
+       (owner_jid, musim, poin, tertinggi, menang, kalah, seri, beruntun, hadiah_diklaim)
+     VALUES (?, ?, 1650, 1700, 20, 4, 1, 0, 0)`,
+    [E, musimIni - 1]);
+
+  const r1 = await db.tcgGetRank(E, { umumkan: true });
+  benar('hadiah musim lalu dibayar saat pertama menyentuh peringkat', !!r1.hadiahMusimLalu);
+  benar('tier akhir musim terbaca Master', r1.hadiahMusimLalu?.tier?.id === 'MASTER');
+  benar('gelar musiman diberikan untuk Diamond ke atas', !!r1.hadiahMusimLalu?.gelar);
+  benar('poin musim baru hasil reset lunak', r1.poin === db.tcgResetLunak(1650));
+
+  const r2 = await db.tcgGetRank(E, { umumkan: true });
+  benar('hadiah musim tidak diumumkan dua kali', r2.hadiahMusimLalu === null);
+  benar('poin musim baru tidak berubah saat dibaca ulang', r2.poin === r1.poin);
+
+  // Layar yang tidak mencetak apa pun soal musim tidak boleh menghabiskan
+  // pengumumannya. Ini yang membuat hadiah 2.500 Keping terbayar diam-diam.
+  const G = '628999999999@s.whatsapp.net';
+  await db.runQuery(
+    `INSERT OR REPLACE INTO tcg_rank
+       (owner_jid, musim, poin, tertinggi, menang, kalah, seri, beruntun, hadiah_diklaim, hadiah_diumumkan)
+     VALUES (?, ?, 1900, 1900, 30, 2, 0, 0, 0, 0)`,
+    [G, musimIni - 1]);
+  const diam1 = await db.tcgGetRank(G);                    // jalur senyap (mis. kartu duel)
+  benar('jalur senyap tidak mengumumkan', diam1.hadiahMusimLalu === null);
+  const dompetG = await db.tcgGetWallet(G);
+  benar('jalur senyap tetap membayar hadiahnya', dompetG.keping >= db.TCG_HADIAH_MUSIM.LEGENDA.keping);
+  const diam2 = await db.tcgGetRank(G, { umumkan: true }); // layar yang mencetak
+  benar('pengumuman masih tersimpan untuk layar berikutnya', !!diam2.hadiahMusimLalu);
+  benar('hadiah tidak dibayar dua kali',
+    (await db.tcgGetWallet(G)).keping === dompetG.keping);
+
+  const gelarE = await db.tcgPeriksaGelar(E, TOTAL_KARTU);
+  benar('gelar musiman muncul di daftar gelar',
+    gelarE.semua.some(g => g.musiman && /Master Musim/.test(g.nama)));
+
+  // Peringkat rendah tetap dapat hadiah, tapi tanpa gelar.
+  const F = '628888888888@s.whatsapp.net';
+  await db.runQuery(
+    `INSERT OR REPLACE INTO tcg_rank
+       (owner_jid, musim, poin, tertinggi, menang, kalah, seri, beruntun, hadiah_diklaim)
+     VALUES (?, ?, 900, 950, 2, 9, 0, 0, 0)`,
+    [F, musimIni - 1]);
+  const rF = await db.tcgGetRank(F, { umumkan: true });
+  benar('tier rendah tetap dibayar', (rF.hadiahMusimLalu?.teks || []).length > 0);
+  benar('tier rendah tidak dapat gelar musiman', !rF.hadiahMusimLalu?.gelar);
+  benar('reset lunak menahan di lantai 800', rF.poin >= 800);
+}
+
+// --- Gelar ---
+{
+  t = await jalankan('.tcg gelar', ['tcg', 'gelar']);
+  harus('layar gelar tampil', t, 'GELAR ARENA');
+  harus('syarat gelar terkunci ditampilkan', t, '🔒');
+
+  const g = await db.tcgPeriksaGelar(A, TOTAL_KARTU);
+  const punya = g.semua.filter(x => x.punya);
+  benar('setidaknya satu gelar terbuka', punya.length >= 1);
+
+  t = await jalankan(`.tcg gelar ${punya[0].id.toLowerCase()}`, ['tcg', 'gelar', punya[0].id.toLowerCase()]);
+  harus('gelar terpasang', t, 'Gelar terpasang');
+  benar('gelar aktif terbaca', (await db.tcgGelarAktif(A)) === punya[0].nama);
+
+  t = await jalankan('.tcg (menu dengan gelar)', ['tcg']);
+  harus('gelar muncul di menu', t, punya[0].nama);
+
+  t = await jalankan('.tcg gelar zzz', ['tcg', 'gelar', 'zzz']);
+  harus('menolak gelar yang belum dimiliki', t, 'belum punya gelar');
+  t = await jalankan('.tcg gelar lepas', ['tcg', 'gelar', 'lepas']);
+  harus('gelar bisa dilepas', t, 'dilepas');
+  benar('gelar aktif kosong sesudah dilepas', (await db.tcgGelarAktif(A)) === null);
+}
+
+// --- Tonggak koleksi ---
+{
+  t = await jalankan('.tcg tonggak', ['tcg', 'tonggak']);
+  harus('layar tonggak tampil', t, 'TONGGAK KOLEKSI');
+  harus('bar progres koleksi tampil', t, /[▰▱]/);
+
+  const sebelum = await db.tcgGetTonggak(A);
+  if (sebelum.adaKlaim) {
+    t = await jalankan('.tcg tonggak klaim', ['tcg', 'tonggak', 'klaim']);
+    harus('tonggak terbayar', t, 'TONGGAK KOLEKSI TERKLAIM');
+    t = await jalankan('.tcg tonggak klaim (dobel)', ['tcg', 'tonggak', 'klaim']);
+    harus('tidak bisa diklaim dua kali', t, 'Belum ada tonggak baru');
+  } else {
+    t = await jalankan('.tcg tonggak klaim (belum cukup)', ['tcg', 'tonggak', 'klaim']);
+    harus('menolak klaim tanpa syarat', t, 'Belum ada tonggak baru');
+  }
+}
+
+// --- Menara Abadi ---
+{
+  t = await jalankan('.tcg abadi (terkunci)', ['tcg', 'abadi']);
+  harus('abadi tersegel sebelum lantai 30', t, 'tersegel');
+
+  await db.runQuery("UPDATE tcg_tower SET highest_floor = ? WHERE owner_jid = ?", [TOWER_FLOORS.length, A]);
+  await db.tcgTambahEnergi(A, { menara: 3 });
+
+  t = await jalankan('.tcg abadi', ['tcg', 'abadi']);
+  harus('layar abadi terbuka', t, 'MENARA ABADI');
+  harus('lantai berikutnya tampil', t, /Lantai 1/);
+  harus('elemen lantai diumumkan', t, 'condong');
+
+  t = await jalankan('.tcg abadi lawan', ['tcg', 'abadi', 'lawan']);
+  harus('pertarungan abadi berjalan', t, /LANTAI ABADI 1 DITEMBUS|GAGAL DI LANTAI ABADI 1/);
+
+  // Menara habis juga harus tetap mengarahkan ke Abadi.
+  t = await jalankan('.tcg menara', ['tcg', 'menara']);
+  harus('menara tamat mengarah ke abadi', t, '.tcg abadi');
+
+  // Maju satu lantai lewat lapisan data: hadiah dibayar dan lantai naik.
+  const a0 = await db.tcgGetAbadi(A);
+  const maju = await db.tcgMajuAbadi(A, a0.lantai + 1);
+  benar('maju satu lantai berhasil', maju.success && maju.lantai === a0.lantai + 1);
+  benar('lantai tidak bisa dilompati', (await db.tcgMajuAbadi(A, a0.lantai + 5)).success === false);
+
+  // Lantai dibangkitkan, bukan disimpan: harus deterministik dan selalu valid.
+  let rusak = 0;
+  for (let l = 1; l <= 200; l++) {
+    const d = dekAbadi(l);
+    for (const s of [1, 2, 3]) if (!getKartu(d.deck[s]?.card_id)) rusak++;
+    if (new Set([1, 2, 3].map(s => d.deck[s].card_id)).size !== 3) rusak++;
+    if (!(d.skala > 0) || d.level < 1 || d.level > 5) rusak++;
+  }
+  benar('200 lantai abadi valid & tanpa kartu kembar', rusak === 0);
+  benar('lantai abadi deterministik',
+    JSON.stringify(dekAbadi(47)) === JSON.stringify(dekAbadi(47)));
+  benar('nama lantai bervariasi',
+    new Set(Array.from({ length: 40 }, (_, i) => dekAbadi(i + 1).nama)).size >= 15);
+  benar('kekuatan penjaga naik seiring lantai', dekAbadi(50).skala > dekAbadi(1).skala);
+  benar('hadiah abadi dibatasi atas',
+    db.tcgHadiahAbadi(9999).keping === db.TCG_ABADI_KEPING_MAKS);
+}
+
+// --- Barter duplikat ---
+{
+  t = await jalankan('.tcg barter (tanpa argumen)', ['tcg', 'barter']);
+  harus('panduan barter tampil', t, 'BARTER KARTU');
+  harus('aturan duplikat dijelaskan', t, 'duplikat');
+
+  await db.tcgTambahKartu(A, 'CMN01', 3);
+  await db.tcgTambahKartu(B, 'CMN03', 3);
+  const aSebelum = (await db.tcgGetKartu(A, 'CMN01'))?.qty || 0;
+  const bSebelum = (await db.tcgGetKartu(B, 'CMN03'))?.qty || 0;
+
+  t = await jalankan('.tcg barter @B CMN01 CMN03',
+    ['tcg', 'barter', '@' + B.split('@')[0], 'CMN01', 'CMN03'],
+    { messageObj: pesan('Penguji', B) });
+  harus('tawaran barter terkirim', t, 'TAWARAN BARTER');
+  t = await jalankan('B: .tcg deal', ['tcg', 'deal'], { sebagai: B, messageObj: pesan('Lawan') });
+  harus('barter berhasil', t, 'BARTER BERHASIL');
+
+  benar('A kehilangan satu CMN01', ((await db.tcgGetKartu(A, 'CMN01'))?.qty || 0) === aSebelum - 1);
+  benar('A menerima CMN03', ((await db.tcgGetKartu(A, 'CMN03'))?.qty || 0) >= 1);
+  benar('B kehilangan satu CMN03', ((await db.tcgGetKartu(B, 'CMN03'))?.qty || 0) === bSebelum - 1);
+  benar('B menerima CMN01', ((await db.tcgGetKartu(B, 'CMN01'))?.qty || 0) >= 1);
+
+  // Kartu terakhir tidak boleh pernah berpindah.
+  await db.runQuery("UPDATE tcg_collection SET qty = 1 WHERE owner_jid = ? AND card_id = 'LGD03'", [A]);
+  const tunggal = await db.tcgPunyaDuplikat(A, 'LGD03');
+  benar('salinan tunggal bukan duplikat', tunggal.bisa === false);
+  t = await jalankan('.tcg barter kartu tunggal',
+    ['tcg', 'barter', '@' + B.split('@')[0], 'LGD03', 'CMN03'],
+    { messageObj: pesan('Penguji', B) });
+  harus('menolak barter kartu terakhir', t, 'tidak punya *duplikat*');
+
+  // Barter di DM ditolak.
+  t = await jalankan('.tcg barter di DM', ['tcg', 'barter'], { grup: false });
+  harus('barter hanya di grup', t, 'hanya bisa dilakukan di dalam grup');
+
+  // Menolak tawaran.
+  await jalankan('.tcg barter lagi',
+    ['tcg', 'barter', '@' + B.split('@')[0], 'CMN01', 'CMN03'],
+    { messageObj: pesan('Penguji', B) });
+  t = await jalankan('B: .tcg batal', ['tcg', 'batal'], { sebagai: B, messageObj: pesan('Lawan') });
+  harus('tawaran barter bisa ditolak', t, 'ditolak');
+
+  // Kuota harian benar-benar mengikat.
+  const sisa = await db.tcgSisaKuotaBarter(A);
+  benar('kuota barter berkurang sesudah tukar', sisa < db.TCG_BARTER_KUOTA_HARIAN);
+  await db.runQuery(
+    `INSERT INTO tcg_barter_kuota (owner_jid, tanggal, jumlah) VALUES (?, ?, ?)
+       ON CONFLICT(owner_jid, tanggal) DO UPDATE SET jumlah = ?`,
+    [A, db.tcgTanggalHariIni(), db.TCG_BARTER_KUOTA_HARIAN, db.TCG_BARTER_KUOTA_HARIAN]);
+  t = await jalankan('.tcg barter (kuota habis)',
+    ['tcg', 'barter', '@' + B.split('@')[0], 'CMN01', 'CMN03'],
+    { messageObj: pesan('Penguji', B) });
+  harus('kuota habis menolak barter', t, 'Kuota barter harianmu habis');
+}
+
+// --- Layar yang menampilkan semuanya ---
+{
+  t = await jalankan('.tcg (menu penuh)', ['tcg']);
+  harus('menu menampilkan peringkat', t, /Perunggu|Perak|Emas|Platina|Diamond|Master|Legenda/);
+  harus('menu menampilkan beruntun', t, 'Beruntun');
+  harus('menu punya pintasan barter', t, '.tcg barter');
+  t = await jalankan('.tcg misi (dengan mingguan)', ['tcg', 'misi']);
+  harus('misi menautkan mingguan', t, '.tcg mingguan');
+  t = await jalankan('.tcg bantuan jangka', ['tcg', 'bantuan', 'jangka']);
+  harus('topik bantuan jangka panjang ada', t, 'JANGKA PANJANG');
+}
 
 // ============================================================
 // 10. INPUT SALAH & IZIN
