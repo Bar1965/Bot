@@ -1,8 +1,15 @@
 /**
  * ARENA KARTU MONSTER — MESIN PERTARUNGAN 3V3 & PVE MENARA
+ *
+ * Mesin ini tidak tahu nama skill apa pun. Ia hanya membaca field angka dari
+ * SKILL di cards.js (lihat daftar field di sana). Menambah skill baru cukup
+ * dilakukan di katalog; file ini tidak perlu disentuh lagi.
  */
 
-import { getKartu, statKartu, ELEMEN, pengaliElemen, SKILL, STAT_RARITY, costKartu } from './cards.js';
+import {
+  getKartu, statKartu, ELEMEN, pengaliElemen, SKILL,
+  costKartu, sinergiDek, PENGALI_UNGGUL, KRIT_DMG
+} from './cards.js';
 
 // ============================================================
 // STATE DUEL PVP AKTIF
@@ -30,10 +37,287 @@ export function deleteTcgDuel(targetJid) {
 
 const fmt = (n) => Number(n || 0).toLocaleString('id-ID');
 
+const MAKS_GILIRAN = 8;
+const VARIAN_ATAS = 1.10;
+const VARIAN_BAWAH = 0.90;
+// `stabil` dulu memakai 0,98-1,10 dan itu diam-diam adalah buff damage +4%,
+// bukan kestabilan. Sekarang benar-benar stabil (rata-rata tetap 1,00) dan
+// harganya jujur: peluang kritisnya dipotong separuh di `hitungPukulan`.
+const VARIAN_STABIL_ATAS = 1.03;
+const VARIAN_STABIL_BAWAH = 0.97;
+// Ambang untuk field `eksekusi` — damage tambahan saat HP LAWAN sudah tipis.
+const AMBANG_EKSEKUSI = 0.35;
+
+/**
+ * Menyiapkan satu petarung lengkap dengan bonus skill pasif dan bonus sinergi
+ * dek. Semua pengali stat diselesaikan di sini supaya loop serangan hanya
+ * berurusan dengan angka jadi.
+ */
+function buatPetarung(item, nama, sinergi) {
+  const kartu = getKartu(item.card_id);
+  if (!kartu) return null;
+
+  const dasar = statKartu(kartu, item.card_lv || 1);
+  const sk = kartu.skill ? SKILL[kartu.skill] : null;
+  const bonusAtk = (1 + (sk?.atkBonus || 0)) * (1 + (sinergi?.atk || 0));
+  const bonusHp = (1 + (sk?.hpBonus || 0)) * (1 + (sinergi?.hp || 0));
+  const hp = Math.round(dasar.hp * bonusHp);
+
+  return {
+    kartu,
+    nama,
+    sk,
+    level: dasar.level,
+    cost: costKartu(kartu),
+    atk: Math.round(dasar.atk * bonusAtk),
+    // Kritis kartu + tambahan dari skill. Dibatasi 85% supaya tidak ada
+    // kombinasi yang membuat kritis jadi keadaan normal.
+    kritis: Math.max(0, Math.min(0.85, (dasar.kritis || 0) + (sk?.kritBonus || 0))),
+    kritDmg: KRIT_DMG + (sk?.kritDmg || 0),
+    hp,
+    maxHp: hp,
+    // HP tanpa dijepit di 0. Hanya dipakai untuk memisahkan hasil ketika kedua
+    // kartu tumbang di ronde yang sama.
+    hpAsli: hp,
+    elemenMult: 1,
+    perisaiTerpakai: false,
+    lewatiGiliran: false,
+    pelemahTerpakai: false,
+    nyawaCadangan: sk?.bertahanMati === true,
+    selamatDariMaut: false,
+    // Penyembuhan dikumpulkan dulu di sini, baru dibayarkan di akhir ronde.
+    // Lihat `terapkanPulih` untuk alasannya.
+    pulihTertunda: 0,
+    kritisTerjadi: 0,
+    racunMasuk: 0 // porsi HP maks yang hilang tiap akhir ronde
+  };
+}
+
+/**
+ * Menghitung SATU pukulan tanpa menyentuh objek mana pun.
+ *
+ * Semua angka diambil dari `snap` — potret kondisi di AWAL ronde — supaya kedua
+ * kartu benar-benar memukul serentak. Kalau nilai dibaca langsung dari objek,
+ * yang dihitung belakangan akan melihat HP lawan yang sudah berkurang dan
+ * keuntungan "siapa duluan" masuk lewat pintu belakang.
+ */
+function hitungPukulan(p, l, giliran, snapP, snapL) {
+  // Menghindar: serangan hangus seluruhnya, tidak ada efek sampingan apa pun.
+  if (l.sk?.hindar && Math.random() < l.sk.hindar) return { meleset: true, dmg: 0 };
+
+  let mod = p.elemenMult;
+  if (p.sk?.penindas && p.cost > l.cost) mod *= (1 + p.sk.penindas);
+  if (giliran === 1 && p.sk?.bukaan && !l.sk?.waspada) mod *= (1 + p.sk.bukaan);
+  if (p.sk?.menumpuk) mod *= (1 + (giliran - 1) * p.sk.menumpuk);
+  if (p.sk?.nekat && (snapP / p.maxHp) < p.sk.nekat.ambang) mod *= (1 + p.sk.nekat.bonus);
+  if (p.sk?.eksekusi && (snapL / l.maxHp) < AMBANG_EKSEKUSI) mod *= (1 + p.sk.eksekusi);
+
+  // Kritis: peluang kartu sendiri dikurangi `antiKrit` lawan.
+  let peluangKrit = p.kritis - (l.sk?.antiKrit || 0);
+  if (p.sk?.stabil) peluangKrit *= 0.5;
+  const kritis = peluangKrit > 0 && Math.random() < peluangKrit;
+  if (kritis) mod *= p.kritDmg;
+
+  const atas = p.sk?.stabil ? VARIAN_STABIL_ATAS : VARIAN_ATAS;
+  const bawah = p.sk?.stabil ? VARIAN_STABIL_BAWAH : VARIAN_BAWAH;
+  let dmg = p.atk * mod * (bawah + Math.random() * (atas - bawah));
+
+  // Pertahanan pasif lawan, bisa ditembus sebagian oleh `tembus`.
+  let tahan = l.sk?.tahan || 0;
+  if (p.sk?.tembus) tahan *= (1 - p.sk.tembus);
+  if (tahan > 0) dmg *= (1 - tahan);
+
+  return { meleset: false, kritis, dmg };
+}
+
+/**
+ * Menerapkan satu pukulan yang sudah dihitung, beserta seluruh efek
+ * sampingannya. Dipanggil setelah KEDUA sisi selesai menghitung.
+ */
+function terapkanPukulan(p, l, pukulan) {
+  if (pukulan.meleset) return;
+
+  let dmg = pukulan.dmg;
+  // Perisai sekali pakai: hanya untuk damage pertama yang diterima.
+  if (l.sk?.perisaiAwal && !l.perisaiTerpakai) {
+    dmg *= (1 - l.sk.perisaiAwal);
+    l.perisaiTerpakai = true;
+  }
+
+  dmg = Math.max(1, Math.round(dmg));
+  if (pukulan.kritis) p.kritisTerjadi++;
+  l.hpAsli -= dmg;
+  l.hp = Math.max(0, l.hp - dmg);
+
+  // Nyali Terakhir: sekali per duel, serangan mematikan menyisakan 1 HP.
+  if (l.hp <= 0 && l.nyawaCadangan) {
+    l.nyawaCadangan = false;
+    l.selamatDariMaut = true;
+    l.hp = 1;
+    l.hpAsli = 1;
+  }
+
+  // Isap darah dihitung dari HP MAKS PENGISAP, bukan dari damage yang diberikan.
+  //
+  // Versi lama (dmg x serap) punya cacat struktural: nilainya adalah
+  // dmg x serap / hp_sendiri, jadi makin kecil badan kartunya makin besar
+  // manfaatnya. Kelelawar Gua (158 ATK / 290 HP) memanen 87,1% di antara sesama
+  // Common dari skill Common biasa, sementara skill yang sama di badan Petahan
+  // nyaris tidak terasa. Basis HP maks membuat manfaatnya identik untuk semua
+  // bentuk kartu: tiap pukulan mengembalikan porsi yang sama dari nyawa sendiri.
+  if (p.sk?.serap) {
+    p.pulihTertunda += Math.round(p.maxHp * p.sk.serap);
+  }
+  if (l.sk?.duri) {
+    const balik = Math.round(dmg * l.sk.duri);
+    p.hpAsli -= balik;
+    p.hp = Math.max(0, p.hp - balik);
+    if (p.hp <= 0 && p.nyawaCadangan) {
+      p.nyawaCadangan = false;
+      p.selamatDariMaut = true;
+      p.hp = 1;
+      p.hpAsli = 1;
+    }
+  }
+  if (p.sk?.racun) {
+    l.racunMasuk = p.sk.racun;
+  }
+  if (p.sk?.setrum && Math.random() < p.sk.setrum) {
+    l.lewatiGiliran = true;
+  }
+  // Pelemah hanya sekali per duel — kalau menumpuk tiap pukulan, satu skill
+  // Rare bisa membuat ATK lawan nyaris nol di ronde ketiga.
+  if (p.sk?.pelemah && !p.pelemahTerpakai) {
+    p.pelemahTerpakai = true;
+    l.atk = Math.max(1, Math.round(l.atk * (1 - p.sk.pelemah)));
+  }
+}
+
+/** Semua pukulan yang dilepaskan `p` di ronde ini, belum diterapkan. */
+function rencanakanGiliran(p, l, giliran, snapP, snapL) {
+  if (p.lewatiGiliran) {
+    p.lewatiGiliran = false;
+    return [];
+  }
+  const daftar = [hitungPukulan(p, l, giliran, snapP, snapL)];
+  if (p.sk?.ganda && Math.random() < p.sk.ganda) {
+    daftar.push(hitungPukulan(p, l, giliran, snapP, snapL));
+  }
+  return daftar;
+}
+
+/**
+ * Satu ronde penuh, SERENTAK.
+ *
+ * Versi lama menjalankan giliran bergantian, dan itu adalah keunggulan raksasa:
+ * di pertandingan cermin, pihak yang memukul duluan menang 74,7% — angka yang
+ * ditentukan `Math.random()` di pemilihan inisiatif, bukan oleh pemain. Dengan
+ * resolusi serentak angka itu turun ke 50,4%, dan keunggulan 10% daya berubah
+ * dari 99,9% (praktis pasti) menjadi 69,6% (masih diunggulkan, masih bisa
+ * kalah). Satu tingkat rarity tetap menentukan di 98%, jadi hasil gacha tidak
+ * kehilangan artinya.
+ */
+function jalankanRonde(A, B, giliran) {
+  const snapA = A.hp;
+  const snapB = B.hp;
+  const pukulanA = rencanakanGiliran(A, B, giliran, snapA, snapB);
+  const pukulanB = rencanakanGiliran(B, A, giliran, snapB, snapA);
+  for (const pk of pukulanA) terapkanPukulan(A, B, pk);
+  for (const pk of pukulanB) terapkanPukulan(B, A, pk);
+  // Penyembuhan dibayarkan SETELAH kedua sisi selesai memukul.
+  terapkanPulih(A);
+  terapkanPulih(B);
+}
+
+/**
+ * Membayarkan isap darah yang tertunda.
+ *
+ * Ini bukan kerapian, ini perbaikan bug. Kalau penyembuhan dibayar di dalam
+ * `terapkanPukulan`, urutan pemanggilan bocor jadi keunggulan: sisi yang
+ * dihitung belakangan menyembuhkan diri SETELAH menerima damage (selalu
+ * terpakai penuh), sementara sisi pertama menyembuhkan diri saat masih penuh
+ * (terbuang oleh batas HP maks). Lebih parah lagi, penyembuhan itu bisa
+ * MENGHIDUPKAN kartu yang HP-nya sudah nol di ronde yang sama.
+ *
+ * Akibatnya terukur dan brutal: Kelelawar Gua sebagai dek B menang 100% atas
+ * dirinya sendiri sebagai dek A. Menunda pembayaran ke akhir ronde, ditambah
+ * syarat masih hidup, membuat kedua sisi diperlakukan sama persis.
+ */
+function terapkanPulih(x) {
+  const pulih = x.pulihTertunda;
+  x.pulihTertunda = 0;
+  if (pulih <= 0 || x.hp <= 0) return;
+  x.hp = Math.min(x.maxHp, x.hp + pulih);
+  x.hpAsli = Math.min(x.maxHp, x.hpAsli + pulih);
+}
+
+/** Regen dan racun diselesaikan bersamaan di akhir ronde. */
+function akhirRonde(x) {
+  if (x.hp <= 0) return;
+  if (x.sk?.regen) {
+    const pulih = Math.round(x.maxHp * x.sk.regen);
+    x.hp = Math.min(x.maxHp, x.hp + pulih);
+    x.hpAsli = Math.min(x.maxHp, x.hpAsli + pulih);
+  }
+  if (x.racunMasuk) {
+    const luka = Math.round(x.maxHp * x.racunMasuk);
+    x.hpAsli -= luka;
+    x.hp = Math.max(0, x.hp - luka);
+  }
+}
+
+/** Baris deskripsi satu petarung untuk laporan ronde. */
+function barisPetarung(p) {
+  const el = ELEMEN[p.kartu.elemen];
+  const skl = p.sk ? ` · _${p.sk.nama}_` : '';
+  const krit = p.kritis > 0 ? ` | KRIT: ${Math.round(p.kritis * 100)}%` : '';
+  return `  👤 ${p.nama}: ${el.emoji} *${p.kartu.nama}* (Lv.${p.level}) [HP: ${fmt(p.hp)} | ATK: ${fmt(p.atk)}${krit}]${skl}`;
+}
+
+/**
+ * Menentukan pemenang satu slot.
+ *
+ * Karena kedua kartu kini memukul serentak, TUMBANG BERSAMAAN jadi hasil yang
+ * lumrah — dan itu butuh pemutus. Keduanya, baik saat tumbang bersamaan maupun
+ * saat 8 ronde habis, memakai ukuran yang sama: PERSEN HP, bukan angka mentah.
+ *
+ * Dua percobaan sebelumnya gagal justru karena memakai angka mentah:
+ *
+ *   "kartu lebih murah bertahan" — niatnya mengganti bonus inisiatif lama
+ *   sebagai kompensasi dek hemat. Kartu murah ber-ATK besar lalu memancing
+ *   tumbang bersamaan dan memanen kemenangan gratis dari rarity di atasnya.
+ *   Kompensasi dek hemat sudah ditangani Pasukan Ramping; jangan dibayar dua kali.
+ *
+ *   "luka mentah paling ringan" — terdengar netral, ternyata memihak keras ke
+ *   kartu ber-HP kecil. Kartu 290 HP paling banter kelebihan luka satu pukulan
+ *   lawan, sementara kartu 675 HP bisa kelebihan jauh lebih besar hanya karena
+ *   badannya besar. Kelelawar Gua melonjak ke 90,3% di antara sesama Common
+ *   gara-gara ini — bukan karena kartunya kuat, tapi karena badannya kecil.
+ *
+ * Persen menanyakan pertanyaan yang benar: siapa yang lebih dekat ke kemenangan.
+ */
+function tentukanPemenang(A, B) {
+  const matiA = A.hp <= 0;
+  const matiB = B.hp <= 0;
+  if (!matiA && matiB) return { winner: 1, sebab: 'KO' };
+  if (matiA && !matiB) return { winner: 2, sebab: 'KO' };
+  if (matiA && matiB) {
+    const lukaA = A.hpAsli / A.maxHp;
+    const lukaB = B.hpAsli / B.maxHp;
+    if (lukaA !== lukaB) return { winner: lukaA > lukaB ? 1 : 2, sebab: 'RINGAN' };
+    return { winner: 0, sebab: 'SERI' };
+  }
+  const sisaA = A.hp / A.maxHp;
+  const sisaB = B.hp / B.maxHp;
+  if (sisaA > sisaB) return { winner: 1, sebab: 'SISA' };
+  if (sisaB > sisaA) return { winner: 2, sebab: 'SISA' };
+  return { winner: 0, sebab: 'SERI' };
+}
+
 /**
  * Mensimulasikan pertarungan 1 kartu vs 1 kartu
  */
-function duelSatuSlot(slotIdx, itemA, itemB, nameA, nameB) {
+function duelSatuSlot(slotIdx, itemA, itemB, nameA, nameB, sinergiA, sinergiB, diam = false) {
   if (!itemA && !itemB) {
     return { winner: 0, text: `⚔️ *Ronde ${slotIdx}:* Kedua sisi tidak memasang kartu (Seri).` };
   }
@@ -46,141 +330,96 @@ function duelSatuSlot(slotIdx, itemA, itemB, nameA, nameB) {
     return { winner: 1, text: `⚔️ *Ronde ${slotIdx}:* ${nameB} tidak memasang kartu di slot ini! ${nameA} (*${cardA?.nama || itemA.card_id}*) menang mutlak.` };
   }
 
-  const cardA = getKartu(itemA.card_id);
-  const cardB = getKartu(itemB.card_id);
-  if (!cardA || !cardB) {
+  const A = buatPetarung(itemA, nameA, sinergiA);
+  const B = buatPetarung(itemB, nameB, sinergiB);
+  if (!A || !B) {
     return { winner: 0, text: `⚔️ *Ronde ${slotIdx}:* Terjadi kesalahan data kartu.` };
   }
 
-  const statA = statKartu(cardA, itemA.card_lv || 1);
-  const statB = statKartu(cardB, itemB.card_lv || 1);
+  A.elemenMult = pengaliElemen(A.kartu.elemen, B.kartu.elemen);
+  B.elemenMult = pengaliElemen(B.kartu.elemen, A.kartu.elemen);
 
-  let hpA = statA.hp;
-  let hpB = statB.hp;
-  const maxHpA = statA.hp;
-  const maxHpB = statB.hp;
+  // Pusaran dan sejenisnya: kerugian elemen dinaikkan kembali ke netral.
+  if (A.sk?.abaikanLemah && A.elemenMult < 1) A.elemenMult = 1;
+  if (B.sk?.abaikanLemah && B.elemenMult < 1) B.elemenMult = 1;
 
-  const elA = ELEMEN[cardA.elemen];
-  const elB = ELEMEN[cardB.elemen];
-
-  let multElemenA = pengaliElemen(cardA.elemen, cardB.elemen);
-  let multElemenB = pengaliElemen(cardB.elemen, cardA.elemen);
-
-  // Skill Pusaran: Abaikan kerugian elemen
-  if (cardA.skill === 'PUSARAN' && multElemenA < 1.0) multElemenA = 1.0;
-  if (cardB.skill === 'PUSARAN' && multElemenB < 1.0) multElemenB = 1.0;
-
-  // Skill Penindas: +25% damage vs lower rarity
-  const costA = costKartu(cardA);
-  const costB = costKartu(cardB);
-  const penindasA = (cardA.skill === 'PENINDAS' && costA > costB) ? 1.25 : 1.0;
-  const penindasB = (cardB.skill === 'PENINDAS' && costB > costA) ? 1.25 : 1.0;
-
-  let turn = 1;
-  const maxTurns = 8;
+  // Mode diam: sparring dan ekspedisi menjalankan banyak pertarungan sekaligus
+  // dan tidak boleh menghasilkan satu pun baris laporan. Merakit string di sana
+  // hanya membuang waktu untuk teks yang langsung dibuang.
   const log = [];
-
-  log.push(
-    `⚔️ *RONDE ${slotIdx}*\n` +
-    `  👤 ${nameA}: ${elA.emoji} *${cardA.nama}* (Lv.${statA.level}) [HP: ${fmt(hpA)} | ATK: ${fmt(statA.atk)}]\n` +
-    `  👤 ${nameB}: ${elB.emoji} *${cardB.nama}* (Lv.${statB.level}) [HP: ${fmt(hpB)} | ATK: ${fmt(statB.atk)}]`
-  );
-
-  if (multElemenA > 1.0) {
-    log.push(`  ✨ ${cardA.nama} unggul elemen atas ${cardB.nama} (+35% DMG)!`);
-  } else if (multElemenB > 1.0) {
-    log.push(`  ✨ ${cardB.nama} unggul elemen atas ${cardA.nama} (+35% DMG)!`);
+  if (!diam) {
+    log.push(`⚔️ *RONDE ${slotIdx}*`, barisPetarung(A), barisPetarung(B));
+    // Persentasenya DIHITUNG dari PENGALI_UNGGUL, bukan ditulis manual. Angka
+    // 35% dulu tertanam di teks ini, jadi begitu pengali elemen disetel ulang
+    // laporan duel akan berbohong tanpa ada yang menyadarinya.
+    const bonusElemenTeks = `+${Math.round((PENGALI_UNGGUL - 1) * 100)}% DMG`;
+    if (A.elemenMult > 1) {
+      log.push(`  ✨ ${A.kartu.nama} unggul elemen atas ${B.kartu.nama} (${bonusElemenTeks})!`);
+    } else if (B.elemenMult > 1) {
+      log.push(`  ✨ ${B.kartu.nama} unggul elemen atas ${A.kartu.nama} (${bonusElemenTeks})!`);
+    }
   }
 
-  while (hpA > 0 && hpB > 0 && turn <= maxTurns) {
-    // 1. Serangan A -> B
-    let dmgModA = multElemenA * penindasA;
-    if (turn === 1 && cardA.skill === 'GERHANA') dmgModA *= 1.40; // Gerhana +40% turn 1
-    if (cardA.skill === 'BARA_ABADI') dmgModA *= (1 + (turn - 1) * 0.15); // Bara Abadi +15%/turn
-    if (cardA.skill === 'BALAS_DENDAM' && (hpA / maxHpA) < 0.30) dmgModA *= 1.30;
+  let giliran = 1;
+  while (A.hp > 0 && B.hp > 0 && giliran <= MAKS_GILIRAN) {
+    jalankanRonde(A, B, giliran);
+    if (A.hp <= 0 || B.hp <= 0) break;
 
-    let varianceA = 0.90 + Math.random() * 0.20;
-    let rawDmgA = Math.round(statA.atk * dmgModA * varianceA);
+    akhirRonde(A);
+    akhirRonde(B);
+    if (A.hp <= 0 || B.hp <= 0) break;
 
-    // Perisai Air pertahanan B
-    if (turn === 1 && cardB.skill === 'PERISAI_AIR') {
-      rawDmgA = Math.round(rawDmgA * 0.50);
-    }
-
-    // Sambaran Ganda A
-    const doubleA = (cardA.skill === 'SAMBARAN_GANDA' && Math.random() < 0.25);
-    if (doubleA) rawDmgA = Math.round(rawDmgA * 1.8);
-
-    hpB = Math.max(0, hpB - rawDmgA);
-
-    if (hpB <= 0) break;
-
-    // 2. Serangan B -> A
-    let dmgModB = multElemenB * penindasB;
-    if (turn === 1 && cardB.skill === 'GERHANA') dmgModB *= 1.40;
-    if (cardB.skill === 'BARA_ABADI') dmgModB *= (1 + (turn - 1) * 0.15);
-    if (cardB.skill === 'BALAS_DENDAM' && (hpB / maxHpB) < 0.30) dmgModB *= 1.30;
-
-    let varianceB = 0.90 + Math.random() * 0.20;
-    let rawDmgB = Math.round(statB.atk * dmgModB * varianceB);
-
-    if (turn === 1 && cardA.skill === 'PERISAI_AIR') {
-      rawDmgB = Math.round(rawDmgB * 0.50);
-    }
-
-    const doubleB = (cardB.skill === 'SAMBARAN_GANDA' && Math.random() < 0.25);
-    if (doubleB) rawDmgB = Math.round(rawDmgB * 1.8);
-
-    hpA = Math.max(0, hpA - rawDmgB);
-
-    // Skill Penyembuhan
-    if (cardA.skill === 'PENYEMBUHAN' && hpA > 0) {
-      hpA = Math.min(maxHpA, hpA + Math.round(maxHpA * 0.10));
-    }
-    if (cardB.skill === 'PENYEMBUHAN' && hpB > 0) {
-      hpB = Math.min(maxHpB, hpB + Math.round(maxHpB * 0.10));
-    }
-
-    turn++;
+    giliran++;
   }
 
-  let winner = 0;
-  let winnerText = '';
-  if (hpA > 0 && hpB <= 0) {
-    winner = 1;
-    winnerText = `  🏆 Pemenang Ronde ${slotIdx}: *${nameA}* (${cardA.nama} sisa HP: ${fmt(hpA)})`;
-  } else if (hpB > 0 && hpA <= 0) {
-    winner = 2;
-    winnerText = `  🏆 Pemenang Ronde ${slotIdx}: *${nameB}* (${cardB.nama} sisa HP: ${fmt(hpB)})`;
+  const hasil = tentukanPemenang(A, B);
+  if (diam) return { winner: hasil.winner, text: '' };
+
+  for (const x of [A, B]) {
+    if (x.selamatDariMaut) log.push(`  💀 ${x.kartu.nama} bertahan di 1 HP — _${x.sk.nama}_!`);
+    if (x.kritisTerjadi > 0) log.push(`  💥 ${x.kartu.nama} melepas ${x.kritisTerjadi} pukulan kritis!`);
+  }
+
+  const menang = hasil.winner === 1 ? A : (hasil.winner === 2 ? B : null);
+  const namaMenang = hasil.winner === 1 ? nameA : nameB;
+  if (!menang) {
+    log.push(`  ⚖️ Ronde ${slotIdx}: *SERI*`);
+  } else if (hasil.sebab === 'KO') {
+    log.push(`  🏆 Pemenang Ronde ${slotIdx}: *${namaMenang}* (${menang.kartu.nama} sisa HP: ${fmt(menang.hp)})`);
+  } else if (hasil.sebab === 'RINGAN') {
+    log.push(`  🏆 Pemenang Ronde ${slotIdx}: *${namaMenang}* (tumbang bersamaan — luka ${menang.kartu.nama} lebih ringan)`);
   } else {
-    // Seri atau timeout
-    if (hpA > hpB) {
-      winner = 1;
-      winnerText = `  🏆 Pemenang Ronde ${slotIdx}: *${nameA}* (Unggul sisa HP)`;
-    } else if (hpB > hpA) {
-      winner = 2;
-      winnerText = `  🏆 Pemenang Ronde ${slotIdx}: *${nameB}* (Unggul sisa HP)`;
-    } else {
-      winner = 0;
-      winnerText = `  ⚖️ Ronde ${slotIdx}: *SERI*`;
-    }
+    log.push(`  🏆 Pemenang Ronde ${slotIdx}: *${namaMenang}* (unggul sisa HP: ${Math.round(menang.hp / menang.maxHp * 100)}%)`);
   }
 
-  log.push(winnerText);
-  return { winner, text: log.join('\n') };
+  return { winner: hasil.winner, text: log.join('\n') };
+}
+
+/** Ringkasan sinergi satu sisi untuk ditempel di laporan pertandingan. */
+export function ringkasSinergi(nama, sinergi) {
+  if (!sinergi?.aktif?.length) return `🔻 ${nama}: _tanpa sinergi dek_`;
+  const daftar = sinergi.aktif.map(s => `${s.emoji} ${s.nama}`).join(' + ');
+  const efek = [];
+  if (sinergi.atk > 0) efek.push(`ATK +${Math.round(sinergi.atk * 100)}%`);
+  if (sinergi.hp > 0) efek.push(`HP +${Math.round(sinergi.hp * 100)}%`);
+  return `🔹 ${nama}: ${daftar} (${efek.join(', ')})`;
 }
 
 /**
  * Mensimulasikan pertandingan Best-of-3 antara 2 Dek
  */
-export function simulate3v3(deckA, deckB, nameA = 'Pemain A', nameB = 'Pemain B') {
+export function simulate3v3(deckA, deckB, nameA = 'Pemain A', nameB = 'Pemain B', opts = {}) {
+  const diam = opts.diam === true;
+  const sinergiA = sinergiDek(deckA);
+  const sinergiB = sinergiDek(deckB);
+
   let scoreA = 0;
   let scoreB = 0;
   const roundReports = [];
 
   for (let slot = 1; slot <= 3; slot++) {
-    const res = duelSatuSlot(slot, deckA[slot], deckB[slot], nameA, nameB);
-    roundReports.push(res.text);
+    const res = duelSatuSlot(slot, deckA[slot], deckB[slot], nameA, nameB, sinergiA, sinergiB, diam);
+    if (!diam) roundReports.push(res.text);
     if (res.winner === 1) scoreA++;
     else if (res.winner === 2) scoreB++;
   }
@@ -194,9 +433,13 @@ export function simulate3v3(deckA, deckB, nameA = 'Pemain A', nameB = 'Pemain B'
     scoreB,
     matchWinner,
     winnerName: matchWinner === 1 ? nameA : (matchWinner === 2 ? nameB : 'SERI'),
-    roundReports
+    roundReports,
+    sinergiA,
+    sinergiB,
+    sinergiReport: diam ? [] : [ringkasSinergi(nameA, sinergiA), ringkasSinergi(nameB, sinergiB)]
   };
 }
+
 
 // ============================================================
 // DAFTAR 30 LANTAI PVE: MENARA PENJAGA MONSTER
