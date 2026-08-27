@@ -13,9 +13,48 @@
  * BOT_VERSION. Jangan lupa `sorotan` — itu yang dibaca member di grup.
  */
 
-export const BOT_VERSION = 'v3.0';
+export const BOT_VERSION = 'v3.0.1';
 
 export const RIWAYAT_VERSI = [
+  {
+    versi: 'v3.0.1',
+    nama: 'Bot Tidak Bisa Menendang Dirinya Sendiri',
+    tanggal: '27 Agustus 2026',
+    sorotan: [
+      '🛡️ *Perbaikan penting:* `.kick @bot` dulu benar-benar membuat bot KELUAR dari grup. Sekarang ditolak.',
+      '🔁 Balasan ke pesan bot dan `.del` di grup juga ikut diperbaiki — dua-duanya diam-diam rusak oleh sebab yang sama.'
+    ],
+    rincian: [
+      {
+        judul: '🛡️ *BOT BISA MENENDANG DIRINYA SENDIRI*',
+        poin: [
+          'Dilaporkan owner: kalau admin menjalankan perintah kick ke bot, botnya keluar sendiri dari grup.',
+          'Penjaganya sebenarnya sudah ada — tapi cuma membandingkan *nomor HP* bot.',
+          '🆔 Satu akun WhatsApp sekarang punya *dua identitas dengan angka yang sama sekali berbeda*: nomor HP (`@s.whatsapp.net`) dan LID (`@lid`).',
+          'Di grup modern, men-tag bot menghasilkan *@lid*. Angka LID tidak memuat nomor HP sama sekali, jadi penjaganya lewat dan perintah keluar-grup benar-benar dijalankan atas bot sendiri. Bot punya hak admin, jadi permintaannya berhasil.',
+          '✅ Sekarang bot membandingkan *kedua* identitasnya, dan mencocokkannya *persis* — bukan sekadar "mengandung".',
+          '🔓 Efek samping baik: dulu anggota yang nomornya kebetulan memuat digit nomor bot ikut kebal di-kick. Sekarang tidak lagi.',
+          '🚫 Bot juga tidak akan pernah lagi memoderasi dirinya sendiri lewat anti-link maupun anti-spam.'
+        ]
+      },
+      {
+        judul: '🔁 *DUA HAL LAIN YANG DIAM-DIAM RUSAK*',
+        poin: [
+          'Sebab yang sama membuat *balasan ke pesan bot* tidak pernah terdeteksi di grup — fitur yang bergantung padanya seperti tidak ada.',
+          '`.del` untuk menghapus pesan bot sendiri salah mengambil jalur "hapus pesan orang lain", jadi sering gagal.',
+          '🎮 `.suit @bot` juga sekarang ditolak dengan benar di grup ber-LID.'
+        ]
+      },
+      {
+        judul: '🧪 *DIUJI*',
+        poin: [
+          'Uji regresi baru `npm run test:identity` — 31 pemeriksaan, semuanya lewat.',
+          'Termasuk memastikan arah sebaliknya tetap aman: anggota sungguhan *tetap bisa* di-kick admin.',
+          'Ujinya juga menghitung jumlah jalur yang bisa mengeluarkan peserta dari grup, dan gagal kalau ada jalur baru yang lupa dipasangi penjaga.'
+        ]
+      }
+    ]
+  },
   {
     versi: 'v3.0',
     nama: 'Arena Punya Besok',

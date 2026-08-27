@@ -367,6 +367,44 @@ constructed JID.
 are ever visible together: Baileys group metadata, where `participant.id` is the `@lid` and
 `participant.jid` is the phone. It fills in gradually, so mention/reply remains the reliable path.
 
+### 9b. The bot has two identities too — `src/utils/botIdentity.js`
+
+The same LID split applies to the bot's **own** account, and getting it wrong is worse than a failed
+command. Read straight from the live session:
+
+```
+me.id  = 628xxxxxxxxx:NN@s.whatsapp.net   ← phone number
+me.lid = NNNNNNNNNNNNNN:NN@lid            ← different digits entirely
+```
+
+`groupAdminHandler` guarded `.kick` against self-removal with
+`targetJid.includes(sock.user.id.split(':')[0])` — phone digits only. In a LID group, tagging the
+bot puts its **`@lid`** in `mentionedJid`, a LID contains no phone number, the guard evaluated
+false, and `groupParticipantsUpdate(..., 'remove')` ran against the bot itself. The bot is an admin,
+so the request succeeded: **`.kick @bot` made the bot leave the group.** Reported by the owner
+Aug 2026.
+
+Use **`adalahJidBot(sock, targetJid, participants?)`**. Two rules it encodes:
+
+- **Compare every identity, not one.** `sock.user.id` *and* `sock.user.lid` are both the bot. The
+  optional `participants` argument (from `getCachedGroupMetadata`) is a fallback for older sessions
+  whose `creds.me.lid` is empty — the participant row matching either identity contributes its
+  `id`/`jid`/`lid` as well.
+- **Match exactly, never `includes()`.** That one call was wrong in both directions: it missed the
+  LID, *and* it made any member whose number merely contains the bot's digits immune to `.kick`.
+
+Every path that can remove a participant must go through it. There are exactly **three**
+`groupParticipantsUpdate(..., 'remove')` call sites — anti-link and anti-spam in `bot.js` (both
+covered by a single early `return false` at the top of `handleAntiSpamAndAntiLink`, so the bot never
+moderates itself) and the `add`/`kick`/`promote`/`demote` handler. `scripts/botIdentityTest.mjs`
+asserts that count and fails if a fourth appears unguarded.
+
+The same phone-only comparison silently broke two other things, both fixed: `isReplyToBot` in
+`bot.js` was always false in LID groups, and `.del` computed `fromMe: false` for the bot's own
+messages so it took the "delete someone else's message" path.
+
+Run `npm run test:identity` after touching any of this — 31 checks, no database or network needed.
+
 DM-vs-group is **not** a per-command flag. Three separate mechanisms:
 
 1. `isPrivateCommand` (`customerHandler.js:183`) → reply is DM'd, with a public "check your DM" notice.

@@ -7,7 +7,9 @@
   "scripts": {
     "start": "node index.js",
     "test:tcg": "node scripts/tcgSmokeTest.mjs",
-    "balance:tcg": "node scripts/tcgBalance.mjs"
+    "test:identity": "node scripts/botIdentityTest.mjs",
+    "balance:tcg": "node scripts/tcgBalance.mjs",
+    "kalibrasi:abadi": "node scripts/tcgAbadiKalibrasi.mjs"
   },
   "dependencies": {
     "@distube/ytdl-core": "^4.16.12",

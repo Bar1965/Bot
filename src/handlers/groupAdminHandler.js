@@ -10,6 +10,7 @@ import * as mediaHandler from '../../mediaHandler.js';
 import * as ent from '../../entertainmentHandler.js';
 import { sendInteractiveButtons, extractTargetJid, parseDuration, logToSystem, broadcastTagAll, triggerRestockBroadcast, checkAndNotifySubscribers, getCachedGroupMetadata } from '../../bot.js';
 import { backupDatabase } from '../../scheduler.js';
+import { adalahJidBot } from '../utils/botIdentity.js';
 
 export function createGroupAdminHandler(ctx) {
     const { sock, userPushNamesMap, messageCache, formatPhoneNumber, react, sendInteractiveButtons } = ctx;
@@ -46,7 +47,11 @@ export function createGroupAdminHandler(ctx) {
     'autodl', 'autodownload', 'listfitur', 'fiturgrup', 'groupfeatures'
   ];
 
-  const banCommands = ['ban', 'unban', 'addmod', 'delmod', 'listmod', 'setownerid', 'join', 'antidelete'];
+  const banCommands = ['ban', 'unban', 'unwarn', 'cekwarn', 'addmod', 'delmod', 'listmod', 'setownerid', 'join', 'antidelete'];
+
+  // Perintah yang boleh dijalankan Moderator Bot (hasil `.addmod`) dan HANYA itu.
+  // Daftar ini harus selalu cocok dengan janji yang ditulis `.addmod` ke layar.
+  const perintahModerator = ['ban', 'unban', 'unwarn', 'cekwarn'];
 
   if (!adminStoreCommands.includes(cleanCmd) && !groupModerationCommands.includes(cleanCmd) && !banCommands.includes(cleanCmd) && cleanCmd !== 'getjid' && cleanCmd !== 'owner') {
     return false;
@@ -137,20 +142,33 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
   }
 
   const adminList = (botSettings.adminNumbers || config.defaults.adminNumbers || '').split(',').map(n => cleanDigits(n));
-  let isAdminStore = isOwner || isMod || adminList.some(adm => adm && (senderDigits === adm || senderDigits.endsWith(adm) || adm.endsWith(senderDigits)));
+
+  // `isMod` sengaja TIDAK lagi ikut ke isAdminStore.
+  //
+  // `.addmod` menulis di layar: "Dia sekarang bisa menggunakan .ban dan .unban".
+  // Kenyataannya baris ini dulu berbunyi `isOwner || isMod || adminList...`, jadi
+  // satu `.addmod` diam-diam memberikan SELURUH wewenang Admin Toko: `.paid`
+  // (mengirim lisensi Rp150.000 gratis — termasuk ke ordernya sendiri), `.price`,
+  // `.stock`, `.broadcast` ke seluruh pelanggan, dan `.eval` yang menjalankan kode
+  // apa pun di komputer ini. Moderator sekarang benar-benar hanya bisa perintah
+  // moderasi yang dijanjikan.
+  let isAdminStore = isOwner || adminList.some(adm => adm && (senderDigits === adm || senderDigits.endsWith(adm) || adm.endsWith(senderDigits)));
+  let isModeratorBot = isMod;
 
   if (!isOwner || !isAdminStore) {
     try {
       const custRow = await db.getQuery("SELECT role FROM customers WHERE nomor = ? OR nomor = ?", [senderCleanJid, senderNormalized]);
       if (custRow?.role === 'OWNER') isOwner = true;
-      else if (['ADMIN', 'MODERATOR'].includes(custRow?.role)) isAdminStore = true;
+      else if (custRow?.role === 'ADMIN') isAdminStore = true;
+      else if (custRow?.role === 'MODERATOR') isModeratorBot = true;
     } catch (e) {}
   }
 
   const isAdminUser = isAdminStore || isGroupAdmin || isOwner;
 
-  // Jika bukan Admin/Owner, tolak perintah
-  if (!isAdminUser && !isOwner) {
+  // Jika bukan Admin/Owner, tolak perintah — kecuali Moderator Bot yang sedang
+  // menjalankan salah satu perintah moderasi yang memang menjadi haknya.
+  if (!isAdminUser && !isOwner && !(isModeratorBot && perintahModerator.includes(cleanCmd))) {
     return false;
   }
 
@@ -188,12 +206,62 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
   }
 
     if (cleanCmd === 'resetleaderboard') {
-      if (!isOwner && !isAdminUser) {
-        await sock.sendMessage(jid, { text: "❌ Perintah ini hanya dapat dijalankan oleh Admin atau Owner bot." });
+      // Perintah paling merusak di seluruh bot: mode `total` menolkan seluruh poin,
+      // XP, level, dan streak setiap member terdaftar sekaligus.
+      //
+      // Gerbang lamanya `!isOwner && !isAdminUser`, sementara isAdminUser (:150)
+      // bernilai `isAdminStore || isGroupAdmin || isOwner` — jadi ADMIN GRUP
+      // WHATSAPP BIASA pun lolos. Penjaga lokasi di :183 juga mati karena membaca
+      // `adminGroupId`/`transactionLogGroupId` yang tidak ada di tabel settings,
+      // sehingga perintah ini hidup di semua grup. Sekarang: Owner saja, wajib
+      // menyebut mode, dan wajib konfirmasi dengan token setelah melihat angkanya.
+      if (!isOwner) {
+        await sock.sendMessage(jid, { text: "❌ Perintah ini hanya dapat dijalankan oleh *Owner* bot." });
         return true;
       }
-      const res = await db.resetGameLeaderboard();
-      await sock.sendMessage(jid, { text: `✅ *LEADERBOARD GAME DIRESET BERSIH!*\n\nSemua poin, level, dan streak game pengguna un-registered telah dibersihkan.\n\nSekarang hanya member terdaftar (.daftar <nama>) yang dapat mengumpulkan poin dan masuk ke leaderboard!` });
+
+      const modeMinta = (args[1] || '').toLowerCase();
+      const konfirmasi = (args[2] || '').toUpperCase();
+      const pra = await db.pratinjauResetLeaderboard();
+      const fmt = (v) => Number(v || 0).toLocaleString('id-ID');
+
+      if (modeMinta !== 'bersih' && modeMinta !== 'total') {
+        await sock.sendMessage(jid, { text:
+          `⚠️ *RESET PAPAN PERINGKAT — PILIH MODE DULU*\n` +
+          `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+          `📊 *Kondisi sekarang:*\n` +
+          `▫️ Profil belum \`.daftar\`: *${fmt(pra.akanDihapus)}*\n` +
+          `▫️ Member terdaftar: *${fmt(pra.akanDinolkan)}*\n` +
+          `▫️ Poin dompet member terdaftar: *${fmt(pra.poinHilang)}*\n` +
+          `▫️ XP member terdaftar: *${fmt(pra.xpHilang)}*\n\n` +
+          `*1. \`.resetleaderboard bersih YA\`*\n` +
+          `Menghapus *${fmt(pra.akanDihapus)} profil* milik user yang belum \`.daftar\`. ` +
+          `Member terdaftar TIDAK disentuh sama sekali.\n\n` +
+          `*2. \`.resetleaderboard total YA\`* ☢️\n` +
+          `Melakukan poin 1, LALU menolkan poin, XP, level, dan streak *${fmt(pra.akanDinolkan)} member terdaftar* ` +
+          `— *${fmt(pra.poinHilang)} poin* dan *${fmt(pra.xpHilang)} XP* hilang permanen.\n` +
+          `_Saldo bank (${fmt(pra.bankTetap)} poin) tidak ikut dinolkan._\n\n` +
+          `❗ Tidak ada tombol undo. Ambil backup dulu dengan \`.backup\` kalau ragu.` });
+        return true;
+      }
+
+      if (konfirmasi !== 'YA') {
+        const ringkas = modeMinta === 'total'
+          ? `menghapus *${fmt(pra.akanDihapus)} profil* DAN menolkan *${fmt(pra.akanDinolkan)} member terdaftar* (*${fmt(pra.poinHilang)} poin* + *${fmt(pra.xpHilang)} XP* hilang permanen)`
+          : `menghapus *${fmt(pra.akanDihapus)} profil* milik user yang belum \`.daftar\``;
+        await sock.sendMessage(jid, { text:
+          `⚠️ *KONFIRMASI DIPERLUKAN*\n` +
+          `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+          `Kamu akan ${ringkas}.\n\n` +
+          `Kalau yakin, ketik ulang persis:\n\`.resetleaderboard ${modeMinta} YA\`` });
+        return true;
+      }
+
+      const res = await db.resetGameLeaderboard(modeMinta);
+      const teks = res.mode === 'total'
+        ? `☢️ *RESET TOTAL SELESAI*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n🗑️ Profil belum terdaftar dihapus: *${fmt(res.dihapus)}*\n♻️ Member terdaftar dinolkan: *${fmt(res.dinolkan)}*\n\n_Poin, XP, level, dan streak mereka kembali ke nol. Saldo bank tidak ikut dinolkan._`
+        : `🧹 *PEMBERSIHAN SELESAI*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n🗑️ Profil belum terdaftar dihapus: *${fmt(res.dihapus)}*\n\n_Poin dan level member terdaftar tidak disentuh. Hanya member yang sudah_ \`.daftar\` _yang bisa mengumpulkan poin dan masuk papan peringkat._`;
+      await sock.sendMessage(jid, { text: teks });
       return true;
     }
 
@@ -333,11 +401,10 @@ Sekarang Anda akan dikenali sebagai Owner di semua grup meskipun menggunakan sis
       return true;
     }
 
-    // .ban / .unban — Owner atau Moderator terdaftar
+    // .ban / .unban — Owner, Admin Toko, atau Moderator terdaftar
     if (cleanCmd === 'ban' || cleanCmd === 'unban') {
-      const isMod = await db.isModerator(senderNormalized);
-      if (!isOwner && !isMod) {
-        return true; // Silent — bukan owner atau mod
+      if (!isOwner && !isAdminStore && !isModeratorBot) {
+        return true; // Silent — bukan owner, admin toko, atau mod
       }
 
       // Cari target JID dari mention, quote, atau angka manual
@@ -349,8 +416,18 @@ Sekarang Anda akan dikenali sebagai Owner di semua grup meskipun menggunakan sis
       } else if (quotedParticipant) {
         targetJid = quotedParticipant;
       } else if (args[1]) {
-        const numOnly = args[1].replace(/[^0-9]/g, '');
-        if (numOnly) targetJid = numOnly + '@s.whatsapp.net';
+        // Nomor HP mentah TIDAK boleh dirakit begitu saja jadi `628xxx@s.whatsapp.net`.
+        // 191 dari 194 pelanggan tersimpan sebagai @lid, jadi JID rakitan itu tidak
+        // cocok dengan siapa pun: bot membalas "🚫 USER DI-BAN" dengan meyakinkan,
+        // sementara orangnya tetap memakai bot seolah tidak terjadi apa-apa.
+        const hasil = await db.resolveTargetJid(args[1]);
+        if (!hasil.ditemukan) {
+          await sock.sendMessage(jid, {
+            text: `❌ *NOMOR TIDAK DITEMUKAN*\n\nNomor \`${args[1]}\` tidak cocok dengan pelanggan mana pun di database.\n\n_Sejak WhatsApp memakai identitas @lid, nomor HP tidak selalu bisa dipetakan ke akun. Cara yang PASTI berhasil:_\n• \`.${cleanCmd} @user\` (mention di grup)\n• reply salah satu pesan orangnya lalu ketik \`.${cleanCmd}\``
+          });
+          return true;
+        }
+        targetJid = hasil.jid;
       }
 
       if (!targetJid) {
@@ -438,7 +515,12 @@ User ini sekarang bisa kembali berinteraksi dengan bot.`,
       await db.addModerator(mentionedJid, senderNormalized);
       await sock.sendMessage(jid, {
         text: `✅ @${mentionedJid.split('@')[0]} telah didaftarkan sebagai *Moderator Bot*.
-Dia sekarang bisa menggunakan perintah \`.ban\` dan \`.unban\`.`,
+
+🔓 *Yang dia dapat:*
+\`.ban\` · \`.unban\` · \`.unwarn\` · \`.cekwarn\`
+
+🔒 *Yang TIDAK dia dapat:*
+\`.paid\`, \`.price\`, \`.stock\`, \`.broadcast\`, \`.eval\`, dan semua perintah toko lain.`,
         mentions: [mentionedJid]
       });
       return true;
@@ -476,7 +558,109 @@ Gunakan \`.addmod @user\` untuk menambahkan.` });
 
 ${modList}
 
-Moderataor dapat menggunakan \`.ban\` dan \`.unban\`.` });
+Moderator hanya dapat menggunakan \`.ban\`, \`.unban\`, \`.unwarn\`, dan \`.cekwarn\`.` });
+      }
+      return true;
+    }
+
+    // .cekwarn — Lihat peringatan moderasi (Owner / Admin Toko / Moderator)
+    //
+    // Sebelum ini tidak ada satu pun cara melihat siapa yang mendekati ambang kick.
+    // Peringatan hanya muncul sekilas di chat grup lalu hilang ditelan pesan lain,
+    // padahal ter-kick berarti kehilangan hak checkout (checkout mewajibkan member
+    // berada di grup pembeli).
+    if (cleanCmd === 'cekwarn') {
+      if (!isOwner && !isAdminStore && !isModeratorBot) return true;
+
+      const ambang = Number.parseInt(botSettings.kickAfterWarnings, 10) || 3;
+      const mentionedList = m.message?.extendedTextMessage?.contextInfo?.mentionedJid;
+      const quotedParticipant = m.message?.extendedTextMessage?.contextInfo?.participant;
+      let targetJid = mentionedList?.[0] || quotedParticipant || '';
+
+      if (!targetJid && args[1]) {
+        const hasil = await db.resolveTargetJid(args[1]);
+        if (!hasil.ditemukan) {
+          await sock.sendMessage(jid, { text: `❌ Nomor \`${args[1]}\` tidak cocok dengan pelanggan mana pun. Pakai mention atau reply pesannya.` });
+          return true;
+        }
+        targetJid = hasil.jid;
+      }
+
+      // Tanpa target: tampilkan daftar pantauan siapa saja yang sudah mendekat.
+      if (!targetJid) {
+        const daftar = await db.getWarningWatchlist(2);
+        if (!daftar.length) {
+          await sock.sendMessage(jid, { text: `✅ *TIDAK ADA YANG MENDEKATI AMBANG*\n\nTak seorang pun punya 2 peringatan aktif atau lebih.\n\n_Cek satu orang:_ \`.cekwarn @user\`` });
+          return true;
+        }
+        const baris = daftar.map((d, i) => {
+          const tanda = d.aktif >= ambang ? '🚨' : (d.aktif === ambang - 1 ? '⚠️' : '•');
+          return `${tanda} ${i + 1}. *${d.nama}* — *${d.aktif}/${ambang}*\n     \`${d.jid}\``;
+        }).join('\n');
+        await sock.sendMessage(jid, {
+          text: `📋 *PANTAUAN PERINGATAN MODERASI*\n━━━━━━━━━━━━━━━━━━━━\nAmbang kick: *${ambang}x*\n\n${baris}\n\n_Maafkan seseorang:_ \`.unwarn @user\`\n_Cabut 1 peringatan saja:_ \`.unwarn @user 1\``
+        });
+        return true;
+      }
+
+      const detail = await db.getCustomerWarningsDetail(targetJid);
+      const riwayat = detail.terakhir.length
+        ? detail.terakhir.map(r => `• _${r.created_at}_\n  ${r.reason}`).join('\n')
+        : '_(belum ada)_';
+      await sock.sendMessage(jid, {
+        text: `📋 *PERINGATAN MODERASI*\n━━━━━━━━━━━━━━━━━━━━\n👤 @${targetJid.split('@')[0]}\n\n🔥 Aktif: *${detail.aktif}/${ambang}* _(dalam ${detail.jendelaHari} hari terakhir)_\n📜 Seumur hidup: *${detail.seumurHidup}x*\n\n*3 terakhir:*\n${riwayat}\n\n_Maafkan semua:_ \`.unwarn @user\``,
+        mentions: [targetJid]
+      });
+      return true;
+    }
+
+    // .unwarn — Maafkan peringatan moderasi (Owner / Admin Toko / Moderator)
+    //
+    // Pasangan yang hilang dari `addCustomerWarning`. Tanpa perintah ini peringatan
+    // benar-benar tidak bisa dibatalkan: `clearCustomerWarnings()` sudah ada di
+    // database sejak lama tapi tidak pernah dipanggil satu baris pun.
+    if (cleanCmd === 'unwarn') {
+      if (!isOwner && !isAdminStore && !isModeratorBot) return true;
+
+      const mentionedList = m.message?.extendedTextMessage?.contextInfo?.mentionedJid;
+      const quotedParticipant = m.message?.extendedTextMessage?.contextInfo?.participant;
+      let targetJid = mentionedList?.[0] || quotedParticipant || '';
+      let sisaArgs = mentionedList?.length ? args.slice(2) : (quotedParticipant ? args.slice(1) : args.slice(2));
+
+      if (!targetJid && args[1]) {
+        const hasil = await db.resolveTargetJid(args[1]);
+        if (!hasil.ditemukan) {
+          await sock.sendMessage(jid, { text: `❌ Nomor \`${args[1]}\` tidak cocok dengan pelanggan mana pun. Pakai mention atau reply pesannya.` });
+          return true;
+        }
+        targetJid = hasil.jid;
+      }
+
+      if (!targetJid) {
+        await sock.sendMessage(jid, {
+          text: `⚠️ *Gunakan:*\n• \`.unwarn @user\` — hapus SEMUA peringatannya\n• \`.unwarn @user 1\` — cabut 1 peringatan terakhir saja\n\n_Lihat siapa yang mendekati ambang:_ \`.cekwarn\``
+        });
+        return true;
+      }
+
+      const satuSaja = String(sisaArgs?.[0] || '').trim() === '1';
+      if (satuSaja) {
+        const dihapus = await db.hapusPeringatanTerakhir(targetJid);
+        const detail = await db.getCustomerWarningsDetail(targetJid);
+        await sock.sendMessage(jid, {
+          text: dihapus
+            ? `✅ 1 peringatan terakhir @${targetJid.split('@')[0]} dicabut.\n🔥 Sisa aktif: *${detail.aktif}x*`
+            : `⚠️ @${targetJid.split('@')[0]} tidak punya peringatan untuk dicabut.`,
+          mentions: [targetJid]
+        });
+      } else {
+        const dihapus = await db.clearCustomerWarnings(targetJid);
+        await sock.sendMessage(jid, {
+          text: dihapus
+            ? `✅ *PERINGATAN DIBERSIHKAN*\n\n👤 @${targetJid.split('@')[0]}\n🧹 *${dihapus}* peringatan dihapus.\n\n_Dia mulai dari nol lagi._`
+            : `⚠️ @${targetJid.split('@')[0]} memang tidak punya peringatan.`,
+          mentions: [targetJid]
+        });
       }
       return true;
     }
@@ -676,6 +860,8 @@ Moderataor dapat menggunakan \`.ban\` dan \`.unban\`.` });
       const welcomeStatus = (g.welcome_enabled === 1) ? "🟢 *AKTIF (ON)*" : "🔴 *NONAKTIF (OFF)*";
       const autoSholatStatus = (g.auto_sholat !== 0) ? "🟢 *AKTIF (ON)*" : "🔴 *NONAKTIF (OFF)*";
       
+      const gameStatus = ((g.features_config || {}).game !== false) ? "🟢 *AKTIF (ON)*" : "🔴 *NONAKTIF (OFF)*";
+
       let modeStatus = "🟢 *MODE ALL (Semua Fitur)*";
       if (g.bot_mode === 'sales') modeStatus = "🟡 *MODE SALES (Khusus Toko)*";
       else if (g.bot_mode === 'off') modeStatus = "🔴 *MODE OFF (Muted)*";
@@ -711,6 +897,10 @@ Berikut adalah daftar fitur bot yang dapat diaktifkan / dimatikan oleh Admin gru
    ├ Status: ${modeStatus}
    └ Ubah: \`.mode all\` / \`.mode sales\` / \`.mode off\`
 
+7. 🎮 *Game & Hiburan*
+   ├ Status: ${gameStatus}
+   └ Ubah: \`.mode game on\` / \`.mode game off\`
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 💡 _Gunakan perintah di atas untuk mengaktifkan atau menonaktifkan fitur sesuai kebutuhan grup._`;
 
@@ -723,32 +913,72 @@ Berikut adalah daftar fitur bot yang dapat diaktifkan / dimatikan oleh Admin gru
         await sock.sendMessage(jid, { text: "⚠️ Perintah pengaturan mode grup hanya dapat dijalankan di dalam Grup WhatsApp!" });
         return true;
       }
+
       const newMode = args[1]?.toLowerCase();
       const currentSettings = await db.getGroupSettings(jid);
-      
+      const fiturGrup = currentSettings.features_config || {};
+      const gameAktif = fiturGrup.game !== false;
+
+      const labelMode = (mode) => {
+        if (mode === 'sales') return '🛍️ MODE JUALAN (Hanya Respon Produk & Toko)';
+        if (mode === 'off') return '🔴 OFF / MUTE (Bot Dibisukan di Grup Ini)';
+        return '🌐 MODE ALL (Respon Seluruh Fitur)';
+      };
+      const labelGame = gameAktif ? '🟢 AKTIF (ON)' : '🔴 MATI (OFF)';
+
+      const panduanMode =
+`💡 *Cara Mengubah Mode Respon Bot:*
+• \`.mode all\` — Respon seluruh fitur & media
+• \`.mode sales\` — Khusus jualan & transaksi
+• \`.mode off\` — Bisukan bot sepenuhnya di grup ini
+
+🎮 *Sakelar Game/Hiburan (fitur lain tetap jalan):*
+• \`.mode game off\` — Matikan semua game di grup ini
+• \`.mode game on\` — Nyalakan lagi
+_(alias cepat: \`.mode nogame\`)_`;
+
       if (!newMode) {
-        let modeLabel = '🌐 MODE ALL (Respon Seluruh Fitur)';
-        if (currentSettings.bot_mode === 'sales') {
-          modeLabel = '🛍️ MODE JUALAN (Hanya Respon Produk & Toko)';
-        } else if (currentSettings.bot_mode === 'off') {
-          modeLabel = '🔴 OFF/MUTE (Bot Dinonaktifkan di Grup Ini)';
-        }
+        await sock.sendMessage(jid, {
+          text: `⚙️ *STATUS MODE BOT GRUP INI*
+━━━━━━━━━━━━━━━━━━━━
+📡 Mode Respon  : *${labelMode(currentSettings.bot_mode)}*
+🎮 Game/Hiburan : *${labelGame}*
 
-        await sock.sendMessage(jid, { 
-          text: `⚙️ *STATUS MODE BOT GRUP INI:*
-          
-Mode Saat Ini: *${modeLabel}*
-
-💡 *Cara Mengubah Mode:*
-• Ketik \`.mode jualan\` atau \`.mode sales\` (Khusus jualan & transaksi)
-• Ketik \`.mode all\` or \`.mode semua\` (Respon seluruh fitur & media)
-• Ketik \`.mode off\` atau \`.mode mute\` (Nonaktifkan respon bot sepenuhnya)` 
+${panduanMode}`
         });
         return true;
       }
 
+      // Sakelar khusus GAME. Sengaja dipisah dari bot_mode supaya admin bisa
+      // meredam keramaian game tanpa ikut mematikan downloader, AI, dan toko.
+      // Nilainya disimpan di features_config.game — sumber kebenaran yang sama
+      // dipakai `.fitur game on/off` dan gerbang di src/games/index.js.
+      const aliasGame = ['game', 'games', 'gim', 'hiburan', 'fun'];
+      const aliasMatikanGame = ['nogame', 'tanpagame', 'matigame', 'offgame'];
+      if (aliasGame.includes(newMode) || aliasMatikanGame.includes(newMode)) {
+        const aksi = aliasMatikanGame.includes(newMode) ? 'off' : (args[2]?.toLowerCase() || '');
+
+        if (!['on', 'nyala', 'aktif', 'off', 'mati', 'matikan', 'nonaktif'].includes(aksi)) {
+          await sock.sendMessage(jid, {
+            text: `🎮 *SAKELAR GAME GRUP INI*\n━━━━━━━━━━━━━━━━━━━━\n📊 Status: *${labelGame}*\n\n• \`.mode game on\` — Aktifkan game\n• \`.mode game off\` — Matikan game\n\n_Saat game dimatikan, perintah seperti .quiz, .undercover, .slot, .tcg, .raid, dan .mines tidak akan direspons di grup ini. Perintah profil & ekonomi (.poin, .rank, .transfer, .bank) tetap jalan._`
+          });
+          return true;
+        }
+
+        const nyalakanGame = ['on', 'nyala', 'aktif'].includes(aksi);
+        fiturGrup.game = nyalakanGame;
+        await db.updateGroupSettings(jid, { features_config: fiturGrup });
+        await sock.sendMessage(jid, {
+          text: nyalakanGame
+            ? "🎮 *GAME DIAKTIFKAN KEMBALI DI GRUP INI!* 🟢\n\nSemua perintah game & hiburan kini bisa dipakai lagi."
+            : "🚫 *GAME DIMATIKAN DI GRUP INI!* 🔴\n\nBot tidak akan lagi merespons perintah game & hiburan (.quiz, .undercover, .slot, .tcg, .raid, .mines, dll) di grup ini.\nPerintah profil & ekonomi (.poin, .rank, .transfer, .bank) tetap aktif.\n\n_Nyalakan lagi dengan_ `.mode game on`"
+        });
+        await db.addLog("GROUP", `Game di grup ${jid} di-${nyalakanGame ? 'ON' : 'OFF'}-kan oleh ${senderNormalized}`);
+        return true;
+      }
+
       if (!['sales', 'jualan', 'toko', 'all', 'semua', 'full', 'off', 'mute', 'nonaktif'].includes(newMode)) {
-        await sock.sendMessage(jid, { text: "⚠️ Mode tidak valid. Gunakan: `.mode jualan`, `.mode all`, atau `.mode off`" });
+        await sock.sendMessage(jid, { text: `⚠️ Mode tidak dikenal: *${newMode}*\n\n${panduanMode}` });
         return true;
       }
 
@@ -760,17 +990,18 @@ Mode Saat Ini: *${modeLabel}*
       }
 
       await db.updateGroupSettings(jid, { bot_mode: targetMode });
-      
+
       let successMsg = "";
       if (targetMode === 'sales') {
-        successMsg = "🛍️ *MODE JUALAN DIAKTOKAN UNTUK GRUP INI!* 🛍️\n\nBot sekarang *HANYA AKAN MERESPONS* perintah produk, katalog, transaksi, dan stok toko di grup ini. Perintah media/downloader/game/hiburan diabaikan agar grup tetap tertib khusus jualan.";
+        successMsg = "🛍️ *MODE JUALAN DIAKTIFKAN UNTUK GRUP INI!* 🛍️\n\nBot sekarang *HANYA AKAN MERESPONS* perintah produk, katalog, transaksi, dan stok toko di grup ini. Perintah media/downloader/game/hiburan diabaikan agar grup tetap tertib khusus jualan.";
       } else if (targetMode === 'off') {
-        successMsg = "🔴 *BOT DINONAKTIFKAN (MUTED) DI GRUP INI!* 🔴\n\nBot tidak akan merespons perintah apapun lagi di grup ini kecuali perintah `.mode` untuk mengaktifkannya kembali.";
+        successMsg = "🔴 *BOT DIBISUKAN (MUTED) DI GRUP INI!* 🔴\n\nBot berhenti total di grup ini — perintah, sambutan, notifikasi naik level, auto-download, dan anti-link semuanya ikut mati.\n\n👉 Hanya Admin/Owner yang bisa menyalakannya kembali dengan `.mode all`.";
       } else {
         successMsg = "🌐 *MODE ALL DIAKTIFKAN UNTUK GRUP INI!* 🌐\n\nBot sekarang merespons seluruh fitur (Jualan, Transaksi, Media, Downloader, Game, dan AI) di grup ini.";
       }
 
       await sock.sendMessage(jid, { text: successMsg });
+      await db.addLog("GROUP", `Mode bot grup ${jid} diubah ke ${targetMode} oleh ${senderNormalized}`);
       return true;
     }
 
@@ -983,8 +1214,26 @@ Mode Saat Ini: *${modeLabel}*
         return true;
       }
       
-      const botId = sock.user?.id?.split(':')[0];
-      if (botId && targetJid.includes(botId)) {
+      // Penjaga anti-tindakan-pada-diri-sendiri.
+      //
+      // Versi lama membandingkan `targetJid.includes(sock.user.id.split(':')[0])`
+      // — hanya nomor HP. Di grup ber-LID, men-tag bot menghasilkan @lid yang
+      // angkanya sama sekali bukan nomor HP, jadi penjaganya lewat dan
+      // `.kick @bot` benar-benar mengeluarkan bot dari grup. Lihat
+      // `src/utils/botIdentity.js`.
+      //
+      // Metadata grup ikut dikirim sebagai jaring pengaman untuk sesi lama yang
+      // `creds.me.lid`-nya belum terisi. Gagal mengambilnya tidak boleh
+      // membatalkan penjaganya — perbandingan creds saja sudah menutup kasus
+      // yang dilaporkan.
+      let pesertaGrup = null;
+      try {
+        pesertaGrup = (await getCachedGroupMetadata(sock, jid))?.participants || null;
+      } catch (e) {
+        pesertaGrup = null;
+      }
+
+      if (adalahJidBot(sock, targetJid, pesertaGrup)) {
         await sock.sendMessage(jid, { text: `⚠️ Ditolak: Saya tidak bisa melakukan ${cleanCmd} pada diri saya sendiri.` });
         return true;
       }
@@ -1012,7 +1261,9 @@ Mode Saat Ini: *${modeLabel}*
       
       const featureName = args[1]?.toLowerCase();
       const action = args[2]?.toLowerCase();
-      const validFeatures = ['ai', 'lens', 'brat', 'totalchat', 'rvo', 'freegames'];
+      // 'game' memakai kunci yang sama dengan `.mode game on/off` supaya kedua
+      // perintah tidak saling menimpa.
+      const validFeatures = ['ai', 'lens', 'brat', 'totalchat', 'rvo', 'freegames', 'game'];
       
       const currentSettings = await db.getGroupSettings(jid);
       const featuresConfig = currentSettings.features_config || {};
@@ -1056,7 +1307,10 @@ Mode Saat Ini: *${modeLabel}*
       const contextInfo = m.message.extendedTextMessage.contextInfo;
       const key = {
         remoteJid: jid,
-        fromMe: contextInfo.participant === sock.user.id.split(':')[0] + '@s.whatsapp.net',
+        // Di grup ber-LID, pesan bot dibalas dengan participant berisi @lid, jadi
+        // perbandingan nomor HP selalu false dan `.del` salah mengambil jalur
+        // "hapus pesan orang lain" untuk pesannya sendiri.
+        fromMe: adalahJidBot(sock, contextInfo.participant),
         id: contextInfo.stanzaId,
         participant: contextInfo.participant
       };
@@ -1364,7 +1618,16 @@ Pembayaran Anda telah *DITERIMA* dan diverifikasi oleh admin kami. Terima kasih!
       // AUTO-DELIVERY: Local Stock
       // ══════════════════════════════════════════════════════════
       try {
-        const deliveredData = await db.claimAndDeliverItems(orderId);
+        // claimAndDeliverItems mengembalikan PEMBUNGKUS
+        // { success, deliveredData, itemsText, manualItems, warrantyUntil } sejak
+        // commit 0847227 (19 Agu). Baris ini tidak ikut disesuaikan, sehingga
+        // Object.keys() menghasilkan 5 kunci meta dan iterasi pertama menabrak
+        // `true.credentials.length` -> TypeError. Transaksi di dalam
+        // claimAndDeliverItems sudah commit saat itu, jadi lisensinya SUDAH
+        // ditandai USED dan stok sudah turun — pelanggan bayar penuh lalu tidak
+        // menerima apa pun. Jalur Midtrans di server.js:223 sudah benar sejak awal.
+        const claimRes = await db.claimAndDeliverItems(orderId);
+        const deliveredData = claimRes?.deliveredData || {};
         const localKeys = Object.keys(deliveredData);
 
         if (localKeys.length > 0) {
@@ -1680,7 +1943,11 @@ Mohon maaf, pesanan Anda dengan Order ID *${orderId}* telah *DIBATALKAN* oleh ad
 
     if (cleanCmd === 'laporan') {
       const period = args[1]?.toLowerCase() || 'harian';
-      const today = new Date().toISOString().split('T')[0];
+      // `getDailySalesReport` menyaring dengan `DATE(created_at, '+7 hours')` alias
+      // tanggal WIB, tapi baris ini dulu mengirim tanggal UTC. Antara pukul 00:00
+      // dan 07:00 WIB keduanya berbeda hari: judulnya menulis tanggal hari ini,
+      // angkanya omzet KEMARIN — tanpa tanda apa pun bahwa itu salah.
+      const today = db.tanggalWIB();
       const report = await db.getDailySalesReport(today);
       let msg = `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📊 *LAPORAN PENJUALAN HARI INI*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📅 ${new Date().toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}\n\n`;
       msg += `📦 Pesanan Selesai: *${report.total_orders}*\n`;

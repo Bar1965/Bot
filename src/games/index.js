@@ -22,6 +22,7 @@ import { handleTcgCommand } from './tcg/index.js';
 import { getSystemChangelog } from '../utils/changelog.js';
 import { buildCommandMenu } from '../../commandRegistry.js';
 import { jidNormalizedUser } from '@whiskeysockets/baileys';
+import { adalahJidBot } from '../utils/botIdentity.js';
 
 export const easterEggCooldowns = new Map();
 
@@ -33,9 +34,62 @@ const missionList = [
   'Coba satu command media dan satu command game.'
 ];
 
+// Perintah yang TETAP hidup walaupun game dimatikan di grup (`.mode game off`).
+// Mematikan game tujuannya meredam keramaian permainan, bukan mengunci saldo
+// poin, profil, atau perintah admin poin milik member.
+const FUN_CMD_TETAP_AKTIF = [
+  'afk',
+  'poin', 'point', 'points', 'profile', 'profil', 'level', 'me', 'cekpoin',
+  'rank', 'leaderboard', 'top', 'lb', 'papan', 'peringkat',
+  'badge', 'badges', 'achievement', 'achievements', 'misi', 'mission', 'challenge',
+  'transfer', 'kirimpoin', 'transferpoin', 'tfpoin',
+  'bank', 'brankas', 'depo', 'setor', 'tarik', 'withdraw',
+  'daily', 'harian', 'reward', 'bansos', 'sembako', 'kompensasi',
+  'addpoint', 'addpoints', 'addpoin', 'tambahpoin', 'tambahpoint', 'pluspoin',
+  'kurangpoin', 'kurangipoin', 'delpoint', 'delpoints', 'deductpoint', 'potongpoin', 'minuspoin',
+  'giveaway', 'setpoints', 'bagipoin',
+  'tukar', 'pointshop', 'penukaran',
+  'poll', 'voting', 'vote',
+  // Jalan keluar: sesi yang terlanjur jalan saat sakelar dimatikan tetap bisa
+  // ditutup rapi, bukannya menggantung dengan taruhan poin ikut tertahan.
+  'nyerah', 'surrender', 'menyerah', 'cancelraid', 'batalraid', 'cancelbalap',
+  'cancellelang', 'batallelang', 'cancelsuit', 'batalsuit', 'batalmines',
+  'update', 'changelog', 'patchnotes', 'whatsnew', 'pembaruan',
+  'rekomendasi', 'recommend', 'saranproduk',
+  'freegames', 'freegame', 'gamegratis', 'freegamestag'
+];
+
+/**
+ * Apakah game & hiburan sedang dimatikan di grup ini?
+ * Sumber kebenarannya satu: group_settings.features_config.game, yang ditulis
+ * baik oleh `.mode game on/off` maupun `.fitur game on/off`.
+ */
+async function gameDimatikanDiGrup(jid) {
+  try {
+    const setelan = await db.getGroupSettings(jid);
+    return (setelan?.features_config || {}).game === false;
+  } catch (_) {
+    return false;
+  }
+}
+
 export async function handleFunCommand({ sock, jid, senderNumber, messageObj, text, args, cleanCmd, isFromGroup = false, isAdmin = false, isOwner = false, isStoreAdmin = false, isPrefixCmd }) {
   const command = String(cleanCmd || '').toLowerCase();
   const scope = scopeKey(jid, senderNumber, isFromGroup);
+
+  // Kalau game baru saja dimatikan admin, sesi yang terlanjur jalan pun ikut
+  // dibungkam. Query DB-nya hanya ditembak saat memang ADA sesi hidup, supaya
+  // obrolan biasa di grup tidak membayar ongkos baca database tiap pesan.
+  const adaSesiHidup = isFromGroup && text && !text.startsWith('.') && (
+    activeJailbreakSessions.has(senderNumber) ||
+    activeUndercoverGames.has(jid) ||
+    activeQuizTournaments.has(jid) ||
+    activeStealSessions.has(senderNumber) ||
+    activeFamily100.has(scope) ||
+    activeCakLontong.has(scope) ||
+    activeRounds.has(scope)
+  );
+  if (adaSesiHidup && await gameDimatikanDiGrup(jid)) return false;
 
   // Deteksi Jawaban Misi Bobol Penjara (.jailbreak)
   if (activeJailbreakSessions.has(senderNumber) && text && !text.startsWith('.')) {
@@ -99,7 +153,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
       const xpReward = activeGameRound.type === 'tebaklagu' ? 50 : (activeGameRound.type === 'tebakbendera' ? 35 : 30);
       
       const profile = await db.awardGamePoints(senderNumber, pointsReward, true);
-      await db.addMessageXp(senderNumber, xpReward);
+      await db.grantXp(senderNumber, xpReward);
       
       const userTag = `@${senderNumber.split('@')[0]}`;
       let congratsMsg = '';
@@ -149,7 +203,8 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     'kurangpoin', 'kurangipoin', 'delpoint', 'delpoints', 'deductpoint', 'potongpoin', 'minuspoin',
     'transfer', 'kirimpoin', 'transferpoin', 'tfpoin',
     'poin', 'point', 'points', 'profile', 'profil', 'level', 'me', 'cekpoin',
-    'rank', 'leaderboard', 'top', 'misi', 'mission', 'challenge',
+    'rank', 'leaderboard', 'top', 'lb', 'papan', 'peringkat', 'misi', 'mission', 'challenge',
+    'bansos', 'sembako', 'kompensasi',
     'giveaway', 'setpoints', 'bagipoin', 'kompensasi',
     'badge', 'badges', 'achievement', 'achievements',
     'rekomendasi', 'recommend', 'saranproduk',
@@ -165,14 +220,30 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     'fun', 'game', 'games', 'hiburan',
     'tcg', 'arena', 'kartumonster',
     'lelang', 'auction', 'lelangkotak', 'bid', 'tawar', 'bidup', 'cancellelang', 'batallelang', 'infolelang', 'lelanginfo',
+    'lelangstats', 'statlelang', 'lelangstat', 'lelangtop', 'toplelang', 'lelangleaderboard',
+    'endus', 'periksakotak', 'ciumkotak', 'gertak', 'gertakan', 'sikut', 'blokir', 'ganggu',
     'mines', 'ranjau', 'buka', 'pick', 'cashout', 'tarikdana', 'batalmines',
     'infomines', 'tabelmines', 'minesinfo',
     'raid', 'worldboss', 'bos', 'joinraid', 'joinr', 'pilihrole', 'startraid', 'gasraid', 'mulairaid', 'cancelraid', 'batalraid',
+    'statusraid', 'raidstatus', 'statusr', 'inforaid', 'raidtop', 'topraid', 'raidleaderboard', 'raidstats', 'statraid', 'raidstat',
     'serang', 'atk', 'berserk', 'tameng', 'shield', 'taunt', 'provokasi', 'provoke', 'benteng', 'heal', 'massheal', 'revive', 'sihir', 'cast', 'freeze', 'stun'
   ];
 
   if (!knownFunCmds.includes(command)) {
     return false;
+  }
+
+  // GERBANG SAKELAR GAME PER-GRUP (`.mode game off` / `.fitur game off`).
+  // Ditaruh setelah daftar perintah dikenali supaya obrolan biasa tidak kena,
+  // dan sebelum cek registrasi supaya grup yang mematikan game tidak malah
+  // dibanjiri pesan "wajib daftar".
+  if (isFromGroup && !FUN_CMD_TETAP_AKTIF.includes(command) && await gameDimatikanDiGrup(jid)) {
+    // Balas maksimal sekali per menit per grup: pesan penolakan tidak boleh
+    // jadi keramaian baru yang justru ingin dihindari admin.
+    if (!isOnCooldown(`${jid}:game-off-notice`, 60_000)) {
+      await send(sock, jid, messageObj, '🚫 *Fitur game & hiburan sedang dimatikan di grup ini.*\n\n_Admin grup dapat menyalakannya lagi dengan_ `.mode game on`');
+    }
+    return true;
   }
 
   // REGISTRATION CHECK: User non-admin yang belum daftar tidak boleh menggunakan fitur game/fun
@@ -199,6 +270,35 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
   
   // Catatan Pembaruan Sistem (Changelog & Patch Notes)
   if (['update', 'changelog', 'patchnotes', 'whatsnew', 'pembaruan'].includes(command)) {
+    const sub = String(args[1] || '').toLowerCase();
+
+    if (['broadcast', 'siar', 'siarkan', 'umumkan'].includes(sub)) {
+      if (!isOwner) {
+        await send(sock, jid, messageObj, '⚠️ Hanya Owner yang bisa menyiarkan catatan pembaruan ke seluruh grup.');
+        return true;
+      }
+      const { siarkanUpdateManual } = await import('../utils/startupAnnounce.js');
+      await send(sock, jid, messageObj, '📢 Menyiarkan catatan pembaruan ke seluruh grup terkonfigurasi…');
+      const hasil = await siarkanUpdateManual(sock);
+      await send(sock, jid, messageObj,
+        `✅ *Siaran selesai.*\n📤 Terkirim: *${hasil.sukses}/${hasil.tujuan} grup*\n👥 Total grup terhubung: *${hasil.totalGrup}*`);
+      return true;
+    }
+
+    if (['on', 'off', 'nyala', 'mati'].includes(sub)) {
+      if (!isOwner) {
+        await send(sock, jid, messageObj, '⚠️ Hanya Owner yang bisa mengatur pengumuman otomatis.');
+        return true;
+      }
+      const nyala = ['on', 'nyala'].includes(sub);
+      const { setPengumumanOtomatis } = await import('../utils/startupAnnounce.js');
+      await setPengumumanOtomatis(nyala);
+      await send(sock, jid, messageObj, nyala
+        ? '🔔 *Pengumuman rilis otomatis DINYALAKAN.* Setiap versi baru akan disiarkan sekali ke seluruh grup terkonfigurasi.'
+        : '🔕 *Pengumuman rilis otomatis DIMATIKAN.* Owner tetap menerima laporan status saat bot online.');
+      return true;
+    }
+
     await send(sock, jid, messageObj, getSystemChangelog());
     return true;
   }
@@ -570,7 +670,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
   }
 
   // Mystery Auction (Lelang Kotak Misteri)
-  if (['lelang', 'auction', 'lelangkotak', 'bid', 'tawar', 'bidup', 'cancellelang', 'batallelang', 'infolelang', 'lelanginfo'].includes(command)) {
+  if (['lelang', 'auction', 'lelangkotak', 'bid', 'tawar', 'bidup', 'cancellelang', 'batallelang', 'infolelang', 'lelanginfo', 'lelangstats', 'statlelang', 'lelangstat', 'lelangtop', 'toplelang', 'lelangleaderboard', 'endus', 'periksakotak', 'ciumkotak', 'gertak', 'gertakan', 'sikut', 'blokir', 'ganggu'].includes(command)) {
     return await handleAuctionCommand(sock, jid, senderNumber, messageObj, args, command, isFromGroup, isAdmin, isOwner);
   }
 
@@ -580,7 +680,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
   }
 
   // Raid World Boss (MMORPG Co-op)
-  if (['raid', 'worldboss', 'bos', 'joinraid', 'joinr', 'pilihrole', 'startraid', 'gasraid', 'mulairaid', 'cancelraid', 'batalraid', 'serang', 'atk', 'berserk', 'tameng', 'shield', 'taunt', 'provokasi', 'provoke', 'benteng', 'heal', 'massheal', 'revive', 'sihir', 'cast', 'freeze', 'stun'].includes(command)) {
+  if (['raid', 'worldboss', 'bos', 'joinraid', 'joinr', 'pilihrole', 'startraid', 'gasraid', 'mulairaid', 'cancelraid', 'batalraid', 'statusraid', 'raidstatus', 'statusr', 'inforaid', 'raidtop', 'topraid', 'raidleaderboard', 'raidstats', 'statraid', 'raidstat', 'serang', 'atk', 'berserk', 'tameng', 'shield', 'taunt', 'provokasi', 'provoke', 'benteng', 'heal', 'massheal', 'revive', 'sihir', 'cast', 'freeze', 'stun'].includes(command)) {
     return await handleRaidCommand(sock, jid, senderNumber, messageObj, args, command, isFromGroup, isAdmin, isOwner);
   }
 
@@ -770,7 +870,9 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     const round = activeRounds.get(scope);
     if (!word && !round) {
       const starter = randomItem(['AKBAR', 'TOKO', 'DIGITAL', 'PROMO', 'GAME']);
-      const round = { type: 'wordchain', lastWord: starter, answer: '', expiresAt: Date.now() + ROUND_DURATION_MS };
+      // kataTerpakai menutup rantai `RR -> RR -> RR`: normalizeAnswer membuang
+      // semua non-huruf, jadi tanpa daftar ini satu kata bisa diulang selamanya.
+      const round = { type: 'wordchain', lastWord: starter, kataTerpakai: new Set([starter]), answer: '', expiresAt: Date.now() + ROUND_DURATION_MS };
       activeRounds.set(scope, round);
       scheduleRoundExpiry({ sock, jid, messageObj, key: scope, round });
       await send(sock, jid, messageObj, `🔗 *SAMBUNG KATA*\n\nKata awal: *${starter}*\nKirim *.sambungkata <kata>* yang diawali huruf *${starter.slice(-1)}*.`);
@@ -788,19 +890,40 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
       await send(sock, jid, messageObj, `❌ Harus dimulai dari huruf *${round.lastWord.slice(-1)}*.`);
       return true;
     }
-    if (round.lastPlayer === senderNumber && isFromGroup) {
-      await send(sock, jid, messageObj, `⚠️ Tunggu giliran member lain untuk menyambung kata selanjutnya!`);
+    if (word.length < 4) {
+      await send(sock, jid, messageObj, `❌ Kata minimal *4 huruf*. Coba kata lain berawalan *${round.lastWord.slice(-1)}*.`);
+      return true;
+    }
+    if (!round.kataTerpakai) round.kataTerpakai = new Set([round.lastWord]);
+    if (round.kataTerpakai.has(word)) {
+      await send(sock, jid, messageObj, `❌ Kata *${word}* sudah dipakai di ronde ini. Cari kata lain berawalan *${round.lastWord.slice(-1)}*.`);
+      return true;
+    }
+    // Penjaga giliran dulu hanya menyala di grup (`&& isFromGroup`), sehingga di
+    // DM satu orang bisa menyambung kata sendiri tanpa henti — tiap sambungan
+    // mencetak 5 poin + 5 XP. Sambung kata memang butuh lawan, jadi penjaganya
+    // sekarang berlaku di mana pun.
+    if (round.lastPlayer === senderNumber) {
+      await send(sock, jid, messageObj, isFromGroup
+        ? `⚠️ Tunggu giliran member lain untuk menyambung kata selanjutnya!`
+        : `⚠️ Sambung kata butuh lawan. Mainkan di grup supaya ada yang menyambung giliranmu.`);
       return true;
     }
     round.lastWord = word;
     round.lastPlayer = senderNumber;
-    const profile = await db.awardGamePoints(senderNumber, 5, true);
+    round.kataTerpakai.add(word);
+    // addGamePoints, BUKAN awardGamePoints: menyambung satu kata bukan
+    // "memenangkan satu pertandingan". awardGamePoints ikut mencetak XP senilai
+    // poin dan menaikkan games_played + games_won sekaligus.
+    const profile = await db.addGamePoints(senderNumber, 5);
     await send(sock, jid, messageObj, `✅ *${word}* diterima! Lanjutkan dengan kata berawalan *${word.slice(-1)}*.\n+5 poin untukmu. Total: *${profile.points}*`);
     return true;
   }
 
   if (['daily', 'hadian', 'reward'].includes(command)) {
-    const today = new Date().toISOString().slice(0, 10);
+    // Tanggal WIB, bukan UTC — lihat db.tanggalWIB(). Sebelum ini hari pemain
+    // berganti jam 07:00 pagi, jadi klaim lewat tengah malam ditolak palsu.
+    const today = db.tanggalWIB();
     // Cek premium multiplier
     const premiumTier = await db.getPremiumTier(senderNumber);
     const benefits = getPremiumBenefits(premiumTier);
@@ -1109,28 +1232,18 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     return true;
   }
 
-  if (['rank', 'leaderboard', 'top'].includes(command)) {
-    const rows = await db.getGameLeaderboard(10);
-    if (rows.length === 0) {
-      await send(sock, jid, messageObj, 'Belum ada pemain di leaderboard. Ketik `.daily` untuk mulai.', {
-        title: '🏆 LEADERBOARD',
-        buttons: [
-          { type: 'reply', text: '🎁 Klaim Daily', id: '.daily' },
-          { type: 'reply', text: '📋 Menu Utama', id: '.menu' }
-        ]
-      });
-      return true;
-    }
-    const lines = rows.map((row, index) => `${index + 1}. *${row.customer_nama || 'Pelanggan'}* — ${row.points} poin (Lv.${row.level})`);
-    await send(sock, jid, messageObj, `🏆 *LEADERBOARD AKBAR STORE*\n\n${lines.join('\n')}\n\nMain lagi untuk naik peringkat!`, {
-      title: '🏆 LEADERBOARD POIN',
-      buttons: [
-        { type: 'reply', text: '🎁 Klaim Daily', id: '.daily' },
-        { type: 'reply', text: '👤 Profil Saya', id: '.poin' },
-        { type: 'reply', text: '📋 Menu Utama', id: '.menu' }
-      ]
-    });
-    return true;
+  // Bansos Owner — pembagian hadiah massal ala surat kompensasi gacha.
+  if (['bansos', 'sembako'].includes(command)) {
+    const { handleBansosCommand } = await import('./bansos.js');
+    return await handleBansosCommand(sock, jid, senderNumber, messageObj, args, { isOwner });
+  }
+
+  // Papan peringkat terpadu: `.lb`, `.lb poin`, `.lb raid`, `.lb chat`, dst.
+  // `.rank` / `.top` / `.leaderboard` sengaja ikut ke sini supaya perintah lama
+  // tetap jalan tapi ikut mendapat semua kategori baru.
+  if (['rank', 'leaderboard', 'top', 'lb', 'papan', 'peringkat'].includes(command)) {
+    const { handleLeaderboardCommand } = await import('./leaderboard.js');
+    return await handleLeaderboardCommand(sock, jid, senderNumber, messageObj, args, { isFromGroup, isAdmin, isOwner });
   }
 
   if (['misi', 'mission', 'challenge'].includes(command)) {
@@ -1679,7 +1792,9 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
       return true;
     }
 
-    if (targetJid === jidNormalizedUser(sock.user.id)) {
+    // Membandingkan hanya dengan `sock.user.id` tidak cukup: di grup ber-LID,
+    // men-tag bot menghasilkan @lid yang angkanya bukan nomor HP bot.
+    if (adalahJidBot(sock, targetJid)) {
       await send(sock, jid, messageObj, "❌ Kamu tidak bisa menantang bot! Untuk bermain melawan bot gunakan game lain.");
       return true;
     }

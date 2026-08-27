@@ -26,10 +26,12 @@ import { loadPlugins, executePlugin } from './pluginLoader.js';
 import { handleFunCommand } from './funHandler.js';
 import { createCustomerHandler } from './src/handlers/customerHandler.js';
 import { createGroupAdminHandler } from './src/handlers/groupAdminHandler.js';
-import { handlePremiumCommand } from './premiumHandler.js';
+import { handlePremiumCommand, getPremiumBenefits } from './premiumHandler.js';
 import { handlePdfCommands, checkPdfMergeSession } from './src/handlers/pdfHandler.js';
 import { buildCommandMenu } from './commandRegistry.js';
 import { createWelcomeGoodbyeCard, createLevelUpCard } from './cardGenerator.js';
+import { tickPesanGrup } from './src/games/tcg/drop.js';
+import { adalahJidBot } from './src/utils/botIdentity.js';
 
 
 
@@ -39,6 +41,10 @@ const logger = P({ level: 'info' });
 
 let sock = null;
 let botSettings = {};
+
+// Penanda @lid yang pemetaan nomornya sudah ditulis di proses ini, supaya
+// metadata grup yang dibaca berulang kali tidak menghasilkan tulisan berulang.
+const petaLidTercatat = new Set();
 const userPushNamesMap = new Map();
 
 // Group Metadata Cache (TTL: 5 Menit)
@@ -242,7 +248,7 @@ export async function sendInteractiveButtons(...args) {
     return false;
   }
 
-  const { text, title, footer, buttons = [], sections = [] } = options;
+  const { text, title, footer, buttons = [], sections = [], mentions = [] } = options;
   const jid = targetJid;
 
   try {
@@ -276,7 +282,10 @@ export async function sendInteractiveButtons(...args) {
     if (footer) fullText += `\n\n_${footer}_`;
 
     // 1. Kirimkan pesan teks terformat secara langsung (100% terbukti dapat diterima di semua grup & HP)
-    await activeSock.sendMessage(jid, { text: fullText });
+    await activeSock.sendMessage(jid, {
+      text: fullText,
+      mentions: Array.isArray(mentions) && mentions.length > 0 ? mentions : undefined
+    });
 
     // 2. Coba kirimkan tombol interaktif tambahan untuk WhatsApp client yang mendukung
     try {
@@ -383,6 +392,12 @@ export function extractTargetJid(m, args) {
 async function handleAntiSpamAndAntiLink(m, jid, senderNormalized, isGroup, msgText, isAdmin) {
   if (!isGroup) return false;
 
+  // Bot tidak pernah memoderasi dirinya sendiri. Dua jalur di bawah berakhir di
+  // `groupParticipantsUpdate(..., 'remove')` atas `senderNormalized`, dan bot
+  // punya hak admin — artinya satu peringatan yang salah sasaran cukup untuk
+  // membuatnya keluar dari grup sendiri. Lihat `src/utils/botIdentity.js`.
+  if (adalahJidBot(sock, senderNormalized)) return false;
+
   const groupSettings = await db.getGroupSettings(jid);
   const groupAntiLinkActive = groupSettings ? Number(groupSettings.anti_link) === 1 : false;
   const globalAntiLinkActive = (botSettings.antiLinkEnabled || "true") === "true";
@@ -399,16 +414,37 @@ async function handleAntiSpamAndAntiLink(m, jid, senderNormalized, isGroup, msgT
 
   // 1. Anti-Link Scan (Admin kebal anti-link)
   if (antiLinkOn && msgText && !isAdmin) {
-    const urlRegex = /(https?:\/\/[^\s]+|chat\.whatsapp\.com\/[^\s]+|t\.me\/[^\s]+|discord\.gg\/[^\s]+)/gi;
+    // Pola lama mewajibkan `http://` atau `https://` untuk link umum, padahal WhatsApp
+    // tetap membuatnya bisa diklik tanpa itu. Cukup mengetik `bit.ly/promo-grup` -
+    // tanpa skema - untuk lolos dari anti-link sepenuhnya. Sekarang skemanya opsional.
+    const urlRegex = /(?:https?:\/\/)?(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,24}(?:\/[^\s]*)?/gi;
     const matches = msgText.match(urlRegex);
+
+    // Pencocokan domain harus per-LABEL, bukan `includes()` mentah. Dengan `includes()`,
+    // entri blokir `t.me` ikut cocok pada kata biasa seperti "chat.mereka" dan pada URL
+    // situs yang diizinkan yang kebetulan memuat potongan itu di jalurnya - member
+    // kena kick karena mengetik kalimat yang sama sekali bukan link.
+    const cocokDomain = (host, dom) => {
+      if (!host || !dom) return false;
+      if (host === dom || host.endsWith('.' + dom)) return true;
+      // Entri tanpa titik (mis. "tinyurl") dianggap satu label utuh dari host.
+      if (!dom.includes('.')) return host.split('.').includes(dom);
+      return false;
+    };
 
     if (matches && matches.length > 0) {
       let isViolation = false;
       for (const urlStr of matches) {
         const lowerUrl = urlStr.toLowerCase();
-        const isAllowed = allowedDomains.some(dom => dom && lowerUrl.includes(dom));
+        // Ambil host saja: buang skema, jalur, query, port, dan kredensial.
+        const host = lowerUrl
+          .replace(/^https?:\/\//, '')
+          .split(/[/?#]/)[0]
+          .split('@').pop()
+          .split(':')[0];
+        const isAllowed = allowedDomains.some(dom => cocokDomain(host, dom));
         if (!isAllowed) {
-          const isBlocked = blockedDomains.some(dom => dom && lowerUrl.includes(dom)) || lowerUrl.includes('chat.whatsapp.com');
+          const isBlocked = blockedDomains.some(dom => cocokDomain(host, dom)) || cocokDomain(host, 'chat.whatsapp.com');
           if (isBlocked) {
             isViolation = true;
             break;
@@ -840,10 +876,21 @@ export async function startBot(onSocketReady) {
   sock = makeWASocket({
     auth: state,
     version: waVersion,
-    logger: P({ level: 'silent' }),
+    // Baileys dibungkam secara bawaan supaya log bot tidak tenggelam. Kalau bot
+    // tersambung tapi tidak menerima pesan sama sekali, jalankan ulang dengan
+    // WA_LOG_LEVEL=warn (atau debug) agar kegagalan dekripsi ikut terlihat.
+    logger: P({ level: process.env.WA_LOG_LEVEL || 'silent' }),
     browser: ['Windows', 'Chrome', '110.0.5481.177'],
     markOnlineOnConnect: true,
-    syncFullHistory: false
+    syncFullHistory: false,
+    // Setiap kali Baileys mengirim pesan ke grup, dia butuh daftar peserta untuk
+    // enkripsi. Tanpa opsi ini dia menanyakannya ke server WhatsApp SETIAP kali
+    // kirim, dan saat sesi baru dibangun ulang, rentetan query itu dibalas 403
+    // `forbidden` — pengiriman gagal 3x lalu menyerah, padahal bot masih anggota
+    // grupnya. groupMetaCache di atas (TTL 5 menit) sudah menyimpan data yang
+    // sama persis, jadi dipakai ulang di sini. Kalau cache kosong hasilnya null
+    // dan Baileys tetap jatuh ke query bawaannya seperti semula.
+    cachedGroupMetadata: async (groupJid) => await getCachedGroupMetadata(sock, groupJid)
   });
 
   // Dukungan Pairing Code jika dikonfigurasi via ENV
@@ -958,6 +1005,33 @@ export async function startBot(onSocketReady) {
         console.warn('[UNDERCOVER] Restore error:', recErr.message);
       }
 
+      // Pulihkan pertempuran Raid World Boss yang sedang berjalan saat restart
+      try {
+        const { restoreRaidSessions } = await import('./src/games/raidBoss.js');
+        await restoreRaidSessions(sock);
+      } catch (raidErr) {
+        console.warn('[RAID] Restore error:', raidErr.message);
+      }
+
+      // Pulihkan sesi Lelang Kotak Misteri. WAJIB: poin penawar tertinggi
+      // sedang ditahan (escrow), jadi sesi yang hilang = poin pemain hangus.
+      try {
+        const { restoreAuctionSessions } = await import('./src/games/mysteryAuction.js');
+        await restoreAuctionSessions(sock);
+      } catch (aucErr) {
+        console.warn('[LELANG] Restore error:', aucErr.message);
+      }
+
+      // Umumkan bot online + catatan rilis. Fungsinya sendiri yang menjaga
+      // agar tidak berulang: sekali per proses, dan siaran ke grup hanya
+      // dikirim kalau versinya memang berubah.
+      try {
+        const { umumkanBotOnline } = await import('./src/utils/startupAnnounce.js');
+        await umumkanBotOnline(sock);
+      } catch (annErr) {
+        console.warn('[STARTUP ANNOUNCE] Tidak dijalankan:', annErr.message);
+      }
+
       if (onSocketReady) {
         onSocketReady(sock);
       }
@@ -1045,6 +1119,10 @@ export async function startBot(onSocketReady) {
   sock.ev.on('group-participants.update', async ({ id, participants, action }) => {
     try {
       const gSettings = await db.getGroupSettings(id);
+      // Grup yang membisukan bot (`.mode off`) juga tidak boleh kejatuhan kartu
+      // sambutan / perpisahan — itu tetap "bot bersuara" di grup itu.
+      if ((gSettings.bot_mode || 'all') === 'off') return;
+
       let gMeta = null;
       try { gMeta = await sock.groupMetadata(id); } catch (e) {}
       const groupName = gMeta ? gMeta.subject : 'WhatsApp Group';
@@ -1100,7 +1178,121 @@ export async function startBot(onSocketReady) {
   // ==========================================
   // FITUR MEDIA UTILITY (DOWNLOADER & CONVERTER)
   // ==========================================
+  // ==========================================
+  // REM PEMAKAIAN DOWNLOADER
+  // ------------------------------------------
+  // Sebelum ini tidak ada rem sama sekali: tanpa jeda, tanpa kuota, tanpa batas
+  // paralel, dan tanpa batas ukuran berkas di jalur non-yt-dlp. Lima orang
+  // mengetik `.yt` bersamaan berarti lima proses yt-dlp + ffmpeg hidup serentak
+  // di satu PC yang juga memegang sesi WhatsApp.
+  //
+  // Hanya perintah yang BENAR-BENAR menarik data dari internet atau memutar
+  // ffmpeg yang dibatasi. Stiker, quote, meme, khodam, cuaca, dan terjemahan
+  // sengaja dibiarkan bebas supaya obrolan grup tidak ikut tersendat.
+  const PERINTAH_MEDIA_BERAT = [
+    // pengunduh
+    'tt', 'tiktok', 'ttmp3', 'ig', 'instagram', 'igstory',
+    'yt', 'youtube', 'ytmp3', 'ytmp4', 'fb', 'facebook',
+    'pin', 'pinterest', 'tw', 'twitter', 'x', 'spotify', 'play', 'song',
+    // pekerjaan berat lain
+    'hd', 'remini', 'upscale', 'ssweb', 'ss', 'draw', 'aiimg', 'dalle',
+    'tomp3', 'tovn', 'tovid', 'tovideo', 'togif',
+    // efek audio (semuanya menjalankan ffmpeg)
+    'bass', 'blown', 'deep', 'earrape', 'fast', 'fat', 'nightcore',
+    'reverse', 'robot', 'slow', 'smooth', 'tupai', 'chipmunk', 'echo'
+  ];
+
+  // Pembatas jumlah unduhan yang boleh berjalan BERSAMAAN. Yang keenam tidak
+  // ditolak, hanya menunggu — pemain tetap dilayani, PC-nya saja yang tidak
+  // dipaksa menjalankan enam ffmpeg sekaligus.
+  const SLOT_UNDUH = { maks: 2, jalan: 0, antre: [] };
+
+  function ambilSlotUnduh() {
+    if (SLOT_UNDUH.jalan < SLOT_UNDUH.maks) {
+      SLOT_UNDUH.jalan += 1;
+      return Promise.resolve();
+    }
+    return new Promise(resolve => SLOT_UNDUH.antre.push(resolve));
+  }
+
+  function lepasSlotUnduh() {
+    const berikutnya = SLOT_UNDUH.antre.shift();
+    // Slot dioper langsung ke penunggu berikutnya, jadi `jalan` tidak berubah.
+    if (berikutnya) berikutnya();
+    else SLOT_UNDUH.jalan = Math.max(0, SLOT_UNDUH.jalan - 1);
+  }
+
+  const detikRapi = (ms) => Math.max(1, Math.ceil(ms / 1000));
+
+  /**
+   * Apakah orang ini masih punya jatah unduhan?
+   *
+   * Jatah dipotong SAAT PERMINTAAN DITERIMA, bukan saat unduhan berhasil.
+   * Unduhan yang gagal tetap sudah menghabiskan kuota internet, RAM, dan waktu
+   * CPU — persis sumber daya yang sedang dijatah — dan menggratiskan kegagalan
+   * membuat tautan rusak bisa dipakai memutar mesin tanpa batas.
+   */
+  async function periksaJatahMedia(jid, walletJid, m, cleanCmd) {
+    const tier = await db.getPremiumTier(walletJid);
+    const benefit = getPremiumBenefits(tier);
+    const batasHarian = Number(benefit.mediaDailyLimit) || 15;
+    const jedaMs = (Number(benefit.mediaCooldownSec) || 20) * 1000;
+
+    const sisaJeda = await db.getCooldownMs(walletJid, 'MEDIA');
+    if (sisaJeda > 0) {
+      await sock.sendMessage(jid, {
+        text: `⏳ *Sabar sebentar* — tunggu *${detikRapi(sisaJeda)} detik* lagi sebelum unduhan berikutnya.\n\n_Jeda ini menjaga bot tetap responsif untuk semua orang._`
+      }, { quoted: m });
+      return false;
+    }
+
+    const dipakai = await db.getMediaUsageToday(walletJid);
+    if (dipakai >= batasHarian) {
+      await sock.sendMessage(jid, {
+        text: `⚠️ *KUOTA UNDUHAN HARIAN HABIS* (${dipakai}/${batasHarian})\n\nTier kamu: *${tier}*\nKuota berganti otomatis tengah malam WIB.\n\n💎 Butuh lebih banyak? Ketik *.premium* — Silver 30x, Gold 60x, Diamond 150x per hari.`
+      }, { quoted: m });
+      return false;
+    }
+
+    await db.incrementMediaUsage(walletJid);
+    await db.setCooldown(walletJid, 'MEDIA', jedaMs);
+    return true;
+  }
+
+  /**
+   * Pembungkus tipis di depan handler media yang sebenarnya: memeriksa jatah,
+   * lalu memegang satu slot unduhan sampai perintahnya benar-benar selesai.
+   */
   async function handleMediaCommands(jid, senderNumber, m, msgText, isAdmin = false, isOwner = false, isStoreAdmin = false) {
+    const teks = (msgText || '').trim();
+    const isPrefixMedia = teks.startsWith('.') || teks.startsWith('/') || teks.startsWith('#');
+    if (!isPrefixMedia) return false;
+
+    const bagian = teks.split(/\s+/);
+    const perintah = bagian[0].toLowerCase().replace(/^[./#]/, '');
+    const teruskan = () => handleMediaCommandsInti(jid, senderNumber, m, msgText, isAdmin, isOwner, isStoreAdmin);
+
+    // Owner & Admin Toko tidak dijatah — merekalah yang membayar internetnya.
+    if (!PERINTAH_MEDIA_BERAT.includes(perintah) || isOwner || isStoreAdmin) return teruskan();
+
+    // Perintah tanpa bahan apa pun pasti berujung balasan "format salah", jadi
+    // jangan potong kuota untuk sesuatu yang tidak pernah mengunduh apa-apa.
+    const adaBahan = Boolean(bagian[1])
+      || Boolean(m.message?.extendedTextMessage?.contextInfo?.quotedMessage)
+      || Boolean(m.message?.imageMessage || m.message?.videoMessage || m.message?.audioMessage);
+    if (!adaBahan) return teruskan();
+
+    if (!(await periksaJatahMedia(jid, senderNumber, m, perintah))) return true;
+
+    await ambilSlotUnduh();
+    try {
+      return await teruskan();
+    } finally {
+      lepasSlotUnduh();
+    }
+  }
+
+  async function handleMediaCommandsInti(jid, senderNumber, m, msgText, isAdmin = false, isOwner = false, isStoreAdmin = false) {
     const textTrim = (msgText || '').trim();
     if (!textTrim) return false;
     const isPrefix = textTrim.startsWith('.') || textTrim.startsWith('/') || textTrim.startsWith('#');
@@ -2729,9 +2921,19 @@ function _trace(tahap, data) {
 }
   async function dispatchBotMessagePipeline({ sock, m, senderNormalized, jid, msgText, isGroup, isAdmin, isOwnerSender, isPrefixCmd, isTakenOver, isFromMe, isStoreAdmin }) {
     _trace('1-dispatch-masuk', { jid, teks: msgText, isGroup, isFromMe, isTakenOver, tipePesan: Object.keys(m.message || {}) });
+
     const routerArgs = msgText.trim().split(/\s+/);
     const routerRawCmd = routerArgs[0].toLowerCase();
     const routerCleanCmd = routerRawCmd.replace(/^[./#]/, '');
+
+    // Drop kartu TCG dipicu oleh keramaian grup, bukan oleh perintah. Karena itu
+    // penghitungnya harus melihat SETIAP pesan, termasuk obrolan biasa, dan
+    // dipasang sebelum rantai handler yang bisa menelan pesan lebih awal.
+    // Sengaja tanpa await: ini tidak boleh menambah jeda pada jalur pesan, dan
+    // kegagalannya tidak boleh menjatuhkan penanganan pesan yang sesungguhnya.
+    if (isGroup && !isFromMe) {
+      tickPesanGrup(sock, jid).catch(() => {});
+    }
 
     const isPdfMergeFile = await checkPdfMergeSession(sock, m, senderNormalized, jid);
     if (isPdfMergeFile) { _trace('2-ditelan-pdfMergeSession'); return true; }
@@ -2762,7 +2964,7 @@ function _trace(tahap, data) {
 
     _trace('9-masuk-customerHandler');
     try {
-      await handleCustomerMessage(jid, senderNormalized, m, msgText, isGroup, { isAdmin, isOwner: isOwnerSender });
+      await handleCustomerMessage(jid, senderNormalized, m, msgText, isGroup, { isAdmin, isOwner: isOwnerSender, isStoreAdmin });
       _trace('10-customerHandler-selesai-normal');
     } catch (e) {
       _trace('10-customerHandler-MELEMPAR-ERROR', { pesan: e.message, tumpukan: String(e.stack || '').split('\n').slice(0, 6) });
@@ -2892,6 +3094,18 @@ function _trace(tahap, data) {
                 const pPhone = extractDigits(pMatch.id);
                 const pPhoneReal = extractDigits(pMatch.jid || '');
                 const pPhones = [pPhone, pPhoneReal].filter(d => d && d.length > 6);
+
+                // Rekam pasangan @lid <-> nomor HP selagi metadata grup memuat keduanya.
+                // Inilah satu-satunya tempat kedua identitas itu pernah terlihat bersamaan;
+                // tanpa dicatat, `.ban 628xxx` dan `.setpremium 628xxx` tidak punya cara
+                // menemukan 191 pelanggan yang tersimpan sebagai @lid. Sengaja tanpa await
+                // dan hanya sekali per @lid per proses, supaya tidak menambah beban tulis
+                // pada jalur pesan.
+                const lidTerlihat = pMatch.lid ? jidNormalizedUser(pMatch.lid) : (pMatch.id?.endsWith('@lid') ? jidNormalizedUser(pMatch.id) : null);
+                if (lidTerlihat && pPhoneReal && pPhoneReal.length > 6 && !petaLidTercatat.has(lidTerlihat)) {
+                  petaLidTercatat.add(lidTerlihat);
+                  db.catatPetaLid(lidTerlihat, pPhoneReal).catch(() => {});
+                }
                 // Resolusi Owner jika pengirim memakai LID di grup
                 if (ownerPhoneDigits && pPhones.some(d => d === ownerPhoneDigits || d.endsWith(ownerPhoneDigits) || ownerPhoneDigits.endsWith(d))) {
                   isOwnerSender = true;
@@ -2911,18 +3125,24 @@ function _trace(tahap, data) {
           }
         }
 
-        // Database Role Fallback: jika role di DB adalah OWNER / ADMIN / MODERATOR
+        // Database Role Fallback: jika role di DB adalah OWNER atau ADMIN.
+        //
+        // MODERATOR sengaja TIDAK ikut menaikkan isStoreAdmin. `.addmod` menjanjikan
+        // "dia sekarang bisa menggunakan .ban dan .unban", tapi dulu baris di bawah
+        // menyamakan moderator dengan Admin Toko - artinya satu `.addmod` diam-diam
+        // memberi akses ke `.paid` (kirim lisensi Rp150.000 gratis, termasuk ke order
+        // dirinya sendiri), `.price`, `.stock`, `.broadcast` ke seluruh pelanggan, dan
+        // `.eval` yang menjalankan kode apa pun di komputer ini.
+        //
+        // Kewenangan ban moderator tidak lewat sini: groupAdminHandler memanggil
+        // db.isModerator() sendiri di jalur `.ban`/`.unban`.
         if (!isOwnerSender || !isStoreAdmin) {
           try {
             const dbCustomer = await db.getQuery("SELECT role FROM customers WHERE nomor = ? OR nomor = ?", [senderCleanJid, senderNormalized]);
             if (dbCustomer?.role === 'OWNER') {
               isOwnerSender = true;
-            } else if (['ADMIN', 'MODERATOR'].includes(dbCustomer?.role)) {
+            } else if (dbCustomer?.role === 'ADMIN') {
               isStoreAdmin = true;
-            }
-            if (!isStoreAdmin) {
-              const isMod = await db.isModerator(senderCleanJid) || await db.isModerator(senderNormalized);
-              if (isMod) isStoreAdmin = true;
             }
           } catch (e) {}
         }
@@ -2934,6 +3154,38 @@ function _trace(tahap, data) {
         if (!isAdmin) {
           const isBanned = await db.isUserBanned(senderNormalized);
           if (isBanned) continue;
+        }
+
+        // ====================================================================
+        // MODE OFF (`.mode off`) — BOT DIBISUKAN DI GRUP INI
+        // --------------------------------------------------------------------
+        // Nilai bot_mode = 'off' sudah lama bisa disimpan lewat `.mode off`,
+        // tapi tidak pernah dibaca satu handler pun, jadi perintah itu praktis
+        // tidak berefek. Gerbang ini sengaja dipasang PALING AWAL — sebelum
+        // notifikasi AFK, kartu naik level, anti-link, auto-downloader, dan
+        // seluruh rantai handler — supaya "mute" benar-benar berarti diam.
+        // Satu-satunya jalan keluar: `.mode` dari Admin/Owner, agar bot masih
+        // bisa dinyalakan kembali dari dalam grup itu sendiri.
+        // ====================================================================
+        if (isGroup) {
+          let modeGrupIni = 'all';
+          try {
+            const gSetMute = await db.getGroupSettings(jid);
+            modeGrupIni = gSetMute.bot_mode || 'all';
+          } catch (_) { modeGrupIni = 'all'; }
+
+          if (modeGrupIni === 'off') {
+            const cmdMute = msgText.trim().split(/\s+/)[0].toLowerCase().replace(/^[./#]/, '');
+            const bolehLolosSaatMute = isPrefixCmd
+              && ['mode', 'setmode', 'botmode'].includes(cmdMute)
+              && isAdmin;
+            if (!bolehLolosSaatMute) {
+              // XP tetap dikumpulkan diam-diam: yang dimatikan adalah suara bot,
+              // bukan progres level member yang terlanjur aktif di grup itu.
+              if (senderNormalized && !isFromMe) db.addMessageXp(senderNormalized, 10).catch(() => {});
+              continue;
+            }
+          }
         }
 
         const mainBuyerGroupJid = botSettings.buyerGroupId || "";
@@ -2963,7 +3215,7 @@ function _trace(tahap, data) {
           'addfaq', 'delfaq', 'listfaq', 'laporan', 'restock', 'stock', 'price',
           'out', 'ready', 'addproduct', 'takeover', 'release', 'stats', 'flashsale',
           'setname', 'setowner', 'setownerid', 'addmod', 'delmod', 'listmod',
-          'ban', 'unban', 'kick', 'add', 'promote', 'demote', 'tagall', 'hidetag',
+          'ban', 'unban', 'unwarn', 'cekwarn', 'kick', 'add', 'promote', 'demote', 'tagall', 'hidetag',
           'everyone', 'admins', 'mode', 'setmode', 'botmode', 'antilink',
           'welcome', 'setwelcome', 'link', 'getjid', 'backup', 'eval', 'join', 'levelup', 'autolevelup', 'globallevelup', 'setlevelup', 'autodl', 'autodownload', 'listfitur', 'fiturgrup', 'groupfeatures', 'tebaklagu', 'tebakbendera', 'tebaknegara', 'bendera', 'negara', 'flag', 'balasmenfess', 'menfessreply', 'stopmenfess', 'closemenfess'
         ];
@@ -3048,7 +3300,9 @@ function _trace(tahap, data) {
             try {
               const globalLevelUp = (botSettings.levelUpEnabled || "true") !== "false";
               const groupSettings = await db.getGroupSettings(jid);
-              const isGroupLevelUpEnabled = globalLevelUp && (groupSettings.levelup_enabled !== 0);
+              const isGroupLevelUpEnabled = globalLevelUp
+                && (groupSettings.levelup_enabled !== 0)
+                && (groupSettings.bot_mode || 'all') !== 'off';
 
               const xpResult = await db.addMessageXp(senderNormalized, 10);
               if (xpResult.leveledUp && isGroupLevelUpEnabled) {
@@ -3094,12 +3348,50 @@ function _trace(tahap, data) {
         // ⚡ AUTO-DOWNLOADER SOSMED (TIKTOK & INSTAGRAM TANPA COMMAND DI GRUP)
         if (isGroup && !isPrefixCmd) {
           const gSettings = await db.getGroupSettings(jid);
-          if (gSettings.auto_dl_enabled !== 0 && gSettings.bot_mode !== 'sales') {
+          // Dulu hanya 'sales' yang dikecualikan, sehingga grup ber-`.mode off`
+          // tetap kejatuhan hasil unduhan otomatis. Sekarang auto-DL hanya
+          // hidup di mode 'all'.
+          if (gSettings.auto_dl_enabled !== 0 && (gSettings.bot_mode || 'all') === 'all') {
             const tiktokRegex = /https?:\/\/(?:www\.|vt\.|vm\.|v\.)?tiktok\.com\/[^\s]+/i;
             const igRegex = /https?:\/\/(?:www\.)?instagram\.com\/(?:p|reel|tv|stories)\/[^\s]+/i;
             
             const tiktokMatch = msgText.match(tiktokRegex);
             const igMatch = msgText.match(igRegex);
+
+            // Auto-DL adalah jalur PALING longgar di seluruh bot: terpicu oleh
+            // tautan siapa pun tanpa perintah, tanpa cek registrasi, tanpa jeda,
+            // dan sampai 10 berkas per tautan. Satu orang menempel dua puluh
+            // tautan di grup 116 anggota berarti dua ratus kiriman media dari
+            // kuota internet komputer ini, tanpa satu pun rem.
+            //
+            // Sekarang jalur ini memakai penjaga yang sama dengan perintah biasa,
+            // ditambah jeda per GRUP supaya tempel-banyak-tautan tidak menjadi
+            // longsoran walau tiap tautan datang dari orang yang berbeda.
+            if (tiktokMatch || igMatch) {
+              const belumDaftar = !isAdmin && !isOwnerSender && !(await db.isCustomerRegistered(senderNormalized));
+              if (belumDaftar) continue;
+
+              const jedaGrup = await db.getCooldownMs(jid, 'AUTODL');
+              if (jedaGrup > 0) continue; // diam saja - memberi tahu tiap tautan justru jadi spam sendiri
+
+              if (!isOwnerSender && !isStoreAdmin) {
+                const tier = await db.getPremiumTier(senderNormalized);
+                const benefit = getPremiumBenefits(tier);
+                const batas = Number(benefit.mediaDailyLimit) || 15;
+                const dipakai = await db.getMediaUsageToday(senderNormalized);
+                if (dipakai >= batas) {
+                  await sock.sendMessage(jid, {
+                    text: `⚠️ @${senderNormalized.split('@')[0]} kuota unduhan harianmu sudah habis (${dipakai}/${batas}). Auto-download dilewati.
+
+_Kuota berganti tengah malam WIB. Ketik *.premium* untuk jatah lebih besar._`,
+                    mentions: [senderNormalized]
+                  });
+                  continue;
+                }
+                await db.incrementMediaUsage(senderNormalized);
+              }
+              await db.setCooldown(jid, 'AUTODL', 30 * 1000);
+            }
 
             if (tiktokMatch) {
               const url = tiktokMatch[0];
@@ -3166,8 +3458,9 @@ function _trace(tahap, data) {
         const isTakenOver = conv.conversation_state === 'ADMIN';
 
         const isGameCommand = ['nyerah', '.nyerah'].includes(msgText.toLowerCase().trim());
-        const botJid = sock.user?.id?.split(':')[0] + '@s.whatsapp.net';
-        const isReplyToBot = m.message?.extendedTextMessage?.contextInfo?.participant === botJid;
+        // Di grup ber-LID, `contextInfo.participant` untuk pesan bot berisi @lid,
+        // bukan nomor HP — perbandingan lama selalu bernilai false di sana.
+        const isReplyToBot = adalahJidBot(sock, m.message?.extendedTextMessage?.contextInfo?.participant);
 
         // 🎮 Cek jika ada game Tebak Gambar aktif di chat/grup ini
         if (ent.activeGames.has(jid)) {
@@ -3372,14 +3665,34 @@ function _trace(tahap, data) {
         const expiredGroups = await db.getExpiredGroupRentals();
         for (const rent of expiredGroups) {
           console.log(`[GROUP RENTAL] Waktu sewa habis untuk grup ${rent.group_jid}`);
+          let berhasilKeluar = false;
           try {
             await sock.sendMessage(rent.group_jid, { text: `Waktu sewa bot di grup ini telah habis. Hubungi owner untuk memperpanjang.\n\nBye! 👋` });
             await new Promise(r => setTimeout(r, 2000));
             await sock.groupLeave(rent.group_jid);
+            berhasilKeluar = true;
           } catch (e) {
             console.error(`[GROUP RENTAL] Gagal leave grup ${rent.group_jid}:`, e.message);
           }
-          await db.removeGroupRental(rent.group_jid);
+
+          // Baris sewa HANYA dihapus kalau bot benar-benar sudah keluar. Dulu
+          // removeGroupRental dipanggil di luar try/catch, jadi satu kegagalan
+          // groupLeave (koneksi putus, WhatsApp menolak, grup sedang dibekukan)
+          // menghapus catatan sewanya sementara bot tetap di dalam grup - grup itu
+          // lalu dilayani gratis selamanya, dan tidak ada satu pun catatan tersisa
+          // yang bisa memberi tahu bahwa sewanya sudah habis.
+          if (berhasilKeluar) {
+            await db.removeGroupRental(rent.group_jid);
+          } else {
+            // Baris sewa dibiarkan supaya siklus berikutnya (1 jam lagi) mencoba lagi.
+            await db.addLog('SYSTEM', `⚠️ Sewa grup ${rent.group_jid} sudah habis tapi bot GAGAL keluar. Baris sewa dipertahankan, akan dicoba lagi 1 jam lagi.`).catch(() => {});
+            try {
+              const ownerNotif = botSettings.ownerJid || botSettings.ownerNumber;
+              if (ownerNotif) {
+                await sock.sendMessage(ownerNotif, { text: `⚠️ *SEWA GRUP HABIS TAPI GAGAL KELUAR*\n\nGrup: \`${rent.group_jid}\`\n\nBot masih berada di dalam grup itu. Percobaan otomatis diulang tiap 1 jam. Kalau terus gagal, keluarkan bot secara manual dari grupnya.` });
+              }
+            } catch (_) {}
+          }
         }
       } catch (err) {
         console.error('[GROUP RENTAL CRON] Error:', err.message);
