@@ -184,7 +184,24 @@ export function formatPhoneNumber(jid) {
  */
 export function extractMessageText(m) {
   if (!m || !m.message) return '';
-  const msg = m.message;
+  let msg = m.message;
+
+  // Unbox wrapper messages (ephemeral, viewOnce, viewOnceV2, documentWithCaption)
+  while (
+    msg?.ephemeralMessage?.message ||
+    msg?.viewOnceMessage?.message ||
+    msg?.viewOnceMessageV2?.message ||
+    msg?.viewOnceMessageV2Extension?.message ||
+    msg?.documentWithCaptionMessage?.message
+  ) {
+    msg = msg.ephemeralMessage?.message ||
+          msg.viewOnceMessage?.message ||
+          msg.viewOnceMessageV2?.message ||
+          msg.viewOnceMessageV2Extension?.message ||
+          msg.documentWithCaptionMessage?.message;
+  }
+  if (!msg) return '';
+
   let raw = '';
 
   // 1. Pesan teks langsung / caption media
@@ -248,7 +265,7 @@ export async function sendInteractiveButtons(...args) {
     return false;
   }
 
-  const { text, title, footer, buttons = [], sections = [], mentions = [] } = options;
+  const { text, title, footer, buttons = [], sections = [], mentions = [], sendFallbackText = true, listTitle = '📋 Pilih Menu' } = options;
   const jid = targetJid;
 
   try {
@@ -261,6 +278,8 @@ export async function sendInteractiveButtons(...args) {
       buttons.forEach(b => {
         if (b.type === 'url') {
           fullText += `\n🔗 *${b.text}:* ${b.url}`;
+        } else if (b.type === 'copy') {
+          fullText += `\n📋 *${b.text}:* \`${b.copy_code || b.id || b.text}\``;
         } else {
           fullText += `\n▶️ *${b.text}* (Ketik \`${b.id || b.text}\`)`;
         }
@@ -281,47 +300,11 @@ export async function sendInteractiveButtons(...args) {
 
     if (footer) fullText += `\n\n_${footer}_`;
 
-    // 1. Kirimkan pesan teks terformat secara langsung (100% terbukti dapat diterima di semua grup & HP)
+    // Kirimkan pesan teks terformat (100% kompatibel di semua versi WhatsApp Android, iOS, & Web)
     await activeSock.sendMessage(jid, {
       text: fullText,
       mentions: Array.isArray(mentions) && mentions.length > 0 ? mentions : undefined
     });
-
-    // 2. Coba kirimkan tombol interaktif tambahan untuk WhatsApp client yang mendukung
-    try {
-      const nativeButtons = [];
-      if (sections && sections.length > 0) {
-        nativeButtons.push({
-          name: 'single_select',
-          buttonParamsJson: JSON.stringify({ title: '📋 Pilih Menu', sections })
-        });
-      }
-      if (buttons && buttons.length > 0) {
-        for (const b of buttons) {
-          if (b.type === 'url') {
-            nativeButtons.push({ name: 'cta_url', buttonParamsJson: JSON.stringify({ display_text: b.text, url: b.url, merchant_url: b.url }) });
-          } else if (b.type === 'copy') {
-            nativeButtons.push({ name: 'cta_copy', buttonParamsJson: JSON.stringify({ display_text: b.text, id: b.id || b.text, copy_code: b.copy_code || b.text }) });
-          } else {
-            nativeButtons.push({ name: 'quick_reply', buttonParamsJson: JSON.stringify({ display_text: b.text, id: b.id || b.text }) });
-          }
-        }
-      }
-
-      const waMsg = generateWAMessageFromContent(
-        jid,
-        {
-          interactiveMessage: {
-            header: title ? { title, hasMediaAttachment: false } : undefined,
-            body: { text: text || '' },
-            footer: footer ? { text: footer } : undefined,
-            nativeFlowMessage: { buttons: nativeButtons }
-          }
-        },
-        { userJid: jid }
-      );
-      await activeSock.relayMessage(jid, waMsg.message, { messageId: waMsg.key.id });
-    } catch (btnErr) {}
 
     return true;
   } catch (err) {
@@ -356,18 +339,22 @@ const MAX_RATE_LIMITER_ENTRIES = 5000;
 
 // Periodic Sweep setiap 10 menit untuk membersihkan data rate limiter usang
 setInterval(() => {
-  const now = Date.now();
-  for (const [jid, timestamps] of userMessageTimestamps.entries()) {
-    const valid = (timestamps || []).filter(t => now - t < 10000);
-    if (valid.length === 0) {
-      userMessageTimestamps.delete(jid);
-    } else {
-      userMessageTimestamps.set(jid, valid);
+  try {
+    const now = Date.now();
+    for (const [jid, timestamps] of userMessageTimestamps.entries()) {
+      const valid = (timestamps || []).filter(t => now - t < 10000);
+      if (valid.length === 0) {
+        userMessageTimestamps.delete(jid);
+      } else {
+        userMessageTimestamps.set(jid, valid);
+      }
     }
-  }
-  if (userMessageTimestamps.size > MAX_RATE_LIMITER_ENTRIES) {
-    const keysToDelete = Array.from(userMessageTimestamps.keys()).slice(0, 1000);
-    keysToDelete.forEach(k => userMessageTimestamps.delete(k));
+    if (userMessageTimestamps.size > MAX_RATE_LIMITER_ENTRIES) {
+      const keysToDelete = Array.from(userMessageTimestamps.keys()).slice(0, 1000);
+      keysToDelete.forEach(k => userMessageTimestamps.delete(k));
+    }
+  } catch (err) {
+    console.error('[RATE_LIMITER_SWEEP] Error:', err.message);
   }
 }, 10 * 60 * 1000);
 
@@ -641,7 +628,8 @@ async function checkIsUserInGroup(senderNumber) {
 // Fungsi untuk memuat ulang pengaturan bot dari SQLite
 export async function reloadBotSettings() {
   try {
-    botSettings = await db.getSettings();
+    const newSettings = await db.getSettings();
+    Object.assign(botSettings, newSettings);
     console.log("Pengaturan bot berhasil diperbarui dari database.");
   } catch (err) {
     console.error("Gagal memuat pengaturan bot dari DB:", err.message);
@@ -1196,10 +1184,7 @@ export async function startBot(onSocketReady) {
     'pin', 'pinterest', 'tw', 'twitter', 'x', 'spotify', 'play', 'song',
     // pekerjaan berat lain
     'hd', 'remini', 'upscale', 'ssweb', 'ss', 'draw', 'aiimg', 'dalle',
-    'tomp3', 'tovn', 'tovid', 'tovideo', 'togif',
-    // efek audio (semuanya menjalankan ffmpeg)
-    'bass', 'blown', 'deep', 'earrape', 'fast', 'fat', 'nightcore',
-    'reverse', 'robot', 'slow', 'smooth', 'tupai', 'chipmunk', 'echo'
+    'tomp3', 'tovn', 'tovid', 'tovideo', 'togif'
   ];
 
   // Pembatas jumlah unduhan yang boleh berjalan BERSAMAAN. Yang keenam tidak
@@ -1322,8 +1307,7 @@ export async function startBot(onSocketReady) {
       'ping', 'statusbot', 'owner', 'kontakowner',
       'tt', 'tiktok', 'ttmp3', 'ig', 'instagram', 'igstory', 'yt', 'youtube', 'ytmp3', 'ytmp4',
       'fb', 'facebook', 'pin', 'pinterest', 'tw', 'twitter', 'x', 'spotify', 'play', 'song', 'tomp3', 'tovn',
-      'tr', 'translate', 'jadwalsholat', 'sholat', 'menfess', 'confess', 'balasmenfess', 'menfessreply', 'replymenfess', 'stopmenfess', 'closemenfess', 'endmenfess',
-      'bass', 'blown', 'deep', 'earrape', 'fast', 'fat', 'nightcore', 'reverse', 'robot', 'slow', 'smooth', 'tupai', 'chipmunk', 'echo'
+      'tr', 'translate', 'jadwalsholat', 'sholat', 'menfess', 'confess', 'balasmenfess', 'menfessreply', 'replymenfess', 'stopmenfess', 'closemenfess', 'endmenfess'
     ];
 
     if (!knownMediaCmds.includes(cleanCmd)) {
@@ -1414,7 +1398,7 @@ export async function startBot(onSocketReady) {
         if (isImage) {
           await sock.sendMessage(jid, { image: mediaPayload, caption }, { quoted: isFirst ? m : undefined });
         } else {
-          await sock.sendMessage(jid, { video: mediaPayload, caption }, { quoted: isFirst ? m : undefined });
+          await sock.sendMessage(jid, { video: mediaPayload, mimetype: 'video/mp4', caption }, { quoted: isFirst ? m : undefined });
         }
       }
 
@@ -1474,10 +1458,12 @@ export async function startBot(onSocketReady) {
       if (isAudio) {
         const res = await mediaHandler.downloadTikTokAudio(url);
         if (res.success && (res.buffer || res.audioUrl)) {
-          await sock.sendMessage(jid, { 
-            audio: res.buffer || { url: res.audioUrl }, 
-            mimetype: 'audio/mp4',
-            fileName: 'TikTok_Audio.mp3'
+          await sock.sendMessage(jid, {
+            audio: res.buffer || { url: res.audioUrl },
+            // Ikuti wadah asli berkasnya. Menandai data MP3 sebagai `audio/mp4`
+            // membuat WhatsApp (terutama iOS) menolak memutarnya.
+            mimetype: res.mimetype || 'audio/mpeg',
+            fileName: `TikTok_Audio.${res.ext || 'mp3'}`
           });
           await react('✅');
         } else {
@@ -1518,10 +1504,10 @@ export async function startBot(onSocketReady) {
         const res = await mediaHandler.downloadYouTubeAudio(url);
         if (res.success && (res.buffer || res.audioUrl)) {
           const cleanTitle = (res.title || 'YouTube Audio').replace(/[/\\?%*:|"<>]/g, '');
-          await sock.sendMessage(jid, { 
-            audio: res.buffer || { url: res.audioUrl }, 
-            mimetype: 'audio/mp4',
-            fileName: `${cleanTitle}.mp3`
+          await sock.sendMessage(jid, {
+            audio: res.buffer || { url: res.audioUrl },
+            mimetype: res.mimetype || 'audio/mpeg',
+            fileName: `${cleanTitle}.${res.ext || 'mp3'}`
           });
           await react('✅');
         } else {
@@ -1531,9 +1517,12 @@ export async function startBot(onSocketReady) {
       } else {
         const res = await mediaHandler.downloadYouTube(url);
         if (res.success && (res.buffer || res.videoUrl)) {
-          await sock.sendMessage(jid, { 
-            video: res.buffer || { url: res.videoUrl }, 
-            caption: `🎬 *${res.title || 'YouTube Video'}*\n\n✅ *Berhasil diunduh via Akbar Store Bot*` 
+          const cleanTitle = (res.title || 'YouTube Video').replace(/[/\\?%*:|"<>]/g, '');
+          await sock.sendMessage(jid, {
+            video: res.buffer || { url: res.videoUrl },
+            mimetype: res.mimetype || 'video/mp4',
+            fileName: `${cleanTitle}.mp4`,
+            caption: `🎬 *${res.title || 'YouTube Video'}*\n\n✅ *Berhasil diunduh via Akbar Store Bot*`
           });
           await react('✅');
         } else {
@@ -2514,10 +2503,10 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
         await react('⏳');
         const songRes = await mediaHandler.downloadSongBySearch(query);
         if (songRes.success && songRes.buffer) {
-          await sock.sendMessage(jid, { 
-            audio: songRes.buffer, 
-            mimetype: 'audio/mp4',
-            fileName: `${songRes.title}.mp3`
+          await sock.sendMessage(jid, {
+            audio: songRes.buffer,
+            mimetype: songRes.mimetype || 'audio/mpeg',
+            fileName: `${songRes.title}.${songRes.ext || 'mp3'}`
           });
           await react('✅');
         } else {
@@ -2556,9 +2545,11 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
             ptt: true
           });
         } else {
-          await sock.sendMessage(jid, { 
-            audio: audioBuffer, 
-            mimetype: 'audio/mp4',
+          await sock.sendMessage(jid, {
+            audio: audioBuffer,
+            // convertVideoToAudio menghasilkan MP3 sungguhan (libmp3lame),
+            // jadi mimetype-nya harus audio/mpeg, bukan audio/mp4.
+            mimetype: 'audio/mpeg',
             fileName: 'audio.mp3'
           });
         }
@@ -3216,7 +3207,7 @@ function _trace(tahap, data) {
           'out', 'ready', 'addproduct', 'takeover', 'release', 'stats', 'flashsale',
           'setname', 'setowner', 'setownerid', 'addmod', 'delmod', 'listmod',
           'ban', 'unban', 'unwarn', 'cekwarn', 'kick', 'add', 'promote', 'demote', 'tagall', 'hidetag',
-          'everyone', 'admins', 'mode', 'setmode', 'botmode', 'antilink',
+          'everyone', 'all', 'semua', 'admins', 'mode', 'setmode', 'botmode', 'antilink',
           'welcome', 'setwelcome', 'link', 'getjid', 'backup', 'eval', 'join', 'levelup', 'autolevelup', 'globallevelup', 'setlevelup', 'autodl', 'autodownload', 'listfitur', 'fiturgrup', 'groupfeatures', 'tebaklagu', 'tebakbendera', 'tebaknegara', 'bendera', 'negara', 'flag', 'balasmenfess', 'menfessreply', 'stopmenfess', 'closemenfess'
         ];
 
@@ -3666,13 +3657,21 @@ _Kuota berganti tengah malam WIB. Ketik *.premium* untuk jatah lebih besar._`,
         for (const rent of expiredGroups) {
           console.log(`[GROUP RENTAL] Waktu sewa habis untuk grup ${rent.group_jid}`);
           let berhasilKeluar = false;
+          // Kirim pesan pamit dulu, tapi kegagalannya TIDAK boleh menghalangi groupLeave.
+          // Dulu sendMessage & groupLeave ada dalam satu try-catch: kalau sendMessage
+          // throw (3 retry habis karena grup tidak bisa dikirim pesan), groupLeave
+          // tidak pernah dipanggil sama sekali.
           try {
             await sock.sendMessage(rent.group_jid, { text: `Waktu sewa bot di grup ini telah habis. Hubungi owner untuk memperpanjang.\n\nBye! 👋` });
             await new Promise(r => setTimeout(r, 2000));
+          } catch (eSend) {
+            console.warn(`[GROUP RENTAL] Gagal kirim pesan pamit ke ${rent.group_jid} (diabaikan, tetap keluar):`, eSend.message);
+          }
+          try {
             await sock.groupLeave(rent.group_jid);
             berhasilKeluar = true;
-          } catch (e) {
-            console.error(`[GROUP RENTAL] Gagal leave grup ${rent.group_jid}:`, e.message);
+          } catch (eLeave) {
+            console.error(`[GROUP RENTAL] Gagal leave grup ${rent.group_jid}:`, eLeave.message);
           }
 
           // Baris sewa HANYA dihapus kalau bot benar-benar sudah keluar. Dulu

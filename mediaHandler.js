@@ -51,43 +51,92 @@ function getRandomUserAgent() {
 
 /**
  * Helper eksekusi runner Python (Mencoba python -> py -> python3 secara fleksibel)
+ *
+ * Interpreter yang berhasil di-cache. Sebelumnya setiap pemanggilan memutar ulang
+ * seluruh daftar runner selama exit code bukan 0 — artinya satu unduhan yt-dlp yang
+ * gagal diulang TIGA kali penuh (3 x timeout) sebelum menyerah, dan hasil proses
+ * dengan exit code bukan 0 dibuang walau berkasnya sebenarnya sudah jadi.
  */
-async function runPythonProc(args, timeout = 45000) {
-  const runners = ['python', 'py', 'python3'];
-  for (const runner of runners) {
-    const result = await new Promise((resolve) => {
-      let stdout = '';
-      let stderr = '';
-      let proc;
-      try {
-        proc = spawn(runner, args, { timeout });
-      } catch (err) {
-        resolve(null);
-        return;
-      }
+let pythonRunnerCache = null;
 
-      proc.stdout?.on('data', (d) => { stdout += d.toString(); });
-      proc.stderr?.on('data', (d) => { stderr += d.toString(); });
-
-      proc.on('close', (code) => {
-        resolve({ code, stdout, stderr });
+function spawnProc(runner, args, timeout) {
+  return new Promise((resolve) => {
+    let stdout = '';
+    let stderr = '';
+    let proc;
+    try {
+      // PYTHONIOENCODING wajib: tanpa ini Python di Windows menulis stdout memakai
+      // codepage konsol, jadi judul ber-Unicode (tanda kutip miring, emoji, aksara
+      // non-Latin) sampai ke sini sebagai karakter rusak.
+      proc = spawn(runner, args, {
+        timeout,
+        windowsHide: true,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' }
       });
+    } catch (err) {
+      resolve(null);
+      return;
+    }
 
-      proc.on('error', () => {
-        resolve(null);
-      });
+    proc.stdout?.on('data', (d) => { stdout += d.toString(); });
+    proc.stderr?.on('data', (d) => { stderr += d.toString(); });
+
+    proc.on('close', (code) => {
+      resolve({ code, stdout, stderr, runner });
     });
 
-    if (result && result.code === 0) {
-      return result;
+    proc.on('error', () => {
+      resolve(null);
+    });
+  });
+}
+
+async function resolvePythonRunner() {
+  if (pythonRunnerCache) return pythonRunnerCache;
+  for (const runner of ['python', 'py', 'python3']) {
+    const probe = await spawnProc(runner, ['-c', 'import yt_dlp'], 20000);
+    if (probe && probe.code === 0) {
+      pythonRunnerCache = runner;
+      return runner;
+    }
+  }
+  // Tidak ada interpreter dengan yt_dlp: pakai `python` apa adanya supaya
+  // `pip install -U yt-dlp` di autoUpdateYtdlp tetap punya kesempatan jalan.
+  for (const runner of ['python', 'py', 'python3']) {
+    const probe = await spawnProc(runner, ['-V'], 10000);
+    if (probe && probe.code === 0) {
+      pythonRunnerCache = runner;
+      return runner;
     }
   }
   return null;
 }
 
 /**
+ * Menjalankan perintah Python. Hasil dikembalikan APA ADANYA (termasuk exit code
+ * bukan 0) supaya pemanggil bisa memeriksa stdout/berkas keluaran sendiri —
+ * yt-dlp sering keluar dengan kode 1 padahal berkasnya sudah lengkap.
+ */
+async function runPythonProc(args, timeout = 45000) {
+  const runner = await resolvePythonRunner();
+  if (!runner) return null;
+
+  const result = await spawnProc(runner, args, timeout);
+  if (result) return result;
+
+  // Runner cache basi (mis. Python dipindah/di-uninstall) — deteksi ulang sekali.
+  pythonRunnerCache = null;
+  const retryRunner = await resolvePythonRunner();
+  if (!retryRunner || retryRunner === runner) return null;
+  return await spawnProc(retryRunner, args, timeout);
+}
+
+/**
  * Universal Fetch Buffer — Menghindari 403 Forbidden pada CDN WhatsApp
  */
+/** Batas keras satu berkas yang boleh ditarik ke memori (byte). */
+export const BATAS_UNDUH_BYTE = 50 * 1024 * 1024;
+
 export async function fetchBuffer(url) {
   if (!url) return null;
   try {
@@ -96,6 +145,14 @@ export async function fetchBuffer(url) {
       responseType: 'arraybuffer',
       timeout: 30000,
       maxRedirects: 10,
+      // `arraybuffer` menarik SELURUH isi respons ke memori. Tanpa dua batas ini
+      // satu tautan ke berkas besar cukup untuk membengkakkan proses yang sama
+      // yang memegang sesi WhatsApp - dan satu-satunya penjaga sebelumnya cuma
+      // timeout 30 detik, yang di koneksi cepat justru berarti lebih banyak byte.
+      // Jalur yt-dlp sudah dijaga --max-filesize; jalur inilah yang dipakai
+      // TikTok, Instagram, Facebook, Twitter, dan Pinterest.
+      maxContentLength: BATAS_UNDUH_BYTE,
+      maxBodyLength: BATAS_UNDUH_BYTE,
       headers: {
         'User-Agent': getRandomUserAgent(),
         'Accept': '*/*',
@@ -140,6 +197,94 @@ async function extractWithYtdlpJson(url) {
 }
 
 /**
+ * Profil format ramah WhatsApp.
+ *
+ * PENTING: tanpa penyaring `vcodec`, urutan bawaan yt-dlp menaruh AV1 di atas VP9
+ * di atas H.264 — jadi selektor lama (`bv*[height<=720][ext=mp4]`) memilih av01
+ * karena YouTube memang menaruh AV1 di dalam wadah .mp4. Berkasnya terunduh utuh,
+ * tapi WhatsApp tidak bisa memutar AV1/VP9/Opus: itulah "sudah didownload tapi
+ * tidak bisa dibuka". Rantai di bawah memaksa H.264 (avc1) + AAC (mp4a) dulu,
+ * baru turun ke pilihan lain sebagai jaring pengaman.
+ */
+const FORMAT_VIDEO_WA = [
+  'bv*[vcodec^=avc1][height<=720][protocol^=http]+ba[acodec^=mp4a][protocol^=http]',
+  'bv*[vcodec^=avc1][height<=720]+ba[acodec^=mp4a]',
+  'bv*[vcodec^=avc1][height<=720]+ba',
+  'b[vcodec^=avc1][height<=720]',
+  'bv*[height<=720][ext=mp4]+ba[ext=m4a]',
+  'b[ext=mp4]',
+  'bv*[height<=720]+ba',
+  'b'
+].join('/');
+
+// Audio: utamakan m4a/AAC asli agar konversi ke MP3 tidak melewati Opus.
+const FORMAT_AUDIO_WA = 'ba[acodec^=mp4a]/ba[ext=m4a]/ba/b';
+
+/**
+ * Batas berkas yang masih aman dikirim ke WhatsApp.
+ * `--max-filesize 48M` hanya berlaku PER format, jadi video 720p + audio yang
+ * digabung bisa tembus dua kali lipat. Tanpa penjaga ini, hasil gabungan dikirim
+ * apa adanya lalu ditolak diam-diam di sisi penerima.
+ */
+const BATAS_KIRIM_WA_BYTE = 48 * 1024 * 1024;
+
+/** Tanda tangan wadah berkas, dibaca dari byte awal (tanpa perlu ffprobe). */
+function deteksiWadah(buffer) {
+  if (!buffer || buffer.length < 12) return null;
+  if (buffer.slice(4, 8).toString('latin1') === 'ftyp') return 'mp4';
+  if (buffer.readUInt32BE(0) === 0x1a45dfa3) return 'webm';
+  if (buffer.slice(0, 4).toString('latin1') === 'OggS') return 'ogg';
+  if (buffer.slice(0, 3).toString('latin1') === 'ID3') return 'mp3';
+  if (buffer[0] === 0xff && (buffer[1] & 0xe0) === 0xe0) return 'mp3';
+  if (buffer.slice(0, 4).toString('latin1') === 'RIFF') return 'wav';
+  return null;
+}
+
+/** Buang berkas sementara yt-dlp yang menumpuk (termasuk sisa .part saat gagal). */
+function bersihkanSisaUnduhan(tmpDir, prefix) {
+  try {
+    for (const f of fs.readdirSync(tmpDir)) {
+      if (f.startsWith(prefix)) {
+        try { fs.unlinkSync(path.join(tmpDir, f)); } catch {}
+      }
+    }
+  } catch {}
+}
+
+/**
+ * Bungkus ulang berkas ke MP4 H.264/AAC. Coba remux (-c copy, instan) dulu;
+ * hanya transcode kalau codec-nya memang tidak didukung wadah MP4.
+ */
+async function remuxKeMp4(inputPath) {
+  const outputPath = `${inputPath}.wa.mp4`;
+  const dasar = ['-y', '-i', inputPath, '-movflags', '+faststart'];
+
+  const percobaan = [
+    [...dasar, '-c', 'copy', outputPath],
+    [...dasar, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '128k', outputPath]
+  ];
+
+  for (const args of percobaan) {
+    try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch {}
+    const res = await new Promise((resolve) => {
+      let proc;
+      try {
+        proc = spawn(ffmpegInstaller.path, args, { timeout: 240000, windowsHide: true });
+      } catch { resolve(null); return; }
+      proc.stderr?.on('data', () => {});
+      proc.on('close', (code) => resolve({ code }));
+      proc.on('error', () => resolve(null));
+    });
+
+    if (res && res.code === 0 && fs.existsSync(outputPath) && fs.statSync(outputPath).size > 5000) {
+      return outputPath;
+    }
+  }
+  try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch {}
+  return null;
+}
+
+/**
  * Download media via yt-dlp CLI — metode paling andal (disuntikkan FFmpeg location & format gabungan)
  */
 async function downloadWithYtdlp(url, isAudio = false) {
@@ -147,27 +292,33 @@ async function downloadWithYtdlp(url, isAudio = false) {
   const hasCookies = fs.existsSync(cookiesPath);
   const tmpDir = path.join(process.cwd(), 'tmp');
   if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
-  
-  const ext = isAudio ? 'mp3' : 'mp4';
-  const tmpFile = path.join(tmpDir, `ytdlp_${Date.now()}_${Math.floor(Math.random() * 1000)}.${ext}`);
+
+  // Template pakai %(ext)s, bukan ekstensi yang dipaksa. Nama berkas yang dipaksa
+  // ".mp4"/".mp3" membuat kita tidak pernah tahu wadah aslinya, dan berkas
+  // perantara (.f136.mp4 / .part) ikut lolos pemeriksaan existsSync.
+  const prefix = `ytdlp_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+  const outputTemplate = path.join(tmpDir, `${prefix}.%(ext)s`);
 
   // Dapatkan Judul
   let title = 'YouTube Media';
   try {
-    const titleRes = await runPythonProc(['-m', 'yt_dlp', '--get-title', '--no-warnings', '--no-playlist', url], 12000);
+    const titleRes = await runPythonProc(['-m', 'yt_dlp', '--get-title', '--no-warnings', '--no-playlist', url], 20000);
     if (titleRes && titleRes.stdout.trim()) {
       title = titleRes.stdout.trim().split('\n')[0];
     }
   } catch (e) {}
 
   const formatArgs = isAudio ? [
-    '-f', 'ba/bestaudio/best',
+    '-f', FORMAT_AUDIO_WA,
     '-x',
     '--audio-format', 'mp3',
-    '--audio-quality', '0'
+    '--audio-quality', '2'
   ] : [
-    '-f', 'bv*[height<=720][ext=mp4]+ba[ext=m4a]/bv*[height<=720]+ba/b[height<=720]/best',
-    '--merge-output-format', 'mp4'
+    '-f', FORMAT_VIDEO_WA,
+    '--merge-output-format', 'mp4',
+    // Pastikan atom moov ada di depan; tanpa ini WhatsApp sering hanya
+    // menampilkan pemutar yang berputar tanpa pernah mulai.
+    '--postprocessor-args', 'Merger+ffmpeg_o:-movflags +faststart'
   ];
 
   const fileArgs = [
@@ -175,33 +326,92 @@ async function downloadWithYtdlp(url, isAudio = false) {
     '--no-warnings',
     '--no-playlist',
     '--geo-bypass',
+    '--retries', '3',
+    '--fragment-retries', '3',
+    '--socket-timeout', '20',
+    '--no-mtime',
     '--ffmpeg-location', ffmpegInstaller.path,
     ...formatArgs,
     '--max-filesize', '48M',
-    '-o', tmpFile,
+    '-o', outputTemplate,
     ...(hasCookies ? ['--cookies', cookiesPath] : []),
     url
   ];
 
-  const procRes = await runPythonProc(fileArgs, 60000);
-  if (procRes && fs.existsSync(tmpFile)) {
-    const stats = fs.statSync(tmpFile);
-    if (stats.size > 5000) {
-      try {
-        const buffer = fs.readFileSync(tmpFile);
-        return { success: true, buffer, title };
-      } catch (e) {
-        console.error('[YTDLP_READ_ERR]', e.message);
-      } finally {
-        if (fs.existsSync(tmpFile)) {
-          try { fs.unlinkSync(tmpFile); } catch {}
-        }
+  // 180 detik: 60 detik tidak cukup untuk berkas mendekati 48 MB, dan timeout
+  // yang kepagian membuat unduhan yang sebenarnya sehat dianggap gagal.
+  await runPythonProc(fileArgs, 180000);
+
+  // Jangan bergantung pada exit code — yt-dlp sering keluar bukan 0 (mis. saat
+  // --max-filesize memangkas satu format) padahal berkas akhirnya sudah jadi.
+  let hasil = null;
+  try {
+    const urutanExt = isAudio
+      ? ['.mp3', '.m4a', '.opus', '.ogg', '.webm', '.aac']
+      : ['.mp4', '.mkv', '.mov', '.webm'];
+
+    const kandidat = fs.readdirSync(tmpDir)
+      .filter(f => f.startsWith(prefix) && !f.endsWith('.part') && !f.endsWith('.ytdl'))
+      // Berkas perantara per-format (prefix.f136.mp4, prefix.f140.m4a) HARUS
+      // dibuang. Kalau penggabungan gagal yang tersisa hanya trek video saja atau
+      // audio saja — persis jenis berkas "terunduh tapi tidak bisa dibuka" itu.
+      .filter(f => !/\.f\d+\./.test(f))
+      .map(f => path.join(tmpDir, f))
+      .filter(p => { try { return fs.statSync(p).size > 5000; } catch { return false; } })
+      .sort((a, b) => {
+        const ia = urutanExt.indexOf(path.extname(a).toLowerCase());
+        const ib = urutanExt.indexOf(path.extname(b).toLowerCase());
+        return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+      });
+    hasil = kandidat[0] || null;
+  } catch (e) {
+    console.error('[YTDLP_SCAN_ERR]', e.message);
+  }
+
+  if (hasil) {
+    try {
+      let berkas = hasil;
+      let buffer = fs.readFileSync(berkas);
+      const wadah = deteksiWadah(buffer);
+
+      if (buffer.length > BATAS_KIRIM_WA_BYTE) {
+        const mb = (buffer.length / 1024 / 1024).toFixed(1);
+        return {
+          success: false,
+          terlaluBesar: true,
+          message: `❌ Media terlalu besar untuk dikirim lewat WhatsApp (${mb} MB, batas ±48 MB).\n\n💡 Coba durasi yang lebih pendek${isAudio ? '' : ', atau pakai `.ytmp3` untuk mengambil audionya saja'}.`
+        };
       }
-    }
-    if (fs.existsSync(tmpFile)) {
-      try { fs.unlinkSync(tmpFile); } catch {}
+
+      if (isAudio) {
+        const mimetype = wadah === 'mp3' ? 'audio/mpeg'
+          : wadah === 'mp4' ? 'audio/mp4'
+          : wadah === 'ogg' ? 'audio/ogg'
+          : 'audio/mpeg';
+        return { success: true, buffer, title, mimetype, ext: wadah || 'mp3' };
+      }
+
+      // Video: WhatsApp hanya menerima MP4. Kalau yt-dlp terpaksa turun ke
+      // webm/mkv, bungkus ulang dulu daripada mengirim berkas yang tidak bisa dibuka.
+      if (wadah !== 'mp4') {
+        const remuxed = await remuxKeMp4(berkas);
+        if (!remuxed) {
+          console.error('[YTDLP_REMUX_ERR] Wadah tidak didukung WhatsApp:', wadah);
+          return null;
+        }
+        berkas = remuxed;
+        buffer = fs.readFileSync(berkas);
+      }
+
+      return { success: true, buffer, title, mimetype: 'video/mp4', ext: 'mp4' };
+    } catch (e) {
+      console.error('[YTDLP_READ_ERR]', e.message);
+    } finally {
+      bersihkanSisaUnduhan(tmpDir, prefix);
     }
   }
+
+  bersihkanSisaUnduhan(tmpDir, prefix);
 
   // Tier 2 Fallback: Direct Stream URL
   const urlArgs = [
@@ -212,19 +422,40 @@ async function downloadWithYtdlp(url, isAudio = false) {
     '--no-playlist',
     '--geo-bypass',
     '--ffmpeg-location', ffmpegInstaller.path,
-    '-f', isAudio ? 'ba/bestaudio/best' : 'b/best[height<=720]/best',
+    // Selektor lama (`b/best[height<=720]/best`) hanya cocok dengan format
+    // gabungan; YouTube modern sering tidak punya satu pun, jadi yt-dlp langsung
+    // menjawab "Requested format is not available" dan seluruh perintah gagal.
+    '-f', isAudio
+      ? 'ba[acodec^=mp4a]/ba/b'
+      : 'b[vcodec^=avc1][height<=720]/b[ext=mp4]/b/bv*[vcodec^=avc1][height<=720]',
     ...(hasCookies ? ['--cookies', cookiesPath] : []),
     url
   ];
 
-  const procRes2 = await runPythonProc(urlArgs, 25000);
+  const procRes2 = await runPythonProc(urlArgs, 30000);
   if (procRes2 && procRes2.stdout.trim()) {
     const lines = procRes2.stdout.trim().split('\n').map(l => l.trim()).filter(Boolean);
-    const urlLine = [...lines].reverse().find(l => l.startsWith('http'));
+    const urlLines = lines.filter(l => l.startsWith('http'));
     const titleLine = lines.find(l => !l.startsWith('http')) || title;
-    if (urlLine) {
+
+    // Lebih dari satu URL berarti yt-dlp memilih video-only + audio-only yang harus
+    // digabung. Mengirim salah satunya menghasilkan media bisu / tidak bisa dibuka —
+    // versi lama mengambil baris TERAKHIR, yang justru trek audio saja.
+    if (urlLines.length === 1) {
+      const urlLine = urlLines[0];
       const buf = await fetchBuffer(urlLine);
-      return { success: true, buffer: buf || undefined, videoUrl: urlLine, audioUrl: urlLine, title: titleLine };
+      return {
+        success: true,
+        buffer: buf || undefined,
+        videoUrl: isAudio ? undefined : urlLine,
+        audioUrl: isAudio ? urlLine : undefined,
+        title: titleLine,
+        mimetype: isAudio ? 'audio/mp4' : 'video/mp4',
+        ext: isAudio ? 'm4a' : 'mp4'
+      };
+    }
+    if (urlLines.length > 1) {
+      console.log('[YTDLP_TIER2] Dilewati: format terpisah (video+audio), tidak bisa dikirim langsung.');
     }
   }
 
@@ -368,6 +599,70 @@ export async function downloadTikTok(url) {
   }
 
   return { success: false, message: '❌ Gagal mengunduh foto/video TikTok. Pastikan link valid dan akun bersifat publik.' };
+}
+
+/**
+ * Ambil audio / sound TikTok (.ttmp3)
+ *
+ * Fungsi ini sebelumnya tidak pernah ada padahal bot.js sudah memanggilnya, jadi
+ * `.ttmp3` selalu berakhir dengan TypeError "downloadTikTokAudio is not a function".
+ */
+export async function downloadTikTokAudio(url) {
+  // Method 1: TikWM — punya URL sound asli (mime audio/mpeg)
+  try {
+    const res = await axios.post('https://www.tikwm.com/api/', new URLSearchParams({ url, hd: '1' }).toString(), {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': getRandomUserAgent()
+      },
+      timeout: 12000
+    });
+
+    const d = res.data?.code === 0 ? res.data.data : null;
+    if (d) {
+      const musicUrl = d.music || d.music_info?.play;
+      const title = d.music_info?.title || d.title || 'TikTok Audio';
+      if (musicUrl) {
+        const buf = await fetchBuffer(musicUrl);
+        if (buf) {
+          const wadah = deteksiWadah(buf);
+          return {
+            success: true,
+            buffer: buf,
+            title,
+            mimetype: wadah === 'mp4' ? 'audio/mp4' : 'audio/mpeg',
+            ext: wadah === 'mp4' ? 'm4a' : 'mp3'
+          };
+        }
+        return { success: true, audioUrl: musicUrl, title, mimetype: 'audio/mpeg', ext: 'mp3' };
+      }
+    }
+  } catch (err) {
+    console.log('[MEDIA_HANDLER] TikTok Audio Method 1 (TikWM) failed:', err.message);
+  }
+
+  // Method 2: unduh videonya lalu ekstrak jalur suaranya
+  try {
+    const videoRes = await downloadTikTok(url);
+    let videoBuffer = videoRes?.buffer;
+    if (!videoBuffer && videoRes?.videoUrl) videoBuffer = await fetchBuffer(videoRes.videoUrl);
+    if (videoBuffer) {
+      const audioBuffer = await convertVideoToAudio(videoBuffer, 'mp3');
+      if (audioBuffer && audioBuffer.length > 5000) {
+        return {
+          success: true,
+          buffer: audioBuffer,
+          title: videoRes.title || 'TikTok Audio',
+          mimetype: 'audio/mpeg',
+          ext: 'mp3'
+        };
+      }
+    }
+  } catch (err) {
+    console.log('[MEDIA_HANDLER] TikTok Audio Method 2 (ekstrak video) failed:', err.message);
+  }
+
+  return { success: false, message: '❌ Gagal mengambil audio TikTok. Pastikan link valid dan akun bersifat publik.' };
 }
 
 /**
@@ -548,35 +843,45 @@ export async function downloadInstagram(url) {
 export async function downloadYouTube(url) {
   // Method 1: yt-dlp CLI Video
   const ytdlpResult = await downloadWithYtdlp(url, false);
+  if (ytdlpResult?.terlaluBesar) {
+    return { success: false, message: ytdlpResult.message };
+  }
   if (ytdlpResult?.buffer) {
-    return { success: true, buffer: ytdlpResult.buffer, title: ytdlpResult.title || 'YouTube Video' };
+    return { success: true, buffer: ytdlpResult.buffer, title: ytdlpResult.title || 'YouTube Video', mimetype: 'video/mp4' };
   }
   if (ytdlpResult?.videoUrl) {
     const buf = await fetchBuffer(ytdlpResult.videoUrl);
-    return { success: true, buffer: buf || undefined, videoUrl: ytdlpResult.videoUrl, title: ytdlpResult.title || 'YouTube Video' };
+    return { success: true, buffer: buf || undefined, videoUrl: ytdlpResult.videoUrl, title: ytdlpResult.title || 'YouTube Video', mimetype: 'video/mp4' };
   }
 
   // Method 2: @distube/ytdl-core
+  // Hanya format gabungan (punya video DAN audio) yang boleh dipakai. Cadangan lama
+  // jatuh ke `quality: 'highest'` yang di YouTube modern hampir selalu video-only —
+  // hasilnya video bisu, atau berkas yang tidak bisa dibuka sama sekali.
   try {
     const info = await ytdl.getInfo(url);
-    const format = ytdl.chooseFormat(info.formats, { quality: 'highestvideo', filter: 'videoandaudio' }) ||
-                   ytdl.chooseFormat(info.formats, { quality: 'highest' });
-    if (format && format.url) {
+    const muxed = (info.formats || [])
+      .filter(f => f.hasVideo && f.hasAudio && f.url)
+      .filter(f => f.container === 'mp4' || String(f.mimeType || '').includes('mp4'))
+      .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+    const format = muxed[0];
+    if (format) {
       const buf = await fetchBuffer(format.url);
-      return { 
-        success: true, 
-        buffer: buf || undefined, 
-        videoUrl: format.url, 
-        title: info.videoDetails?.title || 'YouTube Video' 
+      return {
+        success: true,
+        buffer: buf || undefined,
+        videoUrl: format.url,
+        title: info.videoDetails?.title || 'YouTube Video',
+        mimetype: 'video/mp4'
       };
     }
   } catch (err) {
     console.log('[MEDIA_HANDLER] YT Method 2 (ytdl-core) failed:', err.message);
   }
 
-  return { 
-    success: false, 
-    message: '❌ Gagal mengunduh video YouTube. Pastikan link publik dan dapat diakses.' 
+  return {
+    success: false,
+    message: '❌ Gagal mengunduh video YouTube. Pastikan link publik dan dapat diakses.'
   };
 }
 
@@ -586,34 +891,59 @@ export async function downloadYouTube(url) {
 export async function downloadYouTubeAudio(url) {
   // Method 1: yt-dlp CLI Audio
   const ytdlpResult = await downloadWithYtdlp(url, true);
+  if (ytdlpResult?.terlaluBesar) {
+    return { success: false, message: ytdlpResult.message };
+  }
   if (ytdlpResult?.buffer) {
-    return { success: true, buffer: ytdlpResult.buffer, title: ytdlpResult.title || 'YouTube Audio' };
+    return {
+      success: true,
+      buffer: ytdlpResult.buffer,
+      title: ytdlpResult.title || 'YouTube Audio',
+      mimetype: ytdlpResult.mimetype || 'audio/mpeg',
+      ext: ytdlpResult.ext || 'mp3'
+    };
   }
   if (ytdlpResult?.audioUrl) {
     const buf = await fetchBuffer(ytdlpResult.audioUrl);
-    return { success: true, buffer: buf || undefined, audioUrl: ytdlpResult.audioUrl, title: ytdlpResult.title || 'YouTube Audio' };
+    return {
+      success: true,
+      buffer: buf || undefined,
+      audioUrl: ytdlpResult.audioUrl,
+      title: ytdlpResult.title || 'YouTube Audio',
+      mimetype: ytdlpResult.mimetype || 'audio/mp4',
+      ext: ytdlpResult.ext || 'm4a'
+    };
   }
 
   // Method 2: @distube/ytdl-core Audio
+  // Utamakan trek m4a/AAC. `highestaudio` biasanya mengembalikan Opus/WebM yang
+  // tidak bisa diputar WhatsApp sebagai pesan suara.
   try {
     const info = await ytdl.getInfo(url);
-    const format = ytdl.chooseFormat(info.formats, { filter: 'audioonly', quality: 'highestaudio' });
-    if (format && format.url) {
+    const audioOnly = (info.formats || []).filter(f => f.hasAudio && !f.hasVideo && f.url);
+    const m4a = audioOnly
+      .filter(f => f.container === 'mp4' || String(f.audioCodec || '').includes('mp4a'))
+      .sort((a, b) => (b.audioBitrate || 0) - (a.audioBitrate || 0))[0];
+    const format = m4a || audioOnly.sort((a, b) => (b.audioBitrate || 0) - (a.audioBitrate || 0))[0];
+    if (format) {
+      const isM4a = format === m4a;
       const buf = await fetchBuffer(format.url);
-      return { 
-        success: true, 
-        buffer: buf || undefined, 
-        audioUrl: format.url, 
-        title: info.videoDetails?.title || 'YouTube Audio' 
+      return {
+        success: true,
+        buffer: buf || undefined,
+        audioUrl: format.url,
+        title: info.videoDetails?.title || 'YouTube Audio',
+        mimetype: isM4a ? 'audio/mp4' : 'audio/ogg; codecs=opus',
+        ext: isM4a ? 'm4a' : 'ogg'
       };
     }
   } catch (err) {
     console.log('[MEDIA_HANDLER] YT Audio Method 2 failed:', err.message);
   }
 
-  return { 
-    success: false, 
-    message: '❌ Gagal mengunduh audio YouTube. Pastikan link publik dan dapat diakses.' 
+  return {
+    success: false,
+    message: '❌ Gagal mengunduh audio YouTube. Pastikan link publik dan dapat diakses.'
   };
 }
 
@@ -1294,31 +1624,39 @@ export async function downloadSongBySearch(query) {
     '--no-warnings',
     '--no-playlist',
     '--geo-bypass',
+    '--retries', '3',
+    '--socket-timeout', '20',
+    '--no-mtime',
     '--ffmpeg-location', ffmpegInstaller.path,
-    '--extractor-args', 'youtube:player_client=android,web',
-    '-f', 'ba[filesize<15M]/bestaudio/best',
+    // Selektor lama `ba[filesize<15M]/bestaudio/best` sering jatuh ke `best`
+    // (format gabungan 360p) sehingga MP3-nya diekstrak dari audio 128k video.
+    '-f', FORMAT_AUDIO_WA,
+    '--max-filesize', '30M',
     '--extract-audio',
     '--audio-format', 'mp3',
+    '--audio-quality', '2',
     '-o', outputTemplate,
     `ytsearch1:${query}`
   ];
 
-  const procRes = await runPythonProc(fileArgs, 60000);
-  if (procRes && procRes.code === 0) {
-    try {
-      const files = fs.readdirSync(tmpDir);
-      const matchedFile = files.find(f => f.startsWith(uniquePrefix) && f.endsWith('.mp3'));
-      if (matchedFile) {
-        const filePath = path.join(tmpDir, matchedFile);
-        const buffer = fs.readFileSync(filePath);
-        fs.unlinkSync(filePath);
-        
-        const title = matchedFile.substring(uniquePrefix.length, matchedFile.length - 4);
-        return { success: true, buffer, title };
+  // Exit code diabaikan: yt-dlp bisa keluar bukan 0 walau MP3-nya sudah jadi.
+  await runPythonProc(fileArgs, 180000);
+  try {
+    const files = fs.readdirSync(tmpDir);
+    const matchedFile = files.find(f => f.startsWith(uniquePrefix) && f.endsWith('.mp3'));
+    if (matchedFile) {
+      const filePath = path.join(tmpDir, matchedFile);
+      const buffer = fs.readFileSync(filePath);
+      const title = matchedFile.substring(uniquePrefix.length, matchedFile.length - 4);
+      bersihkanSisaUnduhan(tmpDir, uniquePrefix);
+      if (buffer.length > 5000) {
+        return { success: true, buffer, title, mimetype: 'audio/mpeg', ext: 'mp3' };
       }
-    } catch (e) {
-      return { success: false, message: e.message };
     }
+    bersihkanSisaUnduhan(tmpDir, uniquePrefix);
+  } catch (e) {
+    bersihkanSisaUnduhan(tmpDir, uniquePrefix);
+    return { success: false, message: e.message };
   }
 
   return { success: false, message: 'Gagal mendownload lagu. Pastikan judul lagu benar atau coba beberapa saat lagi.' };
