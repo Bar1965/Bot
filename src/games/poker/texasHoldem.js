@@ -6,6 +6,12 @@ import { evaluate7Cards, compareScores } from './evaluator.js';
 import { BOT_NAMES, isAiPlayer, decidePreflopAction, decidePostflopAction } from './pokerAi.js';
 
 export const activeTexasGames = new Map();
+// Dealer button terakhir per grup. Objek sesi dibuang tiap ronde selesai, jadi
+// `session.dealerIndex = (session.dealerIndex + 1) % n` di akhir ronde selama
+// ini kode mati: meja baru selalu mulai dari dealerIndex 0, host selamanya jadi
+// Dealer, dan kursi 1 & 2 selamanya membayar SB/BB — padahal teks lobi
+// menjanjikan posisinya berputar.
+const dealerButtonTerakhir = new Map();
 
 const LOBBY_TIMEOUT_MS = 90 * 1000;
 const TURN_TIMEOUT_MS = 25 * 1000;
@@ -36,6 +42,33 @@ function clearSessionTimer(session) {
     clearTimeout(session.timeout);
     session.timeout = null;
   }
+}
+
+/**
+ * Klaim satu giliran secara SINKRON.
+ *
+ * Tiga pihak bisa menyelesaikan giliran yang sama: pemain lewat perintah, timer
+ * 25 detik, dan timer AI. Ketiganya melakukan `await send(...)` di tengah jalan,
+ * dan antrean keluar di bot.js menahan tiap pesan 100-250 ms — jendela yang
+ * lebih dari cukup untuk keduanya lolos.
+ *
+ * Memeriksa nomor giliran saja TIDAK cukup: nomornya baru naik di
+ * advanceBettingTurn, yaitu SESUDAH pesan aksi pemain terkirim, sehingga timer
+ * yang bangun di tengah jendela itu masih melihat nomor lama dan tetap jalan.
+ * Diuji: pemain sempat CALL (chip terpotong) lalu tetap di-FOLD oleh timer,
+ * 40 dari 40 percobaan. Kunci ini dipasang sinkron sebelum await mana pun,
+ * jadi siapa yang lebih dulu sampai dialah yang menyelesaikan giliran itu.
+ */
+function klaimGiliran(session, seqDiharapkan) {
+  if (!session || session.status !== 'PLAYING') return false;
+  if (session.aksiSedangDiproses) return false;
+  if (seqDiharapkan !== undefined && (session.turnSeq || 0) !== seqDiharapkan) return false;
+  session.aksiSedangDiproses = true;
+  return true;
+}
+
+function lepasGiliran(session) {
+  if (session) session.aksiSedangDiproses = false;
 }
 
 async function dm(sock, jid, text) {
@@ -340,10 +373,16 @@ export async function handleTexasHoldem(sock, jid, senderNumber, messageObj, arg
     minRaise: Math.max(10, Math.floor(buyIn * 0.2)),
     smallBlind: Math.max(5, Math.floor(buyIn * 0.1)),
     bigBlind: Math.max(10, Math.floor(buyIn * 0.2)),
-    dealerIndex: 0,
+    dealerIndex: dealerButtonTerakhir.get(jid) || 0,
     sbIndex: 0,
     bbIndex: 0,
     activePlayerIndex: 0,
+    // Nomor generasi giliran. clearTimeout TIDAK bisa membatalkan callback
+    // setTimeout yang sudah terlanjur menyala, jadi timer basi butuh token ini
+    // untuk membatalkan dirinya sendiri.
+    turnSeq: 0,
+    // Kunci aksi per meja, dipakai handlePlayerBetAction.
+    aksiSedangDiproses: false,
     roundPhase: 'PREFLOP',
     actedThisRound: new Set(),
     bbHasOption: false,
@@ -416,10 +455,16 @@ async function startInstantVsBot(sock, jid, senderNumber, messageObj, buyIn, bot
     minRaise: Math.max(10, Math.floor(buyIn * 0.2)),
     smallBlind: Math.max(5, Math.floor(buyIn * 0.1)),
     bigBlind: Math.max(10, Math.floor(buyIn * 0.2)),
-    dealerIndex: 0,
+    dealerIndex: dealerButtonTerakhir.get(jid) || 0,
     sbIndex: 0,
     bbIndex: 0,
     activePlayerIndex: 0,
+    // Nomor generasi giliran. clearTimeout TIDAK bisa membatalkan callback
+    // setTimeout yang sudah terlanjur menyala, jadi timer basi butuh token ini
+    // untuk membatalkan dirinya sendiri.
+    turnSeq: 0,
+    // Kunci aksi per meja, dipakai handlePlayerBetAction.
+    aksiSedangDiproses: false,
     roundPhase: 'PREFLOP',
     actedThisRound: new Set(),
     bbHasOption: false,
@@ -635,6 +680,7 @@ Kartu Rahasia: ${formatCards([card1, card2])}
   session.sbIndex = sbIdx;
   session.bbIndex = bbIdx;
   session.activePlayerIndex = utgIdx;
+  session.turnSeq = (session.turnSeq || 0) + 1;
   session.bbHasOption = true;
 
   const sbPlayer = session.players[sbIdx];
@@ -661,7 +707,12 @@ Meja Komunitas: ${formatHiddenCards(5)}
 🔔 *GILIRAN PERTAMA (UTG):* ${tag(activeP)} (*Taruhan aktif: ${session.currentBet} Poin*)
 _Ketik \`.call\`, \`.raise <nominal>\`, \`.allin\`, atau \`.fold\` (Waktu: ${TURN_TIMEOUT_MS / 1000}s)_`;
 
-  const mention = isAiPlayer(activeP) ? [] : [activeP];
+  // Semua nama yang ditulis pakai tag() WAJIB ikut di array mentions. Dulu
+  // hanya UTG yang masuk, sehingga Dealer/SB/BB tampil sebagai deretan digit
+  // @lid mentah — tidak bisa diklik, tidak menotifikasi, dan pemain tidak tahu
+  // dirinya kena blind. Kursi AI sengaja dikecualikan: tag() mengembalikan
+  // *NamaBot* yang memang tidak butuh mention.
+  const mention = [...new Set([dealerPlayer, sbPlayer, bbPlayer, activeP])].filter(p => !isAiPlayer(p));
   await send(sock, jid, messageObj, startMsg, { mentions: mention });
   armTurnTimer(sock, jid);
   return true;
@@ -677,14 +728,28 @@ function armTurnTimer(sock, jid) {
   clearSessionTimer(session);
 
   const activeP = session.players[session.activePlayerIndex];
+  // Kunci generasi giliran SAAT timer dipasang. clearTimeout tidak bisa
+  // membatalkan callback setTimeout yang sudah terlanjur menyala, jadi kalau
+  // saat callback jalan nomornya sudah berubah berarti pemain keburu bertindak
+  // sendiri di detik-detik terakhir dan giliran sudah pindah — callback ini
+  // wajib bunuh diri. Tanpa ini, callback basi memproses aksi untuk orang yang
+  // gilirannya sudah lewat lalu memajukan giliran untuk KEDUA kalinya,
+  // sehingga pemain berikutnya di-tag "GILIRANMU" lalu langsung dilangkahi.
+  // Terbukti terjadi 40 dari 40 percobaan saat diuji dengan timer dipercepat.
+  const mySeq = session.turnSeq || 0;
 
   // Giliran AI Bot
   if (isAiPlayer(activeP)) {
     const thinkDelay = 1500 + Math.floor(Math.random() * 1000);
     session.timeout = setTimeout(async () => {
       const cur = activeTexasGames.get(jid);
-      if (!cur || cur.status !== 'PLAYING') return;
-      await handleAiTurn(sock, jid, activeP);
+      if (!cur || cur !== session) return;
+      if (!klaimGiliran(cur, mySeq)) return;
+      try {
+        await handleAiTurn(sock, jid, activeP);
+      } finally {
+        lepasGiliran(cur);
+      }
     }, thinkDelay);
     return;
   }
@@ -692,17 +757,22 @@ function armTurnTimer(sock, jid) {
   // Giliran Human
   session.timeout = setTimeout(async () => {
     const cur = activeTexasGames.get(jid);
-    if (!cur || cur.status !== 'PLAYING') return;
+    if (!cur || cur !== session) return;
+    // Klaim SEBELUM await apa pun. Kalau pemain sudah lebih dulu memegang
+    // giliran ini, timer diam — pemain sempat bertindak, jadi tidak boleh
+    // dianggap kehabisan waktu.
+    if (!klaimGiliran(cur, mySeq)) return;
+    try {
+      const currentActiveP = cur.players[cur.activePlayerIndex];
+      const playerBet = cur.playerBets.get(currentActiveP) || 0;
+      const otomatis = playerBet >= cur.currentBet ? 'CHECK' : 'FOLD';
 
-    const currentActiveP = cur.players[cur.activePlayerIndex];
-    const playerBet = cur.playerBets.get(currentActiveP) || 0;
-
-    if (playerBet >= cur.currentBet) {
-      await send(sock, jid, null, `⏰ Waktu habis! ${tag(currentActiveP)} otomatis *CHECK*.`, { mentions: [currentActiveP] });
-      await processBetAction(sock, jid, currentActiveP, 'CHECK', 0);
-    } else {
-      await send(sock, jid, null, `⏰ Waktu habis! ${tag(currentActiveP)} otomatis *FOLD*.`, { mentions: [currentActiveP] });
-      await processBetAction(sock, jid, currentActiveP, 'FOLD', 0);
+      await send(sock, jid, null, `⏰ Waktu habis! ${tag(currentActiveP)} otomatis *${otomatis}*.`, {
+        mentions: isAiPlayer(currentActiveP) ? [] : [currentActiveP]
+      });
+      await processBetAction(sock, jid, currentActiveP, otomatis, 0);
+    } finally {
+      lepasGiliran(cur);
     }
   }, TURN_TIMEOUT_MS);
 }
@@ -744,7 +814,21 @@ async function handlePlayerBetAction(sock, jid, senderNumber, messageObj, action
     return true;
   }
 
-  return await processBetAction(sock, jid, activeP, action, amount, messageObj);
+  // Kunci aksi per meja, dipakai bersama timer 25 detik dan timer AI.
+  //
+  // Handler `messages.upsert` di bot.js tidak menyerialkan pesan antar-event,
+  // jadi dua `.call` beruntun (kebiasaan pemain saat bot terasa lambat) bisa
+  // berjalan bersamaan: keduanya lolos gerbang di atas karena activePlayerIndex
+  // belum bergeser, keduanya sampai ke advanceBettingTurn, dan giliran melompat
+  // DUA orang sekaligus — pemain di tengah di-tag "GILIRANMU" lalu langsung
+  // dilewati. Kunci dipasang di titik masuk, bukan di processBetAction, supaya
+  // rekursi CHECK->CALL tidak mengunci dirinya sendiri.
+  if (!klaimGiliran(session)) return true;
+  try {
+    return await processBetAction(sock, jid, activeP, action, amount, messageObj);
+  } finally {
+    lepasGiliran(session);
+  }
 }
 
 /**
@@ -754,6 +838,18 @@ async function processBetAction(sock, jid, player, action, amount = 0, messageOb
   const session = activeTexasGames.get(jid);
   if (!session || session.status !== 'PLAYING') return false;
 
+  // Gerbang identitas giliran. handlePlayerBetAction memang sudah mengeceknya,
+  // tapi tiga pemanggil lain (timer 25 detik, timer AI, rekursi CHECK->CALL)
+  // TIDAK lewat sana. Tanpa cek ini, aksi dari rantai yang sudah basi tetap
+  // diterima, lalu advanceBettingTurn di bawah memajukan giliran dari
+  // activePlayerIndex yang SUDAH pindah — pemain berikutnya di-tag "GILIRANMU"
+  // lalu langsung dilangkahi tanpa pernah bisa bertindak.
+  if (session.players[session.activePlayerIndex] !== player) return false;
+  // Pemain yang sudah fold/all-in tidak punya aksi lagi. Ini menutup "ronde
+  // taruhan hantu" saat papan sudah lengkap dan jeda showdown 1,8 detik keburu
+  // dibunuh oleh aksi susulan.
+  if (session.foldedPlayers.has(player) || session.allInPlayers.has(player)) return false;
+
   clearSessionTimer(session);
 
   const currentBet = session.currentBet;
@@ -762,6 +858,8 @@ async function processBetAction(sock, jid, player, action, amount = 0, messageOb
   const mention = isAiPlayer(player) ? [] : [player];
 
   if (action === 'FOLD') {
+    // Fold dua kali tidak boleh memicu penyelesaian ronde dua kali.
+    if (session.foldedPlayers.has(player)) return true;
     session.foldedPlayers.add(player);
     await send(sock, jid, messageObj, `🏳️ ${tag(player)} melakukan *FOLD* (menyerah).`, { mentions: mention });
 
@@ -870,11 +968,30 @@ async function advanceBettingTurn(sock, jid) {
   const allBetsEqual = nonFolded.every(p => (session.playerBets.get(p) || 0) === session.currentBet || session.allInPlayers.has(p));
   const allActed = nonFolded.every(p => session.actedThisRound.has(p) || session.allInPlayers.has(p));
 
-  // Opsi Big Blind di Pre-flop: jika semua orang cuma call dan BB belum memutuskan
+  // Opsi Big Blind di Pre-flop: menurut WSOP, BB berhak bicara PALING AKHIR
+  // setelah semua orang menyamai — itulah gunanya "option".
+  //
+  // Syarat `allBetsEqual` + "semua non-BB sudah bertindak" WAJIB ada. Dulu blok
+  // ini hanya memeriksa BB sendiri, jadi ia menyala pada aksi pre-flop PERTAMA:
+  // giliran langsung dilempar ke BB sementara Dealer/SB/MP/CO belum pernah
+  // ditanya (mereka lalu ditolak "Bukan giliranmu"), UTG mendapat giliran dua
+  // kali, dan option BB yang sesungguhnya hangus karena bbHasOption sudah
+  // dikonsumsi terlalu cepat. Pesan "Semua pemain telah menyamai Big Blind"
+  // juga bohong pada momen itu. Di meja 8 pemain, 6 kursi dilangkahi.
   if (session.roundPhase === 'PREFLOP' && session.bbHasOption) {
     const bbPlayer = session.players[session.bbIndex];
-    if (!session.actedThisRound.has(bbPlayer) && !session.foldedPlayers.has(bbPlayer) && !session.allInPlayers.has(bbPlayer)) {
+    const semuaNonBbSudahAksi = nonFolded.every(p =>
+      p === bbPlayer || session.actedThisRound.has(p) || session.allInPlayers.has(p)
+    );
+    if (
+      allBetsEqual &&
+      semuaNonBbSudahAksi &&
+      !session.actedThisRound.has(bbPlayer) &&
+      !session.foldedPlayers.has(bbPlayer) &&
+      !session.allInPlayers.has(bbPlayer)
+    ) {
       session.activePlayerIndex = session.bbIndex;
+      session.turnSeq = (session.turnSeq || 0) + 1;
       session.bbHasOption = false; // Gunakan option sekali
       const turnMsg =
 `👉 *Option Big Blind:* ${tag(bbPlayer)}
@@ -893,18 +1010,37 @@ _Kamu berhak \`.check\` (gratis lanjut ke Flop) atau \`.raise <nominal>\`! (Wakt
     return;
   }
 
+  // Lewati pemain yang fold/all-in, DAN yang sudah bertindak sementara
+  // taruhannya sudah menyamai currentBet. Tanpa syarat kedua, giliran bisa
+  // kembali ke orang yang barusan bertindak (mis. UTG sesudah option BB) dan
+  // dia boleh me-raise taruhannya SENDIRI tanpa ada raise perantara — ilegal
+  // di poker, dan raise itu meng-clear actedThisRound sehingga seluruh meja
+  // yang belum pernah ditanya langsung dipaksa membayar lagi.
   let nextIdx = (session.activePlayerIndex + 1) % session.players.length;
   let attempts = 0;
+  let ketemu = false;
   while (attempts < session.players.length) {
     const candidate = session.players[nextIdx];
-    if (!session.foldedPlayers.has(candidate) && !session.allInPlayers.has(candidate)) {
+    const sudahSelesai =
+      session.actedThisRound.has(candidate) &&
+      (session.playerBets.get(candidate) || 0) === session.currentBet;
+    if (!session.foldedPlayers.has(candidate) && !session.allInPlayers.has(candidate) && !sudahSelesai) {
+      ketemu = true;
       break;
     }
     nextIdx = (nextIdx + 1) % session.players.length;
     attempts++;
   }
 
+  // Sudah tidak ada yang perlu bicara → tutup ronde taruhan, jangan
+  // mengembalikan giliran ke orang yang sudah selesai.
+  if (!ketemu) {
+    await nextStreetPhase(sock, jid);
+    return;
+  }
+
   session.activePlayerIndex = nextIdx;
+  session.turnSeq = (session.turnSeq || 0) + 1;
   const nextPlayer = session.players[nextIdx];
   const toCall = session.currentBet - (session.playerBets.get(nextPlayer) || 0);
 
@@ -933,6 +1069,13 @@ async function nextStreetPhase(sock, jid) {
     session.playerBets.set(p, 0);
   }
 
+  // Minimum raise kembali ke big blind tiap street. Tanpa baris ini, raise
+  // besar di FLOP tetap jadi patokan minimum di TURN/RIVER padahal currentBet
+  // sudah nol — taruhan pembuka yang sah ikut ditolak, dan kalau angkanya
+  // melebihi sisa chip, pesan "raise minimal" dan "chip tidak cukup" saling
+  // bertentangan sehingga `.raise` mustahil di nominal berapa pun.
+  session.lastRaiseDiff = session.bigBlind;
+
   const nonFolded = session.players.filter(p => !session.foldedPlayers.has(p));
   const canBetPlayers = nonFolded.filter(p => !session.allInPlayers.has(p));
 
@@ -941,6 +1084,36 @@ async function nextStreetPhase(sock, jid) {
     await autoRunRemainingStreetsToShowdown(sock, jid);
     return;
   }
+
+  // 📐 Post-Flop Action Order: pemain aktif pertama di sebelah kiri Dealer Button.
+  //
+  // KENAPA DIHITUNG DI SINI, SEBELUM kartu diumumkan: dulu blok ini ada di BAWAH
+  // rantai if/else, sehingga announceCommunityCards() masih membaca
+  // activePlayerIndex milik ronde SEBELUMNYA. Akibatnya setiap pembukaan
+  // Flop/Turn/River men-tag "Giliran Taruhan Pertama" ke pemain yang salah,
+  // sementara pemain yang benar-benar giliran tidak pernah disebut sama sekali
+  // lalu dipaksa auto-CHECK setelah 25 detik. Itu dua keluhan sekaligus:
+  // "salah tag" dan "giliran ke-skip".
+  const n = session.players.length;
+  let firstPostFlopIdx = (session.dealerIndex + 1) % n;
+  // Penghitung `cari` WAJIB: tanpa batas, kalau semua pemain sempat masuk
+  // foldedPlayers/allInPlayers, while ini berputar selamanya dan membekukan
+  // SELURUH proses Node — bot berhenti membalas dan port 3000 mati.
+  let cari = 0;
+  while (
+    cari < n &&
+    (session.foldedPlayers.has(session.players[firstPostFlopIdx]) ||
+     session.allInPlayers.has(session.players[firstPostFlopIdx]))
+  ) {
+    firstPostFlopIdx = (firstPostFlopIdx + 1) % n;
+    cari++;
+  }
+  if (cari >= n) {
+    await autoRunRemainingStreetsToShowdown(sock, jid);
+    return;
+  }
+  session.activePlayerIndex = firstPostFlopIdx;
+  session.turnSeq = (session.turnSeq || 0) + 1;
 
   if (session.roundPhase === 'PREFLOP') {
     session.roundPhase = 'FLOP';
@@ -961,14 +1134,6 @@ async function nextStreetPhase(sock, jid) {
     await conductTexasShowdown(sock, jid);
     return;
   }
-
-  // 📐 Post-Flop Action Order: Mulai dari pemain aktif pertama di sebelah kiri Dealer Button
-  const n = session.players.length;
-  let firstPostFlopIdx = (session.dealerIndex + 1) % n;
-  while (session.foldedPlayers.has(session.players[firstPostFlopIdx]) || session.allInPlayers.has(session.players[firstPostFlopIdx])) {
-    firstPostFlopIdx = (firstPostFlopIdx + 1) % n;
-  }
-  session.activePlayerIndex = firstPostFlopIdx;
 
   armTurnTimer(sock, jid);
 }
@@ -1140,7 +1305,9 @@ ${resultLines}${catatanBot}
 _Terima kasih telah bermain! Ketik \`.poker [taruhan]\` atau \`.poker vsbot\` untuk ronde baru._`;
 
   // Rotasi Dealer Button untuk ronde berikutnya
-  session.dealerIndex = (session.dealerIndex + 1) % session.players.length;
+  // Simpan posisi button untuk ronde berikutnya. Menulis ke session saja
+  // percuma: objeknya dibuang beberapa baris di bawah.
+  dealerButtonTerakhir.set(jid, (session.dealerIndex + 1) % session.players.length);
 
   await db.finishActiveGameSession(jid, 'COMPLETED');
   activeTexasGames.delete(jid);
@@ -1154,7 +1321,12 @@ _Terima kasih telah bermain! Ketik \`.poker [taruhan]\` atau \`.poker vsbot\` un
  */
 async function finishTexasByFold(sock, jid, winner) {
   const session = activeTexasGames.get(jid);
-  if (!session) return;
+  // Gerbang idempoten + status terminal, disamakan dengan conductTexasShowdown.
+  // Tanpa ini, `.fold` dobel atau `.fold` yang bertabrakan dengan timer 25 detik
+  // membuat fungsi ini jalan dua kali dan pot dikreditkan DUA KALI ke pemenang —
+  // sesi baru dihapus dari Map jauh sesudah tiga await pembayaran.
+  if (!session || session.status !== 'PLAYING') return;
+  session.status = 'SETTLING';
 
   clearSessionTimer(session);
   // Pot sekarang mustahil melebihi total buy-in di meja, tapi chip bot tetap
@@ -1181,7 +1353,9 @@ Semua lawan telah FOLD (menyerah)!
 
 _Ketik \`.poker [taruhan]\` atau \`.poker vsbot\` untuk membuka meja baru._`;
 
-  session.dealerIndex = (session.dealerIndex + 1) % session.players.length;
+  // Simpan posisi button untuk ronde berikutnya. Menulis ke session saja
+  // percuma: objeknya dibuang beberapa baris di bawah.
+  dealerButtonTerakhir.set(jid, (session.dealerIndex + 1) % session.players.length);
   await db.finishActiveGameSession(jid, 'COMPLETED');
   activeTexasGames.delete(jid);
 
