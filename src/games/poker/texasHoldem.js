@@ -3,7 +3,7 @@ import * as db from '../../../database.js';
 import { send } from '../helpers.js';
 import { createDeck, shuffleDeck, formatCards, formatHiddenCards } from './deck.js';
 import { evaluate7Cards, compareScores } from './evaluator.js';
-import { BOT_NAMES, isAiPlayer, decidePreflopAction, decidePostflopAction } from './pokerAi.js';
+import { BOT_NAMES, PERSONA, isAiPlayer, decideAction, waktuBerpikir, celetukUntuk } from './pokerAi.js';
 
 export const activeTexasGames = new Map();
 // Dealer button terakhir per grup. Objek sesi dibuang tiap ronde selesai, jadi
@@ -370,9 +370,17 @@ export async function handleTexasHoldem(sock, jid, senderNumber, messageObj, arg
     pot: 0,
     currentBet: 0,
     lastRaiseDiff: Math.max(10, Math.floor(buyIn * 0.2)),
-    minRaise: Math.max(10, Math.floor(buyIn * 0.2)),
-    smallBlind: Math.max(5, Math.floor(buyIn * 0.1)),
-    bigBlind: Math.max(10, Math.floor(buyIn * 0.2)),
+    // Blind = 1/50 dan 1/25 buy-in, jadi stack awal sekitar 25 big blind.
+    //
+    // Rumus lama (10% dan 20% buy-in) menghasilkan TEPAT 5 big blind untuk
+    // setiap buy-in, dan cuma 2 big blind di buy-in minimum. Pada kedalaman
+    // itu tidak ada poker yang bisa dimainkan: satu taruhan seukuran pot sudah
+    // all-in, sehingga hampir semua ronde berakhir sebagai lempar koin preflop
+    // dan kartu meja cuma dibuka sebagai formalitas. Terukur: FLOP, TURN, dan
+    // RIVER tercapai pada persentase ronde yang PERSIS SAMA — tanda semuanya
+    // datang dari auto-runout all-in, bukan dari ronde taruhan sungguhan.
+    smallBlind: Math.max(1, Math.floor(Math.max(2, Math.round(buyIn / 25)) / 2)),
+    bigBlind: Math.max(2, Math.round(buyIn / 25)),
     dealerIndex: dealerButtonTerakhir.get(jid) || 0,
     sbIndex: 0,
     bbIndex: 0,
@@ -452,9 +460,17 @@ async function startInstantVsBot(sock, jid, senderNumber, messageObj, buyIn, bot
     pot: 0,
     currentBet: 0,
     lastRaiseDiff: Math.max(10, Math.floor(buyIn * 0.2)),
-    minRaise: Math.max(10, Math.floor(buyIn * 0.2)),
-    smallBlind: Math.max(5, Math.floor(buyIn * 0.1)),
-    bigBlind: Math.max(10, Math.floor(buyIn * 0.2)),
+    // Blind = 1/50 dan 1/25 buy-in, jadi stack awal sekitar 25 big blind.
+    //
+    // Rumus lama (10% dan 20% buy-in) menghasilkan TEPAT 5 big blind untuk
+    // setiap buy-in, dan cuma 2 big blind di buy-in minimum. Pada kedalaman
+    // itu tidak ada poker yang bisa dimainkan: satu taruhan seukuran pot sudah
+    // all-in, sehingga hampir semua ronde berakhir sebagai lempar koin preflop
+    // dan kartu meja cuma dibuka sebagai formalitas. Terukur: FLOP, TURN, dan
+    // RIVER tercapai pada persentase ronde yang PERSIS SAMA — tanda semuanya
+    // datang dari auto-runout all-in, bukan dari ronde taruhan sungguhan.
+    smallBlind: Math.max(1, Math.floor(Math.max(2, Math.round(buyIn / 25)) / 2)),
+    bigBlind: Math.max(2, Math.round(buyIn / 25)),
     dealerIndex: dealerButtonTerakhir.get(jid) || 0,
     sbIndex: 0,
     bbIndex: 0,
@@ -471,10 +487,14 @@ async function startInstantVsBot(sock, jid, senderNumber, messageObj, buyIn, bot
     timeout: null
   };
 
+  // Indeks awal diacak. Dulu selalu BOT_NAMES[0], jadi `.poker vsbot` tanpa
+  // argumen SELALU melawan Bot Akbar — pemain tidak pernah bertemu enam
+  // kepribadian lainnya, dan lawan defaultnya selalu itu-itu saja.
+  const mulai = Math.floor(Math.random() * BOT_NAMES.length);
   for (let i = 0; i < botCount && i < BOT_NAMES.length; i++) {
-    const bot = BOT_NAMES[i];
+    const bot = BOT_NAMES[(mulai + i) % BOT_NAMES.length];
     session.players.push(bot.id);
-    session.playerLabels.push(`*${bot.name}*`);
+    session.playerLabels.push(`*${bot.name}* _(${bot.julukan})_`);
     session.playerStacks.set(bot.id, buyIn);
     session.playerBets.set(bot.id, 0);
     session.playerTotalContributed.set(bot.id, 0);
@@ -515,11 +535,11 @@ async function addBotToTexasLobby(sock, jid, senderNumber, messageObj, count = 1
   for (let i = 0; i < num && i < availableBots.length; i++) {
     const bot = availableBots[i];
     session.players.push(bot.id);
-    session.playerLabels.push(`*${bot.name}*`);
+    session.playerLabels.push(`*${bot.name}* _(${bot.julukan})_`);
     session.playerStacks.set(bot.id, session.buyIn);
     session.playerBets.set(bot.id, 0);
     session.playerTotalContributed.set(bot.id, 0);
-    addedBots.push(bot.name);
+    addedBots.push(`${bot.name} — _${bot.gaya}_`);
   }
 
   await send(sock, jid, messageObj, `🤖 Berhasil menambahkan AI Bot: ${addedBots.join(', ')} ke meja!\n👥 Total Pemain (${session.players.length}/${MAX_PLAYERS}): ${session.playerLabels.join(', ')}\n\nKetik \`.poker start\` untuk mulai!`, { mentions: session.players.filter(p => !isAiPlayer(p)) });
@@ -631,6 +651,11 @@ async function startTexasGame(sock, jid, senderNumber, messageObj) {
   session.foldedPlayers = new Set();
   session.allInPlayers = new Set();
   session.actedThisRound = new Set();
+  session.aggressor = null;
+  session.aggressorLalu = null;
+  session.adaRaisePreflop = false;
+  session.aiPending = null;
+  session.celetukPending = null;
 
   // Bagikan 2 kartu hole ke masing-masing pemain
   for (const p of session.players) {
@@ -740,7 +765,23 @@ function armTurnTimer(sock, jid) {
 
   // Giliran AI Bot
   if (isAiPlayer(activeP)) {
-    const thinkDelay = 1500 + Math.floor(Math.random() * 1000);
+    // Keputusan dihitung SEKARANG, sebelum jeda, supaya lama berpikirnya bisa
+    // mengikuti sulitnya keputusan. Dulu semua bot menunggu 1500-2500 ms acak
+    // seragam apa pun yang mereka lakukan — tanda robot paling telanjang di
+    // sistem ini. Manusia melipat sampah dalam sekejap dan menyiksa diri lama
+    // di river.
+    const ctx = bangunKonteksAi(session, activeP);
+    const decision = decideAction(ctx);
+    session.aiPending = { player: activeP, decision, ctx };
+    const gaya = PERSONA[ctx.persona];
+    const banyakBot = session.players.filter(isAiPlayer).length >= 4;
+    const thinkDelay = waktuBerpikir({
+      tipis: decision.action === 'FOLD' ? 0.1 : 0.6,
+      aksi: decision.action,
+      fase: ctx.fase,
+      tempo: gaya ? gaya.tempo : 1,
+      banyakBot
+    });
     session.timeout = setTimeout(async () => {
       const cur = activeTexasGames.get(jid);
       if (!cur || cur !== session) return;
@@ -780,20 +821,96 @@ function armTurnTimer(sock, jid) {
 /**
  * Proses keputusan AI Bot saat gilirannya
  */
+/**
+ * Berapa pemain yang masih akan bicara SESUDAH kita di ronde taruhan ini.
+ *
+ * Ini satu-satunya angka posisi yang dipakai AI, dan otomatis benar untuk meja
+ * 2..8 tanpa cabang khusus. Pembicara terakhir pre-flop adalah BB, post-flop
+ * adalah Dealer Button. Bot lama nol tahu soal posisi, jadi bot di button main
+ * seketat bot di UTG — padahal keduanya menghadapi situasi yang sama sekali
+ * berbeda.
+ */
+function hitungPemainDiBelakang(session, myIdx) {
+  const n = session.players.length;
+  const hidup = i => {
+    const p = session.players[i];
+    return !session.foldedPlayers.has(p) && !session.allInPlayers.has(p);
+  };
+  const akhir = session.roundPhase === 'PREFLOP'
+    ? session.bbIndex
+    : (session.dealerIndex % n);
+  if (myIdx === akhir) return 0;
+  let c = 0;
+  for (let i = 1; i <= n; i++) {
+    const idx = (myIdx + i) % n;
+    if (hidup(idx)) c++;
+    if (idx === akhir) break;
+  }
+  return c;
+}
+
+/**
+ * Rakit semua yang boleh diketahui AI.
+ *
+ * LARANGAN KERAS: jangan pernah memasukkan session.deck atau kartu pemain lain.
+ * Itu curang, dan sekali bocor pemain akan merasakannya lewat call-call mustahil.
+ */
+function bangunKonteksAi(session, botId) {
+  const n = session.players.length;
+  const myIdx = session.players.indexOf(botId);
+  const hidup = session.players.filter(p => !session.foldedPlayers.has(p));
+  const bisaBet = hidup.filter(p => !session.allInPlayers.has(p) && p !== botId);
+  const myStack = session.playerStacks.get(botId) || 0;
+  const lawanMax = bisaBet.reduce((m, p) => Math.max(m, session.playerStacks.get(p) || 0), 0);
+  const playerBet = session.playerBets.get(botId) || 0;
+  const pb = hitungPemainDiBelakang(session, myIdx);
+  const cfg = BOT_NAMES.find(b => b.id === botId);
+  return {
+    persona: (cfg && cfg.persona) || 'PROFESOR',
+    fase: session.roundPhase,
+    hole: session.playerHoleCards.get(botId) || [],
+    board: session.communityCards || [],
+    pot: session.pot,
+    toCall: Math.max(0, session.currentBet - playerBet),
+    minRaise: session.lastRaiseDiff,
+    bigBlind: session.bigBlind,
+    myStack,
+    effStack: Math.min(myStack, lawanMax || myStack),
+    nOpp: Math.max(1, hidup.length - 1),
+    playersBehind: pb,
+    inPosition: pb === 0,
+    isSmallBlind: myIdx === session.sbIndex,
+    adaRaise: session.currentBet > session.bigBlind,
+    adaRaisePreflop: !!session.adaRaisePreflop,
+    akuAgresor: session.aggressorLalu === botId
+  };
+}
+
 async function handleAiTurn(sock, jid, aiPlayer) {
   const session = activeTexasGames.get(jid);
   if (!session || session.status !== 'PLAYING') return;
 
-  const botConfig = BOT_NAMES.find(b => b.id === aiPlayer) || { personality: 'PRO' };
-  const holeCards = session.playerHoleCards.get(aiPlayer) || [];
-  const playerBet = session.playerBets.get(aiPlayer) || 0;
+  // Keputusan biasanya sudah dihitung di armTurnTimer supaya lama berpikirnya
+  // bisa mengikuti sulitnya keputusan. Kalau tidak ada, hitung sekarang.
+  const ctx = (session.aiPending && session.aiPending.player === aiPlayer)
+    ? session.aiPending.ctx
+    : bangunKonteksAi(session, aiPlayer);
+  const decision = (session.aiPending && session.aiPending.player === aiPlayer)
+    ? session.aiPending.decision
+    : decideAction(ctx);
+  session.aiPending = null;
 
-  let decision;
-  if (session.roundPhase === 'PREFLOP') {
-    decision = decidePreflopAction(holeCards, session.currentBet, playerBet, session.pot, session.lastRaiseDiff, botConfig.personality);
-  } else {
-    decision = decidePostflopAction(holeCards, session.communityCards, session.currentBet, playerBet, session.pot, session.lastRaiseDiff, session.roundPhase, botConfig.personality);
-  }
+  // Celetuk disalurkan lewat field session, BUKAN parameter: processBetAction
+  // memanggil dirinya sendiri (CHECK->CALL, RAISE->ALLIN) tanpa meneruskan
+  // argumen tambahan.
+  const gaya = PERSONA[ctx.persona];
+  session.celetukPending = celetukUntuk(
+    ctx.persona,
+    ctx.toCall > ctx.pot * 0.6 ? 'ditekan'
+      : decision.action === 'ALLIN' ? 'shove'
+      : ctx.nOpp >= 3 ? 'ramai' : 'biasa',
+    gaya ? gaya.mulut : 0.2
+  );
 
   await processBetAction(sock, jid, aiPlayer, decision.action, decision.amount);
 }
@@ -857,11 +974,18 @@ async function processBetAction(sock, jid, player, action, amount = 0, messageOb
   const toCall = currentBet - playerBet;
   const mention = isAiPlayer(player) ? [] : [player];
 
+  // Celetuk kepribadian ditempel ke pesan aksi yang SUDAH pasti terkirim, jadi
+  // biayanya nol pesan tambahan. Digerbangi isAiPlayer supaya celetuk sisa
+  // giliran bot tidak pernah menempel ke aksi manusia.
+  const bumbu = (isAiPlayer(player) && session.celetukPending)
+    ? `  _"${session.celetukPending}"_` : '';
+  session.celetukPending = null;
+
   if (action === 'FOLD') {
     // Fold dua kali tidak boleh memicu penyelesaian ronde dua kali.
     if (session.foldedPlayers.has(player)) return true;
     session.foldedPlayers.add(player);
-    await send(sock, jid, messageObj, `🏳️ ${tag(player)} melakukan *FOLD* (menyerah).`, { mentions: mention });
+    await send(sock, jid, messageObj, `🏳️ ${tag(player)} melakukan *FOLD* (menyerah).${bumbu}`, { mentions: mention });
 
     const alive = session.players.filter(p => !session.foldedPlayers.has(p));
     if (alive.length === 1) {
@@ -877,10 +1001,10 @@ async function processBetAction(sock, jid, player, action, amount = 0, messageOb
       armTurnTimer(sock, jid);
       return true;
     }
-    await send(sock, jid, messageObj, `👌 ${tag(player)} melakukan *CHECK*.`, { mentions: mention });
+    await send(sock, jid, messageObj, `👌 ${tag(player)} melakukan *CHECK*.${bumbu}`, { mentions: mention });
   } else if (action === 'CALL') {
     if (toCall <= 0) {
-      await send(sock, jid, messageObj, `👌 ${tag(player)} melakukan *CHECK*.`, { mentions: mention });
+      await send(sock, jid, messageObj, `👌 ${tag(player)} melakukan *CHECK*.${bumbu}`, { mentions: mention });
     } else {
       // commitChips otomatis memotong ke sisa stack: kalau chip tidak cukup
       // untuk menyamai taruhan, pemain jadi all-in dengan sisa chipnya (call
@@ -888,7 +1012,7 @@ async function processBetAction(sock, jid, player, action, amount = 0, messageOb
       const paid = commitChips(session, player, toCall);
       const shortAllIn = paid < toCall;
       const note = shortAllIn ? ` — *ALL-IN* dengan sisa chip!` : '';
-      await send(sock, jid, messageObj, `📞 ${tag(player)} melakukan *CALL* (+${paid} Poin)${note}\n💰 Total Pot: *${session.pot} Poin* | Sisa chip: *${session.playerStacks.get(player) || 0}*`, { mentions: mention });
+      await send(sock, jid, messageObj, `📞 ${tag(player)} melakukan *CALL* (+${paid} Poin)${note}${bumbu}\n💰 Total Pot: *${session.pot} Poin* | Sisa chip: *${session.playerStacks.get(player) || 0}*`, { mentions: mention });
     }
   } else if (action === 'RAISE') {
     const raiseVal = Math.floor(Number(amount));
@@ -920,11 +1044,15 @@ async function processBetAction(sock, jid, player, action, amount = 0, messageOb
     const added = commitChips(session, player, toCall + raiseVal);
     const newBet = session.playerBets.get(player) || 0;
     session.lastRaiseDiff = raiseVal; // Update min-raise delta
+    // Siapa penyerang terakhir di street ini. Dipakai AI untuk memutuskan
+    // continuation bet di street berikutnya.
+    session.aggressor = player;
+    if (session.roundPhase === 'PREFLOP') session.adaRaisePreflop = true;
     session.currentBet = newBet;
     session.actedThisRound.clear();
     session.bbHasOption = false; // Option hilang begitu ada raise
 
-    await send(sock, jid, messageObj, `🔥 ${tag(player)} melakukan *RAISE* sebesar *+${raiseVal} Poin* (setor ${added})! Taruhan sekarang: *${newBet} Poin*.\n💰 Total Pot: *${session.pot} Poin* | Sisa chip: *${session.playerStacks.get(player) || 0}*`, { mentions: mention });
+    await send(sock, jid, messageObj, `🔥 ${tag(player)} melakukan *RAISE* sebesar *+${raiseVal} Poin* (setor ${added})! Taruhan sekarang: *${newBet} Poin*.${bumbu}\n💰 Total Pot: *${session.pot} Poin* | Sisa chip: *${session.playerStacks.get(player) || 0}*`, { mentions: mention });
   } else if (action === 'ALLIN') {
     // ALL-IN = seluruh sisa chip. Rumus lama (currentBet + max(lastRaiseDiff*2, 50))
     // tidak ada hubungannya dengan stack pemain: buy-in 20 bisa "all-in" 60.
@@ -940,12 +1068,14 @@ async function processBetAction(sock, jid, player, action, amount = 0, messageOb
         // All-in yang membuka taruhan baru → ronde taruhan dibuka ulang.
         session.lastRaiseDiff = Math.max(session.bigBlind, newBet - currentBet);
         session.currentBet = newBet;
+        session.aggressor = player;
+        if (session.roundPhase === 'PREFLOP') session.adaRaisePreflop = true;
         session.actedThisRound.clear();
         session.bbHasOption = false;
-        await send(sock, jid, messageObj, `💥 ${tag(player)} menyatakan *ALL-IN* dengan *${added} Poin*! Taruhan naik jadi *${newBet} Poin*.\n💰 Total Pot: *${session.pot} Poin*.`, { mentions: mention });
+        await send(sock, jid, messageObj, `💥 ${tag(player)} menyatakan *ALL-IN* dengan *${added} Poin*! Taruhan naik jadi *${newBet} Poin*.${bumbu}\n💰 Total Pot: *${session.pot} Poin*.`, { mentions: mention });
       } else {
         // All-in pendek: tidak menyamai taruhan, jadi tidak membuka ronde baru.
-        await send(sock, jid, messageObj, `💥 ${tag(player)} *ALL-IN pendek* dengan sisa *${added} Poin* (di bawah taruhan ${currentBet}).\n💰 Total Pot: *${session.pot} Poin* — sisanya masuk side pot.`, { mentions: mention });
+        await send(sock, jid, messageObj, `💥 ${tag(player)} *ALL-IN pendek* dengan sisa *${added} Poin* (di bawah taruhan ${currentBet}).${bumbu}\n💰 Total Pot: *${session.pot} Poin* — sisanya masuk side pot.`, { mentions: mention });
       }
     }
   }
@@ -1051,8 +1181,13 @@ _Kamu berhak \`.check\` (gratis lanjut ke Flop) atau \`.raise <nominal>\`! (Wakt
 🎟️ *Sisa chipmu:* *${stackNext} Poin* (raise maksimal +${Math.max(0, stackNext - toCall)})
 _Ketik \`.check\`, \`.call\`, \`.raise <nominal>\`, \`.allin\`, atau \`.fold\` (Waktu: ${TURN_TIMEOUT_MS / 1000}s)_`;
 
-  const mention = isAiPlayer(nextPlayer) ? [] : [nextPlayer];
-  await send(sock, jid, null, turnMsg, { mentions: mention });
+  // Bot tidak perlu disuruh mengetik `.call`. Di meja `vsbot` hampir semua
+  // giliran adalah giliran bot, jadi pesan ini murni derau — dan ruang yang
+  // dihematnya persis yang dibutuhkan sekarang setelah bot jauh lebih sering
+  // ikut main (aksi per ronde naik banyak).
+  if (!isAiPlayer(nextPlayer)) {
+    await send(sock, jid, null, turnMsg, { mentions: [nextPlayer] });
+  }
   armTurnTimer(sock, jid);
 }
 
@@ -1062,6 +1197,12 @@ _Ketik \`.check\`, \`.call\`, \`.raise <nominal>\`, \`.allin\`, atau \`.fold\` (
 async function nextStreetPhase(sock, jid) {
   const session = activeTexasGames.get(jid);
   if (!session || session.status !== 'PLAYING') return;
+
+  // Agresor street yang baru saja tutup jadi "agresor lalu" — itu yang berhak
+  // melakukan continuation bet. Kalau reset ini salah, bot akan c-bet setelah
+  // MEMANGGIL taruhan orang lain dan engine tidak akan mengeluh.
+  session.aggressorLalu = session.aggressor;
+  session.aggressor = null;
 
   session.actedThisRound.clear();
   session.currentBet = 0;
