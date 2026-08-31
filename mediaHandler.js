@@ -356,6 +356,37 @@ function bacaWadahMedia(buffer) {
   return null;
 }
 
+/** Playlist HLS (.m3u8) / manifes DASH (.mpd) — daftar segmen, bukan berkasnya. */
+function adalahManifest(u) {
+  return typeof u === 'string' && /\.(m3u8|mpd)(\?|$)/i.test(u);
+}
+
+/**
+ * Pilih URL berkas LANGSUNG dari hasil dump-json yt-dlp.
+ *
+ * Versi lama mengambil `formats[formats.length - 1].url` — format TERAKHIR dalam
+ * daftar. Di X/Twitter daftar itu berakhir di varian HLS: yang terunduh cuma
+ * berkas teks 2 KB berisi daftar segmen, lalu dikirim sebagai .mp4. Persis
+ * penyebab ".x" menghasilkan video rusak, padahal format progresif (http-2176,
+ * 720p) ada di daftar yang sama.
+ */
+function pilihUrlLangsung(entry) {
+  if (!entry) return null;
+  const formats = Array.isArray(entry.formats) ? entry.formats : [];
+  const langsung = formats.filter(f =>
+    f && f.url &&
+    !adalahManifest(f.url) &&
+    /^https?$/i.test(String(f.protocol || 'https')) &&
+    f.vcodec !== 'none' &&
+    f.acodec !== 'none'
+  );
+  const nilai = (f) => (f.height || 0) * 100000 + (f.tbr || f.abr || 0);
+  const terbaik = langsung.sort((a, b) => nilai(b) - nilai(a))[0];
+  if (terbaik) return terbaik.url;
+  if (entry.url && !adalahManifest(entry.url)) return entry.url;
+  return null;
+}
+
 /** { wadah, kategori, mimetype, ext } atau null kalau isinya bukan media. */
 function deteksiJenisMedia(buffer) {
   const wadah = bacaWadahMedia(buffer);
@@ -1011,7 +1042,7 @@ export async function downloadInstagram(url) {
         const mediaList = [];
         for (const e of data.entries) {
           const isVideo = e.ext === 'mp4' || (e.vcodec && e.vcodec !== 'none');
-          const itemUrl = e.url || e.formats?.[e.formats.length - 1]?.url || e.thumbnails?.[e.thumbnails.length - 1]?.url;
+          const itemUrl = pilihUrlLangsung(e) || e.thumbnails?.[e.thumbnails.length - 1]?.url;
           if (itemUrl) {
             mediaList.push({ type: isVideo ? 'video' : 'image', url: itemUrl });
           }
@@ -1021,7 +1052,7 @@ export async function downloadInstagram(url) {
         }
       } else if (data.url || data.thumbnails?.length > 0) {
         const isVideo = data.ext === 'mp4' || (data.vcodec && data.vcodec !== 'none') || (data.duration && data.duration > 0);
-        const itemUrl = isVideo ? (data.url || data.formats?.[data.formats.length - 1]?.url) : (data.url || data.thumbnails?.[data.thumbnails.length - 1]?.url);
+        const itemUrl = isVideo ? pilihUrlLangsung(data) : (data.url || data.thumbnails?.[data.thumbnails.length - 1]?.url);
         if (itemUrl) {
           return {
             success: true,
@@ -1293,7 +1324,7 @@ export async function downloadFacebook(url) {
         const mediaList = [];
         for (const e of data.entries) {
           const isVideo = e.ext === 'mp4' || (e.vcodec && e.vcodec !== 'none');
-          const itemUrl = e.url || e.formats?.[e.formats.length - 1]?.url || e.thumbnails?.[e.thumbnails.length - 1]?.url;
+          const itemUrl = pilihUrlLangsung(e) || e.thumbnails?.[e.thumbnails.length - 1]?.url;
           if (itemUrl) mediaList.push({ type: isVideo ? 'video' : 'image', url: itemUrl });
         }
         if (mediaList.length > 0) {
@@ -1301,7 +1332,7 @@ export async function downloadFacebook(url) {
         }
       } else if (data.url || data.thumbnails?.length > 0) {
         const isVideo = data.ext === 'mp4' || (data.vcodec && data.vcodec !== 'none');
-        const itemUrl = isVideo ? (data.url || data.formats?.[data.formats.length - 1]?.url) : (data.url || data.thumbnails?.[data.thumbnails.length - 1]?.url);
+        const itemUrl = isVideo ? pilihUrlLangsung(data) : (data.url || data.thumbnails?.[data.thumbnails.length - 1]?.url);
         if (itemUrl) {
           return {
             success: true,
@@ -1434,7 +1465,7 @@ export async function downloadTwitter(url) {
     const data = await extractWithYtdlpJson(url);
     if (data) {
       const isVideo = data.ext === 'mp4' || (data.vcodec && data.vcodec !== 'none');
-      const itemUrl = isVideo ? (data.url || data.formats?.[data.formats.length - 1]?.url) : (data.url || data.thumbnails?.[data.thumbnails.length - 1]?.url);
+      const itemUrl = isVideo ? pilihUrlLangsung(data) : (data.url || data.thumbnails?.[data.thumbnails.length - 1]?.url);
       if (itemUrl) {
         const buf = await fetchBuffer(itemUrl);
         return {
@@ -1450,7 +1481,26 @@ export async function downloadTwitter(url) {
     }
   } catch (e) {}
 
-  // Method 2: Third-party API fallback
+  // Method 2: unduh sungguhan lewat yt-dlp.
+  // Sebagian tweet hanya menyediakan HLS; yt-dlp yang menggabungkan segmennya
+  // jadi satu MP4 utuh. Tanpa langkah ini playlist-nya yang terkirim.
+  try {
+    const hasil = await downloadWithYtdlp(url, false);
+    if (hasil?.terlaluBesar) return { success: false, message: hasil.message };
+    if (hasil?.buffer) {
+      return {
+        success: true,
+        media: [{ type: 'video', buffer: hasil.buffer }],
+        buffer: hasil.buffer,
+        title: hasil.title || 'Twitter / X Media',
+        type: 'video'
+      };
+    }
+  } catch (err) {
+    console.log('[MEDIA_HANDLER] Twitter yt-dlp download failed:', err.message);
+  }
+
+  // Method 3: Third-party API fallback
   try {
     const apiRes = await axios.get(`https://api.siputzx.my.id/api/d/twitter?url=${encodeURIComponent(url)}`, { timeout: 15000 });
     if (apiRes.data && apiRes.data.status && apiRes.data.data) {
@@ -1489,7 +1539,7 @@ export async function downloadPinterest(url) {
     const data = await extractWithYtdlpJson(url);
     if (data) {
       const isVideo = data.ext === 'mp4' || (data.vcodec && data.vcodec !== 'none');
-      const itemUrl = isVideo ? (data.url || data.formats?.[data.formats.length - 1]?.url) : (data.url || data.thumbnails?.[data.thumbnails.length - 1]?.url);
+      const itemUrl = isVideo ? pilihUrlLangsung(data) : (data.url || data.thumbnails?.[data.thumbnails.length - 1]?.url);
       if (itemUrl) {
         const buf = await fetchBuffer(itemUrl);
         return {
