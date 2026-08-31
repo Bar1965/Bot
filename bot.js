@@ -1020,6 +1020,13 @@ export async function startBot(onSocketReady) {
         console.warn('[STARTUP ANNOUNCE] Tidak dijalankan:', annErr.message);
       }
 
+      // Pemulihan & Auto-Refund game jika bot sempat restart/mati mendadak
+      try {
+        await db.recoverAndRefundStaleGameSessions(sock);
+      } catch (recErr) {
+        console.warn('[CRASH_RECOVERY] Error pemulihan game:', recErr.message);
+      }
+
       if (onSocketReady) {
         onSocketReady(sock);
       }
@@ -1370,9 +1377,12 @@ export async function startBot(onSocketReady) {
       const itemsToSend = mediaList.slice(0, 10);
       const totalItems = itemsToSend.length;
 
+      let terkirim = 0;
+      const gagal = [];
+
       for (let i = 0; i < totalItems; i++) {
         const item = itemsToSend[i];
-        const isFirst = i === 0;
+        const isFirst = terkirim === 0;
         const countInfo = totalItems > 1 ? ` 📸 [${i + 1}/${totalItems}]` : '';
         
         let caption = undefined;
@@ -1384,22 +1394,45 @@ export async function startBot(onSocketReady) {
           caption = `📸 *${defaultTitle}*${countInfo}`;
         }
 
-        let mediaPayload = null;
-        if (item.buffer) {
-          mediaPayload = item.buffer;
-        } else if (item.url) {
-          const fetchedBuf = await mediaHandler.fetchBuffer(item.url);
-          mediaPayload = fetchedBuf || { url: item.url };
+        // Semua media disaring lewat gerbang siapkanMediaWA: isi berkas yang
+        // menentukan cara kirim, bukan tebakan dari ekstensi URL, dan halaman
+        // galat CDN tidak pernah lolos jadi "video" yang tidak bisa dibuka.
+        const siap = await mediaHandler.siapkanMediaWA(item);
+        if (!siap || !siap.ok) {
+          gagal.push(siap);
+          continue;
         }
 
-        if (!mediaPayload) continue;
-
-        const isImage = item.type === 'image' || (!item.type && !item.url?.includes('.mp4'));
-        if (isImage) {
-          await sock.sendMessage(jid, { image: mediaPayload, caption }, { quoted: isFirst ? m : undefined });
+        const kutip = terkirim === 0 ? { quoted: m } : {};
+        if (siap.kategori === 'image') {
+          await sock.sendMessage(jid, { image: siap.buffer, mimetype: siap.mimetype, caption }, kutip);
+        } else if (siap.kategori === 'audio') {
+          await sock.sendMessage(jid, { audio: siap.buffer, mimetype: siap.mimetype, fileName: `${defaultTitle}.${siap.ext}` }, kutip);
         } else {
-          await sock.sendMessage(jid, { video: mediaPayload, mimetype: 'video/mp4', caption }, { quoted: isFirst ? m : undefined });
+          await sock.sendMessage(jid, {
+            video: siap.buffer,
+            mimetype: 'video/mp4',
+            gifPlayback: siap.gifPlayback || undefined,
+            caption
+          }, kutip);
         }
+        terkirim++;
+      }
+
+      // Dulu bot selalu bereaksi ✅ walau tidak satu pun berkas benar-benar
+      // terkirim — pengguna mengira berhasil lalu menerima berkas rusak.
+      if (terkirim === 0) {
+        await react('❌');
+        await sock.sendMessage(jid, {
+          text: mediaHandler.pesanGagalMedia(gagal[0], defaultTitle)
+        }, { quoted: m });
+        return false;
+      }
+
+      if (gagal.length > 0) {
+        await sock.sendMessage(jid, {
+          text: `⚠️ ${gagal.length} dari ${totalItems} berkas dilewati karena tidak valid / gagal disiapkan.`
+        });
       }
 
       await react('✅');
@@ -1457,18 +1490,19 @@ export async function startBot(onSocketReady) {
       await react('⏳');
       if (isAudio) {
         const res = await mediaHandler.downloadTikTokAudio(url);
-        if (res.success && (res.buffer || res.audioUrl)) {
+        // Mimetype mengikuti ISI berkas, bukan tebakan: menandai data MP3 sebagai
+        // `audio/mp4` membuat WhatsApp (terutama iOS) menolak memutarnya.
+        const siap = res.success ? await mediaHandler.siapkanMediaWA({ buffer: res.buffer, url: res.audioUrl, type: 'audio' }) : null;
+        if (siap?.ok) {
           await sock.sendMessage(jid, {
-            audio: res.buffer || { url: res.audioUrl },
-            // Ikuti wadah asli berkasnya. Menandai data MP3 sebagai `audio/mp4`
-            // membuat WhatsApp (terutama iOS) menolak memutarnya.
-            mimetype: res.mimetype || 'audio/mpeg',
-            fileName: `TikTok_Audio.${res.ext || 'mp3'}`
+            audio: siap.buffer,
+            mimetype: siap.mimetype,
+            fileName: `TikTok_Audio.${siap.ext}`
           });
           await react('✅');
         } else {
           await react('❌');
-          await sock.sendMessage(jid, { text: `❌ ${res.message || 'Gagal mengambil audio TikTok.'}` });
+          await sock.sendMessage(jid, { text: res.success ? mediaHandler.pesanGagalMedia(siap, 'Audio TikTok') : `❌ ${res.message || 'Gagal mengambil audio TikTok.'}` });
         }
       } else {
         const res = await mediaHandler.downloadTikTok(url);
@@ -1502,32 +1536,36 @@ export async function startBot(onSocketReady) {
       await react('⏳');
       if (isAudio) {
         const res = await mediaHandler.downloadYouTubeAudio(url);
-        if (res.success && (res.buffer || res.audioUrl)) {
+        const siap = res.success ? await mediaHandler.siapkanMediaWA({ buffer: res.buffer, url: res.audioUrl, type: 'audio' }) : null;
+        if (siap?.ok) {
           const cleanTitle = (res.title || 'YouTube Audio').replace(/[/\\?%*:|"<>]/g, '');
           await sock.sendMessage(jid, {
-            audio: res.buffer || { url: res.audioUrl },
-            mimetype: res.mimetype || 'audio/mpeg',
-            fileName: `${cleanTitle}.${res.ext || 'mp3'}`
+            audio: siap.buffer,
+            mimetype: siap.mimetype,
+            fileName: `${cleanTitle}.${siap.ext}`
           });
           await react('✅');
         } else {
           await react('❌');
-          await sock.sendMessage(jid, { text: `❌ ${res.message || 'Gagal mengunduh audio YouTube.'}` });
+          await sock.sendMessage(jid, { text: res.success ? mediaHandler.pesanGagalMedia(siap, 'Audio YouTube') : `❌ ${res.message || 'Gagal mengunduh audio YouTube.'}` });
         }
       } else {
         const res = await mediaHandler.downloadYouTube(url);
-        if (res.success && (res.buffer || res.videoUrl)) {
+        // Verifikasi terakhir sebelum kirim: wadah MP4 + codec H.264/AAC. Berkas
+        // AV1/VP9/Opus tetap "terunduh" di penerima tapi tidak bisa dibuka.
+        const siap = res.success ? await mediaHandler.siapkanMediaWA({ buffer: res.buffer, url: res.videoUrl, type: 'video' }) : null;
+        if (siap?.ok) {
           const cleanTitle = (res.title || 'YouTube Video').replace(/[/\\?%*:|"<>]/g, '');
           await sock.sendMessage(jid, {
-            video: res.buffer || { url: res.videoUrl },
-            mimetype: res.mimetype || 'video/mp4',
+            video: siap.buffer,
+            mimetype: 'video/mp4',
             fileName: `${cleanTitle}.mp4`,
             caption: `🎬 *${res.title || 'YouTube Video'}*\n\n✅ *Berhasil diunduh via Akbar Store Bot*`
           });
           await react('✅');
         } else {
           await react('❌');
-          await sock.sendMessage(jid, { text: `❌ ${res.message || 'Gagal mengunduh video YouTube.'}` });
+          await sock.sendMessage(jid, { text: res.success ? mediaHandler.pesanGagalMedia(siap, 'Video YouTube') : `❌ ${res.message || 'Gagal mengunduh video YouTube.'}` });
         }
       }
       return true;
@@ -3398,12 +3436,14 @@ _Kuota berganti tengah malam WIB. Ketik *.premium* untuk jatah lebih besar._`,
                     const it = items[i];
                     const countInfo = items.length > 1 ? ` [${i + 1}/${items.length}]` : '';
                     const caption = i === 0 ? `✨ *AUTO-DOWNLOAD TIKTOK* ⚡\n\n📌 *Judul:* ${res.title || 'TikTok Media'}${res.author ? `\n👤 *Creator:* ${res.author}` : ''}\n✅ *Diproses via Akbar Store Bot*${countInfo}` : `📸 *TikTok Media*${countInfo}`;
-                    const payload = it.buffer || (it.url ? (await mediaHandler.fetchBuffer(it.url)) || { url: it.url } : null);
-                    if (!payload) continue;
-                    if (it.type === 'image' || (!it.type && !it.url?.includes('.mp4'))) {
-                      await sock.sendMessage(jid, { image: payload, caption }, { quoted: i === 0 ? m : undefined });
+                    const siap = await mediaHandler.siapkanMediaWA(it);
+                    if (!siap?.ok) continue;
+                    if (siap.kategori === 'image') {
+                      await sock.sendMessage(jid, { image: siap.buffer, mimetype: siap.mimetype, caption }, { quoted: i === 0 ? m : undefined });
+                    } else if (siap.kategori === 'audio') {
+                      await sock.sendMessage(jid, { audio: siap.buffer, mimetype: siap.mimetype }, { quoted: i === 0 ? m : undefined });
                     } else {
-                      await sock.sendMessage(jid, { video: payload, caption }, { quoted: i === 0 ? m : undefined });
+                      await sock.sendMessage(jid, { video: siap.buffer, mimetype: 'video/mp4', gifPlayback: siap.gifPlayback || undefined, caption }, { quoted: i === 0 ? m : undefined });
                     }
                   }
                   await sock.sendMessage(jid, { react: { text: '✅', key: m.key } });
@@ -3426,12 +3466,14 @@ _Kuota berganti tengah malam WIB. Ketik *.premium* untuk jatah lebih besar._`,
                     const it = items[i];
                     const countInfo = items.length > 1 ? ` [${i + 1}/${items.length}]` : '';
                     const caption = i === 0 ? `✨ *AUTO-DOWNLOAD INSTAGRAM* ⚡\n\n📌 *Judul:* ${res.title || 'Instagram Media'}\n✅ *Diproses via Akbar Store Bot*${countInfo}` : `📸 *Instagram Media*${countInfo}`;
-                    const payload = it.buffer || (it.url ? (await mediaHandler.fetchBuffer(it.url)) || { url: it.url } : null);
-                    if (!payload) continue;
-                    if (it.type === 'image' || (!it.type && !it.url?.includes('.mp4'))) {
-                      await sock.sendMessage(jid, { image: payload, caption }, { quoted: i === 0 ? m : undefined });
+                    const siap = await mediaHandler.siapkanMediaWA(it);
+                    if (!siap?.ok) continue;
+                    if (siap.kategori === 'image') {
+                      await sock.sendMessage(jid, { image: siap.buffer, mimetype: siap.mimetype, caption }, { quoted: i === 0 ? m : undefined });
+                    } else if (siap.kategori === 'audio') {
+                      await sock.sendMessage(jid, { audio: siap.buffer, mimetype: siap.mimetype }, { quoted: i === 0 ? m : undefined });
                     } else {
-                      await sock.sendMessage(jid, { video: payload, caption }, { quoted: i === 0 ? m : undefined });
+                      await sock.sendMessage(jid, { video: siap.buffer, mimetype: 'video/mp4', gifPlayback: siap.gifPlayback || undefined, caption }, { quoted: i === 0 ? m : undefined });
                     }
                   }
                   await sock.sendMessage(jid, { react: { text: '✅', key: m.key } });

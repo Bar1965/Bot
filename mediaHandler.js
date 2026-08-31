@@ -137,13 +137,50 @@ async function runPythonProc(args, timeout = 45000) {
 /** Batas keras satu berkas yang boleh ditarik ke memori (byte). */
 export const BATAS_UNDUH_BYTE = 50 * 1024 * 1024;
 
-export async function fetchBuffer(url) {
-  if (!url) return null;
+export async function fetchBuffer(url, opsi = {}) {
+  const hasil = await fetchMediaTervalidasi(url, opsi);
+  return hasil ? hasil.buffer : null;
+}
+
+/**
+ * Referer yang cocok per-CDN.
+ *
+ * pinimg, twimg, cdninstagram, dan tiktokcdn membalas HALAMAN HTML — bukan galat
+ * HTTP — kalau Referer-nya asing. Dengan Referer google lama, isi balasan itu
+ * tetap berstatus 200 dan panjangnya jauh di atas 3 KB.
+ */
+function refererUntuk(url) {
+  try {
+    const host = new URL(url).hostname;
+    if (host.includes('pinimg')) return 'https://www.pinterest.com/';
+    if (host.includes('cdninstagram')) return 'https://www.instagram.com/';
+    if (host.includes('fbcdn')) return 'https://www.facebook.com/';
+    if (host.includes('tiktok')) return 'https://www.tiktok.com/';
+    if (host.includes('twimg')) return 'https://twitter.com/';
+    if (host.includes('googlevideo') || host.includes('ytimg')) return 'https://www.youtube.com/';
+    return 'https://www.google.com/';
+  } catch {
+    return 'https://www.google.com/';
+  }
+}
+
+/**
+ * Unduh SEKALIGUS pastikan yang terunduh memang berkas media.
+ *
+ * INI AKAR MASALAH "sudah terunduh tapi tidak bisa dibuka / tidak valid":
+ * versi lama meloloskan apa pun yang panjangnya > 3000 byte. Halaman login
+ * Instagram, halaman "video unavailable" TikTok, dan JSON galat dari API pihak
+ * ketiga semuanya lolos, lalu diunggah ke WhatsApp sebagai video/foto. WhatsApp
+ * tidak memeriksa isi — penerima mengunduh berkas HTML bernama .mp4 dan
+ * pemutarnya bilang berkasnya rusak.
+ */
+export async function fetchMediaTervalidasi(url, opsi = {}) {
+  if (!url || typeof url !== 'string' || !/^https?:\/\//i.test(url)) return null;
   try {
     const res = await axios.get(url, {
       httpsAgent,
       responseType: 'arraybuffer',
-      timeout: 30000,
+      timeout: opsi.timeout || 60000,
       maxRedirects: 10,
       // `arraybuffer` menarik SELURUH isi respons ke memori. Tanpa dua batas ini
       // satu tautan ke berkas besar cukup untuk membengkakkan proses yang sama
@@ -157,17 +194,29 @@ export async function fetchBuffer(url) {
         'User-Agent': getRandomUserAgent(),
         'Accept': '*/*',
         'Accept-Language': 'en-US,en;q=0.9,id;q=0.8',
-        'Referer': 'https://www.google.com/'
+        'Referer': opsi.referer || refererUntuk(url)
       }
     });
-    if (res.data) {
-      const buf = Buffer.from(res.data);
-      if (buf.length > 3000) return buf;
+
+    const buf = res.data ? Buffer.from(res.data) : null;
+    if (!buf || buf.length < 1024) return null;
+
+    const contentType = String(res.headers?.['content-type'] || '').toLowerCase();
+    if (/text\/html|application\/json|text\/plain|application\/xml/.test(contentType)) {
+      console.log('[MEDIA_HANDLER] Ditolak: server membalas', contentType, '(bukan media) —', url.slice(0, 90));
+      return null;
     }
+
+    const jenis = deteksiJenisMedia(buf);
+    if (!jenis) {
+      console.log('[MEDIA_HANDLER] Ditolak: isi berkas bukan media yang dikenali —', url.slice(0, 90));
+      return null;
+    }
+    return { buffer: buf, jenis };
   } catch (err) {
     console.log('[MEDIA_HANDLER] fetchBuffer error:', err.message);
+    return null;
   }
-  return null;
 }
 
 /**
@@ -252,36 +301,320 @@ function bersihkanSisaUnduhan(tmpDir, prefix) {
 }
 
 /**
- * Bungkus ulang berkas ke MP4 H.264/AAC. Coba remux (-c copy, instan) dulu;
- * hanya transcode kalau codec-nya memang tidak didukung wadah MP4.
+ * Tabel jenis media berdasarkan tanda tangan byte (magic number).
+ * Isi berkaslah yang menentukan cara mengirim — BUKAN ekstensi di URL. URL CDN
+ * Instagram/Facebook untuk video sering tidak mengandung ".mp4" sama sekali,
+ * jadi tebakan lama `url.includes('.mp4')` mengirim video sebagai foto (dan
+ * sebaliknya) — penerima dapat "foto" yang tidak bisa dibuka.
  */
-async function remuxKeMp4(inputPath) {
+const PROFIL_MEDIA = {
+  jpg:  { kategori: 'image', mimetype: 'image/jpeg', ext: 'jpg' },
+  png:  { kategori: 'image', mimetype: 'image/png', ext: 'png' },
+  gif:  { kategori: 'image', mimetype: 'image/gif', ext: 'gif' },
+  webp: { kategori: 'image', mimetype: 'image/webp', ext: 'webp' },
+  bmp:  { kategori: 'image', mimetype: 'image/bmp', ext: 'bmp' },
+  heic: { kategori: 'image', mimetype: 'image/heic', ext: 'heic' },
+  mp4:  { kategori: 'video', mimetype: 'video/mp4', ext: 'mp4' },
+  webm: { kategori: 'video', mimetype: 'video/webm', ext: 'webm' },
+  avi:  { kategori: 'video', mimetype: 'video/x-msvideo', ext: 'avi' },
+  flv:  { kategori: 'video', mimetype: 'video/x-flv', ext: 'flv' },
+  mp3:  { kategori: 'audio', mimetype: 'audio/mpeg', ext: 'mp3' },
+  m4a:  { kategori: 'audio', mimetype: 'audio/mp4', ext: 'm4a' },
+  ogg:  { kategori: 'audio', mimetype: 'audio/ogg', ext: 'ogg' },
+  wav:  { kategori: 'audio', mimetype: 'audio/wav', ext: 'wav' },
+  flac: { kategori: 'audio', mimetype: 'audio/flac', ext: 'flac' }
+};
+
+/** Baca wadah berkas dari byte awal. null = bukan media (HTML, JSON, sampah). */
+function bacaWadahMedia(buffer) {
+  if (!buffer || buffer.length < 16) return null;
+  const s = (a, b) => buffer.slice(a, b).toString('latin1');
+
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return 'jpg';
+  if (s(1, 4) === 'PNG') return 'png';
+  if (s(0, 3) === 'GIF') return 'gif';
+  if (s(0, 4) === 'RIFF') {
+    const sub = s(8, 12);
+    if (sub === 'WEBP') return 'webp';
+    if (sub === 'WAVE') return 'wav';
+    if (sub === 'AVI ') return 'avi';
+    return null;
+  }
+  if (s(0, 2) === 'BM' && buffer.length > 54) return 'bmp';
+  if (s(4, 8) === 'ftyp') {
+    const brand = s(8, 12);
+    if (brand.startsWith('M4A') || brand.startsWith('M4B')) return 'm4a';
+    if (['heic', 'heix', 'hevc', 'mif1', 'msf1'].includes(brand)) return 'heic';
+    return 'mp4';
+  }
+  if (buffer.readUInt32BE(0) === 0x1a45dfa3) return 'webm';
+  if (s(0, 4) === 'OggS') return 'ogg';
+  if (s(0, 4) === 'fLaC') return 'flac';
+  if (s(0, 3) === 'FLV') return 'flv';
+  if (s(0, 3) === 'ID3') return 'mp3';
+  if (buffer[0] === 0xff && (buffer[1] & 0xe0) === 0xe0) return 'mp3';
+  return null;
+}
+
+/** { wadah, kategori, mimetype, ext } atau null kalau isinya bukan media. */
+function deteksiJenisMedia(buffer) {
+  const wadah = bacaWadahMedia(buffer);
+  if (!wadah || !PROFIL_MEDIA[wadah]) return null;
+  return { wadah, ...PROFIL_MEDIA[wadah] };
+}
+
+/** Jalankan ffmpeg sekali; true kalau exit code 0. */
+function jalankanFfmpeg(args, timeout = 240000) {
+  return new Promise((resolve) => {
+    let proc;
+    try {
+      proc = spawn(ffmpegInstaller.path, args, { timeout, windowsHide: true });
+    } catch {
+      resolve(false);
+      return;
+    }
+    proc.stdout?.on('data', () => {});
+    proc.stderr?.on('data', () => {});
+    proc.on('close', (code) => resolve(code === 0));
+    proc.on('error', () => resolve(false));
+  });
+}
+
+/**
+ * Baca codec berkas lewat `ffmpeg -i` tanpa keluaran (cepat, tidak men-decode).
+ * ffmpeg memang keluar dengan kode bukan 0 di sini — info stream tetap tercetak.
+ *
+ * Wadah .mp4 SAJA tidak cukup: YouTube dan sebagian CDN menaruh AV1/VP9/Opus di
+ * dalam wadah .mp4, dan WhatsApp tidak bisa memutarnya. Berkasnya terunduh utuh
+ * tapi penerima melihatnya sebagai berkas rusak.
+ */
+async function probeCodecMedia(filePath) {
+  const stderr = await new Promise((resolve) => {
+    let teks = '';
+    let proc;
+    try {
+      proc = spawn(ffmpegInstaller.path, ['-hide_banner', '-i', filePath], { timeout: 30000, windowsHide: true });
+    } catch {
+      resolve(null);
+      return;
+    }
+    proc.stderr?.on('data', (d) => { teks += d.toString(); });
+    proc.on('close', () => resolve(teks));
+    proc.on('error', () => resolve(null));
+  });
+  if (!stderr) return null;
+
+  const baris = stderr.split(/\r?\n/);
+  // "attached pic" = sampul album di dalam berkas audio, bukan trek video.
+  const barisVideo = baris.find(l => / Video: /.test(l) && !/attached pic/i.test(l));
+  const barisAudio = baris.find(l => / Audio: /.test(l));
+  const v = barisVideo && barisVideo.match(/ Video: ([A-Za-z0-9_]+)/);
+  const a = barisAudio && barisAudio.match(/ Audio: ([A-Za-z0-9_]+)/);
+  if (!v && !a) return null;
+  return { vcodec: v ? v[1].toLowerCase() : null, acodec: a ? a[1].toLowerCase() : null };
+}
+
+/**
+ * Bungkus ulang berkas ke MP4 H.264/AAC.
+ *
+ * Kalau codec-nya sudah diketahui (`kodek`), hanya trek yang bermasalah yang
+ * disandi ulang — trek yang sudah ramah WhatsApp cukup disalin. `-c copy` buta
+ * seperti versi lama justru berbahaya: Opus/AV1 disalin apa adanya ke dalam MP4,
+ * wadahnya benar tapi isinya tetap tidak bisa diputar.
+ */
+async function remuxKeMp4(inputPath, kodek = null) {
   const outputPath = `${inputPath}.wa.mp4`;
   const dasar = ['-y', '-i', inputPath, '-movflags', '+faststart'];
+  const sandiVideo = ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-pix_fmt', 'yuv420p', '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2'];
 
-  const percobaan = [
-    [...dasar, '-c', 'copy', outputPath],
-    [...dasar, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '128k', outputPath]
-  ];
+  const percobaan = [];
+  if (kodek && (kodek.vcodec || kodek.acodec)) {
+    const v = kodek.vcodec === 'h264' ? ['-c:v', 'copy'] : sandiVideo;
+    const a = !kodek.acodec ? ['-an'] : (kodek.acodec === 'aac' ? ['-c:a', 'copy'] : ['-c:a', 'aac', '-b:a', '128k']);
+    percobaan.push([...dasar, ...v, ...a, outputPath]);
+  } else {
+    percobaan.push([...dasar, '-c', 'copy', outputPath]);
+  }
+  percobaan.push([...dasar, ...sandiVideo, '-c:a', 'aac', '-b:a', '128k', outputPath]);
 
   for (const args of percobaan) {
     try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch {}
-    const res = await new Promise((resolve) => {
-      let proc;
-      try {
-        proc = spawn(ffmpegInstaller.path, args, { timeout: 240000, windowsHide: true });
-      } catch { resolve(null); return; }
-      proc.stderr?.on('data', () => {});
-      proc.on('close', (code) => resolve({ code }));
-      proc.on('error', () => resolve(null));
-    });
-
-    if (res && res.code === 0 && fs.existsSync(outputPath) && fs.statSync(outputPath).size > 5000) {
+    const ok = await jalankanFfmpeg(args);
+    if (ok && fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1024) {
       return outputPath;
     }
   }
   try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch {}
   return null;
+}
+
+/** Pastikan buffer video benar-benar MP4 H.264/AAC yang bisa diputar WhatsApp. */
+async function siapkanVideoMp4(buffer, extAwal = 'mp4') {
+  const tmpDir = path.join(process.cwd(), 'tmp');
+  if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+  const prefix = `wa_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+  const inputPath = path.join(tmpDir, `${prefix}.${extAwal}`);
+
+  try {
+    fs.writeFileSync(inputPath, buffer);
+    const kodek = await probeCodecMedia(inputPath);
+    const terbaca = Boolean(kodek && (kodek.vcodec || kodek.acodec));
+
+    // Ada trek audio tapi tidak ada trek video: ini berkas audio yang salah
+    // dikira video. Mengirimnya sebagai video menghasilkan pesan video kosong.
+    if (terbaca && !kodek.vcodec) return { alasan: 'isi-audio' };
+
+    const wadahOk = extAwal === 'mp4';
+    const videoOk = !terbaca || kodek.vcodec === 'h264';
+    const audioOk = !terbaca || !kodek.acodec || kodek.acodec === 'aac';
+    if (wadahOk && videoOk && audioOk) return { buffer };
+
+    console.log(`[MEDIA_WA] Bungkus ulang ke MP4 H.264/AAC (wadah=${extAwal}, v=${kodek?.vcodec || '?'}, a=${kodek?.acodec || '-'})`);
+    const outPath = await remuxKeMp4(inputPath, kodek);
+    if (!outPath) return { alasan: 'konversi-video' };
+    const hasil = fs.readFileSync(outPath);
+    try { fs.unlinkSync(outPath); } catch {}
+    return hasil.length > 1024 ? { buffer: hasil } : { alasan: 'konversi-video' };
+  } catch (e) {
+    console.error('[MEDIA_WA] siapkanVideoMp4 gagal:', e.message);
+    return { alasan: 'konversi-video' };
+  } finally {
+    try { if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath); } catch {}
+  }
+}
+
+/** GIF tidak didukung WhatsApp sebagai gambar — ubah ke MP4 bergaya GIF. */
+async function konversiGifKeMp4(buffer) {
+  const tmpDir = path.join(process.cwd(), 'tmp');
+  if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+  const prefix = `gif_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+  const inputPath = path.join(tmpDir, `${prefix}.gif`);
+  const outputPath = path.join(tmpDir, `${prefix}.mp4`);
+
+  try {
+    fs.writeFileSync(inputPath, buffer);
+    const ok = await jalankanFfmpeg([
+      '-y', '-i', inputPath,
+      '-movflags', '+faststart',
+      '-pix_fmt', 'yuv420p',
+      '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26',
+      '-an', outputPath
+    ], 120000);
+    if (ok && fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1024) {
+      return fs.readFileSync(outputPath);
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    try { if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath); } catch {}
+    try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch {}
+  }
+}
+
+/** WebP/BMP/HEIC bukan format foto WhatsApp — ubah ke JPEG dulu. */
+async function keJpeg(buffer) {
+  try {
+    return await sharp(buffer).flatten({ background: '#ffffff' }).jpeg({ quality: 90 }).toBuffer();
+  } catch (e) {
+    console.log('[MEDIA_WA] Konversi gambar ke JPEG gagal:', e.message);
+    return null;
+  }
+}
+
+/**
+ * Gerbang tunggal sebelum media apa pun dikirim ke WhatsApp.
+ *
+ * Menerima { buffer?, url?, type? } dan mengembalikan
+ *   { ok: true, kategori, buffer, mimetype, ext, gifPlayback? }  atau
+ *   { ok: false, alasan, ukuranMb? }
+ *
+ * `type` cuma dipakai sebagai PETUNJUK untuk permintaan audio (berkas audio-only
+ * kerap datang dalam wadah mp4/webm). Selebihnya isi berkas yang menentukan —
+ * label dari API pihak ketiga terlalu sering salah.
+ */
+export async function siapkanMediaWA(item = {}) {
+  const diminta = item.type;
+  let buffer = Buffer.isBuffer(item.buffer) ? item.buffer : null;
+  let jenis = buffer ? deteksiJenisMedia(buffer) : null;
+
+  if (buffer && !jenis) {
+    console.log('[MEDIA_WA] Buffer sumber bukan media yang dikenali — coba unduh ulang dari URL.');
+    buffer = null;
+  }
+  if (!buffer && item.url) {
+    const hasil = await fetchMediaTervalidasi(item.url);
+    if (hasil) {
+      buffer = hasil.buffer;
+      jenis = hasil.jenis;
+    }
+  }
+  if (!buffer || !jenis) return { ok: false, alasan: 'bukan-media' };
+
+  if (buffer.length > BATAS_KIRIM_WA_BYTE) {
+    return { ok: false, alasan: 'terlalu-besar', ukuranMb: (buffer.length / 1024 / 1024).toFixed(1) };
+  }
+
+  if (diminta === 'audio') {
+    if (jenis.wadah === 'mp3' || jenis.wadah === 'm4a' || jenis.wadah === 'ogg') {
+      return { ok: true, kategori: 'audio', buffer, mimetype: jenis.mimetype, ext: jenis.ext };
+    }
+    // Wadah mp4 tanpa trek video = m4a (YouTube DASH). Kirim sebagai audio/mp4,
+    // bukan audio/mpeg: menandai data AAC sebagai MP3 membuat iOS menolaknya.
+    if (jenis.wadah === 'mp4') {
+      return { ok: true, kategori: 'audio', buffer, mimetype: 'audio/mp4', ext: 'm4a' };
+    }
+    const mp3 = await convertVideoToAudio(buffer, 'mp3').catch(() => null);
+    if (mp3 && mp3.length > 5000) {
+      return { ok: true, kategori: 'audio', buffer: mp3, mimetype: 'audio/mpeg', ext: 'mp3' };
+    }
+    return { ok: false, alasan: 'konversi-audio' };
+  }
+
+  if (jenis.kategori === 'image') {
+    if (jenis.wadah === 'jpg' || jenis.wadah === 'png') {
+      return { ok: true, kategori: 'image', buffer, mimetype: jenis.mimetype, ext: jenis.ext };
+    }
+    if (jenis.wadah === 'gif') {
+      const mp4 = await konversiGifKeMp4(buffer);
+      if (mp4) return { ok: true, kategori: 'video', buffer: mp4, mimetype: 'video/mp4', ext: 'mp4', gifPlayback: true };
+    }
+    const jpg = await keJpeg(buffer);
+    if (jpg && jpg.length > 1024) {
+      return { ok: true, kategori: 'image', buffer: jpg, mimetype: 'image/jpeg', ext: 'jpg' };
+    }
+    return { ok: false, alasan: 'konversi-gambar' };
+  }
+
+  if (jenis.kategori === 'audio') {
+    // Diminta video/foto tapi isinya trek audio saja — persis berkas yang
+    // "terunduh tapi tidak bisa dibuka" itu. Lebih baik gagal terang-terangan.
+    return { ok: false, alasan: 'isi-audio' };
+  }
+
+  const video = await siapkanVideoMp4(buffer, jenis.ext);
+  if (!video.buffer) return { ok: false, alasan: video.alasan || 'konversi-video' };
+  if (video.buffer.length > BATAS_KIRIM_WA_BYTE) {
+    return { ok: false, alasan: 'terlalu-besar', ukuranMb: (video.buffer.length / 1024 / 1024).toFixed(1) };
+  }
+  return { ok: true, kategori: 'video', buffer: video.buffer, mimetype: 'video/mp4', ext: 'mp4' };
+}
+
+/** Pesan gagal berbahasa manusia untuk tiap `alasan` dari siapkanMediaWA. */
+export function pesanGagalMedia(hasil, konteks = 'Media') {
+  switch (hasil?.alasan) {
+    case 'terlalu-besar':
+      return `❌ ${konteks} terlalu besar untuk dikirim lewat WhatsApp (${hasil.ukuranMb} MB, batas ±48 MB).`;
+    case 'isi-audio':
+      return '❌ Sumbernya hanya berisi jalur audio, bukan video utuh. Coba lagi atau pakai perintah audio.';
+    case 'konversi-video':
+    case 'konversi-gambar':
+    case 'konversi-audio':
+      return `❌ ${konteks} berhasil diunduh tapi gagal disiapkan untuk WhatsApp. Coba lagi beberapa saat lagi.`;
+    default:
+      return '❌ Server sumber tidak mengirim berkas media yang valid (biasanya link kedaluwarsa atau akun privat). Coba lagi dengan link yang baru.';
+  }
 }
 
 /**
