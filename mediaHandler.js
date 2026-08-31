@@ -1030,10 +1030,110 @@ export async function downloadTikTokAudio(url) {
 }
 
 /**
+ * Ambil cookie untuk SATU domain dari berkas Netscape `ig_cookies.txt`.
+ * Berkasnya menampung banyak situs (instagram, youtube, facebook, tiktok, x,
+ * pinterest) — cookie satu situs tidak boleh ikut terkirim ke situs lain.
+ */
+function bacaCookieHeader(domainCocok) {
+  try {
+    const p = path.join(process.cwd(), 'ig_cookies.txt');
+    if (!fs.existsSync(p)) return null;
+    const pasangan = [];
+    for (let baris of fs.readFileSync(p, 'utf8').split(/\r?\n/)) {
+      // Baris HttpOnly ditulis yt-dlp dengan awalan '#HttpOnly_' — tetap cookie sah.
+      if (baris.startsWith('#HttpOnly_')) baris = baris.slice(10);
+      if (!baris.trim() || baris.startsWith('#')) continue;
+      const kolom = baris.split('\t');
+      if (kolom.length < 7 || !kolom[5]) continue;
+      const domain = kolom[0].replace(/^\./, '').toLowerCase();
+      if (domain !== domainCocok && !domain.endsWith('.' + domainCocok)) continue;
+      pasangan.push(kolom[5] + '=' + kolom[6]);
+    }
+    return pasangan.length ? pasangan.join('; ') : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Shortcode Instagram (DcltCFOgbxL) -> media_id numerik; base64 64-karakter. */
+function shortcodeKeMediaId(shortcode) {
+  const ABJAD = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+  let id = 0n;
+  for (const c of shortcode) {
+    const i = ABJAD.indexOf(c);
+    if (i < 0) return null;
+    id = id * 64n + BigInt(i);
+  }
+  return id.toString();
+}
+
+/**
+ * Instagram Web API resmi (memakai sesi login di ig_cookies.txt).
+ *
+ * yt-dlp TIDAK bisa mengambil postingan foto: untuk carousel foto ia
+ * mengembalikan `entries` berisi null semua ("No video formats found"), dan
+ * seluruh API pihak ketiga yang dipakai sebagai cadangan sudah mati (401/404).
+ * Jalur inilah yang mengembalikan isi carousel secara utuh — foto maupun video.
+ */
+async function downloadInstagramApi(url) {
+  const cocok = url.match(/instagram\.com\/(?:[^/?#]+\/)?(?:p|reel|reels|tv)\/([A-Za-z0-9_-]+)/i);
+  if (!cocok) return null;
+  const mediaId = shortcodeKeMediaId(cocok[1]);
+  if (!mediaId) return null;
+  const cookie = bacaCookieHeader('instagram.com');
+  if (!cookie) return null;
+
+  const res = await axios.get(`https://www.instagram.com/api/v1/media/${mediaId}/info/`, {
+    httpsAgent,
+    timeout: 15000,
+    headers: {
+      'User-Agent': getRandomUserAgent(),
+      'X-IG-App-ID': '936619743392459',
+      'Referer': 'https://www.instagram.com/',
+      'Accept': '*/*',
+      'Cookie': cookie
+    }
+  });
+
+  const item = res.data?.items?.[0];
+  if (!item) return null;
+
+  const daftar = Array.isArray(item.carousel_media) && item.carousel_media.length > 0
+    ? item.carousel_media
+    : [item];
+
+  const mediaList = [];
+  for (const c of daftar) {
+    const video = c.video_versions?.[0]?.url;
+    const gambar = c.image_versions2?.candidates?.[0]?.url;
+    if (video) mediaList.push({ type: 'video', url: video });
+    else if (gambar) mediaList.push({ type: 'image', url: gambar });
+  }
+  if (mediaList.length === 0) return null;
+
+  return {
+    success: true,
+    media: mediaList,
+    title: item.caption?.text || 'Instagram Media',
+    author: item.user?.username,
+    type: mediaList.length > 1 ? 'carousel' : mediaList[0].type
+  };
+}
+
+/**
  * Download Instagram Reels / Posts / Single Photo / Multiple Photo Carousels — Multi-Tier Failover
  */
 export async function downloadInstagram(url) {
-  // Method 1: yt-dlp dump-json (Mendukung single photo, video Reels, maupun Carousel/Album multiple photos)
+  // Method 1: Instagram Web API pakai sesi di ig_cookies.txt — satu-satunya
+  // jalur yang mengembalikan carousel FOTO secara utuh.
+  try {
+    const hasil = await downloadInstagramApi(url);
+    if (hasil) return hasil;
+  } catch (err) {
+    console.log('[MEDIA_HANDLER] IG Method 1 (Web API) failed:', err.message);
+  }
+
+  // Method 2: yt-dlp dump-json (video Reels & carousel yang berisi video)
   try {
     const data = await extractWithYtdlpJson(url);
     if (data) {
@@ -1041,6 +1141,11 @@ export async function downloadInstagram(url) {
       if (Array.isArray(data.entries) && data.entries.length > 0) {
         const mediaList = [];
         for (const e of data.entries) {
+          // yt-dlp menaruh null untuk entri yang gagal diekstrak (mis. foto di
+          // dalam carousel Instagram). Tanpa penjaga ini `e.ext` melempar
+          // TypeError dan SATU entri null membatalkan seluruh postingan —
+          // termasuk video-video di dalamnya yang sebenarnya berhasil.
+          if (!e) continue;
           const isVideo = e.ext === 'mp4' || (e.vcodec && e.vcodec !== 'none');
           const itemUrl = pilihUrlLangsung(e) || e.thumbnails?.[e.thumbnails.length - 1]?.url;
           if (itemUrl) {
@@ -1066,10 +1171,10 @@ export async function downloadInstagram(url) {
       }
     }
   } catch (err) {
-    console.log('[MEDIA_HANDLER] IG Method 1 (yt-dlp JSON) failed:', err.message);
+    console.log('[MEDIA_HANDLER] IG Method 2 (yt-dlp JSON) failed:', err.message);
   }
 
-  // Method 2: SSSInstagram API (Mendukung multiple photo & video)
+  // Method 3: SSSInstagram API (Mendukung multiple photo & video)
   try {
     const res = await axios.post('https://sssinstagram.com/api/convert',
       JSON.stringify({ url }),
@@ -1106,10 +1211,10 @@ export async function downloadInstagram(url) {
       }
     }
   } catch (err) {
-    console.log('[MEDIA_HANDLER] IG Method 2 (SSSInstagram) failed:', err.message);
+    console.log('[MEDIA_HANDLER] IG Method 3 (SSSInstagram) failed:', err.message);
   }
 
-  // Method 3: Siputzx IG Downloader API (Mendukung foto slide & video)
+  // Method 4: Siputzx IG Downloader API (Mendukung foto slide & video)
   try {
     const res = await axios.get(`https://api.siputzx.my.id/api/d/igdl?url=${encodeURIComponent(url)}`, {
       headers: { 'User-Agent': getRandomUserAgent() },
@@ -1140,10 +1245,10 @@ export async function downloadInstagram(url) {
       }
     }
   } catch (err) {
-    console.log('[MEDIA_HANDLER] IG Method 3 (Siputzx) failed:', err.message);
+    console.log('[MEDIA_HANDLER] IG Method 4 (Siputzx) failed:', err.message);
   }
 
-  // Method 4: direct igdl package (Mengembalikan seluruh url_list foto & video)
+  // Method 5: direct igdl package (Mengembalikan seluruh url_list foto & video)
   try {
     const fn = igdl.instagramGetUrl || igdl.default || igdl;
     const res = await fn(url);
@@ -1158,10 +1263,10 @@ export async function downloadInstagram(url) {
       }
     }
   } catch (err) {
-    console.log('[MEDIA_HANDLER] IG Method 4 (igdl) failed:', err.message);
+    console.log('[MEDIA_HANDLER] IG Method 5 (igdl) failed:', err.message);
   }
 
-  // Method 5: SnapSave API
+  // Method 6: SnapSave API
   try {
     const res = await axios.post('https://snapsave.app/action.php', `url=${encodeURIComponent(url)}`, {
       httpsAgent,
@@ -1192,7 +1297,7 @@ export async function downloadInstagram(url) {
       }
     }
   } catch (err) {
-    console.log('[MEDIA_HANDLER] IG Method 5 (SnapSave) failed:', err.message);
+    console.log('[MEDIA_HANDLER] IG Method 6 (SnapSave) failed:', err.message);
   }
 
   return { 
@@ -1323,6 +1428,11 @@ export async function downloadFacebook(url) {
       if (Array.isArray(data.entries) && data.entries.length > 0) {
         const mediaList = [];
         for (const e of data.entries) {
+          // yt-dlp menaruh null untuk entri yang gagal diekstrak (mis. foto di
+          // dalam carousel Instagram). Tanpa penjaga ini `e.ext` melempar
+          // TypeError dan SATU entri null membatalkan seluruh postingan —
+          // termasuk video-video di dalamnya yang sebenarnya berhasil.
+          if (!e) continue;
           const isVideo = e.ext === 'mp4' || (e.vcodec && e.vcodec !== 'none');
           const itemUrl = pilihUrlLangsung(e) || e.thumbnails?.[e.thumbnails.length - 1]?.url;
           if (itemUrl) mediaList.push({ type: isVideo ? 'video' : 'image', url: itemUrl });
