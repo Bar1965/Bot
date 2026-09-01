@@ -7,8 +7,8 @@
  */
 
 import {
-  getKartu, statKartu, KARTU, ELEMEN, pengaliElemen, SKILL,
-  costKartu, sinergiDek, PENGALI_UNGGUL, KRIT_DMG
+  getKartu, statKartu, KARTU, ELEMEN, pengaliElemen, SKILL, skillEfektif,
+  costKartu, sinergiDek, PENGALI_UNGGUL, KRIT_DMG, pengalahElemen, MAKS_BIAYA_DEK
 } from './cards.js';
 
 // ============================================================
@@ -53,12 +53,15 @@ const AMBANG_EKSEKUSI = 0.35;
  * dek. Semua pengali stat diselesaikan di sini supaya loop serangan hanya
  * berurusan dengan angka jadi.
  */
-function buatPetarung(item, nama, sinergi) {
+function buatPetarung(item, nama, sinergi, efek = null, sisiPemain = true) {
   const kartu = getKartu(item.card_id);
   if (!kartu) return null;
 
   const dasar = statKartu(kartu, item.card_lv || 1);
-  const sk = kartu.skill ? SKILL[kartu.skill] : null;
+  // R kartu ikut lewat `item`, sama seperti `card_lv`. `skillEfektif` menjamin
+  // R1 mengembalikan objek SKILL yang asli, jadi kartu tanpa R berperilaku persis
+  // seperti sebelum fitur ini ada.
+  const sk = skillEfektif(kartu, item.refine || 1);
   // `skala` hanya dipakai penjaga Menara Abadi. Lantainya tidak punya ujung,
   // sedangkan katalog kartu punya — tanpa pengali ini, lantai 200 akan memakai
   // penjaga yang persis sama kuatnya dengan lantai 31.
@@ -70,8 +73,15 @@ function buatPetarung(item, nama, sinergi) {
   // di sana bernilai 13★ melawan dek pemain yang dibatasi 10★, jadi tanpa
   // peredam itu lantai pertamanya sudah lebih berat daripada bos akhir Menara.
   const skala = Number(item.skala) > 0 ? Number(item.skala) : 1;
-  const bonusAtk = (1 + (sk?.atkBonus || 0)) * (1 + (sinergi?.atk || 0)) * skala;
-  const bonusHp = (1 + (sk?.hpBonus || 0)) * (1 + (sinergi?.hp || 0)) * skala;
+  // Modifier lantai Menara Abadi. Efek yang memukul pemain dan efek yang
+  // memperkuat penjaga sengaja dipisah lewat sisiPemain: satu modifier hanya
+  // boleh menyentuh satu sisi. Kalau sebuah modifier memukul dua-duanya, kurva
+  // kesulitan Abadi yang sudah diukur tidak bisa dibaca lagi.
+  const modAtk = sisiPemain ? (1 + (efek?.atkPemain || 0)) : 1;
+  const modHp = sisiPemain ? 1 : (1 + (efek?.hpPenjaga || 0));
+
+  const bonusAtk = (1 + (sk?.atkBonus || 0)) * (1 + (sinergi?.atk || 0)) * skala * modAtk;
+  const bonusHp = (1 + (sk?.hpBonus || 0)) * (1 + (sinergi?.hp || 0)) * skala * modHp;
   const hp = Math.round(dasar.hp * bonusHp);
 
   return {
@@ -83,7 +93,7 @@ function buatPetarung(item, nama, sinergi) {
     atk: Math.round(dasar.atk * bonusAtk),
     // Kritis kartu + tambahan dari skill. Dibatasi 85% supaya tidak ada
     // kombinasi yang membuat kritis jadi keadaan normal.
-    kritis: Math.max(0, Math.min(0.85, (dasar.kritis || 0) + (sk?.kritBonus || 0))),
+    kritis: Math.max(0, Math.min(0.85, (dasar.kritis || 0) + (sk?.kritBonus || 0) + (sisiPemain ? (efek?.kritPemain || 0) : 0))),
     kritDmg: KRIT_DMG + (sk?.kritDmg || 0),
     hp,
     maxHp: hp,
@@ -100,7 +110,13 @@ function buatPetarung(item, nama, sinergi) {
     // Lihat `terapkanPulih` untuk alasannya.
     pulihTertunda: 0,
     kritisTerjadi: 0,
-    racunMasuk: 0 // porsi HP maks yang hilang tiap akhir ronde
+    racunMasuk: 0, // porsi HP maks yang hilang tiap akhir ronde (dari skill)
+    // Dua field di bawah HANYA diisi modifier lantai Menara Abadi. Racun lantai
+    // dipisah dari racunMasuk karena skill racun MENIMPA nilainya (lihat
+    // terapkanPukulan), jadi menaruh keduanya di satu field membuat racun lantai
+    // hilang begitu lawan memakai skill racun.
+    racunLantai: sisiPemain ? (efek?.racunPemain || 0) : 0,
+    perisaiLantai: sisiPemain ? null : (efek?.perisaiPenjaga || null)
   };
 }
 
@@ -138,6 +154,14 @@ function hitungPukulan(p, l, giliran, snapP, snapL) {
   if (p.sk?.tembus) tahan *= (1 - p.sk.tembus);
   if (tahan > 0) dmg *= (1 - tahan);
 
+  // Perisai modifier lantai: penjaga meredam serangan yang TIDAK unggul elemen,
+  // selama beberapa ronde awal saja. Serangan unggul sengaja tidak diredam —
+  // kalau semuanya ditahan, modifier ini cuma jadi bonus HP dan tidak mengajari
+  // apa pun soal counter elemen.
+  if (l.perisaiLantai && giliran <= l.perisaiLantai.ronde && p.elemenMult <= 1) {
+    dmg *= (1 - l.perisaiLantai.potong);
+  }
+
   return { meleset: false, kritis, dmg };
 }
 
@@ -161,11 +185,17 @@ function terapkanPukulan(p, l, pukulan) {
   l.hp = Math.max(0, l.hp - dmg);
 
   // Nyali Terakhir: sekali per duel, serangan mematikan menyisakan 1 HP.
+  //
+  // `pulihSetelahMaut` adalah imbalan R untuk skill yang isinya cuma saklar
+  // benar/salah dan karena itu tidak punya angka untuk diskalakan. Bernilai
+  // NOL di R1, jadi baris ini tidak mengubah perilaku apa pun sampai pemiliknya
+  // benar-benar menyisipkan duplikat.
   if (l.hp <= 0 && l.nyawaCadangan) {
     l.nyawaCadangan = false;
     l.selamatDariMaut = true;
-    l.hp = 1;
-    l.hpAsli = 1;
+    const pulih = Math.round(l.maxHp * (l.sk?.pulihSetelahMaut || 0));
+    l.hp = Math.max(1, pulih);
+    l.hpAsli = l.hp;
   }
 
   // Isap darah dihitung dari HP MAKS PENGISAP, bukan dari damage yang diberikan.
@@ -270,8 +300,9 @@ function akhirRonde(x) {
     x.hp = Math.min(x.maxHp, x.hp + pulih);
     x.hpAsli = Math.min(x.maxHp, x.hpAsli + pulih);
   }
-  if (x.racunMasuk) {
-    const luka = Math.round(x.maxHp * x.racunMasuk);
+  const racunTotal = (x.racunMasuk || 0) + (x.racunLantai || 0);
+  if (racunTotal) {
+    const luka = Math.round(x.maxHp * racunTotal);
     x.hpAsli -= luka;
     x.hp = Math.max(0, x.hp - luka);
   }
@@ -328,7 +359,7 @@ function tentukanPemenang(A, B) {
 /**
  * Mensimulasikan pertarungan 1 kartu vs 1 kartu
  */
-function duelSatuSlot(slotIdx, itemA, itemB, nameA, nameB, sinergiA, sinergiB, diam = false) {
+function duelSatuSlot(slotIdx, itemA, itemB, nameA, nameB, sinergiA, sinergiB, diam = false, efek = null) {
   if (!itemA && !itemB) {
     return { winner: 0, text: `⚔️ *Ronde ${slotIdx}:* Kedua sisi tidak memasang kartu (Seri).` };
   }
@@ -341,8 +372,8 @@ function duelSatuSlot(slotIdx, itemA, itemB, nameA, nameB, sinergiA, sinergiB, d
     return { winner: 1, text: `⚔️ *Ronde ${slotIdx}:* ${nameB} tidak memasang kartu di slot ini! ${nameA} (*${cardA?.nama || itemA.card_id}*) menang mutlak.` };
   }
 
-  const A = buatPetarung(itemA, nameA, sinergiA);
-  const B = buatPetarung(itemB, nameB, sinergiB);
+  const A = buatPetarung(itemA, nameA, sinergiA, efek, true);
+  const B = buatPetarung(itemB, nameB, sinergiB, efek, false);
   if (!A || !B) {
     return { winner: 0, text: `⚔️ *Ronde ${slotIdx}:* Terjadi kesalahan data kartu.` };
   }
@@ -421,6 +452,9 @@ export function ringkasSinergi(nama, sinergi) {
  */
 export function simulate3v3(deckA, deckB, nameA = 'Pemain A', nameB = 'Pemain B', opts = {}) {
   const diam = opts.diam === true;
+  // Modifier lantai Menara Abadi. Selalu null di duel PvP, spar, dan Menara
+  // Penjaga — mesin ini dipakai lima tempat dan hanya satu yang punya modifier.
+  const efek = opts.modifier?.efek || null;
   const sinergiA = sinergiDek(deckA);
   const sinergiB = sinergiDek(deckB);
 
@@ -429,7 +463,7 @@ export function simulate3v3(deckA, deckB, nameA = 'Pemain A', nameB = 'Pemain B'
   const roundReports = [];
 
   for (let slot = 1; slot <= 3; slot++) {
-    const res = duelSatuSlot(slot, deckA[slot], deckB[slot], nameA, nameB, sinergiA, sinergiB, diam);
+    const res = duelSatuSlot(slot, deckA[slot], deckB[slot], nameA, nameB, sinergiA, sinergiB, diam, efek);
     if (!diam) roundReports.push(res.text);
     if (res.winner === 1) scoreA++;
     else if (res.winner === 2) scoreB++;
@@ -758,7 +792,7 @@ export const TOWER_FLOORS = [
     rewardKeping: 220,
     rewardShards: { rarity: 'LEGENDARY', jumlah: 2 },
     deck: {
-      1: { card_id: 'MYT03', card_lv: 3 }, // Voidreaper
+      1: { card_id: 'MYT03', card_lv: 3 }, // Kala Rau
       2: { card_id: 'LGD05', card_lv: 5 },
       3: { card_id: 'LGD01', card_lv: 4 }
     }
@@ -793,7 +827,7 @@ export const TOWER_FLOORS = [
     deck: {
       1: { card_id: 'MYT01', card_lv: 5 }, // Barong Agni Lv. 5
       2: { card_id: 'MYT02', card_lv: 5 }, // Sang Hyang Petir Lv. 5
-      3: { card_id: 'MYT03', card_lv: 5 }  // Voidreaper Lv. 5
+      3: { card_id: 'MYT03', card_lv: 5 }  // Kala Rau Lv. 5
     }
   }
 ];
@@ -920,4 +954,464 @@ export function dekAbadi(lantai) {
   ids.forEach((id, i) => { deck[i + 1] = { card_id: id, card_lv: level, skala }; });
 
   return { lantai: n, nama: namaLantaiAbadi(n), level, skala, elemen, deck };
+}
+
+
+// ============================================================
+// PRATINJAU PENJAGA — LIHAT DULU, BARU SUSUN DEK
+// ============================================================
+
+/**
+ * Sebelum ini, Menara Penjaga hanya memberi tahu nama lantai dan hadiahnya.
+ * Dek penjaganya rahasia, jadi counter elemen mustahil dan pemain baru tahu
+ * lawannya SESUDAH stamina terpakai. Itu bukan kesulitan, itu ketidaktahuan:
+ * yang diuji cuma "sudah pernah kalah di sini atau belum".
+ *
+ * Membuka pratinjau tidak membuat Menara jadi mudah — mesin tempurnya tetap
+ * sama. Yang berubah, kekalahan sekarang bisa dipelajari.
+ */
+export function ringkasPenjaga(deck) {
+  return [1, 2, 3]
+    .map(s => {
+      const item = deck?.[s];
+      if (!item) return null;
+      const k = getKartu(item.card_id);
+      if (!k) return null;
+      const el = ELEMEN[k.elemen] || { emoji: '✨' };
+      return `   ${s}. ${el.emoji} *${k.nama}* Lv.${item.card_lv || 1} · ${costKartu(k)}★`;
+    })
+    .filter(Boolean);
+}
+
+/** Elemen unik yang dipakai satu dek. */
+export function elemenDek(deck) {
+  return [...new Set(
+    [1, 2, 3]
+      .map(s => deck?.[s] && getKartu(deck[s].card_id))
+      .filter(Boolean)
+      .map(k => k.elemen)
+  )];
+}
+
+/**
+ * Saran counter: elemen apa yang benar-benar unggul melawan dek ini.
+ *
+ * Sengaja menyebut ELEMEN, bukan kartu — menyebut kartu berarti memberi jawaban
+ * jadi, menyebut elemen berarti memberi arah dan pemain tetap memilih sendiri
+ * dari koleksinya.
+ *
+ * VERSI PERTAMA FUNGSI INI MEMBERI SARAN YANG JUSTRU MERUGIKAN, dan cacatnya
+ * ada dua sekaligus:
+ *
+ * 1. Ia meng-UNION `pengalahElemen` atas himpunan elemen UNIK dek lawan. Dek
+ *    Menara Abadi selalu berbentuk 2 kartu setema + 1 penyimpang (lihat
+ *    `dekAbadi`), jadi elemen yang cuma mengalahkan SATU kartu penyimpang tetap
+ *    ikut disarankan walaupun ia lemah melawan DUA kartu inti. Diukur atas
+ *    lantai 1-200, 147 lantai (73,5%) menyarankan minimal satu elemen yang
+ *    nilai bersihnya di bawah 1 — merugikan, bukan menolong.
+ * 2. Ia MEMBUANG kandidat yang kebetulan berelemen sama dengan salah satu kartu
+ *    penjaga. Justru di situlah counter terbaik sering berada: 27% lantai
+ *    menyembunyikan jawaban terbaiknya sendiri.
+ *
+ * Sekarang tiap kandidat dinilai atas KETIGA slot, bukan atas himpunan unik,
+ * dan nilainya adalah rasio "seberapa keras aku memukul" dibagi "seberapa keras
+ * aku dipukul". Rasio, bukan selisih, karena kedua arah sama pentingnya: elemen
+ * yang memukul keras tapi juga dipukul keras bukan counter.
+ *
+ * Yang disarankan hanya kandidat dengan nilai bersih DI ATAS 1. Kalau tidak ada
+ * satu pun, fungsi ini mengembalikan string kosong — lebih baik diam daripada
+ * menyuruh pemain membawa elemen yang tidak menolong.
+ */
+export function saranCounter(deck) {
+  const lawan = [1, 2, 3]
+    .map(s => deck?.[s] && getKartu(deck[s].card_id))
+    .filter(Boolean);
+  if (!lawan.length) return '';
+
+  const nilai = Object.keys(ELEMEN).map(e => {
+    const menyerang = lawan.reduce((t, k) => t + pengaliElemen(e, k.elemen), 0) / lawan.length;
+    const diserang = lawan.reduce((t, k) => t + pengaliElemen(k.elemen, e), 0) / lawan.length;
+    return { elemen: e, bersih: menyerang / (diserang || 1) };
+  }).sort((a, b) => b.bersih - a.bersih);
+
+  // Ambang 1,001 supaya selisih pembulatan tidak lolos jadi "counter".
+  const layak = nilai.filter(n => n.bersih > 1.001).slice(0, 2);
+  if (!layak.length) return '';
+  return layak.map(n => `${ELEMEN[n.elemen].emoji} ${ELEMEN[n.elemen].nama}`).join(' / ');
+}
+
+
+// ============================================================
+// MODIFIER LANTAI MENARA ABADI
+// ============================================================
+
+/**
+ * Masalah yang dijawab bagian ini: sesudah `.tcg autodek` ada, menyusun dek
+ * bukan lagi keputusan. Bot menghitung kombinasi 3 kartu terkuat dari seluruh
+ * koleksi, memasangnya, selesai — dan jawaban itu SAMA untuk setiap lantai.
+ * Padahal seluruh tantangan arena ini hidup di penyusunan dek: pertarungannya
+ * sendiri berjalan otomatis tanpa satu pun keputusan pemain.
+ *
+ * Modifier mengembalikan keputusan itu dengan cara yang tidak bisa dijawab satu
+ * dek: tiap lantai memasang aturan berbeda, sebagian di antaranya justru
+ * melarang jawaban terbaik. Dek 10★ terkuat tidak berguna di lantai yang
+ * membatasi 8★, dan counter elemen terbaik tidak berguna di lantai yang
+ * menyegel elemen itu.
+ *
+ * TIGA ATURAN YANG MEMBUATNYA ADIL:
+ *
+ * 1. **Deterministik.** Sama seperti nama dan penjaganya, modifier diturunkan
+ *    dari nomor lantai. Lantai 43 memasang aturan yang sama untuk semua orang,
+ *    selamanya. Kalau diacak, pemain akan mengulang sampai dapat aturan mudah.
+ * 2. **Terlihat sebelum bertarung.** `.tcg abadi` menampilkannya lengkap dengan
+ *    akibatnya. Modifier tersembunyi hanya akan terasa seperti bot curang.
+ * 3. **Baru mulai di lantai 10.** Kurva kesulitan Abadi sudah diukur (lihat
+ *    ABADI_SKALA_AWAL); sembilan lantai pertama tetap persis seperti hasil
+ *    kalibrasi itu, sebagai tempat pemain mengenali sistemnya tanpa dihukum.
+ *
+ * Satu modifier hanya boleh memukul SATU sisi — pemain saja, atau penjaga saja.
+ * Modifier yang menyentuh keduanya membuat efeknya tidak bisa dihitung lagi.
+ */
+export const MODIFIER_ABADI = [
+  {
+    id: 'KABUT_RACUN',
+    nama: 'Kabut Beracun',
+    emoji: '☠️',
+    teks: 'Kartumu kehilangan 5% HP maks tiap akhir ronde.',
+    efek: { racunPemain: 0.05 }
+  },
+  {
+    id: 'PERISAI_PENJAGA',
+    nama: 'Perisai Penjaga',
+    emoji: '🛡️',
+    teks: 'Serangan yang TIDAK unggul elemen dipotong 35% selama 2 ronde pertama.',
+    efek: { perisaiPenjaga: { ronde: 2, potong: 0.35 } }
+  },
+  {
+    id: 'SEGEL_ELEMEN',
+    nama: 'Segel Elemen',
+    emoji: '🚫',
+    teks: 'Satu elemen pengalah penjaga disegel — tidak boleh ada di dekmu.',
+    efek: { laranganElemen: true }
+  },
+  {
+    id: 'ANGGARAN_KETAT',
+    nama: 'Anggaran Ketat',
+    emoji: '💰',
+    teks: 'Batas biaya dek dipangkas jadi 8★.',
+    efek: { batasBintang: 8 }
+  },
+  {
+    id: 'PANGGILAN',
+    nama: 'Panggilan Elemen',
+    emoji: '📯',
+    teks: 'Dekmu wajib memuat minimal 1 kartu elemen yang diminta.',
+    efek: { wajibElemen: true }
+  },
+  {
+    id: 'GRAVITASI',
+    nama: 'Gravitasi Berat',
+    emoji: '🪨',
+    teks: 'ATK seluruh kartumu -12%.',
+    efek: { atkPemain: -0.12 }
+  },
+  {
+    id: 'TANGAN_DINGIN',
+    nama: 'Tangan Dingin',
+    emoji: '❄️',
+    teks: 'Peluang kritis kartumu turun 10 poin persen.',
+    efek: { kritPemain: -0.10 }
+  },
+  {
+    id: 'BENTENG',
+    nama: 'Benteng Penjaga',
+    emoji: '🏯',
+    teks: 'HP penjaga +18%.',
+    efek: { hpPenjaga: 0.18 }
+  }
+];
+
+export const ABADI_MODIFIER_MULAI = 10;
+
+/**
+ * Indeks modifier sebuah lantai, dengan jaminan tidak pernah sama dengan
+ * lantai tepat di bawahnya.
+ *
+ * Rantainya sengaja dihitung ulang dari lantai pertama bermodifier, bukan
+ * sekadar membandingkan undian mentah dua lantai. Percobaan pertama memakai
+ * cara pendek itu dan masih menghasilkan tiga lantai berturut-turut dengan
+ * aturan yang sama: lantai yang undiannya sudah digeser bisa mendarat tepat di
+ * undian mentah lantai berikutnya, dan perbandingan mentah tidak melihatnya.
+ * Iterasinya murah dan hasilnya tetap deterministik.
+ */
+function indeksModifier(n) {
+  let prev = -1;
+  for (let i = ABADI_MODIFIER_MULAI; i <= n; i++) {
+    let idx = acakLantai(i, 23) % MODIFIER_ABADI.length;
+    if (idx === prev) idx = (idx + 1) % MODIFIER_ABADI.length;
+    prev = idx;
+  }
+  return prev;
+}
+
+/**
+ * Modifier untuk satu lantai Abadi, atau null kalau lantainya masih bersih.
+ * Elemen yang disegel/diminta ikut diselesaikan di sini supaya pemanggil tidak
+ * perlu tahu cara menurunkannya — dan supaya elemen yang tampil di layar
+ * pratinjau dijamin sama dengan yang divalidasi saat bertarung.
+ */
+export function modifierAbadi(lantai) {
+  const n = Math.max(1, Math.floor(Number(lantai) || 1));
+  if (n < ABADI_MODIFIER_MULAI) return null;
+
+  const dasar = MODIFIER_ABADI[indeksModifier(n)];
+  const elemenPenjaga = ABADI_ELEMEN_URUT[(n - 1) % ABADI_ELEMEN_URUT.length];
+  const efek = { ...dasar.efek };
+  let teks = dasar.teks;
+  let elemen = null;
+
+  if (efek.laranganElemen === true) {
+    // Yang disegel adalah salah satu elemen PENGALAH penjaga, bukan elemen acak.
+    // Menyegel elemen sembarangan sering tidak terasa apa-apa; menyegel jalan
+    // termudah memaksa pemain menang tanpa counter andalannya.
+    const pengalah = pengalahElemen(elemenPenjaga);
+    elemen = pengalah.length
+      ? pengalah[acakLantai(n, 29) % pengalah.length]
+      : ABADI_ELEMEN_URUT[acakLantai(n, 29) % ABADI_ELEMEN_URUT.length];
+    efek.laranganElemen = elemen;
+    teks = `Elemen ${ELEMEN[elemen].emoji} *${ELEMEN[elemen].nama}* disegel — tidak boleh ada di dekmu.`;
+  }
+
+  if (efek.wajibElemen === true) {
+    elemen = ABADI_ELEMEN_URUT[acakLantai(n, 31) % ABADI_ELEMEN_URUT.length];
+    efek.wajibElemen = elemen;
+    teks = `Dek wajib memuat minimal 1 kartu ${ELEMEN[elemen].emoji} *${ELEMEN[elemen].nama}*.`;
+  }
+
+  return { id: dasar.id, nama: dasar.nama, emoji: dasar.emoji, teks, efek, elemen };
+}
+
+/**
+ * Memeriksa dek pemain terhadap syarat penyusunan sebuah modifier.
+ * Mengembalikan { boleh, alasan } dengan alasan sudah berupa kalimat siap kirim.
+ *
+ * Syarat penyusunan sengaja diperiksa DI LUAR mesin tempur: melarang elemen
+ * atau membatasi bintang bukan efek pertarungan, itu aturan pendaftaran. Kalau
+ * dicampur ke dalam simulasi, pemain akan kehilangan stamina untuk pertarungan
+ * yang sebenarnya tidak pernah boleh dimulai.
+ */
+export function periksaSyaratModifier(deck, modifier) {
+  if (!modifier?.efek) return { boleh: true };
+  const kartu = [1, 2, 3].map(s => deck?.[s] && getKartu(deck[s].card_id)).filter(Boolean);
+  const efek = modifier.efek;
+
+  if (efek.laranganElemen) {
+    const melanggar = kartu.filter(k => k.elemen === efek.laranganElemen);
+    if (melanggar.length) {
+      const el = ELEMEN[efek.laranganElemen];
+      return {
+        boleh: false,
+        alasan: `${el.emoji} Elemen *${el.nama}* disegel di lantai ini, tapi dekmu memakai *${melanggar.map(k => k.nama).join(', ')}*.`
+      };
+    }
+  }
+
+  if (efek.wajibElemen) {
+    const ada = kartu.some(k => k.elemen === efek.wajibElemen);
+    if (!ada) {
+      const el = ELEMEN[efek.wajibElemen];
+      return {
+        boleh: false,
+        alasan: `📯 Lantai ini menuntut minimal 1 kartu ${el.emoji} *${el.nama}* di dekmu.`
+      };
+    }
+  }
+
+  if (efek.batasBintang) {
+    const total = kartu.reduce((t, k) => t + costKartu(k), 0);
+    if (total > efek.batasBintang) {
+      return {
+        boleh: false,
+        alasan: `💰 Batas biaya dek di lantai ini *${efek.batasBintang}★*, dekmu sekarang *${total}★*.`
+      };
+    }
+  }
+
+  return { boleh: true };
+}
+
+
+// ============================================================
+// GAUNTLET PEKANAN — TIGA PERTARUNGAN, KARTU TIDAK BOLEH DIULANG
+// ============================================================
+
+/**
+ * Cacat paling lama arena ini: pemain hanya pernah butuh TIGA kartu bagus.
+ * Katalognya 60 kartu, tapi tidak ada satu pun konten yang menuntut kartu
+ * keempat — dan sejak `.tcg jualsemua` ada, menyempitkan koleksi justru
+ * menguntungkan.
+ *
+ * Gauntlet adalah jawabannya: tiga pertarungan berurutan dalam satu pekan, dan
+ * kartu yang sudah bertarung TIDAK boleh dipakai lagi di tahap berikutnya.
+ * Sekali tamat butuh sembilan kartu terawat, bukan tiga. Lawannya menguat tiap
+ * tahap, jadi sembilan kartu itu juga tidak boleh asal ada.
+ *
+ * Deknya deterministik per pekan: semua orang di semua grup menghadapi tiga
+ * lawan yang sama persis sepanjang pekan itu, jadi hasilnya bisa dibandingkan
+ * dan tidak ada yang bisa mengulang sampai dapat undian mudah.
+ */
+export const GAUNTLET_TAHAP = 3;
+
+/**
+ * VERSI PERTAMA PROFIL INI RUSAK, dan cara rusaknya layak dicatat.
+ *
+ * Dulu tiap tahap memilih 3 kartu dari kolam rarity tinggi TANPA batas biaya
+ * bintang, lalu dikalikan skala sampai 1,10 — sementara pemain dikunci di
+ * MAKS_BIAYA_DEK (10 bintang). Hasil pengukuran: dek lawan tahap 3 bernilai
+ * 12-14 bintang tergantung undian pekan, dan pada pekan 24 Agustus 2026 dek
+ * terbaik yang mungkin ada (koleksi 60 kartu penuh Lv.5) cuma menang 10%.
+ * Hadiah tahap 3 praktis tidak akan pernah dibayar ke siapa pun.
+ *
+ * Sekarang lawan memakai ANGGARAN YANG SAMA dengan pemain. Aturannya jadi bisa
+ * dibaca pemain — 'dia main dengan batas yang sama denganku' — dan
+ * kesulitannya naik lewat LEVEL kartu, satu-satunya sumbu yang bisa dinaikkan
+ * bertahap tanpa mengubah aturan mainnya.
+ *
+ * Medan skala sengaja dikembalikan ke 1,00 di ketiga tahap. Skala adalah
+ * peredam yang dipakai Menara Abadi (ABADI_SKALA_AWAL) HANYA karena penjaganya
+ * melampaui anggaran pemain; begitu anggarannya disamakan, tidak ada yang perlu
+ * diredam maupun dilebihkan. Menaikkannya lagi tanpa harness kalibrasi seperti
+ * scripts/tcgAbadiKalibrasi.mjs adalah menebak, dan umpan balik Gauntlet
+ * bersifat pekanan — satu tebakan salah merusak satu pekan penuh.
+ */
+const GAUNTLET_PROFIL = [
+  { nama: 'Penantang', level: 3, skala: 1.00, rarity: ['RARE', 'EPIC', 'LEGENDARY'] },
+  { nama: 'Panglima', level: 4, skala: 1.00, rarity: ['EPIC', 'LEGENDARY', 'MYTHIC'] },
+  { nama: 'Juara Pekan', level: 5, skala: 1.00, rarity: ['EPIC', 'LEGENDARY', 'MYTHIC'] }
+];
+
+/** Benih 32-bit dari teks (kunci pekan). FNV-1a — cukup untuk memilih kartu. */
+function benihTeks(teks) {
+  let h = 2166136261 >>> 0;
+  const t = String(teks || '');
+  for (let i = 0; i < t.length; i++) {
+    h ^= t.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h >>> 0;
+}
+
+export function dekGauntlet(kunciPekan, tahap) {
+  const t = Math.min(GAUNTLET_TAHAP, Math.max(1, Math.floor(Number(tahap) || 1)));
+  const profil = GAUNTLET_PROFIL[t - 1];
+  const benih = benihTeks(`${kunciPekan}#${t}`);
+
+  const kolam = KARTU.filter(k => profil.rarity.includes(k.rarity));
+  const cadangan = KARTU.filter(k => !profil.rarity.includes(k.rarity));
+  const dipakai = new Set();
+
+  // Anggaran bintang ditegakkan slot per slot, dan tiap slot yang belum terisi
+  // disisakan minimal 1 bintang — kalau tidak, dua kartu mahal di awal membuat
+  // slot ketiga mustahil diisi dan lawan bertarung dengan dek dua kartu.
+  let biaya = 0;
+  const ids = [];
+  for (let slot = 0; slot < 3; slot++) {
+    const sisaSlot = 2 - slot;
+    const muat = (k) => (biaya + costKartu(k) + sisaSlot) <= MAKS_BIAYA_DEK;
+    // Kolam utama dulu; kalau tidak ada yang muat, turun ke rarity lain supaya
+    // deknya tetap tiga kartu penuh, bukan dua.
+    let sisa = kolam.filter(k => !dipakai.has(k.id) && muat(k));
+    if (!sisa.length) sisa = cadangan.filter(k => !dipakai.has(k.id) && muat(k));
+    if (!sisa.length) break;
+    // Lawan tidak cuma patuh anggaran, ia juga MEMILIH DENGAN BAIK. Undian bebas
+    // dari seluruh kolam menghasilkan dek acak-acakan: diukur, dek pemain
+    // terbaik menang 100% di ketiga tahap. Dibatasi ke beberapa kartu terkuat
+    // yang muat, lawan jadi setara dek yang disusun sungguh-sungguh, dan
+    // kesulitannya kembali datang dari LEVEL — sumbu yang memang bertahap.
+    // Tetap ada undian di antara yang terkuat supaya tiap pekan tidak sama.
+    sisa = sisa.slice().sort((a, x) => dayaKartu(x, profil.level) - dayaKartu(a, profil.level));
+    const pilihan = sisa.slice(0, Math.min(4, sisa.length));
+    const k = pilihan[acakLantai(benih, 3 + slot * 2) % pilihan.length];
+    dipakai.add(k.id);
+    ids.push(k.id);
+    biaya += costKartu(k);
+  }
+
+  const deck = {};
+  ids.forEach((id, i) => { deck[i + 1] = { card_id: id, card_lv: profil.level, skala: profil.skala }; });
+
+  return { tahap: t, nama: profil.nama, level: profil.level, skala: profil.skala, biaya, deck };
+}
+
+
+// ============================================================
+// BOS ARENA GRUP — SATU LAWAN BERSAMA
+// ============================================================
+
+/**
+ * Semua konten Arena sampai sekarang bersifat sendirian: menara, gerbang,
+ * ekspedisi, bahkan duel pun cuma dua orang. Grup yang ramai dan grup yang sepi
+ * memainkan permainan yang persis sama.
+ *
+ * Bos Arena adalah satu-satunya konten yang hasilnya ditentukan bersama: satu
+ * kantong HP raksasa milik grup, dipukul siapa pun yang punya dek, dan baru
+ * tumbang kalau cukup banyak orang ikut. Hadiahnya dibagi menurut sumbangan
+ * damage, jadi ikut memukul selalu berarti sesuatu meski bukan yang terkuat.
+ *
+ * PERBEDAAN PENTING dari mesin duel: di sini ayunan elemen jauh lebih besar
+ * (x1,5 lawan x0,7, bukan x1,13 lawan x0,89). Alasannya, bos tidak balas
+ * memukul — satu-satunya keputusan yang tersisa adalah "kartu apa yang kamu
+ * bawa". Kalau ayunannya sekecil di duel, keputusan itu tidak akan terasa dan
+ * yang menang cuma yang koleksinya paling tebal.
+ */
+export const BOS_PENGALI_UNGGUL = 1.5;
+export const BOS_PENGALI_LEMAH = 0.7;
+
+const BOS_AWALAN = ['Naga', 'Raksasa', 'Titan', 'Leviathan', 'Garuda', 'Kalajengking', 'Kraken', 'Behemoth'];
+const BOS_AKHIRAN = ['Palung Hitam', 'Bara Purba', 'Badai Utara', 'Rimba Mati', 'Langit Runtuh', 'Sunyi Beku', 'Kabut Merah', 'Gerbang Akhir'];
+
+/** Data bos untuk satu pekan. Deterministik: semua grup melawan bos yang sama. */
+export function bosPekan(kunciPekan) {
+  const benih = benihTeks(String(kunciPekan));
+  const nama = `${BOS_AWALAN[acakLantai(benih, 13) % BOS_AWALAN.length]} ${BOS_AKHIRAN[acakLantai(benih, 17) % BOS_AKHIRAN.length]}`;
+  const elemen = ABADI_ELEMEN_URUT[acakLantai(benih, 19) % ABADI_ELEMEN_URUT.length];
+  return { nama, elemen };
+}
+
+/**
+ * Daya satu kartu di level tertentu. Rumusnya sama persis dengan yang dipakai
+ * `tcgAutoBuildDeck` supaya "kartu terkuat" berarti hal yang sama di dua tempat.
+ */
+export function dayaKartu(kartu, level = 1) {
+  const st = statKartu(kartu, level);
+  return Math.round((st.atk * 2.2) + (st.hp * 0.9) + ((st.kritis || 0) * 500));
+}
+
+/**
+ * Damage satu serangan ke bos. Mengembalikan total plus rincian per kartu
+ * supaya laporannya bisa menunjukkan kartu mana yang unggul elemen — itu yang
+ * mengajari pemain mengganti dek, bukan angka totalnya.
+ */
+export function hitungSeranganBos(deck, elemenBos) {
+  const rincian = [];
+  let total = 0;
+
+  for (const slot of [1, 2, 3]) {
+    const item = deck?.[slot];
+    if (!item) continue;
+    const kartu = getKartu(item.card_id);
+    if (!kartu) continue;
+
+    let mult = 1;
+    if (ELEMEN[kartu.elemen]?.unggul.includes(elemenBos)) mult = BOS_PENGALI_UNGGUL;
+    else if (ELEMEN[elemenBos]?.unggul.includes(kartu.elemen)) mult = BOS_PENGALI_LEMAH;
+
+    const dasar = dayaKartu(kartu, item.card_lv || 1);
+    const varian = 0.92 + Math.random() * 0.16;
+    const dmg = Math.max(1, Math.round(dasar * mult * varian));
+    total += dmg;
+    rincian.push({ nama: kartu.nama, elemen: kartu.elemen, mult, dmg });
+  }
+
+  return { total, rincian };
 }

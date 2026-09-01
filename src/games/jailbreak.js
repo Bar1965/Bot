@@ -173,7 +173,7 @@ ${finalChallenge.story}
       // 🎉 LOLOS SELURUH 3 TAHAP (KEMENANGAN MUTLAK)
       activeJailbreakSessions.delete(senderNumber);
       await db.clearGameJail(senderNumber);
-      await db.addMessageXp(senderNumber, 100);
+      await db.grantXp(senderNumber, 100);
       await db.addGamePoints(senderNumber, 50);
 
       const senderPhone = senderNumber.split('@')[0];
@@ -242,13 +242,23 @@ Waktu 25 detikmu di *${session.challenge.title}* habis! Sorotan lampu menara pen
   await send(sock, jid, messageObj, failMsg);
 }
 
-export async function handleTebusNapi(sock, jid, senderNumber, messageObj, targetNumber) {
-  if (!targetNumber) {
+export async function handleTebusNapi(sock, jid, senderNumber, messageObj, targetRaw) {
+  if (!targetRaw) {
     await send(sock, jid, messageObj, "⚠️ *Format Perintah Salah!*\nTag atau sertakan nomor tahanan yang ingin ditebus!\n_Contoh:_ `.tebus @member` atau `.bebasinnapi @member`");
     return true;
   }
 
-  if (senderNumber === targetNumber) {
+  let targetNumber = targetRaw;
+  if (!targetNumber.endsWith('@s.whatsapp.net') && !targetNumber.endsWith('@lid')) {
+    const res = await db.resolveTargetJid(targetNumber);
+    if (res?.ditemukan && res.jid) targetNumber = res.jid;
+    else {
+      const cleanNum = targetNumber.replace(/[^0-9]/g, '');
+      if (cleanNum.length > 5) targetNumber = `${cleanNum}@s.whatsapp.net`;
+    }
+  }
+
+  if (senderNumber === targetNumber || db.isPhoneMatch(senderNumber, targetNumber)) {
     await send(sock, jid, messageObj, "⚠️ Kamu tidak bisa menebus dirimu sendiri! Gunakan `.jailbreak` untuk mencoba membobol sel.");
     return true;
   }
@@ -274,7 +284,7 @@ export async function handleTebusNapi(sock, jid, senderNumber, messageObj, targe
 
   await db.deductGamePoints(senderNumber, tebusCost);
   await db.clearGameJail(targetNumber);
-  await db.addMessageXp(senderNumber, 100);
+  await db.grantXp(senderNumber, 100);
 
   const senderPhone = senderNumber.split('@')[0];
   const targetPhone = targetNumber.split('@')[0];

@@ -13,7 +13,11 @@ import * as db from '../../../database.js';
 import { send, isOnCooldown } from '../helpers.js';
 import { tcgKey } from './identity.js';
 import { getKartu, normalisasiIdKartu, STAT_RARITY, TOTAL_KARTU, ELEMEN } from './cards.js';
-import { simulate3v3, dekAbadi, TOWER_FLOORS } from './battle.js';
+import {
+  simulate3v3, dekAbadi, TOWER_FLOORS,
+  modifierAbadi, periksaSyaratModifier, ringkasPenjaga, saranCounter,
+  ABADI_MODIFIER_MULAI
+} from './battle.js';
 
 const fmt = (n) => Number(n || 0).toLocaleString('id-ID');
 const GARIS = '━━━━━━━━━━━━━━━━━━━━━━━━━━━━';
@@ -349,6 +353,10 @@ export async function kelolaAbadi(sock, jid, messageObj, key, aksiArg) {
   const energi = await db.tcgGetEnergi(key);
   const target = abadi.berikutnya;
   const lantai = dekAbadi(target);
+  // Modifier lantai dihitung sekali di sini dan dipakai dua kali: untuk layar
+  // pratinjau dan untuk pertarungannya. Menghitungnya dua kali membuka celah
+  // beda hasil kalau rumusnya diubah setengah jalan.
+  const modifier = modifierAbadi(target);
   const aksi = String(aksiArg || '').toLowerCase();
 
   if (!['lawan', 'gas', 'fight', 'naik'].includes(aksi)) {
@@ -358,11 +366,7 @@ export async function kelolaAbadi(sock, jid, messageObj, key, aksiArg) {
       ...hadiah.serpihan.map(s => `${s.jumlah} Serpihan ${STAT_RARITY[s.rarity].label}`)
     ].join(' · ');
 
-    const penjaga = [1, 2, 3]
-      .map(s => lantai.deck[s] && getKartu(lantai.deck[s].card_id))
-      .filter(Boolean)
-      .map(k => `${ELEMEN[k.elemen].emoji} ${k.nama}`)
-      .join(', ');
+    const counter = saranCounter(lantai.deck);
 
     await send(sock, jid, messageObj, [
       '🌌 *MENARA ABADI*',
@@ -371,13 +375,19 @@ export async function kelolaAbadi(sock, jid, messageObj, key, aksiArg) {
       `🕳️ Lantai terdalammu: *${abadi.lantai}*`,
       `🎯 Berikutnya: *Lantai ${target}* — _${lantai.nama}_`,
       `   └ Penjaga Lv.${lantai.level} · kekuatan ×${lantai.skala.toFixed(2)} · condong ${ELEMEN[lantai.elemen].emoji} *${ELEMEN[lantai.elemen].nama}*`,
-      `   └ ${penjaga}`,
-      `   └ Hadiah: ${isiHadiah}`,
+      ...ringkasPenjaga(lantai.deck),
+      ...(counter ? [`   └ 💡 Unggul melawan mereka: ${counter}`] : []),
+      `   └ 🎁 Hadiah: ${isiHadiah}`,
+      '',
+      modifier
+        ? `${modifier.emoji} *MODIFIER LANTAI — ${modifier.nama.toUpperCase()}*\n   ${modifier.teks}`
+        : `✨ _Lantai bersih — modifier baru mulai di lantai ${ABADI_MODIFIER_MULAI}._`,
       '',
       `⚡ Stamina Menara: *${energi.menara}/${db.TCG_MAX_STAMINA_MENARA}*`,
       '',
       GARIS,
-      '➜ `.tcg abadi lawan` untuk menantang.',
+      '➜ `.tcg autodek abadi` — susun dek yang cocok untuk lantai ini',
+      '➜ `.tcg abadi lawan` — menantang sekarang',
       '',
       '_Elemen penjaga berputar tiap lantai — satu dek tidak akan cukup selamanya._',
       '_Kalah tidak menurunkan lantai, tapi tetap memakai stamina._',
@@ -401,8 +411,28 @@ export async function kelolaAbadi(sock, jid, messageObj, key, aksiArg) {
     return true;
   }
 
+  // Syarat penyusunan (segel elemen, wajib elemen, batas bintang) diperiksa di
+  // sini — sebelum stamina dipotong. Melanggar aturan pendaftaran bukan
+  // kekalahan, jadi tidak boleh memakan sumber daya yang sedang dijatah.
+  const syarat = periksaSyaratModifier(deck, modifier);
+  if (!syarat.boleh) {
+    await send(sock, jid, messageObj, [
+      `${modifier.emoji} *LANTAI ${target} — ${modifier.nama.toUpperCase()}*`,
+      `_${modifier.teks}_`,
+      '',
+      syarat.alasan,
+      '',
+      GARIS,
+      '➜ `.tcg autodek abadi` — susun ulang dek yang memenuhi syarat lantai ini',
+      '➜ `.tcg pasang <1-3> <id>` — atur sendiri',
+      '',
+      '_Stamina kamu belum terpakai._'
+    ].join('\n'));
+    return true;
+  }
+
   const namaKu = messageObj?.pushName || 'Kamu';
-  const sim = simulate3v3(deck, lantai.deck, namaKu, `Penjaga ${lantai.nama}`);
+  const sim = simulate3v3(deck, lantai.deck, namaKu, `Penjaga ${lantai.nama}`, { modifier });
 
   // Stamina dipakai lebih dulu, apa pun hasilnya. Percobaan yang gagal tetap
   // memakan sumber daya yang sedang dijatah — kalau kalah itu gratis, tidak ada
@@ -421,6 +451,7 @@ export async function kelolaAbadi(sock, jid, messageObj, key, aksiArg) {
     await send(sock, jid, messageObj, [
       `💀 *GAGAL DI LANTAI ABADI ${target}*`,
       `📍 _${lantai.nama}_ · penjaga Lv.${lantai.level} ×${lantai.skala.toFixed(2)}`,
+      modifier ? `${modifier.emoji} _${modifier.nama}: ${modifier.teks}_` : '',
       '',
       ...sim.sinergiReport,
       '',
@@ -452,6 +483,7 @@ export async function kelolaAbadi(sock, jid, messageObj, key, aksiArg) {
   await send(sock, jid, messageObj, [
     `🌌 *LANTAI ABADI ${target} DITEMBUS!*`,
     `📍 _${lantai.nama}_ · penjaga Lv.${lantai.level} ×${lantai.skala.toFixed(2)}`,
+    modifier ? `${modifier.emoji} _${modifier.nama} ditaklukkan_` : '',
     '',
     ...sim.sinergiReport,
     '',

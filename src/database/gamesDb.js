@@ -1,4 +1,5 @@
 import { runQuery, getQuery, allQuery, withTransaction, normalizePhoneDigits } from './connection.js';
+import { config } from '../../config.js';
 
 import { addLog, getOrCreateCustomer, getCustomerMembershipProfile, getSettings } from './userDb.js';
 
@@ -80,23 +81,107 @@ export async function updateLastRobbedAt(customerJid) {
   await runQuery("UPDATE game_profiles SET last_robbed_at = CURRENT_TIMESTAMP WHERE customer_jid = ?", [customerJid]);
 }
 
+/**
+ * EKONOMI BANK — tiga aturan yang saling mengunci. Jangan ubah satu tanpa
+ * memikirkan dua lainnya.
+ *
+ * 1. **Menarik uang sendiri tidak dipajaki.** Dulu setor gratis tapi tarik kena
+ *    2%, jadi setor 100 lalu tarik 100 cuma balik 98 — uang pas tidak pernah
+ *    ada. Digabung dengan bunga 2%/hari, bank jadi katup satu arah: semua masuk,
+ *    tidak ada yang keluar. Saat aturan ini ditulis, 95% kekayaan seluruh bot
+ *    parkir di bank dan cuma 5.790 poin benar-benar beredar di 134 dompet.
+ * 2. **Bunga bertingkat + batas keras.** Bunga hanya untuk `BANK_BUNGA_TIER`
+ *    poin pertama dan tidak pernah lebih dari `BANK_BUNGA_CAP` per hari per
+ *    akun. Sebelum ini, 93% bunga harian mengalir ke 3 akun saja.
+ * 3. **Dana endap menggantikan pajak tarik sebagai rem.** Setoran baru belum
+ *    kebal `.steal` selama `BANK_ENDAP_MS`. Tanpa ini, menghapus pajak tarik
+ *    membuat bank jadi tameng sempurna dan `.steal` mati total.
+ */
+export const BANK_BUNGA_RATE = 0.02;
+export const BANK_BUNGA_TIER = 5000;   // bunga hanya untuk saldo sampai angka ini
+export const BANK_BUNGA_CAP = 50;      // maksimum poin bunga per akun per hari
+// Cap sengaja DI BAWAH tier*rate (5000 x 2% = 100) supaya batas ini benar-benar
+// menggigit. Kalau disamakan dengan 100, capnya tidak pernah aktif dan hasilnya
+// identik dengan bunga bertingkat biasa.
+export const BANK_ENDAP_MS = 10 * 60 * 1000;
+
+/** Berapa poin korban yang masih bisa dijangkau `.steal`: dompet + dana endap. */
+export async function getSaldoRawan(customerJid) {
+  const prof = await getGameProfile(customerJid);
+  const dompet = Math.max(0, Number(prof?.points) || 0);
+  const masihEndap = (Date.now() - (Number(prof?.bank_pending_at) || 0)) < BANK_ENDAP_MS;
+  const endap = masihEndap
+    ? Math.min(Math.max(0, Number(prof?.bank_pending) || 0), Math.max(0, Number(prof?.bank_points) || 0))
+    : 0;
+  return { dompet, endap, rawan: dompet + endap, profile: prof };
+}
+
+/**
+ * Ambil paksa dari korban `.steal`: dompet dulu, sisanya baru menggerus dana
+ * yang belum mengendap. Saldo bank yang sudah mengendap tidak pernah tersentuh.
+ */
+export async function curiSaldoKorban(customerJid, jumlah) {
+  const target = Math.max(0, Math.floor(Number(jumlah) || 0));
+  if (target <= 0) return { success: false, diambil: 0 };
+
+  return withTransaction(async () => {
+    const s = await getSaldoRawan(customerJid);
+    const diambil = Math.min(target, s.rawan);
+    if (diambil <= 0) return { success: false, diambil: 0 };
+
+    const dariDompet = Math.min(diambil, s.dompet);
+    const dariEndap = diambil - dariDompet;
+
+    await runQuery(
+      `UPDATE game_profiles
+       SET points = MAX(0, COALESCE(points, 0) - ?),
+           bank_points = MAX(0, COALESCE(bank_points, 0) - ?),
+           bank_pending = MAX(0, COALESCE(bank_pending, 0) - ?),
+           updated_at = CURRENT_TIMESTAMP
+       WHERE customer_jid = ?`,
+      [dariDompet, dariEndap, dariEndap, customerJid]
+    );
+    return { success: true, diambil, dariDompet, dariEndap };
+  });
+}
+
+/** Bunga harian yang akan diterima satu saldo tertentu — dipakai layar `.bank`. */
+export function hitungBungaHarian(bankPoints) {
+  const saldo = Math.max(0, Math.floor(Number(bankPoints) || 0));
+  if (saldo < 25) return 0;
+  return Math.min(BANK_BUNGA_CAP, Math.floor(Math.min(saldo, BANK_BUNGA_TIER) * BANK_BUNGA_RATE));
+}
+
 export async function bankDeposit(customerJid, amount) {
   const safeAmount = Math.max(0, Math.floor(Number(amount)));
   if (safeAmount <= 0) return { success: false, reason: 'INVALID_AMOUNT' };
   
   return withTransaction(async () => {
+    const now = Date.now();
+    const prof = await getQuery(
+      "SELECT bank_pending, bank_pending_at FROM game_profiles WHERE customer_jid = ?", [customerJid]
+    );
+    // Setoran lama yang sudah mengendap tidak boleh ikut dihidupkan lagi.
+    const masihEndap = prof && (now - (Number(prof.bank_pending_at) || 0)) < BANK_ENDAP_MS;
+    const pendingBaru = (masihEndap ? Math.max(0, Number(prof.bank_pending) || 0) : 0) + safeAmount;
+
     const res = await runQuery(
-      `UPDATE game_profiles SET points = points - ?, bank_points = COALESCE(bank_points, 0) + ? WHERE customer_jid = ? AND points >= ?`,
-      [safeAmount, safeAmount, customerJid, safeAmount]
+      `UPDATE game_profiles
+       SET points = points - ?,
+           bank_points = COALESCE(bank_points, 0) + ?,
+           bank_pending = ?,
+           bank_pending_at = ?
+       WHERE customer_jid = ? AND points >= ?`,
+      [safeAmount, safeAmount, pendingBaru, now, customerJid, safeAmount]
     );
     if (res.changes === 0) {
       return { success: false, reason: 'INSUFFICIENT_FUNDS' };
     }
-    return { success: true };
+    return { success: true, pending: pendingBaru, endapSampai: now + BANK_ENDAP_MS };
   });
 }
 
-export async function bankWithdraw(customerJid, amount, taxRate = 0.02) {
+export async function bankWithdraw(customerJid, amount, taxRate = 0) {
   const safeAmount = Math.max(0, Math.floor(Number(amount)));
   if (safeAmount <= 0) return { success: false, reason: 'INVALID_AMOUNT' };
   
@@ -114,14 +199,22 @@ export async function bankWithdraw(customerJid, amount, taxRate = 0.02) {
   });
 }
 
-export async function applyDailyBankInterest(interestRate = 0.02) {
+export async function applyDailyBankInterest(
+  interestRate = BANK_BUNGA_RATE,
+  tier = BANK_BUNGA_TIER,
+  cap = BANK_BUNGA_CAP
+) {
   return withTransaction(async () => {
+    // Bunga dihitung hanya dari `tier` poin pertama lalu dipotong `cap`.
+    // Rumusnya ditulis di SQL supaya tetap satu pernyataan atomik untuk semua
+    // nasabah, sama seperti versi sebelumnya.
     const res = await runQuery(
       `UPDATE game_profiles
-       SET bank_points = MIN(${MAX_POINTS}, CAST(ROUND(bank_points * (1 + ?)) AS INTEGER)),
+       SET bank_points = MIN(${MAX_POINTS},
+             bank_points + MIN(?, CAST(MIN(bank_points, ?) * ? AS INTEGER))),
            updated_at = CURRENT_TIMESTAMP
        WHERE bank_points >= 25`,
-      [interestRate]
+      [cap, tier, interestRate]
     );
     return res.changes || 0;
   });
@@ -239,7 +332,14 @@ export async function deductGamePoints(customerJid, amount) {
 
 export async function awardGamePoints(customerJid, points, won = false) {
   const rawPts = Number.parseInt(points, 10);
-  const safePoints = (!isFinite(rawPts) || isNaN(rawPts)) ? 0 : Math.max(0, Math.min(1000, rawPts));
+  // Batas atas dipakai MAX_POINTS (sama seperti addGamePoints). Dulu di sini
+  // ada batas keras 1.000 poin dari masa ketika hadiah terbesar cuma trivia
+  // (~50 poin). Game baru (Mines cashout, Raid Boss prizepool, Mystery Auction)
+  // rutin membayar di atas 1.000, sehingga batas lama memotong hadiah secara
+  // diam-diam: pesan menampilkan hadiah penuh tapi dompet cuma nambah 1.000.
+  // Batas ini murni penjaga nilai gila/overflow, bukan aturan ekonomi — nilai
+  // hadiah tiap game diatur di modul game masing-masing.
+  const safePoints = (!isFinite(rawPts) || isNaN(rawPts)) ? 0 : Math.max(0, Math.min(MAX_POINTS, rawPts));
   // XP Booster hanya mengalikan XP, tidak pernah poin — poin tetap 1:1 supaya
   // buff tidak bisa dipakai untuk menggandakan saldo poin.
   const xpBoost = await getBuffMultiplier(customerJid, 'XP_BOOST');
@@ -261,6 +361,22 @@ export async function awardGamePoints(customerJid, points, won = false) {
     }
     return { ...profile, earned: safePoints };
   });
+}
+
+/**
+ * Tanggal hari ini menurut WIB (UTC+7), format YYYY-MM-DD.
+ *
+ * `.daily` dulu memakai `new Date().toISOString()` yang selalu UTC, sehingga
+ * "hari" pemain berganti jam 07:00 pagi WIB, bukan tengah malam. Pemain yang
+ * main lewat tengah malam ditolak dengan "sudah diklaim hari ini" padahal bagi
+ * mereka sudah hari baru. scheduler.js sudah memakai pergeseran +7 jam ini
+ * untuk laporan harian dan bunga bank; `.daily` tertinggal.
+ *
+ * (`tcgTanggalHariIni()` di tcgDb.js adalah fungsi yang sama dengan nama khusus
+ * TCG — jangan tambah versi ketiga.)
+ */
+export function tanggalWIB() {
+  return new Date(Date.now() + 7 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
 export async function claimGameDaily(customerJid, today, reward = 25) {
@@ -323,24 +439,202 @@ export async function getGameLeaderboard(limit = 10) {
   return rows.slice(0, safeLimit);
 }
 
-export async function resetGameLeaderboard() {
-  // 1. Hapus profile game dari user yang belum mendaftar (.daftar)
-  await runQuery(`
+/**
+ * PAPAN PERINGKAT SERBAGUNA (dipakai `.lb <kategori>`)
+ *
+ * Semua mode memakai satu query yang sama; yang berbeda cuma ORDER BY. Daftar
+ * mode adalah whitelist karena potongan SQL-nya digabung sebagai teks — nama
+ * mode tidak boleh datang dari input pemain tanpa lewat peta ini.
+ */
+const PAPAN_PROFIL = {
+  poin:   'COALESCE(g.points, 0) DESC, COALESCE(g.level, 1) DESC',
+  level:  'COALESCE(g.level, 1) DESC, COALESCE(g.xp, 0) DESC',
+  kaya:   '(COALESCE(g.points, 0) + COALESCE(g.bank_points, 0)) DESC, COALESCE(g.level, 1) DESC',
+  menang: 'COALESCE(g.games_won, 0) DESC, COALESCE(g.games_played, 0) ASC',
+  streak: 'COALESCE(g.daily_streak, 0) DESC, COALESCE(g.points, 0) DESC'
+};
+
+/**
+ * Semua member terdaftar sebagai calon penerima bansos — **OWNER IKUT**.
+ *
+ * JANGAN pernah memakai `getProfileLeaderboard()` untuk daftar penerima. Fungsi
+ * itu sengaja membuang owner DUA LAPIS (kolom `c.role` dan pencocokan digit
+ * nomor) supaya papan peringkat tidak didominasi pemiliknya sendiri, dan diam-
+ * diam memotong hasilnya di 100 baris lewat `Math.min(100, limit)`.
+ *
+ * Dipakai sebagai daftar penerima, dua sifat itu jadi bug: owner tidak pernah
+ * kebagian bansosnya sendiri, dan begitu member terdaftar lewat 100 orang
+ * sisanya ikut hilang tanpa pesan. Terbukti di produksi: 63 member terdaftar,
+ * `bansos_log` mencatat 62 penerima dua kali berturut-turut — satu yang hilang
+ * adalah owner.
+ */
+export async function getPenerimaBansos(limit = 1000) {
+  const safeLimit = Math.max(1, Math.min(5000, Number.parseInt(limit, 10) || 1000));
+  return allQuery(
+    `SELECT g.customer_jid,
+            COALESCE(c.nama, 'Member') AS customer_nama
+     FROM game_profiles g
+     INNER JOIN customers c ON c.nomor = g.customer_jid
+     WHERE c.profile_completed = 1
+     ORDER BY COALESCE(c.nama, '') COLLATE NOCASE ASC, g.customer_jid ASC
+     LIMIT ?`,
+    [safeLimit]
+  );
+}
+
+export async function getProfileLeaderboard(mode = 'poin', limit = 10) {
+  const kunci = Object.prototype.hasOwnProperty.call(PAPAN_PROFIL, mode) ? mode : 'poin';
+  const safeLimit = Math.max(1, Math.min(100, Number.parseInt(limit, 10) || 10));
+
+  // Owner disaring dua lapis: lewat kolom role, dan lewat pencocokan digit
+  // nomor. Lapis kedua perlu karena baris owner bisa saja tercatat sebagai
+  // MEMBER kalau profilnya dibuat sebelum role-nya diatur.
+  let ownerDigits = '';
+  try {
+    const settings = await getSettings();
+    ownerDigits = normalizePhoneDigits(settings?.ownerNumber || config.defaults.ownerNumber || '');
+  } catch (e) { /* biarkan tanpa filter digit */ }
+
+  let rows = await allQuery(
+    `SELECT g.customer_jid,
+            COALESCE(g.points, 0) AS points,
+            COALESCE(g.bank_points, 0) AS bank_points,
+            COALESCE(g.points, 0) + COALESCE(g.bank_points, 0) AS total_harta,
+            COALESCE(g.xp, 0) AS xp,
+            COALESCE(g.level, 1) AS level,
+            COALESCE(g.games_won, 0) AS games_won,
+            COALESCE(g.games_played, 0) AS games_played,
+            COALESCE(g.daily_streak, 0) AS daily_streak,
+            COALESCE(c.nama, 'Member') AS customer_nama
+     FROM game_profiles g
+     INNER JOIN customers c ON c.nomor = g.customer_jid
+     WHERE c.profile_completed = 1 AND UPPER(COALESCE(c.role, 'MEMBER')) != 'OWNER'
+     ORDER BY ${PAPAN_PROFIL[kunci]}
+     LIMIT ?`,
+    [safeLimit + 10]
+  );
+
+  if (ownerDigits && ownerDigits.length > 5) {
+    rows = rows.filter(r => {
+      const d = normalizePhoneDigits(r.customer_jid || '');
+      return !d.includes(ownerDigits) && !ownerDigits.includes(d);
+    });
+  }
+
+  return rows.slice(0, safeLimit);
+}
+
+// ============================================================
+// RIWAYAT BANSOS OWNER
+// ============================================================
+
+export async function catatBansos({ jenis, jumlah = 0, penerima = 0, alasan = null } = {}) {
+  if (!jenis) return null;
+  await runQuery(
+    "INSERT INTO bansos_log (jenis, jumlah, penerima, alasan) VALUES (?, ?, ?, ?)",
+    [String(jenis).slice(0, 32),
+     Math.max(0, Math.floor(Number(jumlah) || 0)),
+     Math.max(0, Math.floor(Number(penerima) || 0)),
+     alasan ? String(alasan).slice(0, 500) : null]
+  );
+  return true;
+}
+
+export async function getBansosLog(limit = 15) {
+  const safeLimit = Math.max(1, Math.min(50, Number.parseInt(limit, 10) || 15));
+  return await allQuery(
+    "SELECT jenis, jumlah, penerima, alasan, created_at FROM bansos_log ORDER BY id DESC LIMIT ?",
+    [safeLimit]
+  );
+}
+
+/** Papan member paling cerewet di satu grup (dari group_chat_stats). */
+export async function getChatLeaderboard(groupJid, limit = 10) {
+  if (!groupJid) return [];
+  const safeLimit = Math.max(1, Math.min(100, Number.parseInt(limit, 10) || 10));
+  return await allQuery(
+    `SELECT s.participant_jid AS customer_jid,
+            COALESCE(s.msg_count, 0) AS msg_count,
+            COALESCE(c.nama, 'Member') AS customer_nama
+     FROM group_chat_stats s
+     LEFT JOIN customers c ON c.nomor = s.participant_jid
+     WHERE s.group_jid = ? AND COALESCE(s.msg_count, 0) > 0
+     ORDER BY COALESCE(s.msg_count, 0) DESC
+     LIMIT ?`,
+    [groupJid, safeLimit]
+  );
+}
+
+/**
+ * Hitung dampak reset SEBELUM dijalankan. Dipakai layar konfirmasi supaya
+ * pemanggil melihat angka nyata, bukan kalimat abstrak.
+ */
+export async function pratinjauResetLeaderboard() {
+  const belum = await getQuery(`
+    SELECT COUNT(*) n FROM game_profiles
+    WHERE customer_jid NOT IN (SELECT nomor FROM customers WHERE profile_completed = 1)
+  `);
+  const sudah = await getQuery(`
+    SELECT COUNT(*) n,
+           COALESCE(SUM(points), 0) poin,
+           COALESCE(SUM(bank_points), 0) bank,
+           COALESCE(SUM(xp), 0) xp
+    FROM game_profiles
+    WHERE customer_jid IN (SELECT nomor FROM customers WHERE profile_completed = 1)
+  `);
+  return {
+    akanDihapus: Number(belum?.n) || 0,
+    akanDinolkan: Number(sudah?.n) || 0,
+    poinHilang: Number(sudah?.poin) || 0,
+    xpHilang: Number(sudah?.xp) || 0,
+    bankTetap: Number(sudah?.bank) || 0
+  };
+}
+
+/**
+ * Reset papan peringkat game.
+ *
+ * BAHAYA: mode `'total'` menjalankan UPDATE **tanpa klausa WHERE** yang menolkan
+ * poin, XP, level, dan streak SELURUH member terdaftar sekaligus. Sebelumnya
+ * fungsi ini tidak punya parameter apa pun, sehingga satu perintah tanpa
+ * argumen dari admin grup WhatsApp mana pun langsung menghapus seluruh ekonomi
+ * bot tanpa konfirmasi. Pemanggil WAJIB meminta konfirmasi eksplisit sebelum
+ * memakai `'total'` — lihat `.resetleaderboard` di groupAdminHandler.js.
+ *
+ * - `'bersih'` (default): hanya menghapus profil milik user yang belum `.daftar`.
+ *   Member terdaftar tidak tersentuh sama sekali.
+ * - `'total'`: `'bersih'` + menolkan poin/XP/level/streak semua member terdaftar.
+ *
+ * Catatan: `bank_points` sengaja TIDAK ikut dinolkan, mengikuti perilaku lama.
+ * Artinya "reset total" pun menyisakan saldo bank — disadari, bukan kelalaian.
+ */
+export async function resetGameLeaderboard(mode = 'bersih') {
+  const modeAman = String(mode).toLowerCase() === 'total' ? 'total' : 'bersih';
+
+  // 1. Hapus profil game milik user yang belum mendaftar (.daftar)
+  const hapus = await runQuery(`
     DELETE FROM game_profiles
     WHERE customer_jid NOT IN (
       SELECT nomor FROM customers WHERE profile_completed = 1
     )
   `);
+  const dihapus = hapus.changes || 0;
 
-  // 2. Reset semua poin, XP, level, dan streak untuk member terdaftar
+  if (modeAman === 'bersih') {
+    await addLog("ADMIN", `Papan peringkat dibersihkan: ${dihapus} profil belum terdaftar dihapus. Member terdaftar tidak disentuh.`);
+    return { success: true, mode: modeAman, dihapus, dinolkan: 0 };
+  }
+
+  // 2. Nolkan poin, XP, level, dan streak SEMUA member terdaftar.
   const result = await runQuery(`
     UPDATE game_profiles
     SET points = 0, xp = 0, level = 1, games_played = 0, games_won = 0,
         daily_streak = 0, daily_claimed_at = NULL, updated_at = CURRENT_TIMESTAMP
   `);
+  const dinolkan = result.changes || 0;
 
-  await addLog("ADMIN", `Leaderboard game di-reset bersih (${result.changes} member di-reset).`);
-  return { success: true, resetCount: result.changes };
+  await addLog("ADMIN", `RESET TOTAL papan peringkat: ${dihapus} profil dihapus, ${dinolkan} member terdaftar dinolkan.`);
+  return { success: true, mode: modeAman, dihapus, dinolkan };
 }
 
 
@@ -485,7 +779,68 @@ export function getRankBadgeTitle(level) {
 }
 
 /**
- * Menambahkan XP per pesan di grup & mengecek peningkatan level
+ * Menambahkan XP secara atomik. **Ini yang harus dipakai semua modul game**
+ * untuk memberi hadiah XP — jangan pakai `addMessageXp`.
+ *
+ * Dua bug diperbaiki di sini sekaligus:
+ *
+ * 1. *Hadiah XP hilang diam-diam.* 23 modul game dulu memanggil `addMessageXp`,
+ *    yang punya cooldown 30 detik milik XP chat grup. Hook XP chat di bot.js
+ *    berjalan SEBELUM perintah diproses, jadi jendela 30 detik pemain hampir
+ *    selalu sudah terbakar oleh perintahnya sendiri (`.serang`, `.bid`, dst).
+ *    Akibatnya angka "+100 XP" di pesan kemenangan sering tidak pernah masuk DB.
+ *    Yang paling parah: blackjack, jailbreak, quizTournament, duelRoulette,
+ *    umaDerby, dan loot XP lelang — di situ XP ini SATU-SATUNYA sumber XP.
+ * 2. *Penulisan non-atomik.* Versi lama membaca XP lalu menulis balik nilai
+ *    penuh (`SET xp = ?`) lewat query polos di luar transaksi. `withTransaction`
+ *    hanya menyerialkan sesama transaksi, jadi tulisan itu bisa menimpa XP yang
+ *    baru saja ditambahkan `awardGamePoints` — keduanya dipanggil berurutan
+ *    untuk tiap anggota party di raidBoss.js.
+ */
+export async function grantXp(customerJid, xpAmount = 10) {
+  const profile = await getGameProfile(customerJid);
+  const oldLevel = Math.max(1, Number(profile.level) || 1);
+  // Power-Up XP Booster dari toko poin `.tukar` dikalikan di sini.
+  const xpBoost = await getBuffMultiplier(customerJid, 'XP_BOOST');
+  const grantedXp = Math.max(0, Math.round((Number(xpAmount) || 0) * xpBoost));
+
+  if (grantedXp <= 0) {
+    return {
+      leveledUp: false,
+      oldLevel,
+      newLevel: oldLevel,
+      titleBadge: getRankBadgeTitle(oldLevel),
+      xp: Math.max(0, Number(profile.xp) || 0),
+      profile
+    };
+  }
+
+  return withTransaction(async () => {
+    await runQuery(
+      "UPDATE game_profiles SET xp = COALESCE(xp, 0) + ?, updated_at = CURRENT_TIMESTAMP WHERE customer_jid = ?",
+      [grantedXp, customerJid]
+    );
+    const segar = await getGameProfile(customerJid);
+    const newXp = Math.max(0, Number(segar.xp) || 0);
+    const newLevel = Math.floor(newXp / 100) + 1;
+    if (newLevel !== segar.level) {
+      await runQuery("UPDATE game_profiles SET level = ? WHERE customer_jid = ?", [newLevel, customerJid]);
+    }
+    return {
+      leveledUp: newLevel > oldLevel,
+      oldLevel,
+      newLevel,
+      titleBadge: getRankBadgeTitle(newLevel),
+      xp: newXp,
+      profile: { ...segar, xp: newXp, level: newLevel }
+    };
+  });
+}
+
+/**
+ * XP dari mengetik di grup. **Khusus hook chat di bot.js** — cooldown 30 detik
+ * di sini adalah rem anti-spam untuk XP chat, bukan aturan hadiah game.
+ * Modul game harus memanggil `grantXp` langsung.
  */
 export async function addMessageXp(customerJid, xpAmount = 10) {
   const now = Date.now();
@@ -494,33 +849,7 @@ export async function addMessageXp(customerJid, xpAmount = 10) {
     return { leveledUp: false };
   }
   xpCooldowns.set(customerJid, now);
-
-  const profile = await getGameProfile(customerJid);
-  const oldXp = profile.xp || 0;
-  const oldLevel = profile.level || 1;
-  // Power-Up XP Booster dari toko poin `.tukar` dikalikan di sini — ini satu-satunya
-  // tempat XP chat ditambahkan, jadi cukup satu hook.
-  const xpBoost = await getBuffMultiplier(customerJid, 'XP_BOOST');
-  const grantedXp = Math.max(0, Math.round(xpAmount * xpBoost));
-  const newXp = oldXp + grantedXp;
-  const newLevel = Math.floor(newXp / 100) + 1;
-
-  await runQuery(
-    "UPDATE game_profiles SET xp = ?, level = ?, updated_at = CURRENT_TIMESTAMP WHERE customer_jid = ?",
-    [newXp, newLevel, customerJid]
-  );
-
-  const titleBadge = getRankBadgeTitle(newLevel);
-  const leveledUp = newLevel > oldLevel;
-
-  return {
-    leveledUp,
-    oldLevel,
-    newLevel,
-    titleBadge,
-    xp: newXp,
-    profile: { ...profile, xp: newXp, level: newLevel }
-  };
+  return grantXp(customerJid, xpAmount);
 }
 
 // ============================================================
@@ -706,15 +1035,30 @@ export async function createFulfillmentJob(orderId, customerNumber) {
 }
 
 /**
- * Get all PENDING or FAILED fulfillment jobs (for worker pickup and recovery after restart).
+ * Job pengiriman yang perlu dikerjakan worker: PENDING, FAILED, dan PROCESSING
+ * yang tersangkut.
+ *
+ * PROCESSING wajib ikut. Kalau bot mati atau restart tepat saat sebuah job
+ * sedang dikirim, statusnya berhenti selamanya di PROCESSING dan sebelumnya
+ * tidak pernah diambil worker mana pun — artinya order yang SUDAH DIBAYAR tidak
+ * pernah terkirim dan tidak ada yang tahu. Mengulanginya aman karena
+ * claimAndDeliverItems mencari item USED milik order ini lebih dulu sebelum
+ * menyentuh stok baru, jadi tidak ada lisensi kedua yang terbakar.
+ *
+ * CAST dipakai karena baris lama bisa menyimpan updated_at sebagai teks tanggal;
+ * hasil CAST-nya jadi angka kecil sehingga baris itu ikut dianggap stale — arah
+ * yang aman (diproses ulang) ketimbang terlewat selamanya.
  */
-export async function getPendingFulfillmentJobs() {
+export async function getPendingFulfillmentJobs(staleProcessingMs = 5 * 60 * 1000) {
+  const ambang = Date.now() - Math.max(60_000, Number(staleProcessingMs) || 0);
   return allQuery(
     `SELECT fj.*, o.payment_amount, o.casaku_transaction_id
      FROM fulfillment_jobs fj
      JOIN orders o ON fj.order_id = o.order_id
      WHERE fj.status IN ('PENDING', 'FAILED')
+        OR (fj.status = 'PROCESSING' AND CAST(fj.updated_at AS INTEGER) <= ?)
      ORDER BY fj.created_at ASC`
+    , [ambang]
   );
 }
 
@@ -828,8 +1172,17 @@ export async function getStalePendingOrders(thresholdMinutes = 3) {
 /**
  * Get AI usage count today for a user.
  */
+/**
+ * Kuota AI harian memakai tanggal WIB, bukan UTC.
+ *
+ * `new Date().toISOString()` menghasilkan tanggal UTC, jadi kuotanya dulu berganti
+ * pukul 07:00 WIB — bukan tengah malam. Dua akibatnya: pemain yang kuotanya habis
+ * malam ini harus menunggu sampai pagi, dan siapa pun yang tahu polanya bisa
+ * memakai jatah penuh pukul 06:59 lalu memakai jatah penuh lagi pukul 07:01,
+ * yakni dua kali kuota berbayar dalam dua menit.
+ */
 export async function getAiUsageToday(jid) {
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = tanggalWIB();
   const row = await getQuery(
     "SELECT count FROM ai_usage_logs WHERE jid = ? AND usage_date = ?",
     [jid, todayStr]
@@ -841,7 +1194,7 @@ export async function getAiUsageToday(jid) {
  * Increment AI usage count today for a user.
  */
 export async function incrementAiUsage(jid) {
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = tanggalWIB();
   await runQuery(
     `INSERT INTO ai_usage_logs (jid, usage_date, count) VALUES (?, ?, 1)
      ON CONFLICT(jid, usage_date) DO UPDATE SET count = count + 1`,
@@ -849,6 +1202,40 @@ export async function incrementAiUsage(jid) {
   );
   return await getAiUsageToday(jid);
 }
+
+// ============================================================
+// KUOTA DOWNLOADER HARIAN
+// ============================================================
+/**
+ * Memakai tanggal WIB, sama seperti kuota AI — supaya jatah berganti tengah
+ * malam menurut jam pemain, bukan pukul 07:00 WIB seperti kalau memakai UTC.
+ */
+export async function getMediaUsageToday(jid) {
+  const row = await getQuery(
+    "SELECT count FROM media_usage_logs WHERE jid = ? AND usage_date = ?",
+    [jid, tanggalWIB()]
+  );
+  return row ? row.count : 0;
+}
+
+export async function incrementMediaUsage(jid) {
+  const todayStr = tanggalWIB();
+  await runQuery(
+    `INSERT INTO media_usage_logs (jid, usage_date, count) VALUES (?, ?, 1)
+     ON CONFLICT(jid, usage_date) DO UPDATE SET count = count + 1`,
+    [jid, todayStr]
+  );
+  return await getMediaUsageToday(jid);
+}
+
+/** Buang catatan pemakaian yang sudah lewat, dipanggil scheduler. */
+export async function bersihkanPemakaianMediaLama(simpanHari = 7) {
+  const batas = new Date(Date.now() + 7 * 60 * 60 * 1000 - simpanHari * 86400000)
+    .toISOString().slice(0, 10);
+  const res = await runQuery("DELETE FROM media_usage_logs WHERE usage_date < ?", [batas]);
+  return res.changes || 0;
+}
+
 
 /**
  * Add product to user's wishlist.
@@ -1342,6 +1729,211 @@ export async function getUndercoverLeaderboard(limit = 10, minGames = 3) {
 
 
 // ============================================================
+// STATISTIK RAID WORLD BOSS
+// ============================================================
+// Dua tabel: `raid_stats` per pemain (untuk `.raidstats` & `.raidtop`) dan
+// `raid_group_progress` per grup (untuk membuka Nightmare Mode dan menampilkan
+// rekor grup di `.raid list`).
+
+const RAID_BOSS_IDS = ['ignis', 'malakor', 'raijin', 'leviathan', 'erebus'];
+
+export async function getRaidStats(customerJid) {
+  if (!customerJid) return null;
+  await runQuery("INSERT OR IGNORE INTO raid_stats (customer_jid) VALUES (?)", [customerJid]);
+  const row = await getQuery("SELECT * FROM raid_stats WHERE customer_jid = ?", [customerJid]);
+  if (!row) return null;
+
+  for (const key of Object.keys(row)) {
+    if (key === 'customer_jid' || key === 'last_played' || key === 'updated_at') continue;
+    row[key] = Math.max(0, Math.floor(Number(row[key]) || 0));
+  }
+  return row;
+}
+
+/**
+ * Catat hasil satu raid untuk seorang pemain.
+ * `bossId` harus salah satu dari RAID_BOSS_IDS — nama kolom tidak boleh datang
+ * dari input bebas.
+ */
+export async function recordRaidResult(customerJid, {
+  won = false, bossId = null, damage = 0, healing = 0, absorbed = 0,
+  mvpDamage = false, mvpSupport = false, ko = 0, prize = 0
+} = {}) {
+  if (!customerJid) return null;
+  await runQuery("INSERT OR IGNORE INTO raid_stats (customer_jid) VALUES (?)", [customerJid]);
+
+  const dmg = Math.max(0, Math.floor(Number(damage) || 0));
+  const heal = Math.max(0, Math.floor(Number(healing) || 0));
+  const abs = Math.max(0, Math.floor(Number(absorbed) || 0));
+  const koCount = Math.max(0, Math.floor(Number(ko) || 0));
+  const poin = Math.max(0, Math.floor(Number(prize) || 0));
+
+  const kolomBoss = (won && RAID_BOSS_IDS.includes(bossId)) ? `kill_${bossId}` : null;
+
+  await runQuery(
+    `UPDATE raid_stats SET
+       raids_joined = raids_joined + 1,
+       raids_won = raids_won + ?,
+       total_damage = total_damage + ?,
+       total_healing = total_healing + ?,
+       total_absorbed = total_absorbed + ?,
+       best_damage = MAX(COALESCE(best_damage, 0), ?),
+       mvp_damage = mvp_damage + ?,
+       mvp_support = mvp_support + ?,
+       times_ko = times_ko + ?,
+       points_won = points_won + ?,
+       ${kolomBoss ? `${kolomBoss} = ${kolomBoss} + 1,` : ''}
+       last_played = CURRENT_TIMESTAMP,
+       updated_at = CURRENT_TIMESTAMP
+     WHERE customer_jid = ?`,
+    [won ? 1 : 0, dmg, heal, abs, dmg, mvpDamage ? 1 : 0, mvpSupport ? 1 : 0, koCount, poin, customerJid]
+  );
+
+  return true;
+}
+
+export async function getRaidLeaderboard(limit = 10, minRaids = 1) {
+  const safeLimit = Math.max(1, Math.min(50, Number.parseInt(limit, 10) || 10));
+  const safeMin = Math.max(1, Number.parseInt(minRaids, 10) || 1);
+  return await allQuery(
+    `SELECT r.customer_jid,
+            COALESCE(r.raids_joined, 0) AS raids_joined,
+            COALESCE(r.raids_won, 0) AS raids_won,
+            COALESCE(r.total_damage, 0) AS total_damage,
+            COALESCE(r.mvp_damage, 0) AS mvp_damage,
+            COALESCE(r.mvp_support, 0) AS mvp_support,
+            COALESCE(c.nama, 'Member') AS customer_nama
+     FROM raid_stats r
+     LEFT JOIN customers c ON c.nomor = r.customer_jid
+     WHERE COALESCE(r.raids_joined, 0) >= ?
+     ORDER BY COALESCE(r.raids_won, 0) DESC,
+              COALESCE(r.total_damage, 0) DESC,
+              COALESCE(r.mvp_damage, 0) DESC
+     LIMIT ?`,
+    [safeMin, safeLimit]
+  );
+}
+
+export async function getRaidGroupProgress(groupJid) {
+  if (!groupJid) return null;
+  await runQuery("INSERT OR IGNORE INTO raid_group_progress (group_jid) VALUES (?)", [groupJid]);
+  const row = await getQuery("SELECT * FROM raid_group_progress WHERE group_jid = ?", [groupJid]);
+  if (!row) return null;
+
+  for (const key of Object.keys(row)) {
+    if (key === 'group_jid' || key === 'updated_at') continue;
+    row[key] = Math.max(0, Math.floor(Number(row[key]) || 0));
+  }
+  return row;
+}
+
+/** Catat satu boss yang berhasil ditumbangkan grup, plus rekor ronde tercepat. */
+export async function recordRaidGroupKill(groupJid, bossId, rounds = 0) {
+  if (!groupJid || !RAID_BOSS_IDS.includes(bossId)) return null;
+  const ronde = Math.max(1, Math.floor(Number(rounds) || 1));
+
+  await runQuery("INSERT OR IGNORE INTO raid_group_progress (group_jid) VALUES (?)", [groupJid]);
+  await runQuery(
+    `UPDATE raid_group_progress SET
+       kills_total = kills_total + 1,
+       kill_${bossId} = kill_${bossId} + 1,
+       best_round = CASE
+         WHEN COALESCE(best_round, 0) = 0 THEN ?
+         ELSE MIN(best_round, ?)
+       END,
+       updated_at = CURRENT_TIMESTAMP
+     WHERE group_jid = ?`,
+    [ronde, ronde, groupJid]
+  );
+  return true;
+}
+
+
+// ============================================================
+// STATISTIK LELANG KOTAK MISTERI
+// ============================================================
+// Untung bersih sengaja tidak disimpan sebagai kolom: nilainya bisa negatif,
+// sementara semua kolom di sini dibersihkan ke >= 0 saat dibaca. Profit
+// dihitung di query dan di layar tampilan.
+
+const AUCTION_KATEGORI = { jackpot: 'jackpot_count', trap: 'trap_count', zonk: 'zonk_count' };
+
+export async function getAuctionStats(customerJid) {
+  if (!customerJid) return null;
+  await runQuery("INSERT OR IGNORE INTO auction_stats (customer_jid) VALUES (?)", [customerJid]);
+  const row = await getQuery("SELECT * FROM auction_stats WHERE customer_jid = ?", [customerJid]);
+  if (!row) return null;
+
+  for (const key of Object.keys(row)) {
+    if (key === 'customer_jid' || key === 'last_played' || key === 'updated_at') continue;
+    row[key] = Math.max(0, Math.floor(Number(row[key]) || 0));
+  }
+  return row;
+}
+
+/**
+ * Catat hasil satu lelang untuk seorang peserta.
+ * `kategori` dibatasi whitelist karena namanya jadi nama kolom.
+ */
+export async function recordAuctionResult(customerJid, {
+  won = false, paid = 0, reward = 0, denda = 0, boardFee = 0, bid = 0, kategori = 'lain'
+} = {}) {
+  if (!customerJid) return null;
+  await runQuery("INSERT OR IGNORE INTO auction_stats (customer_jid) VALUES (?)", [customerJid]);
+
+  const dibayar = Math.max(0, Math.floor(Number(paid) || 0));
+  const hadiah = Math.max(0, Math.floor(Number(reward) || 0));
+  const kutukan = Math.max(0, Math.floor(Number(denda) || 0));
+  const papan = Math.max(0, Math.floor(Number(boardFee) || 0));
+  const tawaran = Math.max(0, Math.floor(Number(bid) || 0));
+  const kolomKategori = AUCTION_KATEGORI[kategori] || null;
+
+  await runQuery(
+    `UPDATE auction_stats SET
+       lelang_diikuti = lelang_diikuti + 1,
+       lelang_menang = lelang_menang + ?,
+       total_bid_dibayar = total_bid_dibayar + ?,
+       total_hadiah = total_hadiah + ?,
+       total_denda = total_denda + ?,
+       total_biaya_papan = total_biaya_papan + ?,
+       bid_tertinggi = MAX(COALESCE(bid_tertinggi, 0), ?),
+       ${kolomKategori ? `${kolomKategori} = ${kolomKategori} + 1,` : ''}
+       last_played = CURRENT_TIMESTAMP,
+       updated_at = CURRENT_TIMESTAMP
+     WHERE customer_jid = ?`,
+    [won ? 1 : 0, dibayar, hadiah, kutukan, papan, tawaran, customerJid]
+  );
+
+  return true;
+}
+
+export async function getAuctionLeaderboard(limit = 10, minLelang = 1) {
+  const safeLimit = Math.max(1, Math.min(50, Number.parseInt(limit, 10) || 10));
+  const safeMin = Math.max(1, Number.parseInt(minLelang, 10) || 1);
+  return await allQuery(
+    `SELECT a.customer_jid,
+            COALESCE(a.lelang_diikuti, 0) AS lelang_diikuti,
+            COALESCE(a.lelang_menang, 0) AS lelang_menang,
+            COALESCE(a.jackpot_count, 0) AS jackpot_count,
+            COALESCE(a.trap_count, 0) AS trap_count,
+            COALESCE(a.zonk_count, 0) AS zonk_count,
+            COALESCE(a.bid_tertinggi, 0) AS bid_tertinggi,
+            (COALESCE(a.total_hadiah, 0) - COALESCE(a.total_bid_dibayar, 0)
+             - COALESCE(a.total_denda, 0) - COALESCE(a.total_biaya_papan, 0)) AS profit,
+            COALESCE(c.nama, 'Member') AS customer_nama
+     FROM auction_stats a
+     LEFT JOIN customers c ON c.nomor = a.customer_jid
+     WHERE COALESCE(a.lelang_diikuti, 0) >= ?
+     ORDER BY profit DESC,
+              COALESCE(a.lelang_menang, 0) DESC,
+              COALESCE(a.jackpot_count, 0) DESC
+     LIMIT ?`,
+    [safeMin, safeLimit]
+  );
+}
+
+
+// ============================================================
 // POWER-UP / BUFF PEMAIN (dibeli dengan Akbar Poin lewat `.tukar`)
 // ============================================================
 // Buff berbasis waktu memakai kolom expires_at (epoch ms), buff sekali pakai
@@ -1420,3 +2012,265 @@ export async function listActiveBuffs(jid) {
   );
   return allQuery("SELECT * FROM user_buffs WHERE jid = ? ORDER BY buff_type ASC", [jid]);
 }
+
+
+// ============================================================
+// COOLDOWN TAHAN RESTART
+// ============================================================
+// `scope` bisa JID pemain (cooldown personal) atau JID grup (cooldown per grup,
+// misalnya bank yang baru dirampok). `kind` adalah label bebas seperti 'STEAL',
+// 'STEAL_IMMUNITY', atau 'HEIST:2'. Semuanya menyimpan waktu kedaluwarsa absolut
+// supaya restart bot tidak pernah menghapus hukuman atau perlindungan siapa pun.
+
+export async function setCooldown(scope, kind, durationMs) {
+  const durasi = Math.max(0, Math.floor(Number(durationMs) || 0));
+  if (!scope || !kind || durasi <= 0) return { success: false };
+
+  const expiresAt = Date.now() + durasi;
+  await runQuery(
+    `INSERT INTO user_cooldowns (scope, kind, expires_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(scope, kind) DO UPDATE SET
+       expires_at = excluded.expires_at,
+       created_at = CURRENT_TIMESTAMP`,
+    [scope, kind, expiresAt]
+  );
+  return { success: true, expiresAt };
+}
+
+/** Sisa cooldown dalam milidetik. 0 berarti sudah bebas. */
+export async function getCooldownMs(scope, kind) {
+  if (!scope || !kind) return 0;
+  const row = await getQuery(
+    "SELECT expires_at FROM user_cooldowns WHERE scope = ? AND kind = ?",
+    [scope, kind]
+  );
+  if (!row) return 0;
+
+  const sisa = Number(row.expires_at) - Date.now();
+  if (!isFinite(sisa) || sisa <= 0) {
+    await runQuery("DELETE FROM user_cooldowns WHERE scope = ? AND kind = ?", [scope, kind]);
+    return 0;
+  }
+  return sisa;
+}
+
+export async function clearCooldown(scope, kind) {
+  if (!scope || !kind) return;
+  await runQuery("DELETE FROM user_cooldowns WHERE scope = ? AND kind = ?", [scope, kind]);
+}
+
+/**
+ * Semua cooldown aktif milik satu scope, dalam bentuk Map kind -> expires_at.
+ * Dipakai layar daftar (misalnya daftar target bank) supaya tidak menembak satu
+ * query per baris.
+ */
+export async function listCooldowns(scope) {
+  const hasil = new Map();
+  if (!scope) return hasil;
+
+  await runQuery("DELETE FROM user_cooldowns WHERE expires_at <= ?", [Date.now()]);
+  const rows = await allQuery(
+    "SELECT kind, expires_at FROM user_cooldowns WHERE scope = ?",
+    [scope]
+  );
+  for (const r of rows) hasil.set(r.kind, Number(r.expires_at) || 0);
+  return hasil;
+}
+
+/**
+ * Ringkasan seluruh aset dan profil finansial terpadu pemain (Unified Multi-Asset Wallet).
+ */
+export async function getUnifiedWalletData(jid) {
+  const todayStr = tanggalWIB();
+  const [cust, gp, prem, tcgWallet, tcgShards, tcgCol, tcgProf, aiRow, mediaRow] = await Promise.all([
+    getQuery("SELECT nomor, nama, balance, role, account_status, registered_at FROM customers WHERE nomor = ?", [jid]),
+    getQuery("SELECT points, bank_points, bank_pending, xp, level, daily_streak, jailed_until FROM game_profiles WHERE customer_jid = ?", [jid]),
+    getQuery("SELECT tier, expires_at FROM premium_users WHERE jid = ?", [jid]),
+    getQuery("SELECT keping FROM tcg_wallet WHERE owner_jid = ?", [jid]),
+    allQuery("SELECT rarity, jumlah FROM tcg_shards WHERE owner_jid = ?", [jid]),
+    getQuery("SELECT COUNT(*) as unique_cards, COALESCE(SUM(qty), 0) as total_cards FROM tcg_collection WHERE owner_jid = ? AND qty > 0", [jid]),
+    getQuery("SELECT gelar_aktif FROM tcg_profil WHERE owner_jid = ?", [jid]),
+    getQuery("SELECT count FROM ai_usage_logs WHERE jid = ? AND usage_date = ?", [jid, todayStr]),
+    getQuery("SELECT count FROM media_usage_logs WHERE jid = ? AND usage_date = ?", [jid, todayStr])
+  ]);
+
+  const isPremActive = prem && (prem.expires_at === 0 || prem.expires_at > Date.now());
+  const tier = isPremActive ? (prem.tier || 'Free') : 'Free';
+
+  const shardMap = { COMMON: 0, RARE: 0, EPIC: 0, LEGENDARY: 0, MYTHIC: 0 };
+  for (const s of (tcgShards || [])) {
+    if (s.rarity) shardMap[s.rarity.toUpperCase()] = s.jumlah || 0;
+  }
+
+  return {
+    jid,
+    customer: {
+      nama: cust?.nama || 'Member',
+      balance: cust?.balance || 0,
+      role: cust?.role || 'USER',
+      status: cust?.account_status || 'ACTIVE',
+      terdaftar: !!cust
+    },
+    game: {
+      points: gp?.points || 0,
+      bankPoints: gp?.bank_points || 0,
+      bankPending: gp?.bank_pending || 0,
+      totalWealth: (gp?.points || 0) + (gp?.bank_points || 0) + (gp?.bank_pending || 0),
+      xp: gp?.xp || 0,
+      level: gp?.level || 1,
+      dailyStreak: gp?.daily_streak || 0,
+      isJailed: gp?.jailed_until && gp.jailed_until > Date.now()
+    },
+    premium: {
+      tier,
+      expiresAt: prem?.expires_at || null,
+      isActive: isPremActive
+    },
+    tcg: {
+      keping: tcgWallet?.keping || 0,
+      uniqueCards: tcgCol?.unique_cards || 0,
+      totalCards: tcgCol?.total_cards || 0,
+      shards: shardMap,
+      activeTitle: tcgProf?.gelar_aktif || null
+    },
+    quota: {
+      aiUsed: aiRow?.count || 0,
+      mediaUsed: mediaRow?.count || 0
+    }
+  };
+}
+
+// ─── 🛡️ ACTIVE GAME SESSIONS & CRASH RECOVERY DAOs ─────────────────
+
+/**
+ * Menyimpan sesi game aktif ke database untuk proteksi crash/restart
+ */
+export async function createActiveGameSession({ id, gameType, jid, host, buyIn = 0, pot = 0, players = [], state = {} }) {
+  try {
+    const playersJson = JSON.stringify(players);
+    const stateJson = JSON.stringify(state);
+    await runQuery(
+      `INSERT OR REPLACE INTO active_game_sessions 
+       (id, game_type, jid, host, status, buy_in, pot, players_json, state_json, updated_at) 
+       VALUES (?, ?, ?, ?, 'PLAYING', ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+      [id, gameType, jid, host, buyIn, pot, playersJson, stateJson]
+    );
+    return true;
+  } catch (err) {
+    console.error('[CREATE_GAME_SESSION_ERROR]', err);
+    return false;
+  }
+}
+
+/**
+ * Update data sesi game aktif
+ */
+export async function updateActiveGameSession(id, updates = {}) {
+  try {
+    const sets = [];
+    const params = [];
+    if (updates.status !== undefined) { sets.push("status = ?"); params.push(updates.status); }
+    if (updates.pot !== undefined) { sets.push("pot = ?"); params.push(updates.pot); }
+    if (updates.players !== undefined) { sets.push("players_json = ?"); params.push(JSON.stringify(updates.players)); }
+    if (updates.state !== undefined) { sets.push("state_json = ?"); params.push(JSON.stringify(updates.state)); }
+    
+    if (sets.length === 0) return true;
+    sets.push("updated_at = CURRENT_TIMESTAMP");
+    params.push(id);
+
+    await runQuery(`UPDATE active_game_sessions SET ${sets.join(', ')} WHERE id = ?`, params);
+    return true;
+  } catch (err) {
+    console.error('[UPDATE_GAME_SESSION_ERROR]', err);
+    return false;
+  }
+}
+
+/**
+ * Tandai sesi game telah selesai normal atau dibatalkan
+ */
+export async function finishActiveGameSession(id, status = 'COMPLETED') {
+  try {
+    await runQuery(
+      "UPDATE active_game_sessions SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      [status, id]
+    );
+    return true;
+  } catch (err) {
+    console.error('[FINISH_GAME_SESSION_ERROR]', err);
+    return false;
+  }
+}
+
+/**
+ * Mengambil data sesi game aktif berdasarkan id
+ */
+export async function getActiveGameSession(id) {
+  try {
+    return await getQuery("SELECT * FROM active_game_sessions WHERE id = ?", [id]);
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * Pemulihan & Auto-Refund saat Bot Startup:
+ * Mengembalikan 100% poin taruhan yang tertahan jika bot mati mendadak saat game berlangsung.
+ */
+export async function recoverAndRefundStaleGameSessions(sock = null) {
+  try {
+    const staleSessions = await allQuery(
+      "SELECT * FROM active_game_sessions WHERE status IN ('LOBBY', 'PLAYING')"
+    );
+    if (!staleSessions || staleSessions.length === 0) return { recovered: 0, totalRefundedPoints: 0 };
+
+    let recoveredCount = 0;
+    let totalPoints = 0;
+
+    for (const session of staleSessions) {
+      let players = [];
+      try {
+        players = JSON.parse(session.players_json || '[]');
+      } catch (_) {}
+
+      let sessionRefundedPoints = 0;
+      for (const p of players) {
+        const pJid = typeof p === 'string' ? p : p?.jid;
+        const pPoints = typeof p === 'string' ? (session.buy_in || 0) : (p?.points || session.buy_in || 0);
+
+        if (pJid && !pJid.endsWith('@ai') && pPoints > 0) {
+          await addGamePoints(pJid, pPoints);
+          sessionRefundedPoints += pPoints;
+          totalPoints += pPoints;
+        }
+      }
+
+      await runQuery(
+        "UPDATE active_game_sessions SET status = 'REFUNDED_ON_RESTART', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        [session.id]
+      );
+      recoveredCount++;
+
+      // Kirim pengumuman ke grup jika koneksi socket siap
+      if (sock && session.jid && sessionRefundedPoints > 0) {
+        try {
+          const gameTitle = session.game_type || 'Game';
+          const msg = `⚠️ *[SYSTEM RECOVERY]* Bot baru saja dimulai ulang (restart).\nTaruhan sesi *${gameTitle}* sebesar *${sessionRefundedPoints} Poin* telah dikembalikan 100% ke saldo masing-masing pemain.`;
+          await sock.sendMessage(session.jid, { text: msg });
+        } catch (_) {}
+      }
+    }
+
+    if (recoveredCount > 0) {
+      await addLog('SYSTEM', `[CRASH_RECOVERY] Berhasil merefund ${recoveredCount} sesi game tertunda (${totalPoints} poin dikembalikan).`);
+      console.log(`[CRASH_RECOVERY] ✅ Berhasil merefund ${recoveredCount} sesi game tertunda (${totalPoints} poin dikembalikan).`);
+    }
+
+    return { recovered: recoveredCount, totalRefundedPoints: totalPoints };
+  } catch (err) {
+    console.error('[CRASH_RECOVERY_ERROR]', err);
+    return { recovered: 0, totalRefundedPoints: 0 };
+  }
+}
+

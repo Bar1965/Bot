@@ -7,14 +7,28 @@
  */
 
 import { runQuery, getQuery, allQuery, withTransaction } from './connection.js';
-import { MAKS_BIAYA_DEK } from '../games/tcg/cards.js';
+import { MAKS_BIAYA_DEK, getKartu, statKartu, costKartu, hitungSinergi, pengaliElemen } from '../games/tcg/cards.js';
 
 // --- Tetapan ekonomi arena (Pure 0) ---
 export const TCG_HARGA_TARIK = 200;
 export const TCG_HARGA_TARIK10 = 1800;
 export const TCG_BATAS_TARIK_HARIAN = 20;
+
+/**
+ * Batas paling tinggi yang boleh dipasang Owner untuk sehari.
+ *
+ * Ada karena satu salah ketik — `.tcg batas 2000` alih-alih `200` — akan
+ * membiarkan seluruh grup menguras Kepingnya dalam satu sore, dan tidak ada
+ * cara membatalkannya sesudah kartunya keluar.
+ */
+export const TCG_BATAS_TARIK_MAKS = 200;
 export const TCG_BONUS_HARIAN_KEPING = 50;
 export const TCG_BONUS_STARTER_KEPING = 150;
+// Picis di paket pemula bukan hiasan: tanpa ini pemain baru punya 0 Picis dan
+// TIDAK BISA menaikkan level satu kali pun sampai ia menyelesaikan Gerbang
+// atau Ekspedisi pertamanya. Uji asap menangkapnya persis begitu — seluruh
+// rangkaian `.tcg naik` gagal dengan 'Butuh 250 Picis, kamu punya 0'.
+export const TCG_BONUS_STARTER_PICIS = 2500;
 // Diambil dari katalog kartu: validasi dek dan perhitungan sinergi Pasukan
 // Ramping memakai angka yang sama, jadi keduanya tidak boleh pernah berbeda.
 export const TCG_MAX_DECK_COST = MAKS_BIAYA_DEK;
@@ -50,16 +64,117 @@ export const TCG_HARGA_JUAL = {
   MYTHIC: 1000
 };
 
-// Biaya naik level, dalam serpihan rarity yang sama. Indeks = level saat ini.
+/**
+ * Biaya naik level dalam serpihan rarity yang sama. Indeks = level saat ini.
+ *
+ * ============================================================
+ * KENAPA ANGKANYA DIPANGKAS
+ * ============================================================
+ * Sistem level praktis mati: 212 dari 218 baris koleksi di server masih Lv.1.
+ * Diagnosis pertama menyalahkan biaya Keping-nya, dan itu SALAH — buku besar
+ * mencatat `NAIK_LEVEL` cuma 1,3% dari peredaran Keping. Kalau orang benar-benar
+ * memilih gacha ketimbang level, angkanya akan besar tapi kalah; 1,3% berarti
+ * nyaris tidak ada yang pernah MENCOBA. Itu tanda tembok, bukan tanda
+ * persaingan. (Memisahkan biaya level ke Picis tetap benar dan tetap ada, tapi
+ * ia bukan yang membuka tembok ini.)
+ *
+ * Temboknya serpihan. Satu duplikat menghasilkan tepat SATU serpihan, jadi
+ * dengan kurva lama menaikkan satu kartu Common ke Lv.5 menuntut 30 duplikat —
+ * sekitar 15 hari farming gerbang untuk SATU kartu.
+ *
+ * Yang membuatnya benar-benar rusak adalah kedatangan refine: R1 ➜ R5 cuma
+ * menuntut 4 duplikat di semua rarity. Dengan kurva lama, menaikkan level
+ * berharga 7,5x lipat refine di Common dan 5,8x di Rare, padahal keduanya
+ * memperebutkan duplikat yang sama. Pemain yang berpikir jernih akan selalu
+ * memilih refine dan tidak pernah menaikkan level — sumbu lama mati untuk
+ * kedua kalinya.
+ *
+ * Angka baru menahan perbandingan level:refine di kisaran 1,75x-2,75x untuk
+ * SEMUA rarity. Cukup mahal supaya memilih terasa berarti, tidak cukup mahal
+ * untuk jadi jebakan. Common ke Lv.5 turun dari ~15 hari jadi ~5,5 hari.
+ *
+ * Legendary dan Mythic sengaja TIDAK disentuh: keduanya sudah di 2,75x dan
+ * 1,75x, dan serpihannya sudah mahal luar biasa lewat rantai lebur 5:1 (satu
+ * serpihan Mythic setara 625 serpihan Common).
+ *
+ *   rarity      lama            baru           duplikat  vs refine
+ *   COMMON      2,4,8,16 = 30   1,2,3,5 = 11   11        2,75x
+ *   RARE        2,3,6,12 = 23   1,2,3,4 = 10   10        2,50x
+ *   EPIC        1,2,4,8  = 15   1,1,2,4 =  8    8        2,00x
+ *   LEGENDARY   1,2,3,5  = 11   (tetap)        11        2,75x
+ *   MYTHIC      1,1,2,3  =  7   (tetap)         7        1,75x
+ */
 export const TCG_BIAYA_LEVEL = {
-  COMMON:    { 1: 2, 2: 4, 3: 8, 4: 16 },
-  RARE:      { 1: 2, 2: 3, 3: 6, 4: 12 },
-  EPIC:      { 1: 1, 2: 2, 3: 4, 4: 8 },
+  COMMON:    { 1: 1, 2: 2, 3: 3, 4: 5 },
+  RARE:      { 1: 1, 2: 2, 3: 3, 4: 4 },
+  EPIC:      { 1: 1, 2: 1, 3: 2, 4: 4 },
   LEGENDARY: { 1: 1, 2: 2, 3: 3, 4: 5 },
   MYTHIC:    { 1: 1, 2: 1, 3: 2, 4: 3 }
 };
 
 export const TCG_SERPIHAN_PER_LEBUR = 5;
+
+// ============================================================
+// PICIS — MATA UANG KEDUA, KHUSUS MENAIKKAN LEVEL
+// ============================================================
+/**
+ * Dulu naik level dibayar Keping, mata uang yang sama dengan gacha. Itu
+ * memaksa pemain memilih antara MENARIK dan MENGUATKAN, dan datanya
+ * menunjukkan siapa yang menang: 212 dari 218 baris koleksi di server masih
+ * Lv.1. Sistem levelnya praktis mati.
+ *
+ * Picis memisahkan dua keputusan itu, persis seperti Mora di Genshin yang
+ * tidak pernah berebut dengan Primogem. Sekarang:
+ *
+ *   Keping   -> gacha, dan HANYA gacha
+ *   Picis    -> naik level (stat)
+ *   Serpihan -> naik level (bahan, per rarity)
+ *   Duplikat -> refine R1-R5 (skill)
+ *
+ * Empat sumber daya, empat tujuan, tidak ada yang saling memakan. Nama
+ * "picis" dipilih karena artinya memang uang receh bernilai kecil (idiom
+ * "picisan"): melimpah, satuannya kecil, dibelanjakan borongan. Nama lain
+ * yang dipertimbangkan gugur karena tabrakan koreksi salah ketik — `kepeng`
+ * berjarak 1 dari `keping`, `gobang` berjarak 2 dari `gerbang`, `wang`
+ * berjarak 2 dari `rank`, `.bank`, dan `.ping`.
+ */
+export const TCG_BIAYA_LEVEL_PICIS = 250;
+
+/** Picis untuk naik level: 250 x bintang kartu x level saat ini. */
+export function tcgBiayaPicisLevel(bintang, levelSaatIni) {
+  const b = Math.max(1, Math.min(5, Math.floor(bintang) || 1));
+  const lv = Math.max(1, Math.min(4, Math.floor(levelSaatIni) || 1));
+  return TCG_BIAYA_LEVEL_PICIS * b * lv;
+}
+
+// Sumber Picis. Sengaja ditaruh di dua lingkaran harian yang sudah ada supaya
+// tidak perlu perintah baru: pemain yang main tiap hari otomatis mampu
+// menaikkan level, dan yang tidak main tidak menumpuk apa-apa.
+export const TCG_PICIS_GERBANG = 320;
+export const TCG_PICIS_EKSPEDISI_PER_SLOT = 260;
+// Jatah sekali seumur hidup untuk pemain yang sudah ada sebelum Picis lahir.
+// Tanpa ini fitur level tetap mati di hari pertama karena saldo semua orang 0.
+export const TCG_PICIS_WARISAN = 3000;
+
+// ============================================================
+// REFINE (R1-R5)
+// ============================================================
+/**
+ * Satu duplikat menaikkan satu tingkat, jadi R5 menuntut 4 duplikat di luar
+ * kartu aslinya — sama seperti refinement senjata di Genshin.
+ *
+ * Untuk Common itu ringan, dan itu memang tujuannya: Common akhirnya punya
+ * alasan dikoleksi selain dipecah. Untuk Mythic itu brutal — di seluruh server
+ * baru ada 3 keping Mythic yang pernah ada. Justru di situ letak "wajib
+ * pull"-nya: R5 Mythic adalah kejaran jangka panjang, bukan sesuatu yang
+ * selesai dalam sepekan.
+ */
+export const TCG_REFINE_DUP_PER_TINGKAT = 1;
+
+// Dicerminkan dari MAKS_REFINE di cards.js. tcgDb.js sengaja tidak mengimpor
+// katalog kartu — lapisan data tidak boleh bergantung pada lapisan permainan —
+// jadi angka ini ditulis ulang di sini. Uji asap mengunci keduanya tetap sama.
+export const TCG_MAKS_REFINE = 5;
 
 /**
  * Biaya Keping untuk naik level, dikali bintang kartu dan level tujuan.
@@ -153,6 +268,9 @@ export async function initTcgSchema() {
       highest_floor   INTEGER NOT NULL DEFAULT 0,
       stamina         INTEGER NOT NULL DEFAULT 5,
       stamina_tanggal TEXT,
+      stamina_at      INTEGER,
+      energi_gerbang  INTEGER DEFAULT 5,
+      energi_at       INTEGER,
       last_clear_at   DATETIME
     )
   `);
@@ -168,7 +286,53 @@ export async function initTcgSchema() {
     )
   `);
 
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS tcg_batas_tarik (
+      tanggal   TEXT PRIMARY KEY,
+      batas     INTEGER NOT NULL CHECK(batas > 0),
+      oleh      TEXT,
+      dibuat_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS tcg_banner (
+      owner_jid       TEXT NOT NULL,
+      banner_id       TEXT NOT NULL,
+      kalah_mythic    INTEGER NOT NULL DEFAULT 0 CHECK(kalah_mythic IN (0, 1)),
+      kalah_legendary INTEGER NOT NULL DEFAULT 0 CHECK(kalah_legendary IN (0, 1)),
+      tarikan         INTEGER NOT NULL DEFAULT 0,
+      dapat_mythic    INTEGER NOT NULL DEFAULT 0,
+      dapat_legendary INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (owner_jid, banner_id)
+    )
+  `);
+
   await runQuery("CREATE INDEX IF NOT EXISTS idx_tcg_coll_owner ON tcg_collection(owner_jid)");
+
+  // --- Migrasi kolom (aman dijalankan berulang) ---
+  //
+  // Pola `try/catch` kosong dipakai konsisten di schema.js: SQLite tidak punya
+  // ADD COLUMN IF NOT EXISTS, jadi percobaan kedua melempar dan itu memang
+  // hasil yang diinginkan.
+  try {
+    await runQuery(
+      "ALTER TABLE tcg_collection ADD COLUMN refine INTEGER NOT NULL DEFAULT 1"
+    );
+  } catch (e) { /* sudah ada */ }
+
+  try {
+    await runQuery("ALTER TABLE tcg_wallet ADD COLUMN picis INTEGER NOT NULL DEFAULT 0");
+    // HANYA berjalan pada migrasi pertama, karena ALTER kedua kalinya melempar
+    // sebelum baris ini tercapai. Itu yang membuat jatah warisan tidak mungkin
+    // dibagikan dua kali.
+    await runQuery("UPDATE tcg_wallet SET picis = ?", [TCG_PICIS_WARISAN]);
+    await runQuery(
+      "INSERT INTO tcg_ledger (owner_jid, delta, sumber, ref) " +
+      "SELECT owner_jid, 0, 'PICIS_WARISAN', ? FROM tcg_wallet",
+      [String(TCG_PICIS_WARISAN)]
+    );
+  } catch (e) { /* sudah ada */ }
   await runQuery("CREATE INDEX IF NOT EXISTS idx_tcg_ledger_own ON tcg_ledger(owner_jid, created_at)");
   await runQuery("CREATE INDEX IF NOT EXISTS idx_tcg_deck_owner ON tcg_deck(owner_jid)");
 
@@ -179,6 +343,56 @@ export async function initTcgSchema() {
 // ============================================================
 // DOMPET KEPING
 // ============================================================
+
+// ============================================================
+// BANNER — JAMINAN 50/50 PER PEMAIN, PER BANNER
+// ============================================================
+/**
+ * Barisnya dikunci ke `banner_id`, jadi jaminan yang belum terpakai TIDAK
+ * terbawa ke banner berikutnya.
+ *
+ * Itu keputusan yang disengaja dan perlu diketahui pemain. Membawa jaminan
+ * antar banner terdengar lebih murah hati, tapi ia menghapus seluruh urgensi
+ * banner: tidak ada bedanya menarik sekarang atau bulan depan. Yang penting,
+ * pity global (`tcg_pity`) TIDAK ikut direset — kemajuan menuju Mythic yang
+ * sudah dikumpulkan pemain selama ini tetap utuh, cuma undian 50/50-nya yang
+ * mulai dari nol tiap banner.
+ */
+export async function tcgGetBanner(ownerJid, bannerId) {
+  await runQuery(
+    "INSERT OR IGNORE INTO tcg_banner (owner_jid, banner_id) VALUES (?, ?)",
+    [ownerJid, bannerId]
+  );
+  const row = await getQuery(
+    "SELECT * FROM tcg_banner WHERE owner_jid = ? AND banner_id = ?",
+    [ownerJid, bannerId]
+  );
+  return row || {
+    owner_jid: ownerJid, banner_id: bannerId,
+    kalah_mythic: 0, kalah_legendary: 0, tarikan: 0, dapat_mythic: 0, dapat_legendary: 0
+  };
+}
+
+/** Menyimpan kembali status jaminan sesudah satu rangkaian tarikan. */
+export async function tcgSimpanBanner(ownerJid, bannerId, status) {
+  await runQuery(
+    "INSERT OR IGNORE INTO tcg_banner (owner_jid, banner_id) VALUES (?, ?)",
+    [ownerJid, bannerId]
+  );
+  await runQuery(
+    "UPDATE tcg_banner SET kalah_mythic = ?, kalah_legendary = ?, " +
+    "tarikan = tarikan + ?, dapat_mythic = dapat_mythic + ?, dapat_legendary = dapat_legendary + ? " +
+    "WHERE owner_jid = ? AND banner_id = ?",
+    [
+      status.kalah_mythic ? 1 : 0,
+      status.kalah_legendary ? 1 : 0,
+      Math.max(0, Math.floor(status.tambahTarikan || 0)),
+      Math.max(0, Math.floor(status.tambahMythic || 0)),
+      Math.max(0, Math.floor(status.tambahLegendary || 0)),
+      ownerJid, bannerId
+    ]
+  );
+}
 
 export async function tcgGetWallet(ownerJid) {
   await runQuery("INSERT OR IGNORE INTO tcg_wallet (owner_jid, keping) VALUES (?, 0)", [ownerJid]);
@@ -201,7 +415,7 @@ export async function tcgAddKeping(ownerJid, jumlah, sumber, ref = null) {
       "INSERT INTO tcg_ledger (owner_jid, delta, sumber, ref) VALUES (?, ?, ?, ?)",
       [ownerJid, n, sumber, ref]
     );
-    const w = await getQuery("SELECT keping FROM tcg_wallet WHERE owner_jid = ?", [ownerJid]);
+    const w = await getQuery("SELECT keping, picis FROM tcg_wallet WHERE owner_jid = ?", [ownerJid]);
     return { success: true, keping: w.keping };
   });
 }
@@ -220,14 +434,14 @@ export async function tcgSpendKeping(ownerJid, jumlah, sumber, ref = null) {
       [n, ownerJid, n]
     );
     if (res.changes !== 1) {
-      const w = await getQuery("SELECT keping FROM tcg_wallet WHERE owner_jid = ?", [ownerJid]);
+      const w = await getQuery("SELECT keping, picis FROM tcg_wallet WHERE owner_jid = ?", [ownerJid]);
       return { success: false, reason: 'KEPING_KURANG', keping: w?.keping || 0 };
     }
     await runQuery(
       "INSERT INTO tcg_ledger (owner_jid, delta, sumber, ref) VALUES (?, ?, ?, ?)",
       [ownerJid, -n, sumber, ref]
     );
-    const w = await getQuery("SELECT keping FROM tcg_wallet WHERE owner_jid = ?", [ownerJid]);
+    const w = await getQuery("SELECT keping, picis FROM tcg_wallet WHERE owner_jid = ?", [ownerJid]);
     return { success: true, keping: w.keping };
   });
 }
@@ -251,9 +465,75 @@ export async function tcgGetPity(ownerJid) {
   return p;
 }
 
+/**
+ * BATAS TARIKAN HARIAN YANG BISA DINAIKKAN OWNER — UNTUK SEHARI SAJA
+ *
+ * Barisnya dikunci ke TANGGAL, bukan ke sebuah saklar menyala/mati. Itu yang
+ * membuatnya mustahil lupa dimatikan: besok tanggalnya berganti, barisnya tidak
+ * cocok lagi, dan batasnya kembali ke angka normal dengan sendirinya.
+ *
+ * Pola yang sama dipakai `dekAbadi`, `bosPekan`, dan jadwal banner, dan alasannya
+ * sama: `scheduler.js` tidak pernah menyentuh TCG sama sekali (AGENTS.md §12v),
+ * jadi apa pun yang harus berakhir sendiri WAJIB diturunkan dari waktu. Saklar
+ * biasa akan tetap menyala kalau bot kebetulan mati di tengah malam.
+ *
+ * Baris tanggal lama sengaja tidak dihapus — murah disimpan dan berguna kalau
+ * nanti pemilik ingin melihat kapan saja batasnya pernah dinaikkan.
+ */
+export async function tcgBatasTarikHariIni() {
+  const row = await getQuery(
+    "SELECT batas FROM tcg_batas_tarik WHERE tanggal = ?",
+    [tcgTanggalHariIni()]
+  );
+  const n = Math.floor(Number(row?.batas));
+  if (!Number.isFinite(n) || n <= 0) return TCG_BATAS_TARIK_HARIAN;
+  return Math.min(TCG_BATAS_TARIK_MAKS, n);
+}
+
+/** Status lengkap, untuk layar yang perlu tahu ini batas normal atau bukan. */
+export async function tcgStatusBatasTarik() {
+  const hariIni = tcgTanggalHariIni();
+  const row = await getQuery(
+    "SELECT batas, oleh FROM tcg_batas_tarik WHERE tanggal = ?",
+    [hariIni]
+  );
+  const batas = await tcgBatasTarikHariIni();
+  return {
+    batas,
+    normal: TCG_BATAS_TARIK_HARIAN,
+    dinaikkan: batas > TCG_BATAS_TARIK_HARIAN,
+    diturunkan: batas < TCG_BATAS_TARIK_HARIAN,
+    adaAturan: !!row,
+    oleh: row?.oleh || null,
+    tanggal: hariIni
+  };
+}
+
+export async function tcgSetBatasTarikHariIni(batas, oleh = null) {
+  const n = Math.floor(Number(batas));
+  if (!Number.isFinite(n) || n < 1) return { success: false, reason: 'TIDAK_VALID' };
+  if (n > TCG_BATAS_TARIK_MAKS) {
+    return { success: false, reason: 'TERLALU_TINGGI', maks: TCG_BATAS_TARIK_MAKS };
+  }
+  await runQuery(
+    `INSERT INTO tcg_batas_tarik (tanggal, batas, oleh) VALUES (?, ?, ?)
+       ON CONFLICT(tanggal) DO UPDATE SET batas = ?, oleh = ?, dibuat_at = CURRENT_TIMESTAMP`,
+    [tcgTanggalHariIni(), n, oleh, n, oleh]
+  );
+  return { success: true, batas: n, normal: TCG_BATAS_TARIK_HARIAN };
+}
+
+export async function tcgHapusBatasTarikHariIni() {
+  const res = await runQuery(
+    "DELETE FROM tcg_batas_tarik WHERE tanggal = ?",
+    [tcgTanggalHariIni()]
+  );
+  return { success: true, adaSebelumnya: res.changes > 0, batas: TCG_BATAS_TARIK_HARIAN };
+}
+
 export async function tcgSisaTarikanHarian(ownerJid) {
-  const p = await tcgGetPity(ownerJid);
-  return Math.max(0, TCG_BATAS_TARIK_HARIAN - (p.pull_hari_ini || 0));
+  const [p, batas] = await Promise.all([tcgGetPity(ownerJid), tcgBatasTarikHariIni()]);
+  return Math.max(0, batas - (p.pull_hari_ini || 0));
 }
 
 /**
@@ -327,14 +607,14 @@ export async function getTcgLeaderboard(limit = 10) {
 
 export async function tcgGetKoleksi(ownerJid) {
   return await allQuery(
-    "SELECT card_id, qty, card_lv FROM tcg_collection WHERE owner_jid = ? AND qty > 0 ORDER BY card_id",
+    "SELECT card_id, qty, card_lv, refine FROM tcg_collection WHERE owner_jid = ? AND qty > 0 ORDER BY card_id",
     [ownerJid]
   );
 }
 
 export async function tcgGetKartu(ownerJid, cardId) {
   return await getQuery(
-    "SELECT card_id, qty, card_lv FROM tcg_collection WHERE owner_jid = ? AND card_id = ?",
+    "SELECT card_id, qty, card_lv, refine FROM tcg_collection WHERE owner_jid = ? AND card_id = ?",
     [ownerJid, cardId]
   );
 }
@@ -356,9 +636,12 @@ export async function tcgGetDeck(ownerJid) {
   const deck = { 1: null, 2: null, 3: null };
   for (const r of rows) {
     if (r.slot >= 1 && r.slot <= 3) {
-      const owned = await getQuery("SELECT card_lv, qty FROM tcg_collection WHERE owner_jid = ? AND card_id = ? AND qty > 0", [ownerJid, r.card_id]);
+      const owned = await getQuery("SELECT card_lv, refine, qty FROM tcg_collection WHERE owner_jid = ? AND card_id = ? AND qty > 0", [ownerJid, r.card_id]);
       if (owned) {
-        deck[r.slot] = { card_id: r.card_id, card_lv: owned.card_lv };
+        // `refine` ikut dibawa ke mesin tempur lewat objek ini, sama seperti
+        // `card_lv`. Baris lama di basis data bisa saja NULL sebelum migrasi
+        // sempat berjalan, jadi selalu jatuh ke 1.
+        deck[r.slot] = { card_id: r.card_id, card_lv: owned.card_lv, refine: owned.refine || 1 };
       }
     }
   }
@@ -370,7 +653,7 @@ export async function tcgSetDeckSlot(ownerJid, slot, cardId, cardCostMap = {}) {
   if (![1, 2, 3].includes(s)) return { success: false, reason: 'SLOT_TIDAK_VALID' };
 
   // Pastikan punya kartunya
-  const punya = await getQuery("SELECT card_lv, qty FROM tcg_collection WHERE owner_jid = ? AND card_id = ? AND qty > 0", [ownerJid, cardId]);
+  const punya = await getQuery("SELECT card_lv, refine, qty FROM tcg_collection WHERE owner_jid = ? AND card_id = ? AND qty > 0", [ownerJid, cardId]);
   if (!punya) return { success: false, reason: 'TIDAK_PUNYA' };
 
   // Hitung total cost jika kartu ini dipasang
@@ -427,6 +710,198 @@ export async function tcgClearDeckSlot(ownerJid, slot) {
   if (![1, 2, 3].includes(s)) return { success: false, reason: 'SLOT_TIDAK_VALID' };
   await runQuery("DELETE FROM tcg_deck WHERE owner_jid = ? AND slot = ?", [ownerJid, s]);
   return { success: true, slot: s };
+}
+
+/**
+ * Otomatis menyusun dan memasang 3 kartu terbaik pemain ke dalam dek.
+ * Mengoptimalkan Battle Power (HP + ATK*2.2 + Kritis + Sinergi) dalam batas bintang (TCG_MAX_DECK_COST).
+ */
+export async function tcgAutoBuildDeck(ownerJid, opts = {}) {
+  // Tiga opsi ini yang membuat autodek tetap berguna sesudah tantangan baru
+  // masuk. Tanpa mereka, autodek cuma punya satu jawaban untuk seluruh game:
+  //   lawanElemen  — susun dek yang UNGGUL melawan elemen tertentu, bukan yang
+  //                  paling kuat secara mentah. Ini mengembalikan keputusan
+  //                  "mau meng-counter apa" ke tangan pemain.
+  //   kecuali      — kartu yang tidak boleh dipakai (Gauntlet melarang kartu
+  //                  yang sudah bertarung di tahap sebelumnya).
+  //   batasBintang — anggaran bintang lebih ketat dari biasanya (modifier
+  //                  lantai Menara Abadi).
+  const lawanElemen = opts.lawanElemen || null;
+  const laranganElemen = opts.laranganElemen || null;
+  const wajibElemen = opts.wajibElemen || null;
+  const kecuali = new Set(Array.isArray(opts.kecuali) ? opts.kecuali : []);
+  const batasBintang = Number(opts.batasBintang) > 0
+    ? Math.floor(Number(opts.batasBintang))
+    : TCG_MAX_DECK_COST;
+
+  return withTransaction(async () => {
+    const owned = await allQuery(
+      "SELECT card_id, qty, card_lv FROM tcg_collection WHERE owner_jid = ? AND qty > 0",
+      [ownerJid]
+    );
+    if (!owned || owned.length < 1) {
+      return { success: false, reason: 'KOLEKSI_KOSONG' };
+    }
+
+    // Periksa kartu yang sedang di ekspedisi
+    const ekspedisiRows = await allQuery(
+      "SELECT card_id FROM tcg_ekspedisi WHERE owner_jid = ?",
+      [ownerJid]
+    );
+    const ekspedisiMap = {};
+    for (const e of ekspedisiRows || []) {
+      ekspedisiMap[e.card_id] = (ekspedisiMap[e.card_id] || 0) + 1;
+    }
+
+    // Filter kartu yang tersedia (qty > ekspedisi)
+    const availableCards = [];
+    for (const o of owned) {
+      if (kecuali.has(o.card_id)) continue;
+      if (laranganElemen && getKartu(o.card_id)?.elemen === laranganElemen) continue;
+      const busy = ekspedisiMap[o.card_id] || 0;
+      if (o.qty > busy) {
+        const cardDef = getKartu(o.card_id);
+        if (!cardDef) continue;
+        const stat = statKartu(cardDef, o.card_lv || 1);
+        const cost = costKartu(cardDef);
+        const power = Math.round((stat.atk * 2.2) + (stat.hp * 0.9) + ((stat.kritis || 0) * 500));
+        // Nilai tanding: daya mentah dikali keunggulan elemen atas sasaran.
+        // Dipisah dari `power` supaya angka yang ditampilkan ke pemain tetap
+        // daya sebenarnya, bukan angka yang sudah dibumbui.
+        const nilai = lawanElemen
+          ? power * pengaliElemen(cardDef.elemen, lawanElemen)
+          : power;
+        availableCards.push({
+          card_id: o.card_id,
+          nama: cardDef.nama,
+          rarity: cardDef.rarity,
+          elemen: cardDef.elemen,
+          bintang: cost,
+          level: o.card_lv || 1,
+          stat,
+          cost,
+          power,
+          nilai
+        });
+      }
+    }
+
+    if (availableCards.length === 0) {
+      // Dua sebab yang terasa sangat berbeda bagi pemain: kartunya sedang pergi,
+      // atau kartunya sudah habis terpakai di tahap Gauntlet sebelumnya.
+      return {
+        success: false,
+        reason: kecuali.size > 0 ? 'KARTU_TERSISA_HABIS' : 'SEMUA_KARTU_EKSPEDISI'
+      };
+    }
+
+    let bestTrio = null;
+    let bestScore = -1;
+
+    // Jika kartu yang tersedia <= 3 buah
+    if (availableCards.length <= 3) {
+      const costSum = availableCards.reduce((acc, c) => acc + c.cost, 0);
+      const penuhiWajibPintas = !wajibElemen || availableCards.some(c => c.elemen === wajibElemen);
+      if (costSum <= batasBintang && penuhiWajibPintas) {
+        bestTrio = availableCards;
+        bestScore = availableCards.reduce((acc, c) => acc + c.nilai, 0);
+      }
+    }
+
+    // Cari kombinasi 3 kartu terbaik dengan total cost <= TCG_MAX_DECK_COST
+    if (!bestTrio) {
+      availableCards.sort((a, b) => b.nilai - a.nilai);
+      const n = availableCards.length;
+      for (let i = 0; i < n; i++) {
+        for (let j = i + 1; j < n; j++) {
+          for (let k = j + 1; k < n; k++) {
+            const trio = [availableCards[i], availableCards[j], availableCards[k]];
+            const totalCost = trio[0].cost + trio[1].cost + trio[2].cost;
+            const penuhiWajib = !wajibElemen || trio.some(t => t.elemen === wajibElemen);
+            if (totalCost <= batasBintang && penuhiWajib) {
+              const basePower = trio[0].nilai + trio[1].nilai + trio[2].nilai;
+              const sinergi = hitungSinergi(trio.map(t => getKartu(t.card_id)));
+              let synergyMultiplier = 1.0;
+              if (sinergi?.aktif?.length > 0) {
+                synergyMultiplier += (sinergi.aktif.length * 0.08);
+              }
+              const score = basePower * synergyMultiplier;
+              if (score > bestScore) {
+                bestScore = score;
+                bestTrio = trio;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Fallback: ambil kartu dengan cost terkecil yang muat
+    if (!bestTrio) {
+      const byCost = [...availableCards].sort((a, b) => a.cost - b.cost || b.nilai - a.nilai);
+      const chosen = [];
+      let curCost = 0;
+
+      // Kalau lantainya menuntut satu elemen, kartu itu dipilih DULU. Kalau
+      // menunggu giliran urutan biasa, syaratnya cuma terpenuhi kalau kebetulan
+      // kartu wajibnya juga yang termurah.
+      if (wajibElemen) {
+        const wajib = byCost.find(c => c.elemen === wajibElemen && c.cost <= batasBintang);
+        if (wajib) { chosen.push(wajib); curCost += wajib.cost; }
+      }
+
+      for (const c of byCost) {
+        if (chosen.includes(c)) continue;
+        if (chosen.length < 3 && (curCost + c.cost) <= batasBintang) {
+          chosen.push(c);
+          curCost += c.cost;
+        }
+      }
+      // Jalur cadangan tidak boleh melaporkan sukses untuk dek yang melanggar
+      // syarat. Lebih baik gagal dengan jujur di sini daripada memasang dek yang
+      // pasti ditolak lagi oleh periksaSyaratModifier beberapa detik kemudian.
+      const penuhiWajibCadangan = !wajibElemen || chosen.some(c => c.elemen === wajibElemen);
+      if (chosen.length > 0 && penuhiWajibCadangan) {
+        bestTrio = chosen;
+      }
+    }
+
+    if (!bestTrio || bestTrio.length === 0) {
+      return { success: false, reason: 'TIDAK_DAPAT_DISUSUN' };
+    }
+
+    // Pasang ke tcg_deck
+    await runQuery("DELETE FROM tcg_deck WHERE owner_jid = ?", [ownerJid]);
+    for (let slot = 1; slot <= bestTrio.length; slot++) {
+      await runQuery(
+        "INSERT INTO tcg_deck (owner_jid, slot, card_id) VALUES (?, ?, ?)",
+        [ownerJid, slot, bestTrio[slot - 1].card_id]
+      );
+    }
+
+    const totalCost = bestTrio.reduce((acc, c) => acc + c.cost, 0);
+    const totalPower = bestTrio.reduce((acc, c) => acc + c.power, 0);
+
+    return {
+      success: true,
+      deck: bestTrio.map((c, idx) => ({
+        slot: idx + 1,
+        card_id: c.card_id,
+        nama: c.nama,
+        level: c.level,
+        rarity: c.rarity,
+        elemen: c.elemen,
+        cost: c.cost,
+        power: c.power
+      })),
+      totalCost,
+      maxCost: batasBintang,
+      totalPower,
+      lawanElemen,
+      laranganElemen,
+      wajibElemen
+    };
+  });
 }
 
 // ============================================================
@@ -564,8 +1039,12 @@ export async function tcgPakaiItem(ownerJid, itemId, jumlah = 1) {
   );
   if (res.changes !== 1) return { success: false, reason: 'ITEM_HABIS' };
 
-  const energi = await tcgTambahEnergi(ownerJid, def.efek);
-  return { success: true, def, energi };
+  const efekScaled = {};
+  for (const [k, v] of Object.entries(def.efek || {})) {
+    efekScaled[k] = v * n;
+  }
+  const energi = await tcgTambahEnergi(ownerJid, efekScaled);
+  return { success: true, def, energi, jumlah: n };
 }
 
 /** Ringkasan energi untuk layar status, lengkap dengan sisa waktu regen. */
@@ -627,6 +1106,8 @@ export async function tcgProgressTower(ownerJid, floor, rewardKeping = 0, reward
       return { success: false, reason: 'STAMINA_HABIS' };
     }
 
+    const baruLantai = (t.highest_floor || 0) < floor;
+
     await runQuery(
       `UPDATE tcg_tower SET
          stamina = stamina - 1,
@@ -636,21 +1117,23 @@ export async function tcgProgressTower(ownerJid, floor, rewardKeping = 0, reward
       [floor, ownerJid]
     );
 
-    if (rewardKeping > 0) {
-      await runQuery("INSERT OR IGNORE INTO tcg_wallet (owner_jid, keping) VALUES (?, 0)", [ownerJid]);
-      await runQuery("UPDATE tcg_wallet SET keping = keping + ? WHERE owner_jid = ?", [rewardKeping, ownerJid]);
-      await runQuery(
-        "INSERT INTO tcg_ledger (owner_jid, delta, sumber, ref) VALUES (?, ?, 'TOWER_REWARD', ?)",
-        [ownerJid, rewardKeping, `Lantai ${floor}`]
-      );
-    }
+    if (baruLantai) {
+      if (rewardKeping > 0) {
+        await runQuery("INSERT OR IGNORE INTO tcg_wallet (owner_jid, keping) VALUES (?, 0)", [ownerJid]);
+        await runQuery("UPDATE tcg_wallet SET keping = keping + ? WHERE owner_jid = ?", [rewardKeping, ownerJid]);
+        await runQuery(
+          "INSERT INTO tcg_ledger (owner_jid, delta, sumber, ref) VALUES (?, ?, 'TOWER_REWARD', ?)",
+          [ownerJid, rewardKeping, `Lantai ${floor}`]
+        );
+      }
 
-    if (rewardShards && rewardShards.rarity && rewardShards.jumlah > 0) {
-      await tcgTambahSerpihan(ownerJid, rewardShards.rarity, rewardShards.jumlah);
+      if (rewardShards && rewardShards.rarity && rewardShards.jumlah > 0) {
+        await tcgTambahSerpihan(ownerJid, rewardShards.rarity, rewardShards.jumlah);
+      }
     }
 
     const baru = await tcgGetTower(ownerJid);
-    const w = await getQuery("SELECT keping FROM tcg_wallet WHERE owner_jid = ?", [ownerJid]);
+    const w = await getQuery("SELECT keping, picis FROM tcg_wallet WHERE owner_jid = ?", [ownerJid]);
     return {
       success: true,
       highestFloor: baru.highest_floor,
@@ -687,16 +1170,27 @@ export async function tcgJualKartu(ownerJid, cardId, rarity, jumlah = 1) {
   if (hargaSatuan <= 0) return { success: false, reason: 'RARITY_TIDAK_VALID' };
 
   return withTransaction(async () => {
+    const deckRows = await allQuery(
+      "SELECT slot FROM tcg_deck WHERE owner_jid = ? AND card_id = ?",
+      [ownerJid, cardId]
+    );
+    const ekspedisiRows = await allQuery(
+      "SELECT slot FROM tcg_ekspedisi WHERE owner_jid = ? AND card_id = ?",
+      [ownerJid, cardId]
+    );
+    const inUse = (deckRows?.length || 0) + (ekspedisiRows?.length || 0);
+    const minSisa = Math.max(1, inUse);
+
     const res = await runQuery(
-      "UPDATE tcg_collection SET qty = qty - ? WHERE owner_jid = ? AND card_id = ? AND qty > ?",
-      [n, ownerJid, cardId, n]
+      "UPDATE tcg_collection SET qty = qty - ? WHERE owner_jid = ? AND card_id = ? AND (qty - ?) >= ?",
+      [n, ownerJid, cardId, n, minSisa]
     );
     if (res.changes !== 1) {
       const punya = await getQuery(
         "SELECT qty FROM tcg_collection WHERE owner_jid = ? AND card_id = ?",
         [ownerJid, cardId]
       );
-      return { success: false, reason: 'DUPLIKAT_KURANG', qty: punya?.qty || 0 };
+      return { success: false, reason: 'DUPLIKAT_KURANG', qty: punya?.qty || 0, terpakai: inUse };
     }
     const total = hargaSatuan * n;
     await runQuery("INSERT OR IGNORE INTO tcg_wallet (owner_jid, keping) VALUES (?, 0)", [ownerJid]);
@@ -705,7 +1199,7 @@ export async function tcgJualKartu(ownerJid, cardId, rarity, jumlah = 1) {
       "INSERT INTO tcg_ledger (owner_jid, delta, sumber, ref) VALUES (?, ?, 'JUAL_KARTU', ?)",
       [ownerJid, total, `${cardId}x${n}`]
     );
-    const w = await getQuery("SELECT keping FROM tcg_wallet WHERE owner_jid = ?", [ownerJid]);
+    const w = await getQuery("SELECT keping, picis FROM tcg_wallet WHERE owner_jid = ?", [ownerJid]);
     return { success: true, dapat: total, keping: w.keping };
   });
 }
@@ -715,16 +1209,27 @@ export async function tcgSerpihKartu(ownerJid, cardId, rarity, jumlah = 1) {
   if (!TCG_RARITY.includes(rarity)) return { success: false, reason: 'RARITY_TIDAK_VALID' };
 
   return withTransaction(async () => {
+    const deckRows = await allQuery(
+      "SELECT slot FROM tcg_deck WHERE owner_jid = ? AND card_id = ?",
+      [ownerJid, cardId]
+    );
+    const ekspedisiRows = await allQuery(
+      "SELECT slot FROM tcg_ekspedisi WHERE owner_jid = ? AND card_id = ?",
+      [ownerJid, cardId]
+    );
+    const inUse = (deckRows?.length || 0) + (ekspedisiRows?.length || 0);
+    const minSisa = Math.max(1, inUse);
+
     const res = await runQuery(
-      "UPDATE tcg_collection SET qty = qty - ? WHERE owner_jid = ? AND card_id = ? AND qty > ?",
-      [n, ownerJid, cardId, n]
+      "UPDATE tcg_collection SET qty = qty - ? WHERE owner_jid = ? AND card_id = ? AND (qty - ?) >= ?",
+      [n, ownerJid, cardId, n, minSisa]
     );
     if (res.changes !== 1) {
       const punya = await getQuery(
         "SELECT qty FROM tcg_collection WHERE owner_jid = ? AND card_id = ?",
         [ownerJid, cardId]
       );
-      return { success: false, reason: 'DUPLIKAT_KURANG', qty: punya?.qty || 0 };
+      return { success: false, reason: 'DUPLIKAT_KURANG', qty: punya?.qty || 0, terpakai: inUse };
     }
     await runQuery(
       `INSERT INTO tcg_shards (owner_jid, rarity, jumlah) VALUES (?, ?, ?)
@@ -736,6 +1241,256 @@ export async function tcgSerpihKartu(ownerJid, cardId, rarity, jumlah = 1) {
       [ownerJid, rarity]
     );
     return { success: true, dapat: n, totalSerpihan: s?.jumlah || n };
+  });
+}
+
+/**
+ * Pecah semua kartu duplikat pemain menjadi serpihan (Bulk Salvage).
+ * Selalu menyisakan minimal 1 kartu di koleksi dan menjaga kartu aktif (dek/ekspedisi).
+ */
+export async function tcgSerpihSemua(ownerJid, rarityFilter = null) {
+  const rf = rarityFilter ? String(rarityFilter).toUpperCase().trim() : null;
+  if (rf && rf !== 'ALL' && rf !== 'SEMUA' && !TCG_RARITY.includes(rf)) {
+    return { success: false, reason: 'RARITY_TIDAK_VALID' };
+  }
+  const isAll = !rf || rf === 'ALL' || rf === 'SEMUA';
+
+  return withTransaction(async () => {
+    const cards = await allQuery(
+      "SELECT card_id, qty, card_lv FROM tcg_collection WHERE owner_jid = ? AND qty > 1",
+      [ownerJid]
+    );
+    if (!cards || cards.length === 0) {
+      return { success: false, reason: 'TIDAK_ADA_DUPLIKAT', totalDiproses: 0 };
+    }
+
+    const deckRows = await allQuery(
+      "SELECT card_id FROM tcg_deck WHERE owner_jid = ?",
+      [ownerJid]
+    );
+    const ekspedisiRows = await allQuery(
+      "SELECT card_id FROM tcg_ekspedisi WHERE owner_jid = ?",
+      [ownerJid]
+    );
+
+    const inUseCounts = {};
+    for (const d of deckRows || []) {
+      inUseCounts[d.card_id] = (inUseCounts[d.card_id] || 0) + 1;
+    }
+    for (const e of ekspedisiRows || []) {
+      inUseCounts[e.card_id] = (inUseCounts[e.card_id] || 0) + 1;
+    }
+
+    let totalDiproses = 0;
+    let totalKartuUnik = 0;
+    const dapatSerpihPerRarity = {};
+
+    for (const c of cards) {
+      const cardDef = getKartu(c.card_id);
+      if (!cardDef) continue;
+      const r = cardDef.rarity.toUpperCase();
+      if (!isAll && r !== rf) continue;
+
+      const inUse = inUseCounts[c.card_id] || 0;
+      const minSisa = Math.max(1, inUse);
+      const n = c.qty - minSisa;
+
+      if (n > 0) {
+        await runQuery(
+          "UPDATE tcg_collection SET qty = qty - ? WHERE owner_jid = ? AND card_id = ?",
+          [n, ownerJid, c.card_id]
+        );
+        await runQuery(
+          `INSERT INTO tcg_shards (owner_jid, rarity, jumlah) VALUES (?, ?, ?)
+             ON CONFLICT(owner_jid, rarity) DO UPDATE SET jumlah = jumlah + ?`,
+          [ownerJid, r, n, n]
+        );
+        totalDiproses += n;
+        totalKartuUnik += 1;
+        dapatSerpihPerRarity[r] = (dapatSerpihPerRarity[r] || 0) + n;
+      }
+    }
+
+    if (totalDiproses === 0) {
+      return { success: false, reason: 'TIDAK_ADA_DUPLIKAT_BEBAS', totalDiproses: 0 };
+    }
+
+    return {
+      success: true,
+      totalDiproses,
+      totalKartuUnik,
+      dapatSerpih: dapatSerpihPerRarity
+    };
+  });
+}
+
+/**
+ * Jual semua kartu duplikat pemain untuk mendapatkan Keping Arena (Bulk Sell).
+ * Selalu menyisakan minimal 1 kartu di koleksi dan menjaga kartu aktif.
+ */
+export async function tcgJualSemua(ownerJid, rarityFilter = null) {
+  const rf = rarityFilter ? String(rarityFilter).toUpperCase().trim() : null;
+  if (rf && rf !== 'ALL' && rf !== 'SEMUA' && !TCG_RARITY.includes(rf)) {
+    return { success: false, reason: 'RARITY_TIDAK_VALID' };
+  }
+  const isAll = !rf || rf === 'ALL' || rf === 'SEMUA';
+
+  return withTransaction(async () => {
+    const cards = await allQuery(
+      "SELECT card_id, qty, card_lv FROM tcg_collection WHERE owner_jid = ? AND qty > 1",
+      [ownerJid]
+    );
+    if (!cards || cards.length === 0) {
+      return { success: false, reason: 'TIDAK_ADA_DUPLIKAT', totalDiproses: 0 };
+    }
+
+    const deckRows = await allQuery(
+      "SELECT card_id FROM tcg_deck WHERE owner_jid = ?",
+      [ownerJid]
+    );
+    const ekspedisiRows = await allQuery(
+      "SELECT card_id FROM tcg_ekspedisi WHERE owner_jid = ?",
+      [ownerJid]
+    );
+
+    const inUseCounts = {};
+    for (const d of deckRows || []) {
+      inUseCounts[d.card_id] = (inUseCounts[d.card_id] || 0) + 1;
+    }
+    for (const e of ekspedisiRows || []) {
+      inUseCounts[e.card_id] = (inUseCounts[e.card_id] || 0) + 1;
+    }
+
+    let totalDiproses = 0;
+    let totalKartuUnik = 0;
+    let totalKeping = 0;
+
+    for (const c of cards) {
+      const cardDef = getKartu(c.card_id);
+      if (!cardDef) continue;
+      const r = cardDef.rarity.toUpperCase();
+      if (!isAll && r !== rf) continue;
+
+      const inUse = inUseCounts[c.card_id] || 0;
+      const minSisa = Math.max(1, inUse);
+      const n = c.qty - minSisa;
+
+      if (n > 0) {
+        const hargaSatuan = TCG_HARGA_JUAL[r] || 25;
+        const subtotal = hargaSatuan * n;
+        await runQuery(
+          "UPDATE tcg_collection SET qty = qty - ? WHERE owner_jid = ? AND card_id = ?",
+          [n, ownerJid, c.card_id]
+        );
+        totalDiproses += n;
+        totalKartuUnik += 1;
+        totalKeping += subtotal;
+      }
+    }
+
+    if (totalDiproses === 0) {
+      return { success: false, reason: 'TIDAK_ADA_DUPLIKAT_BEBAS', totalDiproses: 0 };
+    }
+
+    await runQuery("INSERT OR IGNORE INTO tcg_wallet (owner_jid, keping) VALUES (?, 0)", [ownerJid]);
+    await runQuery("UPDATE tcg_wallet SET keping = keping + ? WHERE owner_jid = ?", [totalKeping, ownerJid]);
+    await runQuery(
+      "INSERT INTO tcg_ledger (owner_jid, delta, sumber, ref) VALUES (?, ?, 'JUAL_SEMUA', ?)",
+      [ownerJid, totalKeping, `BULK_${totalDiproses}_CARDS`]
+    );
+
+    const w = await getQuery("SELECT keping, picis FROM tcg_wallet WHERE owner_jid = ?", [ownerJid]);
+
+    return {
+      success: true,
+      totalDiproses,
+      totalKartuUnik,
+      totalKepingDapat: totalKeping,
+      sisaKeping: w?.keping || totalKeping
+    };
+  });
+}
+
+/**
+ * Menyisipkan satu duplikat untuk menaikkan R kartu.
+ *
+ * Duplikat yang dipakai HARUS benar-benar berlebih. Sebuah kartu bisa sedang
+ * berdiri di slot dek dan sedang pergi ekspedisi sekaligus, dan keduanya
+ * menahan satu keping masing-masing (lihat aturan di `tcgSetDeckSlot`). Kalau
+ * pemeriksaan ini cuma melihat `qty > 1`, me-refine bisa mencuri kartu dari
+ * bawah kaki dek pemain dan meninggalkan slot yang menunjuk kartu yang sudah
+ * tidak ia punya.
+ */
+/**
+ * Menambah Picis ke dompet pemain.
+ *
+ * Picis TIDAK ditulis ke kolom `delta` buku besar. Buku besar itu buku besar
+ * KEPING — `delta` dijumlahkan di layar audit untuk menghitung peredaran
+ * Keping, jadi menuliskan angka Picis ke sana akan meracuni hitungannya.
+ * Yang dicatat cuma jejaknya, dengan delta nol.
+ */
+export async function tcgAddPicis(ownerJid, jumlah, sumber, ref = null) {
+  const n = Math.floor(Number(jumlah));
+  if (!isFinite(n) || n <= 0) return { success: false, reason: 'JUMLAH_TIDAK_VALID' };
+  return withTransaction(async () => {
+    await runQuery("INSERT OR IGNORE INTO tcg_wallet (owner_jid, keping) VALUES (?, 0)", [ownerJid]);
+    await runQuery("UPDATE tcg_wallet SET picis = picis + ? WHERE owner_jid = ?", [n, ownerJid]);
+    await runQuery(
+      "INSERT INTO tcg_ledger (owner_jid, delta, sumber, ref) VALUES (?, 0, ?, ?)",
+      [ownerJid, sumber, ref ? `${ref} +${n} picis` : `+${n} picis`]
+    );
+    const w = await getQuery("SELECT picis FROM tcg_wallet WHERE owner_jid = ?", [ownerJid]);
+    return { success: true, picis: w?.picis || 0, ditambah: n };
+  });
+}
+
+export async function tcgRefineKartu(ownerJid, cardId) {
+  return withTransaction(async () => {
+    const kartu = await getQuery(
+      "SELECT qty, card_lv, refine FROM tcg_collection WHERE owner_jid = ? AND card_id = ? AND qty > 0",
+      [ownerJid, cardId]
+    );
+    if (!kartu) return { success: false, reason: 'TIDAK_PUNYA' };
+
+    const rSekarang = kartu.refine || 1;
+    if (rSekarang >= 5) return { success: false, reason: 'SUDAH_MAKS' };
+
+    const diDek = await allQuery(
+      "SELECT slot FROM tcg_deck WHERE owner_jid = ? AND card_id = ?",
+      [ownerJid, cardId]
+    );
+    const diEkspedisi = await allQuery(
+      "SELECT slot FROM tcg_ekspedisi WHERE owner_jid = ? AND card_id = ?",
+      [ownerJid, cardId]
+    );
+    const bertugas = diDek.length + diEkspedisi.length;
+    // Sesudah dipakai harus tersisa minimal satu keping, dan cukup untuk semua
+    // tugas yang sedang berjalan.
+    const sisaSesudah = kartu.qty - TCG_REFINE_DUP_PER_TINGKAT;
+    if (sisaSesudah < Math.max(1, bertugas)) {
+      return {
+        success: false,
+        reason: 'DUPLIKAT_KURANG',
+        punya: kartu.qty,
+        butuh: Math.max(1, bertugas) + TCG_REFINE_DUP_PER_TINGKAT,
+        bertugas,
+        refine: rSekarang
+      };
+    }
+
+    const res = await runQuery(
+      "UPDATE tcg_collection SET qty = qty - ?, refine = refine + 1 " +
+      "WHERE owner_jid = ? AND card_id = ? AND qty - ? >= ? AND refine < 5",
+      [TCG_REFINE_DUP_PER_TINGKAT, ownerJid, cardId, TCG_REFINE_DUP_PER_TINGKAT, Math.max(1, bertugas)]
+    );
+    if (res.changes !== 1) return { success: false, reason: 'GAGAL_BERSAING' };
+
+    return {
+      success: true,
+      refineBaru: rSekarang + 1,
+      sisaKeping: sisaSesudah,
+      dipakai: TCG_REFINE_DUP_PER_TINGKAT
+    };
   });
 }
 
@@ -751,7 +1506,10 @@ export async function tcgNaikLevel(ownerJid, cardId, rarity, bintang = 1) {
     const biaya = (TCG_BIAYA_LEVEL[rarity] || {})[kartu.card_lv];
     if (!biaya) return { success: false, reason: 'RARITY_TIDAK_VALID' };
 
-    const biayaKeping = tcgBiayaKepingLevel(bintang, kartu.card_lv);
+    // Dibayar PICIS, bukan Keping. Lihat catatan di atas TCG_BIAYA_LEVEL_PICIS:
+    // selama biaya level memakai mata uang yang sama dengan gacha, menaikkan
+    // level selalu kalah bersaing melawan menarik kartu baru.
+    const biayaPicis = tcgBiayaPicisLevel(bintang, kartu.card_lv);
 
     const res = await runQuery(
       "UPDATE tcg_shards SET jumlah = jumlah - ? WHERE owner_jid = ? AND rarity = ? AND jumlah >= ?",
@@ -762,32 +1520,32 @@ export async function tcgNaikLevel(ownerJid, cardId, rarity, bintang = 1) {
         "SELECT jumlah FROM tcg_shards WHERE owner_jid = ? AND rarity = ?",
         [ownerJid, rarity]
       );
-      return { success: false, reason: 'SERPIHAN_KURANG', butuh: biaya, punya: s?.jumlah || 0, butuhKeping: biayaKeping };
+      return { success: false, reason: 'SERPIHAN_KURANG', butuh: biaya, punya: s?.jumlah || 0, butuhPicis: biayaPicis };
     }
 
     await runQuery("INSERT OR IGNORE INTO tcg_wallet (owner_jid, keping) VALUES (?, 0)", [ownerJid]);
     const bayar = await runQuery(
-      "UPDATE tcg_wallet SET keping = keping - ? WHERE owner_jid = ? AND keping >= ?",
-      [biayaKeping, ownerJid, biayaKeping]
+      "UPDATE tcg_wallet SET picis = picis - ? WHERE owner_jid = ? AND picis >= ?",
+      [biayaPicis, ownerJid, biayaPicis]
     );
     if (bayar.changes !== 1) {
       // Serpihan sudah dipotong di atas; transaksi ini dibatalkan seluruhnya
       // dengan melempar, jadi tidak ada yang hilang separuh jalan.
-      const w = await getQuery("SELECT keping FROM tcg_wallet WHERE owner_jid = ?", [ownerJid]);
-      const err = new Error('KEPING_KURANG');
-      err.hasil = { success: false, reason: 'KEPING_KURANG', butuhKeping: biayaKeping, punyaKeping: w?.keping || 0, butuh: biaya };
+      const w = await getQuery("SELECT picis FROM tcg_wallet WHERE owner_jid = ?", [ownerJid]);
+      const err = new Error('PICIS_KURANG');
+      err.hasil = { success: false, reason: 'PICIS_KURANG', butuhPicis: biayaPicis, punyaPicis: w?.picis || 0, butuh: biaya };
       throw err;
     }
 
     await runQuery(
-      "INSERT INTO tcg_ledger (owner_jid, delta, sumber, ref) VALUES (?, ?, 'NAIK_LEVEL', ?)",
-      [ownerJid, -biayaKeping, cardId]
+      "INSERT INTO tcg_ledger (owner_jid, delta, sumber, ref) VALUES (?, 0, 'NAIK_LEVEL', ?)",
+      [ownerJid, `${cardId} -${biayaPicis} picis`]
     );
     await runQuery(
       "UPDATE tcg_collection SET card_lv = card_lv + 1 WHERE owner_jid = ? AND card_id = ?",
       [ownerJid, cardId]
     );
-    return { success: true, levelBaru: kartu.card_lv + 1, biaya, biayaKeping };
+    return { success: true, levelBaru: kartu.card_lv + 1, biaya, biayaPicis };
   });
 }
 
@@ -1078,7 +1836,7 @@ export async function tcgKlaimMisi(ownerJid) {
       [ownerJid, total, hariIni]
     );
 
-    const w = await getQuery("SELECT keping FROM tcg_wallet WHERE owner_jid = ?", [ownerJid]);
+    const w = await getQuery("SELECT keping, picis FROM tcg_wallet WHERE owner_jid = ?", [ownerJid]);
     return { success: true, total, rincian, kepingTotal: w?.keping || 0 };
   });
 }
@@ -1204,9 +1962,10 @@ export async function initTcgFarmSchema() {
 
   await runQuery(`
     CREATE TABLE IF NOT EXISTS tcg_profil (
-      owner_jid  TEXT PRIMARY KEY,
-      nama       TEXT,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      owner_jid   TEXT PRIMARY KEY,
+      nama        TEXT,
+      gelar_aktif TEXT,
+      updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
 
@@ -1359,7 +2118,7 @@ export async function tcgCatatHasilSpar(ownerJid, menang, lawanJid = null) {
       );
     }
 
-    const w = await getQuery("SELECT keping FROM tcg_wallet WHERE owner_jid = ?", [ownerJid]);
+    const w = await getQuery("SELECT keping, picis FROM tcg_wallet WHERE owner_jid = ?", [ownerJid]);
     return { hadiah, penuh, hadiahBertahan, kepingTotal: w?.keping || 0 };
   });
 }
@@ -1446,17 +2205,23 @@ export async function tcgKirimEkspedisi(ownerJid, slot, cardId, jam, cardBintang
 
 export async function tcgKlaimEkspedisi(ownerJid, cardRarityMap = {}, cardBintangMap = {}) {
   const sekarang = Date.now();
-  const rows = await allQuery(
-    "SELECT slot, card_id, jam FROM tcg_ekspedisi WHERE owner_jid = ? AND selesai_at <= ?",
-    [ownerJid, sekarang]
-  );
-  if (!rows.length) return { success: false, reason: 'BELUM_ADA_YANG_PULANG' };
-
   return withTransaction(async () => {
+    const rows = await allQuery(
+      "SELECT slot, card_id, jam FROM tcg_ekspedisi WHERE owner_jid = ? AND selesai_at <= ?",
+      [ownerJid, sekarang]
+    );
+    if (!rows.length) return { success: false, reason: 'BELUM_ADA_YANG_PULANG' };
+
     let totalKeping = 0;
     const rincian = [];
 
     for (const r of rows) {
+      const del = await runQuery(
+        "DELETE FROM tcg_ekspedisi WHERE owner_jid = ? AND slot = ?",
+        [ownerJid, r.slot]
+      );
+      if (del.changes !== 1) continue;
+
       const hasil = tcgHasilEkspedisi(r.jam, cardBintangMap[r.card_id] || 1);
       const rarity = cardRarityMap[r.card_id] || 'COMMON';
       totalKeping += hasil.keping;
@@ -1466,23 +2231,28 @@ export async function tcgKlaimEkspedisi(ownerJid, cardRarityMap = {}, cardBintan
            ON CONFLICT(owner_jid, rarity) DO UPDATE SET jumlah = jumlah + ?`,
         [ownerJid, rarity, hasil.serpihan, hasil.serpihan]
       );
-      await runQuery(
-        "DELETE FROM tcg_ekspedisi WHERE owner_jid = ? AND slot = ?",
-        [ownerJid, r.slot]
-      );
 
       rincian.push({ slot: r.slot, cardId: r.card_id, jam: r.jam, rarity, ...hasil });
     }
 
-    await runQuery("INSERT OR IGNORE INTO tcg_wallet (owner_jid, keping) VALUES (?, 0)", [ownerJid]);
-    await runQuery("UPDATE tcg_wallet SET keping = keping + ? WHERE owner_jid = ?", [totalKeping, ownerJid]);
-    await runQuery(
-      "INSERT INTO tcg_ledger (owner_jid, delta, sumber, ref) VALUES (?, ?, 'EKSPEDISI', ?)",
-      [ownerJid, totalKeping, `${rows.length} slot`]
-    );
+    if (!rincian.length) {
+      return { success: false, reason: 'BELUM_ADA_YANG_PULANG' };
+    }
 
-    const w = await getQuery("SELECT keping FROM tcg_wallet WHERE owner_jid = ?", [ownerJid]);
-    return { success: true, totalKeping, rincian, kepingTotal: w?.keping || 0 };
+    // Picis dibayar per slot yang pulang, bukan sekali per klaim: itu membuat
+    // memberangkatkan tiga kartu tiga kali lebih berarti daripada satu.
+    const totalPicis = rincian.length * TCG_PICIS_EKSPEDISI_PER_SLOT;
+    if (totalKeping > 0 || totalPicis > 0) {
+      await runQuery("INSERT OR IGNORE INTO tcg_wallet (owner_jid, keping) VALUES (?, 0)", [ownerJid]);
+      await runQuery("UPDATE tcg_wallet SET keping = keping + ?, picis = picis + ? WHERE owner_jid = ?", [totalKeping, totalPicis, ownerJid]);
+      await runQuery(
+        "INSERT INTO tcg_ledger (owner_jid, delta, sumber, ref) VALUES (?, ?, 'EKSPEDISI', ?)",
+        [ownerJid, totalKeping, `${rincian.length} slot`]
+      );
+    }
+
+    const w = await getQuery("SELECT keping, picis FROM tcg_wallet WHERE owner_jid = ?", [ownerJid]);
+    return { success: true, totalKeping, totalPicis, rincian, kepingTotal: w?.keping || 0, picisTotal: w?.picis || 0 };
   });
 }
 
@@ -1509,7 +2279,7 @@ export async function tcgPakaiStamina(ownerJid, jumlah = 1) {
   return { success: true, sisaStamina: t?.stamina || 0 };
 }
 
-export async function tcgHadiahGerbang(ownerJid, rarity, jumlahSerpihan = TCG_GERBANG_SERPIHAN, keping = TCG_GERBANG_KEPING) {
+export async function tcgHadiahGerbang(ownerJid, rarity, jumlahSerpihan = TCG_GERBANG_SERPIHAN, keping = TCG_GERBANG_KEPING, picis = TCG_PICIS_GERBANG) {
   return withTransaction(async () => {
     await runQuery(
       `INSERT INTO tcg_shards (owner_jid, rarity, jumlah) VALUES (?, ?, ?)
@@ -1517,13 +2287,13 @@ export async function tcgHadiahGerbang(ownerJid, rarity, jumlahSerpihan = TCG_GE
       [ownerJid, rarity, jumlahSerpihan, jumlahSerpihan]
     );
     await runQuery("INSERT OR IGNORE INTO tcg_wallet (owner_jid, keping) VALUES (?, 0)", [ownerJid]);
-    await runQuery("UPDATE tcg_wallet SET keping = keping + ? WHERE owner_jid = ?", [keping, ownerJid]);
+    await runQuery("UPDATE tcg_wallet SET keping = keping + ?, picis = picis + ? WHERE owner_jid = ?", [keping, picis, ownerJid]);
     await runQuery(
       "INSERT INTO tcg_ledger (owner_jid, delta, sumber, ref) VALUES (?, ?, 'GERBANG', ?)",
       [ownerJid, keping, rarity]
     );
-    const w = await getQuery("SELECT keping FROM tcg_wallet WHERE owner_jid = ?", [ownerJid]);
-    return { keping, serpihan: jumlahSerpihan, rarity, kepingTotal: w?.keping || 0 };
+    const w = await getQuery("SELECT keping, picis FROM tcg_wallet WHERE owner_jid = ?", [ownerJid]);
+    return { keping, picis, serpihan: jumlahSerpihan, rarity, kepingTotal: w?.keping || 0, picisTotal: w?.picis || 0 };
   });
 }
 
@@ -1663,6 +2433,8 @@ export async function tcgAmbilKartuDrop(dropId, ownerJid, idx) {
   }
 
   const cardId = kartuIds[i - 1];
+  const sebelum = await tcgGetKartu(ownerJid, cardId);
+  const baru = !sebelum || sebelum.qty === 0;
   await tcgTambahKartu(ownerJid, cardId, 1);
 
   const semua = await allQuery("SELECT idx FROM tcg_drop_ambil WHERE drop_id = ?", [dropId]);
@@ -1670,7 +2442,7 @@ export async function tcgAmbilKartuDrop(dropId, ownerJid, idx) {
     await runQuery("UPDATE tcg_drop SET aktif = 0 WHERE id = ?", [dropId]);
   }
 
-  return { success: true, cardId, idx: i, habis: semua.length >= kartuIds.length };
+  return { success: true, cardId, idx: i, habis: semua.length >= kartuIds.length, baru };
 }
 
 /** Membersihkan drop lama supaya tabel tidak tumbuh selamanya. */

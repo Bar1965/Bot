@@ -11,20 +11,29 @@ async function handleBankEconomy(sock, jid, senderNumber, messageObj, args, comm
   const userLabel = cust?.nama ? `*${cust.nama}* (@${senderPhone})` : `@${senderPhone}`;
 
   if (['bank', 'brankas'].includes(command)) {
-    const estInterest = Math.floor(currentBank * 0.02);
+    const estInterest = db.hitungBungaHarian(currentBank);
+    const kenaBatas = currentBank > db.BANK_BUNGA_TIER;
+    // Jangan menulis "100% Aman" kalau di layar yang sama ada dana yang belum
+    // mengendap — itu kontradiksi yang bikin pemain merasa dibohongi.
+    const rawan = await db.getSaldoRawan(senderNumber);
+    const labelAman = rawan.endap > 0
+      ? `(${(currentBank - rawan.endap).toLocaleString('id-ID')} aman · ${rawan.endap.toLocaleString('id-ID')} belum mengendap)`
+      : '(100% Aman)';
     const bankCard = 
 `🏦 *REKENING BANK POIN AKBAR STORE* 💳
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 👤 Nasabah: ${userLabel}
 💰 Dompet Utama: *${currentWallet.toLocaleString('id-ID')} Poin* (Bisa dimaling)
-🔒 Saldo Rekening Bank: *${currentBank.toLocaleString('id-ID')} Poin* (100% Aman)
-📈 Bunga Harian: *2% per hari* (+${estInterest.toLocaleString('id-ID')} Poin/hari)
+🔒 Saldo Rekening Bank: *${currentBank.toLocaleString('id-ID')} Poin* ${labelAman}
+📈 Bunga Harian: *+${estInterest.toLocaleString('id-ID')} Poin/hari*
+   └ _${db.BANK_BUNGA_RATE * 100}% untuk ${db.BANK_BUNGA_TIER.toLocaleString('id-ID')} poin pertama, maksimal ${db.BANK_BUNGA_CAP} poin/hari_${kenaBatas ? '\n   └ ⚠️ _Saldomu di atas batas bunga — kelebihannya tidak berbunga lagi._' : ''}
 
 📌 *Petunjuk Transaksi:*
 ▫️ \`.depo [jumlah/all]\` - Simpan poin ke bank
-▫️ \`.tarik [jumlah/all]\` - Tarik poin ke dompet (Pajak 2%)
+▫️ \`.tarik [jumlah/all]\` - Tarik poin ke dompet *(gratis, tanpa pajak)*
 
-_Catatan: Poin di bank aman 100% dari aksi .steal / maling member lain._`;
+🔒 *Soal keamanan:*
+Poin di bank aman dari \`.steal\`, *kecuali setoran yang baru masuk* — dana perlu *${Math.round(db.BANK_ENDAP_MS / 60000)} menit* untuk mengendap. Menyetor tepat saat mau dicopet tidak menyelamatkanmu.`;
 
     await send(sock, jid, messageObj, bankCard, {
       title: '🏦 BANK POIN',
@@ -59,7 +68,7 @@ _Catatan: Poin di bank aman 100% dari aksi .steal / maling member lain._`;
     const res = await db.bankDeposit(senderNumber, amount);
     if (res.success) {
       const updated = await db.getGameProfile(senderNumber);
-      await send(sock, jid, messageObj, `✅ *SETORAN BANK BERHASIL!*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📥 Jumlah Disetor: *+${amount.toLocaleString('id-ID')} Poin*\n🔒 Saldo Bank Sekarang: *${updated.bank_points.toLocaleString('id-ID')} Poin*\n💰 Sisa Dompet: *${updated.points.toLocaleString('id-ID')} Poin*`, { mentions: [senderNumber] });
+      await send(sock, jid, messageObj, `✅ *SETORAN BANK BERHASIL!*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📥 Jumlah Disetor: *+${amount.toLocaleString('id-ID')} Poin*\n🔒 Saldo Bank Sekarang: *${updated.bank_points.toLocaleString('id-ID')} Poin*\n💰 Sisa Dompet: *${updated.points.toLocaleString('id-ID')} Poin*\n\n⏳ *Dana baru mengendap dalam ${Math.round(db.BANK_ENDAP_MS / 60000)} menit.* Sebelum itu, setoran ini masih bisa dijangkau \`.steal\`.`, { mentions: [senderNumber] });
     } else {
       await send(sock, jid, messageObj, "❌ Gagal memproses setoran bank.");
     }
@@ -84,10 +93,10 @@ _Catatan: Poin di bank aman 100% dari aksi .steal / maling member lain._`;
       return true;
     }
 
-    const res = await db.bankWithdraw(senderNumber, amount, 0.02);
+    const res = await db.bankWithdraw(senderNumber, amount);
     if (res.success) {
       const updated = await db.getGameProfile(senderNumber);
-      await send(sock, jid, messageObj, `✅ *PENARIKAN BANK BERHASIL!*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📤 Jumlah Ditarik: *${amount.toLocaleString('id-ID')} Poin*\n💸 Pajak Admin (2%): *${(amount - res.received).toLocaleString('id-ID')} Poin*\n💰 Masuk ke Dompet: *+${res.received.toLocaleString('id-ID')} Poin*\n🔒 Sisa Saldo Bank: *${updated.bank_points.toLocaleString('id-ID')} Poin*`, { mentions: [senderNumber] });
+      await send(sock, jid, messageObj, `✅ *PENARIKAN BANK BERHASIL!*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📤 Jumlah Ditarik: *${amount.toLocaleString('id-ID')} Poin*\n💰 Masuk ke Dompet: *+${res.received.toLocaleString('id-ID')} Poin* _(tanpa potongan)_\n🔒 Sisa Saldo Bank: *${updated.bank_points.toLocaleString('id-ID')} Poin*\n\n_Menarik uangmu sendiri tidak dipajaki._`, { mentions: [senderNumber] });
     } else {
       await send(sock, jid, messageObj, "❌ Gagal memproses penarikan bank.");
     }

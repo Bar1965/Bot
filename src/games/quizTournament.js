@@ -299,7 +299,7 @@ async function endTournamentRound(sock, jid, messageObj) {
     // 🏆 JUARA TUNGGAL DITEMUKAN!
     const winner = aliveAfter[0];
     await db.addGamePoints(winner, totalPrize);
-    await db.addMessageXp(winner, 100);
+    await db.grantXp(winner, 100);
 
     const winMsg = report + `\n👑 *SELAMAT KEPADA JUARA TURNAMEN!* 🏆\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🎉 Pemenang: *@${winner.split('@')[0]}*\n💰 Hadiah Juara: *+${totalPrize.toLocaleString('id-ID')} Poin* & *+100 XP*!\n\n_Piala turnamen resmi ditutup! Ketik .cerdascermat untuk turnamen baru._`;
 
@@ -313,7 +313,7 @@ async function endTournamentRound(sock, jid, messageObj) {
     const splitPrize = Math.floor(totalPrize / aliveBefore.length);
     for (const p of aliveBefore) {
       await db.addGamePoints(p, splitPrize);
-      await db.addMessageXp(p, 40);
+      await db.grantXp(p, 40);
     }
 
     const drawMsg = report + `\n⚖️ *SEMUA PESERTA GUGUR BERSAMAAN!* ⚖️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nHadiah prizepool dibagi rata ke peserta ronde terakhir (*+${splitPrize} Poin* tiap orang).\n\n_Turnamen berakhir seri._`;

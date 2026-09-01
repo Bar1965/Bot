@@ -30,7 +30,10 @@ export async function send(sock, jid, messageObj, text, options = {}) {
       title: options.title,
       footer: options.footer || 'Akbar Store Bot',
       buttons: options.buttons,
-      sections: options.sections
+      sections: options.sections,
+      // Tanpa ini setiap pesan bertombol kehilangan mention-nya: pemain yang
+      // namanya ditulis @nomor (belum terdaftar) tidak pernah tertag.
+      mentions
     });
   } else {
     return await sock.sendMessage(jid, { text, mentions: mentions.length > 0 ? mentions : undefined }, messageObj ? { quoted: messageObj } : undefined);

@@ -58,7 +58,7 @@ function getRandomUmaMusumeRoster(count = 8) {
   }));
 }
 
-async function handleHorseRace(sock, jid, senderNumber, messageObj, args, command, isFromGroup) {
+async function handleHorseRace(sock, jid, senderNumber, messageObj, args, command, isFromGroup, isAdmin = false, isOwner = false) {
   if (!isFromGroup) {
     await send(sock, jid, messageObj, "❌ Permainan Balap Kuda Uma Musume Derby hanya bisa dimainkan di grup!");
     return true;
@@ -85,6 +85,11 @@ async function handleHorseRace(sock, jid, senderNumber, messageObj, args, comman
 
   if (['cancelbalap'].includes(command)) {
     if (!session) return true;
+    const isHost = session.host === senderNumber || db.isPhoneMatch(session.host, senderNumber);
+    if (!isHost && !isAdmin && !isOwner) {
+      await send(sock, jid, messageObj, "❌ Hanya host pembuat bursa atau Admin yang bisa membatalkan balapan!");
+      return true;
+    }
     if (session.timeout) clearTimeout(session.timeout);
     for (const b of session.bets) {
       await db.addGamePoints(b.sender, b.amount);
@@ -115,6 +120,7 @@ async function handleHorseRace(sock, jid, senderNumber, messageObj, args, comman
 
     session = {
       jid,
+      host: senderNumber,
       racers,
       payoutMultiplier,
       bets: [],
@@ -190,18 +196,23 @@ _Contoh:_ \`.pasang 1 100\``;
 }
 
 async function processHorseBet(sock, jid, senderNumber, messageObj, session, horseId, amount) {
-  if (isNaN(horseId) || horseId < 1 || horseId > session.racers.length || isNaN(amount) || amount <= 0) {
-    await send(sock, jid, messageObj, `⚠️ *Pilihan Kuda Salah!*\nPilih nomor kuda 1 sampai ${session.racers.length}.\n_Contoh:_ \`.pasang 1 50\``);
+  const safeAmount = Math.floor(Number(amount));
+  if (isNaN(horseId) || horseId < 1 || horseId > session.racers.length || isNaN(safeAmount) || safeAmount <= 0 || safeAmount > 50000) {
+    await send(sock, jid, messageObj, `⚠️ *Taruhan Tidak Valid!*\nPilih nomor kuda 1 sampai ${session.racers.length} dan taruhan 1 - 50.000 Poin.\n_Contoh:_ \`.pasang 1 50\``);
     return;
   }
 
   const prof = await db.getGameProfile(senderNumber);
-  if ((prof?.points || 0) < amount) {
+  if ((prof?.points || 0) < safeAmount) {
     await send(sock, jid, messageObj, `❌ Poin kamu tidak mencukupi! (Poinmu: ${prof?.points || 0})`);
     return;
   }
 
-  await db.deductGamePoints(senderNumber, amount);
+  const deduct = await db.deductGamePoints(senderNumber, safeAmount);
+  if (!deduct?.success) {
+    await send(sock, jid, messageObj, `❌ Gagal memotong poin taruhan.`);
+    return;
+  }
 
   const horse = session.racers.find(h => h.id === horseId);
   const cust = await db.getCustomerByPhone(senderNumber);
@@ -213,7 +224,7 @@ async function processHorseBet(sock, jid, senderNumber, messageObj, session, hor
     label: senderLabel,
     horseId,
     horseName: `${horse.emoji} ${horse.name}`,
-    amount
+    amount: safeAmount
   });
 
   const remSec = Math.max(1, Math.ceil((session.startAt - Date.now()) / 1000));
@@ -306,7 +317,7 @@ _Status: Lap 2/3 (Final Corner)_`;
     for (const w of winners) {
       const payout = Math.floor(w.amount * session.payoutMultiplier);
       await db.addGamePoints(w.sender, payout);
-      await db.addMessageXp(w.sender, 50);
+      await db.grantXp(w.sender, 50);
       mentionList.push(w.sender);
       winSummary += `▫️ ${w.label} — Menang *+${payout.toLocaleString('id-ID')} Poin* (Taruhan: ${w.amount.toLocaleString('id-ID')} Poin)\n`;
     }

@@ -25,7 +25,10 @@ const DIR_CACHE = path.join(process.cwd(), 'public', 'tcg-cards');
 // Menaikkan versi ini adalah satu-satunya cara membuangnya.
 // Dinaikkan ke 3: tiap kartu sekarang punya ATK/HP sendiri di katalog, plus
 // stat KRITIS yang belum pernah tergambar. Seluruh cache lama salah lagi.
-const VERSI_KARTU = 3;
+// Dinaikkan ke 4: Legendary/Mythic mendapat baris gelar dan MYT03 berganti
+// nama dari 'Voidreaper' jadi 'Kala Rau'. Gambar lama menampilkan tata letak
+// dan nama yang sudah tidak ada.
+const VERSI_KARTU = 4;
 
 export const LEBAR_KARTU = 300;
 export const TINGGI_KARTU = 420;
@@ -147,9 +150,20 @@ function gambarWajahKartu(kartu, level) {
   ctx.fillText(el.emoji, LEBAR_KARTU / 2, 150);
   ctx.restore();
 
-  // Nama
+  // Nama, dan untuk Legendary/Mythic satu baris gelar di bawahnya.
+  //
+  // Kartu bergelar menggeser namanya NAIK 8px supaya gelarnya muat di antara
+  // nama dan baris elemen tanpa menyentuh panel stat yang mulai di y=288.
+  // Kartu tanpa gelar tidak digeser sama sekali — tata letaknya tetap persis
+  // seperti sebelumnya.
+  const gelar = kartu.gelar;
   ctx.fillStyle = '#ffffff';
-  tulisMuat(ctx, kartu.nama.toUpperCase(), LEBAR_KARTU / 2, 246, LEBAR_KARTU - 36, 26);
+  tulisMuat(ctx, kartu.nama.toUpperCase(), LEBAR_KARTU / 2, gelar ? 238 : 246, LEBAR_KARTU - 36, 26);
+
+  if (gelar) {
+    ctx.fillStyle = warna.garis;
+    tulisMuat(ctx, gelar, LEBAR_KARTU / 2, 258, LEBAR_KARTU - 30, 12, 'italic');
+  }
 
   // Baris elemen + biaya bintang
   ctx.fillStyle = warna.teks;
@@ -273,7 +287,7 @@ export async function bufferBanyakKartu(daftar, opts = {}) {
     const kol = i % perBaris;
     const brs = Math.floor(i / perBaris);
     const x = jarak + kol * (LEBAR_KARTU + jarak);
-    const y = jarak + brs * (TINGGI_KARTU + tinggiNomor) + tinggiNomor;
+    const y = jarak + brs * (TINGGI_KARTU + tinggiNomor + jarak) + tinggiNomor;
 
     const img = await loadImage(buf);
     ctx.drawImage(img, x, y);

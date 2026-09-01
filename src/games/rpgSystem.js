@@ -3,9 +3,13 @@ import { send, generateStealChallenge, normalizeAnswer } from './helpers.js';
 import { getPremiumBenefits } from '../../premiumHandler.js';
 
 export const activeStealSessions = new Map();
-export const stealCooldowns = new Map();
-export const rampokCooldowns = new Map();
-export const victimImmunity = new Map();
+
+// Cooldown pelaku dan immunity korban sekarang hidup di tabel user_cooldowns,
+// bukan Map memori: restart bot dulu menghapus keduanya, jadi pemain bisa
+// sengaja menunggu bot restart untuk membatalkan masa buron atau membuang
+// perlindungan korban.
+export const COOLDOWN_MALING = 'STEAL';
+export const COOLDOWN_IMMUNITY = 'STEAL_IMMUNITY';
 const STEAL_TIMEOUT_MS = 35 * 1000;
 
 function profileText(profile, name, premiumTier) {
@@ -45,16 +49,16 @@ export async function handleStealHeist(sock, jid, m, senderNumber, targetNumber)
   }
 
   const now = Date.now();
-  const immExpires = victimImmunity.get(targetNumber) || 0;
-  if (now < immExpires) {
-    const sisaMenit = Math.ceil((immExpires - now) / 60000);
+  const sisaImunMs = await db.getCooldownMs(targetNumber, COOLDOWN_IMMUNITY);
+  if (sisaImunMs > 0) {
+    const sisaMenit = Math.ceil(sisaImunMs / 60000);
     await send(sock, jid, m, `🛡️ *GAGAL!* Target sedang dilindungi oleh Sistem Keamanan / Polisi (Immunity) selama ${sisaMenit} menit ke depan.`);
     return true;
   }
 
-  const cdExpires = stealCooldowns.get(senderNumber) || 0;
-  if (now < cdExpires) {
-    const sisaMenit = Math.ceil((cdExpires - now) / 60000);
+  const sisaBuronMs = await db.getCooldownMs(senderNumber, COOLDOWN_MALING);
+  if (sisaBuronMs > 0) {
+    const sisaMenit = Math.ceil(sisaBuronMs / 60000);
     await send(sock, jid, m, `🚨 *BURONAN!* Kamu sedang dalam radar polisi. Bersembunyilah dulu selama ${sisaMenit} menit sebelum melakukan misi pencurian lagi.`);
     return true;
   }
@@ -121,6 +125,8 @@ export async function handleStealHeist(sock, jid, m, senderNumber, targetNumber)
   const session = {
     senderNumber: resolvedSender,
     targetNumber: resolvedTarget,
+    senderRaw: senderNumber,
+    targetRaw: targetNumber,
     senderLabel,
     targetLabel,
     jid,
@@ -137,18 +143,18 @@ export async function handleStealHeist(sock, jid, m, senderNumber, targetNumber)
     activeStealSessions.delete(senderNumber);
 
     // Timeout penalty: tertangkap polisi
-    const curPerampok = await db.getGameProfile(senderNumber);
+    const curPerampok = await db.getGameProfile(resolvedSender);
     const denda = Math.max(25, Math.floor(((curPerampok?.points || 0) * 20) / 100));
     const kompensasi = Math.floor(denda / 2);
 
-    await db.deductGamePoints(senderNumber, denda);
-    await db.addGamePoints(targetNumber, kompensasi);
-    stealCooldowns.set(senderNumber, Date.now() + 15 * 60 * 1000);
-    victimImmunity.set(targetNumber, Date.now() + 20 * 60 * 1000);
+    await db.deductGamePoints(resolvedSender, denda);
+    await db.addGamePoints(resolvedTarget, kompensasi);
+    await db.setCooldown(resolvedSender, COOLDOWN_MALING, 15 * 60 * 1000);
+    await db.setCooldown(resolvedTarget, COOLDOWN_IMMUNITY, 20 * 60 * 1000);
 
     const failMsg = `🚨 *WAKTU HABIS — ALARM BERBUNYI!* 🚨\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🦹 Pelaku: ${senderLabel}\n🎯 Target: ${targetLabel}\n\nPolisi tiba di lokasi! Aksi pembobolan brankas gagal total karena waktu habis (35 detik).\n\n💸 *Sanksi Denda:* Pelaku didenda *-${denda} Poin*!\n🎁 *Kompensasi:* ${targetLabel} menerima perlindungan polisi & *+${kompensasi} Poin* ganti rugi.\n⏳ Status: Pelaku buron selama 15 menit.`;
 
-    await send(sock, jid, m, failMsg, { mentions: [senderNumber, targetNumber] });
+    await send(sock, jid, m, failMsg, { mentions: [resolvedSender, resolvedTarget] });
   }, STEAL_TIMEOUT_MS);
 
   activeStealSessions.set(senderNumber, session);
@@ -192,18 +198,22 @@ export async function handleStealAnswer(sock, jid, m, senderNumber, textAnswer) 
   if (isCorrect) {
     // Sukses: Curi 10% - 25% dari poin target
     const percentStolen = Math.floor(Math.random() * 16) + 10; // 10% s/d 25%
-    const currentVictimProf = await db.getGameProfile(session.targetNumber);
-    const maxVictimPts = Math.max(0, currentVictimProf?.points || 0);
-    const amountStolen = Math.max(5, Math.min(5000, Math.floor((maxVictimPts * percentStolen) / 100)));
+    // Sasaran pencurian = dompet + setoran bank yang belum mengendap. Sejak
+    // pajak tarik dihapus, dana endap inilah rem yang membuat `.steal` tetap
+    // hidup: menyetor tepat sebelum dicopet tidak lagi menyelamatkan korban.
+    const rawan = await db.getSaldoRawan(session.targetNumber);
+    const maxVictimPts = rawan.rawan;
+    const amountTarget = Math.max(5, Math.min(5000, Math.floor((maxVictimPts * percentStolen) / 100)));
 
-    await db.deductGamePoints(session.targetNumber, amountStolen);
-    const updatedStealer = await db.addGamePoints(senderNumber, amountStolen);
-    await db.addMessageXp(senderNumber, 40);
+    const ambil = await db.curiSaldoKorban(session.targetNumber, amountTarget);
+    const amountStolen = ambil.diambil || 0;
+    const updatedStealer = await db.addGamePoints(session.senderNumber, amountStolen);
+    await db.grantXp(session.senderNumber, 40);
 
     const newVictimProf = await db.getGameProfile(session.targetNumber);
 
-    stealCooldowns.set(senderNumber, now + 15 * 60 * 1000); // 15 menit
-    victimImmunity.set(session.targetNumber, now + 30 * 60 * 1000); // 30 menit imun
+    await db.setCooldown(session.senderNumber, COOLDOWN_MALING, 15 * 60 * 1000);
+    await db.setCooldown(session.targetNumber, COOLDOWN_IMMUNITY, 30 * 60 * 1000);
 
     const successMsg = 
 `🥷 *PEMBOBOLAN BRANKAS BERHASIL!* 💰
@@ -213,7 +223,7 @@ export async function handleStealAnswer(sock, jid, m, senderNumber, textAnswer) 
 🔓 Sandi Terbobol: *${session.challenge.answer}*
 
 🎉 *Hasil Pembobolan:*
-💸 Poin Tercuri: *+${amountStolen.toLocaleString('id-ID')} Poin* (${percentStolen}% dari brankas target)
+💸 Poin Tercuri: *+${amountStolen.toLocaleString('id-ID')} Poin* (${percentStolen}% dari saldo yang bisa dijangkau)${ambil.dariEndap > 0 ? `\n🏦 _Termasuk *${ambil.dariEndap.toLocaleString('id-ID')} Poin* setoran bank yang belum sempat mengendap!_` : ''}
 ⭐ Bonus EXP: *+40 XP*
 
 💳 *Informasi Saldo Terkini:*
@@ -221,18 +231,18 @@ export async function handleStealAnswer(sock, jid, m, senderNumber, textAnswer) 
 ▫️ Total Poin Pelaku: *${updatedStealer.points.toLocaleString('id-ID')} Poin*
 ⏳ Status: Pelaku buron selama 15 menit.`;
 
-    await send(sock, jid, m, successMsg, { mentions: [senderNumber, session.targetNumber] });
+    await send(sock, jid, m, successMsg, { mentions: [session.senderNumber, session.targetNumber] });
     return true;
   } else {
     // Gagal: Salah jawab -> Denda 20%
-    const curPerampok = await db.getGameProfile(senderNumber);
+    const curPerampok = await db.getGameProfile(session.senderNumber);
     const denda = Math.max(25, Math.floor(((curPerampok?.points || 0) * 20) / 100));
     const kompensasi = Math.floor(denda / 2);
 
-    await db.deductGamePoints(senderNumber, denda);
+    await db.deductGamePoints(session.senderNumber, denda);
     await db.addGamePoints(session.targetNumber, kompensasi);
-    stealCooldowns.set(senderNumber, now + 15 * 60 * 1000);
-    victimImmunity.set(session.targetNumber, now + 20 * 60 * 1000);
+    await db.setCooldown(session.senderNumber, COOLDOWN_MALING, 15 * 60 * 1000);
+    await db.setCooldown(session.targetNumber, COOLDOWN_IMMUNITY, 20 * 60 * 1000);
 
     const failMsg = 
 `🚨 *KODE SALAH — TERTANGKAP POLISI!* 🚨
@@ -247,7 +257,7 @@ Alarm berbunyi keras! Polisi langsung menyergap pelaku di lokasi.
 🎁 *Kompensasi:* ${session.targetLabel} menerima *+${kompensasi} Poin* ganti rugi & proteksi polisi.
 ⏳ Status: Pelaku buron selama 15 menit.`;
 
-    await send(sock, jid, m, failMsg, { mentions: [senderNumber, session.targetNumber] });
+    await send(sock, jid, m, failMsg, { mentions: [session.senderNumber, session.targetNumber] });
     return true;
   }
 }

@@ -308,7 +308,23 @@ export const SKILL = {
   // dari damage rata-rata sebagian besar Common. Turnamen mencatat kartu ini di
   // 96,7% — angka "wajib punya". 5% menahannya tetap tangguh tanpa tak terkalahkan.
   PUSARAN_ABADI:  { nama: 'Pusaran Abadi',  teks: 'Abaikan kerugian elemen, pulih 5% HP/ronde',   abaikanLemah: true, regen: 0.05 },
-  SANGKAKALA:     { nama: 'Sangkakala',     teks: 'Ronde pertama +30% damage, 15% menghindar',    bukaan: 0.30, hindar: 0.15 }
+  SANGKAKALA:     { nama: 'Sangkakala',     teks: 'Ronde pertama +30% damage, 15% menghindar',    bukaan: 0.30, hindar: 0.15 },
+
+  // --- Tiga skill Mythic tambahan (v3.7) ---
+  //
+  // Sengaja dipilih dari mekanik yang BELUM dipegang satu pun Mythic. Sebelum
+  // ini kelima Mythic memakai bukaan, menumpuk, ganda, regen, dan hindar; tidak
+  // ada satu pun yang memakai duri, tembus, atau pelemah. Menambah Mythic yang
+  // mekaniknya mengulang yang sudah ada cuma menambah panjang katalog, bukan
+  // menambah pilihan.
+  OTOT_KAWAT:     { nama: 'Otot Kawat',     teks: 'Damage diterima -16%, pantulkan 12% damage',    tahan: 0.16, duri: 0.12 },
+  BERKAH_PANEN:   { nama: 'Berkah Panen',   teks: 'Pulih 5,5% HP tiap ronde, +9% damage tiap ronde', regen: 0.055, menumpuk: 0.09 },
+  // `tembus` sempat dipakai di sini dan hasilnya buruk: ia hanya mengurangi
+  // `tahan` LAWAN, dan sebagian besar kartu tidak punya `tahan` sama sekali,
+  // jadi separuh skill ini mati melawan mayoritas katalog. Terukur 38% — jauh di
+  // bawah Mythic lain. Racun selalu berlaku, dan lilitan yang memeras napas juga
+  // lebih masuk akal untuk naga penyangga bumi daripada menembus baju zirah.
+  LILITAN_ANTABOGA: { nama: 'Lilitan Antaboga', teks: 'ATK lawan -17%, lawan -3,5% HP maks/ronde',   pelemah: 0.17, racun: 0.035 }
 };
 
 // ============================================================
@@ -396,8 +412,70 @@ export const KARTU = [
   { id: 'MYT04', nama: 'Naga Baruna',       rarity: 'MYTHIC', elemen: 'AIR',   atk: 146, hp: 1185, kritis: 0.06, skill: 'PUSARAN_ABADI' },
   { id: 'MYT05', nama: 'Sang Hyang Bayu',   rarity: 'MYTHIC', elemen: 'ANGIN', atk: 193, hp:  845, kritis: 0.14, skill: 'SANGKAKALA' },
   { id: 'MYT02', nama: 'Sang Hyang Petir',  rarity: 'MYTHIC', elemen: 'PETIR', atk: 292, hp:  530, kritis: 0.22, skill: 'MURKA_PETIR' },
-  { id: 'MYT03', nama: 'Voidreaper',        rarity: 'MYTHIC', elemen: 'DARK',  atk: 251, hp:  640, kritis: 0.17, skill: 'GERHANA' }
+  { id: 'MYT03', nama: 'Kala Rau',          rarity: 'MYTHIC', elemen: 'DARK',  atk: 251, hp:  640, kritis: 0.17, skill: 'GERHANA' },
+  { id: 'MYT06', nama: 'Gatotkaca',         rarity: 'MYTHIC', elemen: 'PETIR', atk: 155, hp: 1115, kritis: 0.06, skill: 'OTOT_KAWAT' },
+  { id: 'MYT07', nama: 'Dewi Sri',          rarity: 'MYTHIC', elemen: 'ANGIN', atk: 168, hp: 1005, kritis: 0.09, skill: 'BERKAH_PANEN' },
+  { id: 'MYT08', nama: 'Antaboga',          rarity: 'MYTHIC', elemen: 'DARK',  atk: 205, hp:  820, kritis: 0.10, skill: 'LILITAN_ANTABOGA' }
 ];
+
+// ============================================================
+// GELAR — SUBJUDUL INGGRIS UNTUK DUA TIER TERATAS
+// ============================================================
+/**
+ * Nama kartu tetap Nusantara; yang berbahasa Inggris hanya GELAR-nya.
+ *
+ * Alasannya bukan selera. Rangka game ini sudah berbahasa Inggris sejak awal
+ * (Common ... Mythic, Gauntlet, Void), sementara nama makhluknya lokal — itu
+ * formula yang sama dipakai gacha besar: chrome Inggris, nama diri lokal.
+ * Menerjemahkan nama kartunya justru MEMBALIK tangga rarity: `Ember Rat`
+ * terdengar internasional sedangkan `Batara Kala` tetap lokal karena ia nama
+ * diri yang tidak punya terjemahan. Tier murah jadi terdengar lebih megah
+ * daripada endgame.
+ *
+ * Karena itu gelar SENGAJA hanya dipasang di LEGENDARY dan MYTHIC. Ia bukan
+ * hiasan merata — ketiadaannya di Common..Epic adalah penanda tier, sama
+ * kerjanya seperti warna bingkai kartu.
+ *
+ * Tiap gelar ditambatkan ke skill atau stat kartunya, bukan dikarang lepas:
+ * Kala Rau menelan gerhana (skill GERHANA), Jatayu bertahan dan tidak jatuh
+ * (HP 865, tertinggi kedua di tier-nya), Sang Hyang Petir membelah langit
+ * (ATK 292, tertinggi di seluruh katalog).
+ *
+ * Ditulis terpisah dari tabel katalog dengan sengaja: tabel itu sejajar kolom
+ * supaya angka ATK/HP/KRITIS bisa dibaca sekilas dan dibanding-banding, dan
+ * menyelipkan kalimat panjang ke tiap baris akan menghancurkan gunanya.
+ */
+export const GELAR = {
+  // --- LEGENDARY ---
+  LGD01: 'The Island That Burned',        // Naga Krakatau
+  LGD07: 'The Mountain That Never Sleeps', // Naga Merapi - skill LAHAR_PURBA
+  LGD02: 'Empress of the Southern Tide',  // Ratu Laut Selatan
+  LGD08: 'Coils of the Golden Serpent',   // Nyi Blorong - sisik emas
+  LGD03: 'Wings Over the Archipelago',    // Garuda Nusantara
+  LGD09: 'The Wing That Would Not Fall',  // Jatayu Perkasa - HP 865
+  LGD04: 'Twin Bolts of the Highest Peak', // Petir Semeru - SAMBARAN_GANDA
+  LGD10: 'The Thunder That Splits Stone', // Kala Gledek - skill GLEDEK_SELO
+  LGD05: 'Mother of All Curses',          // Rangda Kelam - KUTUKAN_RANGDA
+  LGD06: 'Devourer of Time',              // Batara Kala - dewa waktu
+
+  // --- MYTHIC ---
+  MYT01: 'Sacred Flame of the Guardian',  // Barong Agni - skill API_SUCI
+  MYT04: 'Tide of the Endless Deep',      // Naga Baruna - HP 1185 tertinggi
+  MYT05: 'Breath of the First Storm',     // Sang Hyang Bayu - SANGKAKALA
+  MYT02: 'Fury of the Splitting Sky',     // Sang Hyang Petir - ATK 292
+  MYT03: 'The Eclipse Devourer'           // Kala Rau - skill GERHANA
+  ,
+  MYT06: 'Sinews of Wire, Bones of Iron', // Gatotkaca - otot kawat balung wesi
+  MYT07: 'Mother of the Golden Harvest',  // Dewi Sri - dewi padi
+  MYT08: 'The Serpent That Holds the World' // Antaboga - naga penyangga bumi
+};
+
+// Ditempel ke objek kartunya supaya seluruh layar cukup membaca `kartu.gelar`
+// dan tidak perlu tahu peta ini ada. Kartu tanpa gelar bernilai `undefined`,
+// jadi setiap pemakainya WAJIB menjaganya di balik pengecekan.
+for (const k of KARTU) {
+  if (GELAR[k.id]) k.gelar = GELAR[k.id];
+}
 
 // ============================================================
 // PENJAGA ANGGARAN
@@ -407,6 +485,219 @@ export const KARTU = [
  * karena pembulatan HP ke kelipatan 5 saja sudah menggeser sampai ~1%, jadi
  * angka di bawah itu akan berisik tanpa sebab.
  */
+// ============================================================
+// REFINE (R1-R5) — SUMBU KETIGA, MENAIKKAN SKILL BUKAN STAT
+// ============================================================
+/**
+ * Duplikat kartu yang sama disisipkan untuk menaikkan R. Yang naik adalah
+ * ANGKA SKILL-nya, tidak pernah ATK atau HP.
+ *
+ * Kenapa skill dan bukan stat: seluruh katalog berdiri di atas satu janji,
+ * yaitu `atk x hp = daya` yang sama untuk tiap rarity, dijaga
+ * `periksaKeseimbangan()`. Menaikkan stat lewat R akan meruntuhkan janji itu
+ * dan membuat pemeriksa anggaran berteriak di setiap kartu ber-R tinggi.
+ * Menskalakan skill tidak menyentuh anggaran sama sekali.
+ *
+ * Dan ternyata di situlah tier META/biasa/lewati lahir dengan sendirinya,
+ * tanpa satu angka pun perlu dipilih tangan. Diukur lewat adu penuh sesama
+ * rarity (60 ulangan tiap pasangan, paparan elemen tiap kartu terbukti sama
+ * rata di 1,009-1,010 jadi bukan undian elemen):
+ *
+ *   MYTHIC       Kala Rau 60%  ..  Barong Agni 41%   (selisih 20 poin)
+ *   LEGENDARY    Naga Merapi 57%  ..  Naga Krakatau 45%
+ *   EPIC         Bayangan Rimba 54%  ..  Siluman Angin 42%
+ *
+ * Ketimpangan itu SUDAH ADA sebelum R diperkenalkan — cuma tidak terlihat.
+ * R melipatgandakannya: skill yang menskala keras (Gerhana +60% jadi +120%)
+ * melesat, skill datar (`HP maks +10%`) tetap datar. Itu yang membuat sebagian
+ * kartu layak dikejar dan sebagian tidak, tanpa pernah menulis daftar tier.
+ *
+ * ATURAN YANG TIDAK BOLEH DILANGGAR: R1 WAJIB identik dengan hari ini.
+ * `skillEfektif(kartu, 1)` harus mengembalikan angka yang persis sama dengan
+ * `SKILL[kartu.skill]`, supaya seluruh keseimbangan yang sudah diukur — kurva
+ * Menara Abadi, kalibrasi Gauntlet, HP Bos — tidak bergeser sedikit pun saat
+ * fitur ini menyala. Uji asap mengunci ini.
+ */
+export const MAKS_REFINE = 5;
+
+// R1 tidak menskalakan apa pun; R5 melipatduakan. Naik rata 0,25 tiap tingkat.
+export const REFINE_SKALA = [1.00, 1.25, 1.50, 1.75, 2.00];
+
+/**
+ * Batas atas tiap koefisien sesudah diskalakan.
+ *
+ * Tanpa ini beberapa koefisien jadi merusak, bukan sekadar kuat: `hindar` yang
+ * dilipatduakan membuat duel jadi lotre lempar koin, dan `tahan` yang menumpuk
+ * dengan `perisaiAwal` bisa membuat kartu praktis kebal di ronde pembuka.
+ * Angka-angka ini adalah langit-langit, bukan target — sebagian besar kartu
+ * tidak pernah menyentuhnya bahkan di R5.
+ */
+const BATAS_SKILL = {
+  atkBonus: 0.60, hpBonus: 0.60, tahan: 0.40, hindar: 0.30,
+  duri: 0.25, serap: 0.10, regen: 0.12, racun: 0.09,
+  setrum: 0.35, ganda: 0.50, pelemah: 0.35, eksekusi: 1.30,
+  bukaan: 1.20, menumpuk: 0.25, kritBonus: 0.30, kritDmg: 0.60,
+  tembus: 0.70, antiKrit: 0.40, penindas: 0.35, perisaiAwal: 0.90
+};
+
+/**
+ * Skill yang isinya HANYA saklar benar/salah tidak punya angka untuk
+ * diskalakan, jadi R tidak akan berarti apa-apa untuk pemiliknya. `Nyali
+ * Terakhir` (Musang Gaib) adalah satu-satunya kartu seperti itu.
+ *
+ * Ia diberi imbalan terpisah: sesudah bertahan di 1 HP, ia memulihkan sebagian
+ * HP maks. Sengaja bernilai NOL di R1 supaya kartu itu berperilaku persis
+ * seperti hari ini sampai pemiliknya benar-benar menyisipkan duplikat.
+ *
+ * DUA JEBAKAN, keduanya tertangkap `scripts/tcgTierMeter.mjs` pada percobaan
+ * pertama dan keduanya merusak tangga rarity:
+ *
+ *   1. Imbalan ini sempat diberikan ke SEMUA skill ber-`bertahanMati`. Lahar
+ *      Purba (Naga Merapi) sudah punya `tahan: 0,18` yang menskala, jadi ia
+ *      menerima dua imbalan sekaligus dan melompat ke 67% melawan MYTHIC R1 —
+ *      Legendary R5 mengalahkan rarity di atasnya. Sekarang imbalan ini hanya
+ *      diberikan kalau kartu itu benar-benar tidak punya angka lain untuk
+ *      diskalakan.
+ *   2. Besarnya sempat sampai 0,26 di R5. Itu membuat Musang Gaib (RARE)
+ *      menang 63% melawan EPIC R1. Diturunkan ke 0,16.
+ */
+const PULIH_MAUT_PER_R = [0, 0.04, 0.08, 0.12, 0.16];
+
+/** Apakah skill ini punya satu saja angka yang bisa diskalakan R. */
+function punyaAngkaSkala(sk) {
+  if (sk.nekat) return true;
+  return Object.keys(BATAS_SKILL).some(k => typeof sk[k] === 'number');
+}
+
+const cacheSkill = new Map();
+
+/**
+ * Skill sebuah kartu setelah diskalakan tingkat R-nya.
+ *
+ * Hasilnya di-cache karena simulasi tempur memanggilnya puluhan ribu kali
+ * dalam satu kalibrasi, dan objek yang dikembalikan TIDAK BOLEH diubah oleh
+ * pemanggilnya — ia dibagi pakai antar semua petarung dengan skill dan R yang
+ * sama.
+ */
+export function skillEfektif(kartu, refine = 1) {
+  const id = kartu?.skill;
+  if (!id || !SKILL[id]) return null;
+
+  const r = Math.max(1, Math.min(MAKS_REFINE, Math.floor(refine) || 1));
+  const kunci = `${id}_${r}`;
+  const tersimpan = cacheSkill.get(kunci);
+  if (tersimpan) return tersimpan;
+
+  const asli = SKILL[id];
+  // R1 mengembalikan objek ASLINYA, bukan salinan. Itu disengaja: kalau suatu
+  // saat penskalaan ini rusak, R1 tetap tidak mungkin ikut bergeser.
+  if (r === 1) { cacheSkill.set(kunci, asli); return asli; }
+
+  const skala = REFINE_SKALA[r - 1];
+  const hasil = { ...asli, refine: r };
+
+  for (const [k, batas] of Object.entries(BATAS_SKILL)) {
+    if (typeof asli[k] === 'number') hasil[k] = Math.min(batas, asli[k] * skala);
+  }
+  // `nekat` bersarang: ambang HP-nya tetap, cuma besar bonusnya yang naik.
+  if (asli.nekat) {
+    hasil.nekat = { ambang: asli.nekat.ambang, bonus: Math.min(1.00, asli.nekat.bonus * skala) };
+  }
+  // Hanya untuk skill yang benar-benar tidak punya angka lain — lihat catatan
+  // di atas PULIH_MAUT_PER_R.
+  if (asli.bertahanMati === true && !punyaAngkaSkala(asli)) {
+    hasil.pulihSetelahMaut = PULIH_MAUT_PER_R[r - 1];
+  }
+
+  cacheSkill.set(kunci, hasil);
+  return hasil;
+}
+
+/** Teks skill yang sudah memuat angka R-nya, untuk ditampilkan ke pemain. */
+export function teksSkill(kartu, refine = 1) {
+  const sk = skillEfektif(kartu, refine);
+  if (!sk) return '';
+  const r = Math.max(1, Math.min(MAKS_REFINE, Math.floor(refine) || 1));
+  if (r === 1) return sk.teks;
+
+  // Teks skill ditulis tangan dan memuat angkanya di dalam kalimat, jadi ia
+  // tidak bisa dihitung ulang otomatis. Yang ditampilkan adalah kelipatannya
+  // — jujur dan tidak mungkin melenceng dari angka yang benar-benar dipakai.
+  return `${sk.teks}  _(efek x${REFINE_SKALA[r - 1].toFixed(2).replace('.', ',')})_`;
+}
+
+/**
+ * Angka skill yang SEBENARNYA berlaku di tingkat R tertentu, dirangkum jadi
+ * satu baris pendek.
+ *
+ * Ini bukan hiasan — ini satu-satunya cara pemain bisa membandingkan R2 dengan
+ * R3 sebelum membakar duplikatnya. Teks skill di katalog ditulis tangan dan
+ * angkanya menyatu di dalam kalimat ("Pulih 5,5% HP tiap ronde"), jadi ia
+ * TIDAK BISA dihitung ulang untuk R yang lebih tinggi. Merangkum koefisiennya
+ * sendiri adalah satu-satunya cara yang mustahil melenceng dari angka yang
+ * benar-benar dipakai mesin tempur, karena keduanya membaca objek yang sama.
+ *
+ * Urutannya sengaja tetap (mengikuti LABEL_EFEK), supaya membandingkan dua
+ * tingkat R berarti membandingkan dua baris yang bentuknya sama persis.
+ */
+const LABEL_EFEK = [
+  ['atkBonus', (v) => `ATK +${persenEfek(v)}`],
+  ['hpBonus', (v) => `HP +${persenEfek(v)}`],
+  ['bukaan', (v) => `pukulan pertama +${persenEfek(v)}`],
+  ['menumpuk', (v) => `+${persenEfek(v)} damage/ronde`],
+  ['ganda', (v) => `serang 2x ${persenEfek(v)}`],
+  ['eksekusi', (v) => `eksekusi +${persenEfek(v)}`],
+  ['penindas', (v) => `penindas +${persenEfek(v)}`],
+  ['kritBonus', (v) => `kritis +${persenEfek(v)}`],
+  ['kritDmg', (v) => `kritis ${persenEfek(v)} lebih keras`],
+  ['tahan', (v) => `damage diterima -${persenEfek(v)}`],
+  ['hindar', (v) => `hindar ${persenEfek(v)}`],
+  ['perisaiAwal', (v) => `damage pertama -${persenEfek(v)}`],
+  ['antiKrit', (v) => `kritis lawan -${persenEfek(v)}`],
+  ['duri', (v) => `pantul ${persenEfek(v)}`],
+  ['tembus', (v) => `tembus ${persenEfek(v)}`],
+  ['pelemah', (v) => `ATK lawan -${persenEfek(v)}`],
+  ['setrum', (v) => `lawan hilang giliran ${persenEfek(v)}`],
+  ['racun', (v) => `racun ${persenEfek(v)}/ronde`],
+  ['regen', (v) => `pulih ${persenEfek(v)}/ronde`],
+  ['serap', (v) => `isap ${persenEfek(v)}/pukulan`],
+  ['pulihSetelahMaut', (v) => `bangkit ${persenEfek(v)} HP`]
+];
+
+function persenEfek(v) {
+  const p = v * 100;
+  // Koefisien sekecil 3,5% jadi tidak berarti kalau dibulatkan ke bilangan
+  // bulat, dan justru di angka-angka kecil itulah selisih antar tingkat R
+  // paling sulit dilihat.
+  return `${(Math.round(p * 10) / 10).toString().replace('.', ',')}%`;
+}
+
+export function ringkasEfekSkill(kartu, refine = 1) {
+  const sk = skillEfektif(kartu, refine);
+  if (!sk) return '';
+  const bagian = [];
+  for (const [kunci, tulis] of LABEL_EFEK) {
+    if (typeof sk[kunci] === 'number' && sk[kunci] > 0) bagian.push(tulis(sk[kunci]));
+  }
+  if (sk.nekat) bagian.push(`di HP rendah +${persenEfek(sk.nekat.bonus)}`);
+  if (sk.abaikanLemah) bagian.push('abaikan rugi elemen');
+  if (sk.bertahanMati) bagian.push('sekali bertahan di 1 HP');
+  return bagian.join(' · ');
+}
+
+/**
+ * Tangga R1-R5 lengkap dengan angka tiap tingkat. Sepasangan dengan
+ * `tanggaLevel`, dan dipakai layar kartu supaya pemain bisa melihat sejauh apa
+ * duplikatnya akan membawa kartu itu SEBELUM ia membakar satu pun.
+ */
+export function tanggaRefine(kartu) {
+  const hasil = [];
+  for (let r = 1; r <= MAKS_REFINE; r++) {
+    hasil.push({ refine: r, skala: REFINE_SKALA[r - 1], efek: ringkasEfekSkill(kartu, r) });
+  }
+  return hasil;
+}
+
 export const TOLERANSI_DAYA = 0.05;
 
 /**

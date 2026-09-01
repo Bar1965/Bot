@@ -13,12 +13,16 @@ import { handleBankEconomy } from './bankEconomy.js';
 import { activeRounds, startRound, handleRoundCommand, surrenderRound, ROUND_DURATION_MS, scheduleRoundExpiry } from './triviaEngine.js';
 import { activeStealSessions, profileText, handleStealHeist, handleStealAnswer } from './rpgSystem.js';
 import { activeJailbreakSessions, handleJailbreak, handleJailbreakAnswer, handleTebusNapi } from './jailbreak.js';
-import { activeUndercoverGames, handleUndercover, handleUndercoverClue, handleUndercoverVote, handleUndercoverSkip, handleUndercoverShoot, handleMrWhiteGuess, handleDetectiveCheck, handleGuardianProtect, handleDoctorRevive, handleFramerFrame, handleSaboteurHack, handleUndercoverContinue, handleUndercoverSwap, handleCategoryVote, isUndercoverDoctorActive } from './undercover.js';
+import { activeUndercoverGames, handleUndercover, handleUndercoverClue, handleUndercoverVote, handleUndercoverSkip, handleUndercoverShoot, handleMrWhiteGuess, handleDetectiveCheck, handleGuardianProtect, handleDoctorRevive, handleFramerFrame, handleSaboteurHack, handleUndercoverContinue, handleUndercoverSwap, handleCategoryVote, isUndercoverDoctorActive, handleUndercoverAnonClue, handleTrialVote, handleGhostWhisper, handleShowMission, handleBlackMarket, findUndercoverSessionAndPlayer, getPlayerRoleData } from './undercover.js';
 import { activeQuizTournaments, handleQuizTournament, handleTournamentAnswer } from './quizTournament.js';
 import { activeAuctions, handleAuctionCommand } from './mysteryAuction.js';
 import { activeMinesGames, handleMinesCommand } from './minesGame.js';
 import { activeRaids, handleRaidCommand, getRaidContext } from './raidBoss.js';
 import { handleTcgCommand } from './tcg/index.js';
+import { handlePokerCommand, activeTexasGames, activeCapsaGames, activeFastPokerGames } from './poker/index.js';
+import { activeWireGames, handleCutTheWire } from './cutTheWire.js';
+import { activeBattleships, pendingBattleships, handleBattleshipCommand } from './battleship.js';
+import { activeBuckshots, pendingBuckshots, handleBuckshotCommand } from './buckshotRoulette.js';
 import { getSystemChangelog } from '../utils/changelog.js';
 import { buildCommandMenu } from '../../commandRegistry.js';
 import { jidNormalizedUser } from '@whiskeysockets/baileys';
@@ -54,6 +58,9 @@ const FUN_CMD_TETAP_AKTIF = [
   // ditutup rapi, bukannya menggantung dengan taruhan poin ikut tertahan.
   'nyerah', 'surrender', 'menyerah', 'cancelraid', 'batalraid', 'cancelbalap',
   'cancellelang', 'batallelang', 'cancelsuit', 'batalsuit', 'batalmines',
+  'batalpoker', 'cancelpoker', 'batalcapsa', 'cancelcapsa', 'batalfastpoker', 'cancelfastpoker',
+  'batalbom', 'cancelbom', 'batalkapal', 'tolakkapal',
+  'batalbuckshot', 'tolakbuckshot', 'nyerahbuckshot',
   'update', 'changelog', 'patchnotes', 'whatsnew', 'pembaruan',
   'rekomendasi', 'recommend', 'saranproduk',
   'freegames', 'freegame', 'gamegratis', 'freegamestag'
@@ -87,7 +94,10 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     activeStealSessions.has(senderNumber) ||
     activeFamily100.has(scope) ||
     activeCakLontong.has(scope) ||
-    activeRounds.has(scope)
+    activeRounds.has(scope) ||
+    activeTexasGames.has(jid) ||
+    activeCapsaGames.has(jid) ||
+    activeFastPokerGames.has(jid)
   );
   if (adaSesiHidup && await gameDimatikanDiGrup(jid)) return false;
 
@@ -188,10 +198,19 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     'family100', 'f100', 'caklontong', 'tts',
     'undercover', 'sus', 'impostor', 'joinundercover', 'startundercover', 'tebakwarga', 'guess', 'mrwhite', 'tebakciv', 'intip', 'cekintip', 'v', 'skip', 'lewat', 'pass', 'skipundercover', 'lindung', 'guard', 'protect', 'lindungi', 'sembuhkan', 'revive', 'heal', 'cpr', 'obati', 'doctor', 'fitnah', 'framer', 'frame', 'sabotase',
     'lanjut', 'gasvote', 'mulaivote', 'tukargiliran', 'swapgiliran', 'lempargiliran', 'votekategori', 'katakategori',
+    'anon', 'clue', 'setorpetunjuk', 'kirimpetunjuk', 'bersalah', 'guilty', 'bebas', 'innocent', 'vonis',
+    'bisik', 'whisper', 'arwah', 'misirahasia', 'belihuruf', 'pasargelap',
     'cerdascermat', 'kuisturnamen', 'quizbattle', 'joincerdascermat', 'startcerdascermat',
     'jailbreak', 'kabur', 'bobolpenjara', 'tebus', 'bebasinnapi',
     'duel', 'terimaduel', 'gasduel', 'tolakduel', 'tembak', 'shoot', 'dor',
     'blackjack', 'bj', 'hit', 'stand', 'double',
+    'poker', 'texaspoker', 'texas', 'holdem', 'joinpoker', 'startpoker', 'batalpoker',
+    'check', 'call', 'raise', 'allin', 'fold', 'kartu', 'hand', 'mycards', 'cekkartu', 'kartuku',
+    'capsa', 'capsasusun', 'joincapsa', 'startcapsa', 'batalcapsa',
+    'fastpoker', 'poker3', 'joinfastpoker', 'startfastpoker', 'batalfastpoker',
+    'bom', 'cutthewire', 'jinakkanbom', 'joinbom', 'gasbom', 'batalbom', 'cancelbom', 'potong', 'cut', 'kabel',
+    'battleship', 'kapal', 'perangkapal', 'terimakapal', 'gaskapal', 'tolakkapal', 'batalkapal', 'rudal', 'bomkapal',
+    'buckshot', 'shotgun', 'gasbuckshot', 'tolakbuckshot', 'batalbuckshot', 'nyerahbuckshot', 'pakai', 'use', 'rokok', 'kaca', 'gergaji', 'bir', 'borgol',
     'heist', 'rampokbank', 'joinheist', 'startheist',
     'balapkuda', 'pasangkuda', 'betkuda', 'pasang', 'bet', 'kuda', 'race', 'startbalap', 'startrace', 'cancelbalap',
     'bank', 'brankas', 'depo', 'setor', 'tarik', 'withdraw',
@@ -208,7 +227,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     'giveaway', 'setpoints', 'bagipoin', 'kompensasi',
     'badge', 'badges', 'achievement', 'achievements',
     'rekomendasi', 'recommend', 'saranproduk',
-    'poll', 'voting', 'vote', 'love', 'jodoh', 'compatibility',
+    'poll', 'voting', 'vote', 'love', 'jodoh', 'compatibility', 'karbit', 'fanskarbit',
     'zodiak', 'zodiac', 'horoscope',
     'freegames', 'freegame', 'gamegratis', 'freegamestag',
     'slot', 'slots', 'judi',
@@ -216,6 +235,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     'tebakangka', 'tebak', 'spin', 'luckyspin',
     'suit', 'pilihsuit', 'cancelsuit', 'batalsuit',
     'tukar', 'pointshop', 'penukaran',
+    'dompet', 'wallet', 'aset', 'assets', 'rekening',
     'update', 'changelog', 'patchnotes', 'whatsnew', 'pembaruan',
     'fun', 'game', 'games', 'hiburan',
     'tcg', 'arena', 'kartumonster',
@@ -329,10 +349,11 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     let targetNumber = mentions[0] || contextInfo?.participant;
 
     if (!targetNumber && args[1]) {
-      const cleanNum = args[1].replace(/[^0-9]/g, '');
-      if (cleanNum.length > 5) {
-        const custMatch = await db.getQuery("SELECT customer_jid FROM game_profiles WHERE customer_jid LIKE ? OR customer_jid LIKE ? LIMIT 1", [`%${cleanNum}%`, `${cleanNum}@%`]);
-        targetNumber = custMatch?.customer_jid || `${cleanNum}@s.whatsapp.net`;
+      const res = await db.resolveTargetJid(args[1]);
+      if (res?.ditemukan && res.jid) targetNumber = res.jid;
+      else {
+        const cleanNum = args[1].replace(/[^0-9]/g, '');
+        if (cleanNum.length > 5) targetNumber = `${cleanNum}@s.whatsapp.net`;
       }
     }
 
@@ -523,6 +544,60 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     return true;
   }
 
+  // Setoran petunjuk Ronde Anonim Undercover (.anon <teks>)
+  //
+  // Sengaja BUKAN `.petunjuk`: nama itu sudah dipakai tutorial toko di
+  // customerHandler, dan handler game berjalan lebih dulu di rantai router
+  // (AGENTS.md §5) sehingga akan menelannya untuk semua pengguna.
+  if (['anon', 'clue', 'setorpetunjuk', 'kirimpetunjuk'].includes(command)) {
+    const isiPetunjuk = args.slice(1).join(' ').trim();
+    return await handleUndercoverAnonClue(sock, jid, senderNumber, messageObj, isiPetunjuk);
+  }
+
+  // Vonis juri Sidang Terakhir Undercover (.bersalah / .bebas)
+  if (['bersalah', 'guilty'].includes(command)) {
+    return await handleTrialVote(sock, jid, senderNumber, messageObj, 'GUILTY');
+  }
+  if (['bebas', 'innocent'].includes(command)) {
+    return await handleTrialVote(sock, jid, senderNumber, messageObj, 'INNOCENT');
+  }
+  if (command === 'vonis') {
+    const pilihan = (args[1] || '').toLowerCase();
+    if (['bersalah', 'guilty', 'salah'].includes(pilihan)) {
+      return await handleTrialVote(sock, jid, senderNumber, messageObj, 'GUILTY');
+    }
+    if (['bebas', 'innocent', 'lolos'].includes(pilihan)) {
+      return await handleTrialVote(sock, jid, senderNumber, messageObj, 'INNOCENT');
+    }
+    await send(sock, jid, messageObj, "⚖️ Tentukan vonismu: `.vonis bersalah` atau `.vonis bebas` (bisa juga langsung `.bersalah` / `.bebas`).");
+    return true;
+  }
+
+  // Bisikan Arwah Undercover (.bisik <pesan>) — khusus pemain yang sudah gugur
+  if (['bisik', 'whisper', 'arwah'].includes(command)) {
+    const isiBisikan = args.slice(1).join(' ').trim();
+    return await handleGhostWhisper(sock, jid, senderNumber, messageObj, isiBisikan);
+  }
+
+  // Pasar Gelap Mr. White (.belihuruf)
+  if (['belihuruf', 'pasargelap'].includes(command)) {
+    return await handleBlackMarket(sock, jid, senderNumber, messageObj);
+  }
+
+  // Misi rahasia Undercover.
+  //
+  // `.misi` adalah alias bersama dengan papan misi harian di bawah. Dipilah
+  // berdasarkan sesi yang benar-benar berjalan (pola yang sama dengan
+  // `.heal` Dokter vs Healer raid), bukan urutan if: hanya pemain yang sedang
+  // memegang misi rahasia Undercover yang dibelokkan ke sini.
+  if (['misi', 'misirahasia'].includes(command)) {
+    const ucCtx = findUndercoverSessionAndPlayer(senderNumber);
+    const punyaMisiUc = !!getPlayerRoleData(ucCtx.session, ucCtx.playerJid)?.mission;
+    if (punyaMisiUc || command === 'misirahasia') {
+      return await handleShowMission(sock, jid, senderNumber, messageObj);
+    }
+  }
+
   // Tutup fase diskusi Undercover lebih cepat (.lanjut)
   if (['lanjut', 'gasvote', 'mulaivote'].includes(command)) {
     if (activeUndercoverGames.has(jid)) {
@@ -659,6 +734,46 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     return await handleBlackjack(sock, jid, senderNumber, messageObj, args, command);
   }
 
+  // Poker Suite: Texas Hold'em, Capsa Susun, Fast 3-Card Poker
+  if (['poker', 'texaspoker', 'texas', 'holdem', 'joinpoker', 'startpoker', 'batalpoker', 'check', 'call', 'raise', 'allin', 'fold', 'capsa', 'capsasusun', 'joincapsa', 'startcapsa', 'batalcapsa', 'fastpoker', 'poker3', 'joinfastpoker', 'startfastpoker', 'batalfastpoker'].includes(command)) {
+    return await handlePokerCommand(sock, jid, senderNumber, messageObj, args, command, isFromGroup);
+  }
+
+  // `.kartu` / `.hand` / `.cekkartu` untuk mengintip kartu Texas Poker.
+  // Dispatcher poker sudah menangani alias ini, tapi dulu tidak pernah dipanggil
+  // dari sini sehingga perintahnya mati total (hanya `.poker kartu` yang jalan).
+  // Digerbangi sesi aktif supaya tidak menyerobot alias `.kartu` milik fitur lain.
+  if (['kartu', 'hand', 'mycards', 'cekkartu', 'kartuku'].includes(command)) {
+    const adaSesiPoker = activeTexasGames.has(jid)
+      || [...activeTexasGames.values()].some(s => s.players?.some(p => p === senderNumber));
+    if (adaSesiPoker) {
+      return await handlePokerCommand(sock, jid, senderNumber, messageObj, args, command, isFromGroup);
+    }
+  }
+
+  // Cut The Wire (Jinakkan Bom Waktu)
+  if (['bom', 'cutthewire', 'jinakkanbom', 'joinbom', 'gasbom', 'batalbom', 'cancelbom', 'potong', 'cut', 'kabel'].includes(command)) {
+    return await handleCutTheWire(sock, jid, senderNumber, messageObj, args, command, isFromGroup);
+  }
+
+  // Battleship 1v1 (Perang Armada Kapal Laut)
+  if (['battleship', 'kapal', 'perangkapal', 'terimakapal', 'gaskapal', 'tolakkapal', 'batalkapal', 'rudal', 'bomkapal'].includes(command) || (['tembak', 'shoot', 'fire'].includes(command) && activeBattleships.has(jid))) {
+    return await handleBattleshipCommand(sock, jid, senderNumber, messageObj, args, command, isFromGroup);
+  }
+
+  // Buckshot Roulette 1v1 (Shotgun Taktis)
+  //
+  // Alias milik game sendiri selalu hidup; alias yang dipinjam dari kosakata
+  // umum (`pakai`, `use`, `bir`, `kaca`, `tembak`, ...) hanya boleh diklaim saat
+  // memang ada duel di grup ini. Dulu kelima alias item ikut rute tanpa syarat,
+  // sehingga mengetik `.use` atau `.pakai` di DM pun dibalas "❌ hanya dapat
+  // dimainkan di grup" padahal tidak ada duel di mana pun.
+  const BUCKSHOT_CMD = ['buckshot', 'shotgun', 'gasbuckshot', 'tolakbuckshot', 'batalbuckshot', 'nyerahbuckshot'];
+  const BUCKSHOT_CMD_SESI = ['pakai', 'use', 'rokok', 'kaca', 'gergaji', 'bir', 'borgol', 'tembak', 'shoot', 'dor', 'fire'];
+  if (BUCKSHOT_CMD.includes(command) || (BUCKSHOT_CMD_SESI.includes(command) && activeBuckshots.has(jid))) {
+    return await handleBuckshotCommand(sock, jid, senderNumber, messageObj, args, command, isFromGroup);
+  }
+
   // Rampok Bank Akbar (Group Heist)
   if (['heist', 'rampokbank', 'joinheist', 'startheist'].includes(command)) {
     return await handleBankHeist(sock, jid, senderNumber, messageObj, args, command, isFromGroup);
@@ -666,7 +781,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
 
   // Balap Kuda Uma Musume Derby Multi-Betting
   if (['balapkuda', 'pasangkuda', 'betkuda', 'pasang', 'bet', 'kuda', 'race', 'startbalap', 'startrace', 'cancelbalap'].includes(command)) {
-    return await handleHorseRace(sock, jid, senderNumber, messageObj, args, command, isFromGroup);
+    return await handleHorseRace(sock, jid, senderNumber, messageObj, args, command, isFromGroup, isAdmin, isOwner);
   }
 
   // Mystery Auction (Lelang Kotak Misteri)
@@ -1009,14 +1124,24 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
           amount = parsed;
         }
       } else if (arg1 && arg2) {
-        const num1 = arg1.replace(/[^0-9]/g, '');
-        const num2 = arg2.replace(/[^0-9]/g, '');
-        if (num1.length > 5 && !isNaN(parseInt(arg2, 10))) {
-          targetJid = `${num1}@s.whatsapp.net`;
+        const res1 = await db.resolveTargetJid(arg1);
+        const res2 = await db.resolveTargetJid(arg2);
+        if (res1?.ditemukan && !isNaN(parseInt(arg2, 10))) {
+          targetJid = res1.jid;
           amount = parseInt(arg2, 10);
-        } else if (num2.length > 5 && !isNaN(parseInt(arg1, 10))) {
-          targetJid = `${num2}@s.whatsapp.net`;
+        } else if (res2?.ditemukan && !isNaN(parseInt(arg1, 10))) {
+          targetJid = res2.jid;
           amount = parseInt(arg1, 10);
+        } else {
+          const num1 = arg1.replace(/[^0-9]/g, '');
+          const num2 = arg2.replace(/[^0-9]/g, '');
+          if (num1.length > 5 && !isNaN(parseInt(arg2, 10))) {
+            targetJid = `${num1}@s.whatsapp.net`;
+            amount = parseInt(arg2, 10);
+          } else if (num2.length > 5 && !isNaN(parseInt(arg1, 10))) {
+            targetJid = `${num2}@s.whatsapp.net`;
+            amount = parseInt(arg1, 10);
+          }
         }
       }
     }
@@ -1027,15 +1152,9 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     }
 
     let actualTargetJid = targetJid;
-    const digits = targetJid.replace(/[^0-9]/g, '');
-    if (digits.length > 5) {
-      const alt = await db.getQuery(
-        "SELECT customer_jid FROM game_profiles WHERE (customer_jid LIKE ? OR customer_jid LIKE ?) ORDER BY points DESC LIMIT 1",
-        [`%${digits}%`, `${digits}@%`]
-      );
-      if (alt && alt.customer_jid) {
-        actualTargetJid = alt.customer_jid;
-      }
+    const resolvedTarget = await db.resolveTargetJid(targetJid);
+    if (resolvedTarget?.ditemukan && resolvedTarget.jid) {
+      actualTargetJid = resolvedTarget.jid;
     }
 
     try {
@@ -1086,14 +1205,24 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
       const arg2 = args[2];
 
       if (arg1 && arg2) {
-        const num1 = arg1.replace(/[^0-9]/g, '');
-        const num2 = arg2.replace(/[^0-9]/g, '');
-        if (num1.length > 5 && !isNaN(parseInt(arg2, 10))) {
-          targetJid = `${num1}@s.whatsapp.net`;
+        const res1 = await db.resolveTargetJid(arg1);
+        const res2 = await db.resolveTargetJid(arg2);
+        if (res1?.ditemukan && !isNaN(parseInt(arg2, 10))) {
+          targetJid = res1.jid;
           amount = parseInt(arg2, 10);
-        } else if (num2.length > 5 && !isNaN(parseInt(arg1, 10))) {
-          targetJid = `${num2}@s.whatsapp.net`;
+        } else if (res2?.ditemukan && !isNaN(parseInt(arg1, 10))) {
+          targetJid = res2.jid;
           amount = parseInt(arg1, 10);
+        } else {
+          const num1 = arg1.replace(/[^0-9]/g, '');
+          const num2 = arg2.replace(/[^0-9]/g, '');
+          if (num1.length > 5 && !isNaN(parseInt(arg2, 10))) {
+            targetJid = `${num1}@s.whatsapp.net`;
+            amount = parseInt(arg2, 10);
+          } else if (num2.length > 5 && !isNaN(parseInt(arg1, 10))) {
+            targetJid = `${num2}@s.whatsapp.net`;
+            amount = parseInt(arg1, 10);
+          }
         }
       }
     }
@@ -1104,15 +1233,9 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     }
 
     let actualTargetJid = targetJid;
-    const digits = targetJid.replace(/[^0-9]/g, '');
-    if (digits.length > 5) {
-      const alt = await db.getQuery(
-        "SELECT customer_jid FROM game_profiles WHERE (customer_jid LIKE ? OR customer_jid LIKE ?) ORDER BY points DESC LIMIT 1",
-        [`%${digits}%`, `${digits}@%`]
-      );
-      if (alt && alt.customer_jid) {
-        actualTargetJid = alt.customer_jid;
-      }
+    const resolvedTarget = await db.resolveTargetJid(targetJid);
+    if (resolvedTarget?.ditemukan && resolvedTarget.jid) {
+      actualTargetJid = resolvedTarget.jid;
     }
 
     try {
@@ -1152,16 +1275,31 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
       const arg2 = args[2];
 
       if (arg1 && arg2) {
-        const cleanNum1 = arg1.replace(/[^0-9]/g, '');
-        const cleanNum2 = (arg2 || '').replace(/[^0-9]/g, '');
-        if (cleanNum1.length > 5) {
-          targetJid = `${cleanNum1}@s.whatsapp.net`;
+        const res1 = await db.resolveTargetJid(arg1);
+        const res2 = await db.resolveTargetJid(arg2);
+        if (res1?.ditemukan && !isNaN(parseInt(arg2, 10))) {
+          targetJid = res1.jid;
           amount = parseInt(arg2, 10);
-        } else if (cleanNum2.length > 5) {
-          targetJid = `${cleanNum2}@s.whatsapp.net`;
+        } else if (res2?.ditemukan && !isNaN(parseInt(arg1, 10))) {
+          targetJid = res2.jid;
           amount = parseInt(arg1, 10);
+        } else {
+          const cleanNum1 = arg1.replace(/[^0-9]/g, '');
+          const cleanNum2 = (arg2 || '').replace(/[^0-9]/g, '');
+          if (cleanNum1.length > 5) {
+            targetJid = `${cleanNum1}@s.whatsapp.net`;
+            amount = parseInt(arg2, 10);
+          } else if (cleanNum2.length > 5) {
+            targetJid = `${cleanNum2}@s.whatsapp.net`;
+            amount = parseInt(arg1, 10);
+          }
         }
       }
+    }
+
+    if (targetJid) {
+      const res = await db.resolveTargetJid(targetJid);
+      if (res?.ditemukan && res.jid) targetJid = res.jid;
     }
 
     if (!targetJid || isNaN(amount) || amount <= 0) {
@@ -1169,7 +1307,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
       return true;
     }
 
-    if (targetJid === senderNumber) {
+    if (targetJid === senderNumber || db.isPhoneMatch(targetJid, senderNumber)) {
       await send(sock, jid, messageObj, "❌ Tidak bisa mentransfer poin ke diri sendiri.");
       return true;
     }
@@ -1196,13 +1334,101 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     return true;
   }
 
+  // --- DOMPET & MULTI-ASET TERPADU ---
+  if (['dompet', 'wallet', 'aset', 'assets', 'rekening'].includes(command)) {
+    const contextInfo = messageObj?.message?.extendedTextMessage?.contextInfo;
+    const mentions = contextInfo?.mentionedJid || [];
+    let targetJid = mentions[0] || contextInfo?.participant;
+    if (!targetJid && args[1]) {
+      const res = await db.resolveTargetJid(args[1]);
+      if (res?.ditemukan && res.jid) targetJid = res.jid;
+      else {
+        const cleanNum = args[1].replace(/[^0-9]/g, '');
+        if (cleanNum.length > 5) targetJid = `${cleanNum}@s.whatsapp.net`;
+      }
+    }
+    const target = targetJid || senderNumber;
+    const data = await db.getUnifiedWalletData(target);
+    const targetPhone = target.split('@')[0];
+
+    const premBenefits = getPremiumBenefits(data.premium.tier);
+    const aiLimit = premBenefits?.aiDailyLimit || 10;
+    const mediaLimit = 10;
+
+    let nameStr = '';
+    if (data.customer.nama && data.customer.nama !== 'Member') {
+      nameStr = `*${data.customer.nama}* (@${targetPhone})`;
+    } else if (target === senderNumber && messageObj?.pushName) {
+      nameStr = `*${messageObj.pushName}* (@${targetPhone})`;
+    } else {
+      nameStr = `@${targetPhone}`;
+    }
+
+    const tierBadge = {
+      Free: '🥉 Member Free',
+      Bronze: '🥉 Bronze Member',
+      Silver: '🥈 Silver Member',
+      Gold: '🥇 Gold Member',
+      Platinum: '💎 Platinum VIP',
+      Diamond: '👑 Diamond VIP'
+    }[data.premium.tier] || `✨ ${data.premium.tier}`;
+
+    const roleBadge = {
+      OWNER: '👑 Owner',
+      ADMIN: '🛡️ Admin',
+      MODERATOR: '⚔️ Moderator',
+      RESELLER: '💼 Reseller',
+      USER: '👤 Pelanggan'
+    }[data.customer.role] || data.customer.role;
+
+    const totalSerpih = Object.values(data.tcg.shards).reduce((a, b) => a + b, 0);
+
+    const card = [
+      '╔══════════════════════════════╗',
+      '║   💳 *DOMPET & ASET TERPADU*  ║',
+      '╚══════════════════════════════╝',
+      `👤 Pemilik: ${nameStr}`,
+      `🏷️ Role: *${roleBadge}* · Tier: *${tierBadge}*`,
+      data.tcg.activeTitle ? `🏷️ Gelar Arena: *${data.tcg.activeTitle}*` : '',
+      '',
+      '💵 *FINANSIAL & POIN TOKO:*',
+      `• 💳 Saldo Rupiah (IDR): *Rp ${Number(data.customer.balance).toLocaleString('id-ID')}*`,
+      `• 🪙 Akbar Poin Game: *${Number(data.game.points).toLocaleString('id-ID')} Poin*`,
+      `• 🏦 Tabungan Bank: *${Number(data.game.bankPoints).toLocaleString('id-ID')} Poin*`,
+      data.game.bankPending > 0 ? `• ⏳ Dana Endap: *${Number(data.game.bankPending).toLocaleString('id-ID')} Poin*` : '',
+      `• 💎 Total Kekayaan: *${Number(data.game.totalWealth).toLocaleString('id-ID')} Poin*`,
+      '',
+      '🎴 *ASET ARENA TCG:*',
+      `• 💠 Keping Arena: *${Number(data.tcg.keping).toLocaleString('id-ID')} Keping*`,
+      `• 📚 Koleksi Monster: *${data.tcg.uniqueCards} Jenis* (Total ${data.tcg.totalCards} Kartu)`,
+      `• ✦ Total Serpihan: *${totalSerpih} Serpihan*`,
+      `  └ ⚪ ${data.tcg.shards.COMMON} C · 🟢 ${data.tcg.shards.RARE} R · 🟣 ${data.tcg.shards.EPIC} E · 🟡 ${data.tcg.shards.LEGENDARY} L`,
+      '',
+      '⚡ *KUOTA HARIAN & AKTIVITAS:*',
+      `• 🤖 Smart AI Chat: *${data.quota.aiUsed} / ${aiLimit >= 9999 ? '∞' : aiLimit}* per hari`,
+      `• 📥 Media Downloader: *${data.quota.mediaUsed} / ${mediaLimit}* per hari`,
+      `• 🔥 Streak Harian: *${data.game.dailyStreak} Hari* (Level ${data.game.level} · ${data.game.xp} XP)`,
+      data.game.isJailed ? '• 🚨 *STATUS: SEDANG DALAM PENJARA*' : '',
+      '',
+      '━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+      '_Ketik `.depo <nominal>` untuk top-up IDR atau `.daily` untuk reward harian._'
+    ].filter(line => line !== '').join('\n');
+
+    await send(sock, jid, messageObj, card, { mentions: [target] });
+    return true;
+  }
+
   if (['poin', 'point', 'profile', 'level', 'me', 'cekpoin'].includes(command)) {
     const contextInfo = messageObj?.message?.extendedTextMessage?.contextInfo;
     const mentions = contextInfo?.mentionedJid || [];
     let targetJid = mentions[0] || contextInfo?.participant;
     if (!targetJid && args[1]) {
-      const cleanNum = args[1].replace(/[^0-9]/g, '');
-      if (cleanNum.length > 5) targetJid = `${cleanNum}@s.whatsapp.net`;
+      const res = await db.resolveTargetJid(args[1]);
+      if (res?.ditemukan && res.jid) targetJid = res.jid;
+      else {
+        const cleanNum = args[1].replace(/[^0-9]/g, '');
+        if (cleanNum.length > 5) targetJid = `${cleanNum}@s.whatsapp.net`;
+      }
     }
     const target = targetJid || senderNumber;
     const profile = await db.getGameProfile(target);
@@ -1402,6 +1628,18 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     return true;
   }
 
+  if (['karbit', 'fanskarbit'].includes(command)) {
+    if (isOnCooldown(`${scope}:karbit`, 3000)) return true;
+    const target = args.slice(1).join(' ') || (messageObj?.pushName || 'Kamu');
+    const persen = Math.floor(Math.random() * 101);
+    let level = '🔥 Fans Karbit Sejati (Baru ikut waktu menang doang)';
+    if (persen < 20) level = '👑 Fans Garis Keras / Loyalis Sejati!';
+    else if (persen < 50) level = '🥈 Fans Kasual / Santai';
+    else if (persen < 80) level = '👀 Mulai Goyah / Rawan Loncat Pagar';
+    await send(sock, jid, messageObj, `📊 *DETEKTOR FANS KARBIT* 🚨\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n👤 Target: *${target}*\n📈 Kadar Karbit: *${persen}%*\n🏷️ Kategori: ${level}`);
+    return true;
+  }
+
   if (['zodiak', 'zodiac', 'horoscope'].includes(command)) {
     if (isOnCooldown(`${scope}:zodiak`, 3000)) return true;
     const inputZodiak = args[1];
@@ -1440,7 +1678,24 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
        return true;
     }
 
-    const isTagAllRequested = command === 'freegamestag' || args[1] === 'tag' || args[1] === 'tagall';
+    // MENTION MASSAL WAJIB IZIN ADMIN.
+    //
+    // `.freegames` adalah perintah publik, jadi jalur tag di bawah dulu memberi
+    // SETIAP member kemampuan memanggil seluruh isi grup — persis alat spam yang
+    // `.tagall` di groupAdminHandler sudah lama dijaga. Kebocorannya bukan di
+    // `.tagall`; ia ada di sini, dan lebih parah: tombol '📢 TagAll Group' di
+    // bawah menempelkan pemicunya satu ketukan dari siapa pun yang melihat pesan.
+    //
+    // Sengaja tidak diam-diam diabaikan. Orang yang menekan tombol berhak tahu
+    // kenapa tidak terjadi apa-apa, kalau tidak ia akan menekannya berkali-kali.
+    const mintaTagAll = command === 'freegamestag' || args[1] === 'tag' || args[1] === 'tagall';
+    const bolehTagAll = isAdmin || isOwner || isStoreAdmin;
+    if (mintaTagAll && isFromGroup && !bolehTagAll) {
+      await send(sock, jid, messageObj,
+        '❌ Memanggil seluruh member hanya bisa dilakukan *Admin Grup* atau *Owner*.\n\n_Info game gratisnya tetap bisa kamu lihat dengan_ `.freegames` _tanpa tag._');
+      return true;
+    }
+    const isTagAllRequested = mintaTagAll && bolehTagAll;
 
     const res = await entertainment.fetchFreeGames();
     if (res.success) {
@@ -1457,7 +1712,9 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
         } catch (e) {}
       }
 
-      const buttons = isFromGroup ? [{ type: 'reply', text: '📢 TagAll Group', id: '.freegames tag' }] : [];
+      const buttons = (isFromGroup && bolehTagAll)
+        ? [{ type: 'reply', text: '📢 TagAll Group', id: '.freegames tag' }]
+        : [];
       await send(sock, jid, messageObj, res.text, {
         title: '🎮 FREE GAMES ALERT (STEAM / EPIC / GOG / UBISOFT)',
         buttons
@@ -1780,14 +2037,21 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     }
 
     if (!targetJid) {
-      const argUser = args.find(a => a.startsWith('@'));
+      const argUser = args.find(a => a.startsWith('@') || /^\d{7,}$/.test(a));
       if (argUser) {
-        const cleanNum = argUser.replace(/[^0-9]/g, '');
-        targetJid = `${cleanNum}@s.whatsapp.net`;
+        const res = await db.resolveTargetJid(argUser);
+        if (res?.ditemukan && res.jid) targetJid = res.jid;
+        else {
+          const cleanNum = argUser.replace(/[^0-9]/g, '');
+          if (cleanNum.length > 5) targetJid = `${cleanNum}@s.whatsapp.net`;
+        }
       }
+    } else {
+      const res = await db.resolveTargetJid(targetJid);
+      if (res?.ditemukan && res.jid) targetJid = res.jid;
     }
 
-    if (!targetJid || targetJid === senderNumber) {
+    if (!targetJid || targetJid === senderNumber || db.isPhoneMatch(targetJid, senderNumber)) {
       await send(sock, jid, messageObj, "⚠️ *Format Perintah Salah!* Gunakan:\n▫️ `.suit @member [taruhan]`\n\n*Contoh:* `.suit @628123456789 100` atau `.suit @628123456789 all`");
       return true;
     }

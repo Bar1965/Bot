@@ -78,7 +78,14 @@ export async function initDb() {
       stok INTEGER NOT NULL,
       deskripsi TEXT,
       gambar TEXT,
-      delivery_type TEXT DEFAULT 'MANUAL'
+      delivery_type TEXT DEFAULT 'MANUAL',
+      petunjuk TEXT,
+      prodseller_id TEXT,
+      last_price REAL,
+      last_stock_status INTEGER,
+      brand_category TEXT,
+      variant_type TEXT,
+      duration TEXT
     )
   `);
 
@@ -194,7 +201,7 @@ export async function initDb() {
     )
   `);
 
-  // 7. Tabel Orders (ditambahkan kolom reminder_sent, payment_link, midtrans_status)
+  // 7. Tabel Orders (ditambahkan kolom reminder_sent, payment_link, midtrans_status, casaku & warranty)
   await runQuery(`
     CREATE TABLE IF NOT EXISTS orders (
       order_id TEXT PRIMARY KEY,
@@ -204,6 +211,19 @@ export async function initDb() {
       reminder_sent INTEGER DEFAULT 0,
       payment_link TEXT,
       midtrans_status TEXT,
+      payment_amount INTEGER DEFAULT 0,
+      payment_status TEXT DEFAULT 'PENDING',
+      fulfillment_status TEXT DEFAULT 'PENDING',
+      expired_at INTEGER,
+      casaku_transaction_id TEXT,
+      qr_string TEXT,
+      warranty_until INTEGER,
+      updated_at INTEGER,
+      review_reminder_sent INTEGER DEFAULT 0,
+      coupon_code TEXT,
+      discount_amount INTEGER DEFAULT 0,
+      premium_discount INTEGER DEFAULT 0,
+      coupon_redeemed INTEGER DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY(customer_nomor) REFERENCES customers(nomor)
     )
@@ -239,6 +259,7 @@ export async function initDb() {
       qty INTEGER NOT NULL,
       harga INTEGER NOT NULL,
       subtotal INTEGER NOT NULL,
+      stock_reserved INTEGER DEFAULT 0,
       FOREIGN KEY(order_id) REFERENCES orders(order_id),
       FOREIGN KEY(produk_kode) REFERENCES products(kode)
     )
@@ -323,7 +344,8 @@ export async function initDb() {
       bot_mode TEXT DEFAULT 'all',
       auto_sholat INTEGER DEFAULT 1,
       levelup_enabled INTEGER DEFAULT 1,
-      auto_dl_enabled INTEGER DEFAULT 1
+      auto_dl_enabled INTEGER DEFAULT 1,
+      features_config TEXT DEFAULT '{}'
     )
   `);
   await runQuery(`
@@ -412,6 +434,8 @@ export async function initDb() {
       customer_jid TEXT PRIMARY KEY,
       points INTEGER DEFAULT 0,
       bank_points INTEGER DEFAULT 0,
+      bank_pending INTEGER DEFAULT 0,
+      bank_pending_at INTEGER,
       xp INTEGER DEFAULT 0,
       level INTEGER DEFAULT 1,
       games_played INTEGER DEFAULT 0,
@@ -1240,6 +1264,25 @@ You can now enjoy:
   // Buang buff kedaluwarsa yang tertinggal dari sesi sebelumnya.
   await runQuery("DELETE FROM user_buffs WHERE expires_at IS NOT NULL AND expires_at < ?", [Date.now()]);
 
+  // 57. Tabel Sesi Game Aktif (Crash & Restart Persistence Protection)
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS active_game_sessions (
+      id TEXT PRIMARY KEY,
+      game_type TEXT NOT NULL,
+      jid TEXT NOT NULL,
+      host TEXT NOT NULL,
+      status TEXT NOT NULL,
+      buy_in INTEGER DEFAULT 0,
+      pot INTEGER DEFAULT 0,
+      players_json TEXT NOT NULL,
+      state_json TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_active_game_sessions_jid ON active_game_sessions(jid)");
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_active_game_sessions_status ON active_game_sessions(status)");
+
   // Cleanup & Migration untuk mencegah NULL/NaN/Non-Integer points/xp di database
   await runQuery("UPDATE game_profiles SET points = 0 WHERE points IS NULL OR typeof(points) != 'integer' OR points < 0 OR points > 1000000");
   await runQuery("UPDATE game_profiles SET xp = 0 WHERE xp IS NULL OR typeof(xp) != 'integer' OR xp < 0");
@@ -1259,4 +1302,9 @@ You can now enjoy:
   // SESUDAH initTcgSchema karena ia meng-ALTER `tcg_profil` yang dibuat di sana.
   const { initTcgMetaSchema } = await import('./tcgMetaDb.js');
   await initTcgMetaSchema();
+
+  // Lapisan tantangan arena (Gauntlet pekanan & Bos grup). Terakhir karena ia
+  // membaca kunci pekan dari tcgMetaDb dan tanggal WIB dari tcgDb.
+  const { initTcgTantanganSchema } = await import('./tcgTantanganDb.js');
+  await initTcgTantanganSchema();
 }

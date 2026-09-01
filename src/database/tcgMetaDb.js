@@ -414,7 +414,12 @@ export const TCG_MISI_MINGGUAN = [
   {
     id: 'M_TEMPUR', emoji: '⚔️', nama: 'Menangkan 12 pertarungan apa pun',
     target: 12, hadiah: { keping: 300, item: [{ id: 'RANSUM_AGUNG', jumlah: 1 }] },
-    aksi: ['MENARA', 'DUEL', 'SPAR', 'GERBANG', 'ABADI']
+    aksi: ['MENARA', 'DUEL', 'SPAR', 'GERBANG', 'ABADI', 'GAUNTLET']
+  },
+  {
+    id: 'M_BOS', emoji: '👹', nama: 'Pukul Bos Arena grup 8 kali',
+    target: 8, hadiah: { keping: 300, serpihan: [{ rarity: 'EPIC', jumlah: 2 }] },
+    aksi: ['BOS']
   },
   {
     id: 'M_TARIK', emoji: '🎴', nama: 'Tarik 15 kartu',
@@ -953,7 +958,7 @@ export async function tcgPotretPemain(ownerJid, totalKartu = 0) {
   const [koleksi, mythic, lv5, tower, abadi, streak, rank, barter] = await Promise.all([
     getQuery("SELECT COUNT(*) AS unik, SUM(qty) AS total FROM tcg_collection WHERE owner_jid = ? AND qty > 0", [ownerJid]),
     getQuery("SELECT COUNT(*) AS n FROM tcg_collection WHERE owner_jid = ? AND qty > 0 AND card_id LIKE 'MYT%'", [ownerJid]),
-    getQuery("SELECT COUNT(*) AS n FROM tcg_collection WHERE owner_jid = ? AND card_lv >= 5", [ownerJid]),
+    getQuery("SELECT COUNT(*) AS n FROM tcg_collection WHERE owner_jid = ? AND qty > 0 AND card_lv >= 5", [ownerJid]),
     getQuery("SELECT highest_floor FROM tcg_tower WHERE owner_jid = ?", [ownerJid]),
     getQuery("SELECT lantai FROM tcg_abadi WHERE owner_jid = ?", [ownerJid]),
     getQuery("SELECT terpanjang FROM tcg_streak WHERE owner_jid = ?", [ownerJid]),
@@ -1225,12 +1230,23 @@ export async function tcgTukarKartu(aJid, kartuA, bJid, kartuB) {
 
   return withTransaction(async () => {
     for (const [jid, kartu] of [[aJid, kartuA], [bJid, kartuB]]) {
-      const res = await runQuery(
-        "UPDATE tcg_collection SET qty = qty - 1 WHERE owner_jid = ? AND card_id = ? AND qty > 1",
+      const deckRows = await allQuery(
+        "SELECT slot FROM tcg_deck WHERE owner_jid = ? AND card_id = ?",
         [jid, kartu]
       );
+      const ekspedisiRows = await allQuery(
+        "SELECT slot FROM tcg_ekspedisi WHERE owner_jid = ? AND card_id = ?",
+        [jid, kartu]
+      );
+      const inUse = (deckRows?.length || 0) + (ekspedisiRows?.length || 0);
+      const minSisa = Math.max(1, inUse);
+
+      const res = await runQuery(
+        "UPDATE tcg_collection SET qty = qty - 1 WHERE owner_jid = ? AND card_id = ? AND (qty - 1) >= ?",
+        [jid, kartu, minSisa]
+      );
       if (res.changes !== 1) {
-        return { success: false, reason: 'DUPLIKAT_HABIS', jid, kartu };
+        return { success: false, reason: 'DUPLIKAT_HABIS', jid, kartu, terpakai: inUse };
       }
     }
 

@@ -6,162 +6,7 @@ export const activeFamily100 = new Map();
 export const activeCakLontong = new Map();
 
 
-const family100Questions = [
-  {
-    question: "Apa yang biasa dicari orang saat mati lampu?",
-    answers: [
-      { name: "Lilin", score: 35, aliases: ["LILIN"] },
-      { name: "Senter", score: 25, aliases: ["SENTER", "FLASHLIGHT"] },
-      { name: "Korek Api", score: 20, aliases: ["KOREK", "KOREK API", "MATCHES"] },
-      { name: "HP / Ponsel", score: 15, aliases: ["HP", "PONSEL", "HANDPHONE", "SMARTPHONE"] },
-      { name: "Kipas", score: 5, aliases: ["KIPAS", "KIPAS ANGIN"] }
-    ]
-  },
-  {
-    question: "Sebutkan makanan khas Indonesia yang populer!",
-    answers: [
-      { name: "Nasi Goreng", score: 35, aliases: ["NASI GORENG", "NASGOR"] },
-      { name: "Rendang", score: 25, aliases: ["RENDANG"] },
-      { name: "Sate", score: 20, aliases: ["SATE", "SATE AYAM", "SATE KAMBING"] },
-      { name: "Bakso", score: 15, aliases: ["BAKSO", "BASO"] },
-      { name: "Soto", score: 5, aliases: ["SOTO", "SOTO AYAM"] }
-    ]
-  },
-  {
-    question: "Benda apa yang selalu dibawa saat bepergian?",
-    answers: [
-      { name: "HP / Ponsel", score: 35, aliases: ["HP", "PONSEL", "HANDPHONE"] },
-      { name: "Dompet", score: 30, aliases: ["DOMPET", "WALLET"] },
-      { name: "Kunci", score: 15, aliases: ["KUNCI", "KUNCI MOTOR", "KUNCI RUMAH"] },
-      { name: "Uang", score: 10, aliases: ["UANG", "DUIT"] },
-      { name: "KTP / Identitas", score: 10, aliases: ["KTP", "IDENTITAS", "SIM"] }
-    ]
-  },
-  {
-    question: "Aktivitas apa yang biasa dilakukan di pantai?",
-    answers: [
-      { name: "Berenang", score: 35, aliases: ["BERENANG", "RENANG", "MAIN AIR"] },
-      { name: "Foto-foto", score: 25, aliases: ["FOTO", "FOTO FOTO", "SELFIE"] },
-      { name: "Main Pasir", score: 20, aliases: ["MAIN PASIR", "PASIR"] },
-      { name: "Melihat Sunset", score: 15, aliases: ["SUNSET", "LIHAT SUNSET", "MATAHARI TERBENAM"] },
-      { name: "Makan / Minum Kelapa", score: 5, aliases: ["MINUM KELAPA", "KELAPA", "KELAPA MUDA", "MAKAN KELAPA"] }
-    ]
-  },
-  {
-    question: "Hewan apa yang sering dijadikan peliharaan di rumah?",
-    answers: [
-      { name: "Kucing", score: 40, aliases: ["KUCING", "CAT"] },
-      { name: "Anjing", score: 30, aliases: ["ANJING", "DOG"] },
-      { name: "Ikan", score: 15, aliases: ["IKAN", "FISH"] },
-      { name: "Burung", score: 10, aliases: ["BURUNG", "BIRD"] },
-      { name: "Hamster", score: 5, aliases: ["HAMSTER", "KELINCI"] }
-    ]
-  },
-  {
-    question: "Apa yang biasa dilakukan orang saat bangun tidur di pagi hari?",
-    answers: [
-      { name: "Cek HP", score: 40, aliases: ["CEK HP", "LIHAT HP", "MAIN HP", "HP"] },
-      { name: "Minum Air", score: 25, aliases: ["MINUM", "MINUM AIR", "MINUM AIR PUTIH"] },
-      { name: "Mandi", score: 15, aliases: ["MANDI"] },
-      { name: "Cuci Muka", score: 10, aliases: ["CUCI MUKA", "GOSOK GIGI"] },
-      { name: "Tidur Lagi", score: 10, aliases: ["TIDUR LAGI", "REBAHAN", "MEREM LAGI"] }
-    ]
-  }
-];
-
-const cakLontongQuestions = [
-  {
-    question: "Makan di piring menggunakan...",
-    clue: "P _ N _ E K",
-    answer: "PENDEK",
-    reason: "Kalau sendoknya kepanjangan susah nyuapnya ke mulut.",
-    aliases: ["PENDEK"]
-  },
-  {
-    question: "Sebelum dioperasi, dokter biasanya...",
-    clue: "M _ N _ N _ G _ U",
-    answer: "MENUNGGU",
-    reason: "Menunggu pasiennya siap dan sadar di ruang operasi.",
-    aliases: ["MENUNGGU"]
-  },
-  {
-    question: "Burung bisa terbang karena memiliki...",
-    clue: "B _ K _ T",
-    answer: "BAKAT",
-    reason: "Kalau burungnya gak berbakat terbang, ya jalan kaki kayak penguin.",
-    aliases: ["BAKAT"]
-  },
-  {
-    question: "Orang menyeberang jalan saat lampu lalu lintas...",
-    clue: "N _ A _ A",
-    answer: "NYALA",
-    reason: "Kalau lampunya mati ya gelap, gak kelihatan menyeberangnya.",
-    aliases: ["NYALA"]
-  },
-  {
-    question: "Supaya bersih, lantai harus di...",
-    clue: "S _ P _",
-    answer: "SAPU",
-    reason: "Ya emang disapu, masa dimakan.",
-    aliases: ["SAPU", "DI SAPU", "DISAPU"]
-  },
-  {
-    question: "Banteng warna merah takut sama...",
-    clue: "B _ Y _ N _ N _ A",
-    answer: "BAYANGANNYA",
-    reason: "Bayangan sendiri aja gede serem, apalagi banteng.",
-    aliases: ["BAYANGANNYA", "BAYANGAN"]
-  },
-  {
-    question: "Orang yang bekerja membantu dokter di rumah sakit adalah...",
-    clue: "P _ S _ E N",
-    answer: "PASIEN",
-    reason: "Kalau gak ada pasien, dokternya gak ada kerjaan kan?",
-    aliases: ["PASIEN"]
-  },
-  {
-    question: "Matahari terbit dari sebelah...",
-    clue: "L _ A _",
-    answer: "LUAR",
-    reason: "Matahari terbitnya dari luar angkasa, bukan dari dalam rumah.",
-    aliases: ["LUAR"]
-  },
-  {
-    question: "Kucing kalau tidur biasanya...",
-    clue: "M _ R _ M",
-    answer: "MEREM",
-    reason: "Masa tidur sambil melek, serem dong.",
-    aliases: ["MEREM"]
-  },
-  {
-    question: "Ketika hujan lebat turun, jalanan menjadi...",
-    clue: "B _ S _ H",
-    answer: "BASAH",
-    reason: "Ya basah kena air hujan.",
-    aliases: ["BASAH"]
-  },
-  {
-    question: "Sepeda motor bisa jalan karena ada...",
-    clue: "R _ D _",
-    answer: "RODA",
-    reason: "Kalau rodanya kotak gak bisa jalan.",
-    aliases: ["RODA"]
-  },
-  {
-    question: "Kalau kita lapar, biasanya kita...",
-    clue: "K _ R _ N _",
-    answer: "KURANG",
-    reason: "Kurang makan, makanya lapar.",
-    aliases: ["KURANG"]
-  },
-  {
-    question: "Orang memancing biasanya duduk di...",
-    clue: "D _ K _ T",
-    answer: "DEKAT",
-    reason: "Kalau jauh-jauh ya ga nyampe kailnya ke air.",
-    aliases: ["DEKAT"]
-  }
-];
+import { family100Questions, cakLontongQuestions } from './family100Data.js';
 
 // ─── 1. FAMILY 100 SYSTEM ────────────────────────────────────
 function renderFamily100Board(session) {
@@ -238,7 +83,7 @@ async function handleFamily100Answer(sock, jid, messageObj, senderNumber, text, 
   ans.solverTag = userTag;
 
   await db.awardGamePoints(senderNumber, ans.score, true);
-  await db.addMessageXp(senderNumber, 25);
+  await db.grantXp(senderNumber, 25);
 
   const curScore = session.scores.get(senderNumber) || 0;
   session.scores.set(senderNumber, curScore + ans.score);
@@ -307,7 +152,7 @@ async function handleCakLontongAnswer(sock, jid, messageObj, senderNumber, text,
   const pointsReward = 30;
   const xpReward = 40;
   await db.awardGamePoints(senderNumber, pointsReward, true);
-  await db.addMessageXp(senderNumber, xpReward);
+  await db.grantXp(senderNumber, xpReward);
 
   const senderPhone = senderNumber.split('@')[0];
   const cust = await db.getCustomerByPhone(senderNumber);
@@ -336,7 +181,7 @@ async function surrenderFamily100(sock, jid, messageObj, scope) {
 
   let msg = `🏳️ *MENYERAH — FAMILY 100* 🏳️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📋 Soal: *${session.question}*\n\n*Semua Jawaban:*\n`;
   session.answers.forEach((a, i) => {
-    const status = a.solved ? `✅ (${a.solverTag})` : '❌';
+    const status = a.revealed ? `✅ (${a.solverTag})` : '❌';
     msg += `${i + 1}. *${a.name}* [${a.score} Poin] ${status}\n`;
   });
   msg += `\n_Ketik \`.family100\` untuk bermain ronde baru._`;

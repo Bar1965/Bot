@@ -469,7 +469,7 @@ _Jangan patah semangat! Ketik \`.mines ${session.bet} ${session.bombCount}\` unt
     activeMinesGames.delete(senderNumber);
 
     await db.awardGamePoints(senderNumber, session.currentWin, true);
-    await db.addMessageXp(senderNumber, Math.floor(session.currentWin / 3));
+    await db.grantXp(senderNumber, Math.floor(session.currentWin / 3));
 
     const winBoard = renderMinesBoard(session, true);
     const maxWinMsg = 
@@ -551,7 +551,7 @@ async function cashoutGame(sock, jid, senderNumber, messageObj) {
   const winAmount = session.currentWin;
   const xpReward = Math.max(10, Math.floor(winAmount / 5));
   await db.awardGamePoints(senderNumber, winAmount, true);
-  await db.addMessageXp(senderNumber, xpReward);
+  await db.grantXp(senderNumber, xpReward);
 
   const finalProfile = await db.getGameProfile(senderNumber);
   const fullBoard = renderMinesBoard(session, true);
@@ -605,7 +605,10 @@ async function cancelMinesGame(sock, jid, senderNumber, messageObj) {
   if (session.timer) clearTimeout(session.timer);
   activeMinesGames.delete(senderNumber);
 
-  await db.awardGamePoints(senderNumber, session.bet, false);
+  // addGamePoints: ini pengembalian modal, bukan hadiah. awardGamePoints ikut
+  // mencetak XP senilai poin, sehingga `.mines 37000` -> `.batalmines` dulu
+  // memberi +37.000 XP gratis dan bisa diulang tanpa batas.
+  await db.addGamePoints(senderNumber, session.bet);
   await send(sock, jid, messageObj, `✅ Sesi game Mines dibatalkan. Modal taruhan *${session.bet.toLocaleString('id-ID')} Poin* telah dikembalikan utuh ke dompetmu.`);
   return true;
 }
@@ -633,7 +636,8 @@ function scheduleMinesTimeout(sock, session) {
       } else {
         // Belum buka apapun -> refund
         activeMinesGames.delete(session.senderNumber);
-        await db.awardGamePoints(session.senderNumber, session.bet, false);
+        // Sama seperti `.batalmines`: pengembalian modal, tanpa XP.
+        await db.addGamePoints(session.senderNumber, session.bet);
         await send(sock, session.jid, null, 
           `⏳ *SESI MINES KEDALUWARSA!* Modal taruhan *${session.bet} Poin* telah dikembalikan ke dompet @${session.senderNumber.split('@')[0]}.`,
           { mentions: [session.senderNumber] }

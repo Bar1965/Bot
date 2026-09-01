@@ -210,26 +210,99 @@ export async function nullifyMediaPaths(pathList) {
 
 
 // --- FUNGSI PERINGATAN MODERASI (CUSTOMER WARNINGS) ---
+//
+// Peringatan HARUS punya masa berlaku. Sebelum ini hitungannya `COUNT(*)` tanpa
+// batas waktu apa pun, jadi peringatan bersifat SEUMUR HIDUP: sekali menyentuh
+// ambang `kickAfterWarnings` (bawaan 3), seseorang berada di ambang kick selamanya
+// dan setiap salah ketik berikutnya langsung mengeluarkannya dari grup. Tidak ada
+// perintah `.unwarn`, dan `clearCustomerWarnings()` tidak pernah dipanggil dari
+// mana pun — jadi tidak ada satu pun jalan untuk memaafkan.
+//
+// Itu bukan masalah kecil di toko ini: checkout mewajibkan pelanggan berada di
+// grup pembeli, sehingga ter-kick berarti kehilangan hak membeli. Saat perbaikan
+// ini ditulis, 8 dari 194 pelanggan sudah berada di angka >= 3 (satu di angka 50)
+// murni karena akumulasi berbulan-bulan.
+//
+// Jendelanya bisa diatur lewat setting `warningWindowDays`; bawaannya 7 hari,
+// artinya perilaku baik selama seminggu memulihkan seseorang dengan sendirinya.
+
+const JENDELA_PERINGATAN_BAWAAN = 7;
+
+async function jendelaPeringatanHari() {
+  try {
+    const row = await getQuery("SELECT value FROM settings WHERE key = 'warningWindowDays'");
+    const hari = Number.parseInt(row?.value, 10);
+    if (Number.isFinite(hari) && hari >= 1 && hari <= 365) return hari;
+  } catch (_) {}
+  return JENDELA_PERINGATAN_BAWAAN;
+}
 
 export async function addCustomerWarning(jid, reason) {
   await runQuery(
     "INSERT INTO customer_warnings (jid, reason) VALUES (?, ?)",
     [jid, reason]
   );
-  const countObj = await getQuery("SELECT COUNT(*) as count FROM customer_warnings WHERE jid = ?", [jid]);
-  const total = countObj ? countObj.count : 1;
-  await addLog("MODERATION", `Peringatan (${total}x) diberikan kepada ${jid}: ${reason}`);
+  const total = await getCustomerWarningsCount(jid);
+  await addLog("MODERATION", `Peringatan (${total}x dalam jendela aktif) diberikan kepada ${jid}: ${reason}`);
   return total;
 }
 
+/** Jumlah peringatan yang MASIH berlaku (di dalam jendela waktu). */
 export async function getCustomerWarningsCount(jid) {
-  const row = await getQuery("SELECT COUNT(*) as count FROM customer_warnings WHERE jid = ?", [jid]);
+  const hari = await jendelaPeringatanHari();
+  const row = await getQuery(
+    `SELECT COUNT(*) as count FROM customer_warnings
+     WHERE jid = ? AND created_at >= datetime('now', ?)`,
+    [jid, `-${hari} days`]
+  );
   return row ? row.count : 0;
 }
 
+/** Rincian untuk `.cekwarn`: aktif, seumur hidup, dan peringatan terakhir. */
+export async function getCustomerWarningsDetail(jid) {
+  const hari = await jendelaPeringatanHari();
+  const aktif = await getCustomerWarningsCount(jid);
+  const semua = await getQuery("SELECT COUNT(*) as count FROM customer_warnings WHERE jid = ?", [jid]);
+  const terakhir = await allQuery(
+    "SELECT reason, created_at FROM customer_warnings WHERE jid = ? ORDER BY id DESC LIMIT 3",
+    [jid]
+  );
+  return { aktif, seumurHidup: semua ? semua.count : 0, jendelaHari: hari, terakhir };
+}
+
+/** Siapa saja yang sedang mendekati ambang kick — dipakai `.cekwarn` tanpa target. */
+export async function getWarningWatchlist(minimal = 2) {
+  const hari = await jendelaPeringatanHari();
+  return allQuery(
+    `SELECT w.jid,
+            COUNT(*) AS aktif,
+            MAX(w.created_at) AS terakhir,
+            COALESCE(c.nama, 'Member') AS nama
+     FROM customer_warnings w
+     LEFT JOIN customers c ON c.nomor = w.jid
+     WHERE w.created_at >= datetime('now', ?)
+     GROUP BY w.jid
+     HAVING aktif >= ?
+     ORDER BY aktif DESC, terakhir DESC
+     LIMIT 30`,
+    [`-${hari} days`, Math.max(1, Number.parseInt(minimal, 10) || 2)]
+  );
+}
+
 export async function clearCustomerWarnings(jid) {
-  await runQuery("DELETE FROM customer_warnings WHERE jid = ?", [jid]);
-  await addLog("MODERATION", `Peringatan untuk ${jid} berhasil dibersihkan.`);
+  const res = await runQuery("DELETE FROM customer_warnings WHERE jid = ?", [jid]);
+  await addLog("MODERATION", `Peringatan untuk ${jid} berhasil dibersihkan (${res.changes || 0} baris).`);
+  return res.changes || 0;
+}
+
+/** Hapus SATU peringatan terbaru saja — untuk salah tuduh yang perlu dikoreksi. */
+export async function hapusPeringatanTerakhir(jid) {
+  const res = await runQuery(
+    "DELETE FROM customer_warnings WHERE id = (SELECT id FROM customer_warnings WHERE jid = ? ORDER BY id DESC LIMIT 1)",
+    [jid]
+  );
+  if (res.changes) await addLog("MODERATION", `Satu peringatan terakhir untuk ${jid} dicabut.`);
+  return res.changes || 0;
 }
 
 
@@ -279,6 +352,16 @@ function serializeFeaturesConfig(value) {
   } catch (_) {
     return '{}';
   }
+}
+
+/**
+ * JID semua grup yang pernah dikonfigurasi (punya baris di group_settings).
+ * Dipakai pengumuman rilis supaya catatan update tidak dikirim ke grup yang
+ * cuma numpang lewat.
+ */
+export async function getConfiguredGroupJids() {
+  const rows = await allQuery("SELECT jid FROM group_settings");
+  return (rows || []).map(r => r.jid).filter(Boolean);
 }
 
 export async function getGroupSettings(jid) {

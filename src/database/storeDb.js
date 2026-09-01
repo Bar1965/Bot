@@ -448,14 +448,42 @@ export async function getCartDetails(customerNomor) {
   };
 }
 
+/**
+ * Diskon belanja per tier premium — CERMIN dari `PREMIUM_TIERS[*].benefits.shopDiscountPct`
+ * di premiumHandler.js. Sengaja disalin, bukan di-import: premiumHandler mengimpor
+ * database.js, jadi mengimpor balik dari sini membuat lingkaran impor.
+ *
+ * Angka ini diiklankan di SEMBILAN tempat (`.premium`, `.cekpremium`, layar
+ * konfirmasi pembelian, `.premiumbenefit`, deskripsi tiap tier) tapi sampai
+ * perbaikan ini tidak pernah dipakai satu kali pun dalam perhitungan harga —
+ * `shopDiscountPct` hanya muncul di string tampilan. Pelanggan membayar
+ * Rp5.000-25.000 untuk potongan yang tidak pernah terjadi.
+ *
+ * UBAH DI SINI DAN DI premiumHandler.js SEKALIGUS.
+ */
+const DISKON_PREMIUM_PERSEN = { Silver: 5, Gold: 10, Diamond: 15 };
+
+/** Berapa rupiah potongan premium untuk subtotal ini, 0 kalau bukan premium aktif. */
+async function hitungDiskonPremium(customerNomor, subtotal) {
+  if (!customerNomor || !subtotal || subtotal <= 0) return { rupiah: 0, tier: null, persen: 0 };
+  const row = await getQuery(
+    "SELECT tier FROM premium_users WHERE jid = ? AND expires_at > datetime('now')",
+    [customerNomor]
+  );
+  const persen = DISKON_PREMIUM_PERSEN[row?.tier] || 0;
+  if (!persen) return { rupiah: 0, tier: null, persen: 0 };
+  return { rupiah: Math.floor(subtotal * persen / 100), tier: row.tier, persen };
+}
+
 async function updateOrderTotal(orderId) {
   const result = await getQuery("SELECT SUM(subtotal) as total FROM order_items WHERE order_id = ?", [orderId]);
   const rawTotal = result.total || 0;
-  
-  const order = await getQuery("SELECT discount_amount FROM orders WHERE order_id = ?", [orderId]);
+
+  const order = await getQuery("SELECT discount_amount, premium_discount FROM orders WHERE order_id = ?", [orderId]);
   const discount = order ? (order.discount_amount || 0) : 0;
-  
-  const finalTotal = Math.max(0, rawTotal - discount);
+  const diskonPremium = order ? (order.premium_discount || 0) : 0;
+
+  const finalTotal = Math.max(0, rawTotal - discount - diskonPremium);
   await runQuery("UPDATE orders SET total = ? WHERE order_id = ?", [finalTotal, orderId]);
 }
 
@@ -507,16 +535,25 @@ export async function checkoutCart(customerNomor) {
     return { success: false, message: `Checkout gagal. ${err.message}` };
   }
 
+  // Diskon belanja premium dihitung ULANG dari subtotal setiap checkout, bukan
+  // ditambahkan ke nilai lama — jadi keranjang yang dibatalkan lalu di-checkout
+  // lagi tidak pernah menumpuk diskon.
+  const subtotalRow = await getQuery("SELECT SUM(subtotal) as total FROM order_items WHERE order_id = ?", [cart.order_id]);
+  const diskonPrem = await hitungDiskonPremium(customerNomor, subtotalRow?.total || 0);
+  await runQuery("UPDATE orders SET premium_discount = ? WHERE order_id = ?", [diskonPrem.rupiah, cart.order_id]);
+  await updateOrderTotal(cart.order_id);
+
   await runQuery(
     "UPDATE orders SET status = 'WAITING_PAYMENT' WHERE order_id = ?",
     [cart.order_id]
   );
 
-  await addLog("ORDER", `Order dibuat: ${cart.order_id} oleh customer ${customerNomor}`);
+  await addLog("ORDER", `Order dibuat: ${cart.order_id} oleh customer ${customerNomor}${diskonPrem.rupiah ? ` (diskon premium ${diskonPrem.tier} ${diskonPrem.persen}%: -Rp${diskonPrem.rupiah.toLocaleString('id-ID')})` : ''}`);
   const orderDetails = await getOrderDetails(cart.order_id);
   return {
     success: true,
-    order: orderDetails
+    order: orderDetails,
+    diskonPremium: diskonPrem
   };
   });
 }
@@ -700,7 +737,7 @@ export async function deleteOrder(orderId) {
 }
 
 // Membersihkan riwayat order secara massal (berdasarkan filter: CANCELLED_CART, COMPLETED, atau ALL)
-export async function clearOrders(filter = 'ALL') {
+export async function clearOrders(filter = 'ALL', aktor = 'unknown') {
   let queryOrders = "";
   let params = [];
 
@@ -728,7 +765,7 @@ export async function clearOrders(filter = 'ALL') {
     await runQuery("DELETE FROM orders WHERE order_id = ?", [id]);
   }
 
-  await addLog("ORDER", `Pembersihan riwayat order (${filter}): ${ids.length} transaksi dihapus.`);
+  await addLog("ORDER", `Pembersihan riwayat order (${filter}) oleh ${aktor}: ${ids.length} transaksi dihapus.`);
   return { success: true, count: ids.length, message: `Berhasil menghapus ${ids.length} transaksi.` };
 }
 

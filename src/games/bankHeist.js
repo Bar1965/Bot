@@ -4,7 +4,10 @@ import { send } from './helpers.js';
 export const activeGroupHeists = new Map();
 export const activeBankHeists = activeGroupHeists;
 export const activeHeistMiniGames = new Map();
-const bankCooldowns = new Map(); // key: `${jid}_${bankId}` -> timestamp ms
+// Cooldown bank disimpan di tabel user_cooldowns dengan scope JID grup dan
+// kind 'HEIST:<id>'. Sebelumnya ada di Map memori, jadi restart bot membuat
+// semua bank langsung siap dirampok lagi.
+const kindHeist = (bankId) => `HEIST:${bankId}`;
 
 export const BANK_TARGETS = [
   {
@@ -136,6 +139,8 @@ async function handleBankHeist(sock, jid, senderNumber, messageObj, args, comman
   // Jika tidak memilih nomor bank atau salah -> Tampilkan DAFTAR BANK & STATUS COOLDOWN
   if (!targetBank) {
     const now = Date.now();
+    // Satu query untuk seluruh daftar bank, bukan satu query per baris.
+    const cooldownGrup = await db.listCooldowns(jid);
     let listText = 
 `🏦 *DAFTAR TARGET PEMBOBOLAN BANK AKBAR* 🚨
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -144,9 +149,9 @@ Pilih sasaran bank yang ingin dibobol bersama kru tongkronganmu! Tiap bank memil
 `;
 
     for (const b of BANK_TARGETS) {
-      const lastHeist = bankCooldowns.get(`${jid}_${b.id}`) || 0;
-      const isCooldown = (now - lastHeist) < b.cooldownMs;
-      const sisaMnt = isCooldown ? Math.ceil((b.cooldownMs - (now - lastHeist)) / (60 * 1000)) : 0;
+      const habisPada = cooldownGrup.get(kindHeist(b.id)) || 0;
+      const isCooldown = habisPada > now;
+      const sisaMnt = isCooldown ? Math.ceil((habisPada - now) / (60 * 1000)) : 0;
       const statusStr = isCooldown ? `⏳ *Polisi Siaga* (Sisa ${sisaMnt} mnt)` : `🟢 *SIAP DIRAMPOK*`;
 
       const minLootEst = b.baseLoot + (b.minCrew * b.lootPerCrew);
@@ -168,10 +173,10 @@ Pilih sasaran bank yang ingin dibobol bersama kru tongkronganmu! Tiap bank memil
   }
 
   // Cek Cooldown untuk Bank Terpilih
-  const lastHeistTime = bankCooldowns.get(`${jid}_${targetBank.id}`) || 0;
+  const sisaHeistMs = await db.getCooldownMs(jid, kindHeist(targetBank.id));
   const now = Date.now();
-  if (now - lastHeistTime < targetBank.cooldownMs) {
-    const sisaMnt = Math.ceil((targetBank.cooldownMs - (now - lastHeistTime)) / (60 * 1000));
+  if (sisaHeistMs > 0) {
+    const sisaMnt = Math.ceil(sisaHeistMs / (60 * 1000));
     await send(sock, jid, messageObj, `⏳ *ALARM ${targetBank.shortName.toUpperCase()} MASIH SIAGA KETAT!* Pasukan kepolisian masih berpatroli di area sekitar bank. Harap tunggu *${sisaMnt} menit lagi* atau pilih bank target lain yang sedang hijau!`);
     return true;
   }
@@ -276,7 +281,7 @@ async function startBankHeistExecution(sock, jid, senderNumber, messageObj) {
 
   const target = session.target;
   // Catat Cooldown khusus untuk bank yang baru saja diserbu
-  bankCooldowns.set(`${jid}_${target.id}`, Date.now());
+  await db.setCooldown(jid, kindHeist(target.id), target.cooldownMs);
 
   const crewCount = session.crew.length;
   // Kalkulasi winrate spesifik tier bank
@@ -294,7 +299,7 @@ async function startBankHeistExecution(sock, jid, senderNumber, messageObj) {
 
     for (const member of session.crew) {
       await db.addGamePoints(member, lootPerCrew);
-      await db.addMessageXp(member, target.baseXp);
+      await db.grantXp(member, target.baseXp);
     }
 
     const winMsg = 
