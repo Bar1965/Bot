@@ -330,25 +330,35 @@ function barisPemain(sesi) {
   }).join(' · ');
 }
 
-function renderMeja(sesi, aksiTerakhir = '') {
+/**
+ * Papan meja — sengaja dipadatkan.
+ *
+ * Bentuk lamanya 12 baris penuh garis pemisah, dan itu masih lumayan sebagai
+ * pesan sesekali. Tapi papan ini muncul di setiap giliran, jadi tiap baris
+ * yang tidak benar-benar dibutuhkan terbayar puluhan kali per ronde. Yang
+ * disisakan cuma yang dipakai pemain untuk mengambil keputusan.
+ */
+export function renderMeja(sesi) {
   const aktif = pemainAktif(sesi);
-  const arah = sesi.arah === 1 ? '➡️ searah jarum jam' : '⬅️ berlawanan arah';
-  const kepala = aksiTerakhir ? `${aksiTerakhir}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` : '';
+  const arah = sesi.arah === 1 ? '➡️' : '⬅️';
+  const judul = sesi.aturan?.targetSkor ? `🎴 *UNO* · Ronde ${sesi.ronde}` : '🎴 *UNO*';
 
   const tumpuk = sesi.tumpukan?.jumlah > 0
-    ? `\n🔁 *TUMPUKAN BERJALAN:* +${sesi.tumpukan.jumlah} — hanya kartu *${sesi.tumpukan.jenis === 'D2' ? '+2' : '+4'}* yang bisa menimpanya!`
+    ? `\n🔁 *TUMPUKAN +${sesi.tumpukan.jumlah}* — hanya *${sesi.tumpukan.jenis === 'D2' ? '+2' : '+4'}* yang bisa menimpa!`
     : '';
-  const judul = sesi.aturan?.targetSkor ? `🎴 ─── *UNO — Ronde ${sesi.ronde}* ─── 🎴` : '🎴 ─── *UNO* ─── 🎴';
+
+  const jejak = (sesi.riwayat || []).length
+    ? `\n${sesi.riwayat.map(r => `▸ ${r}`).join('\n')}`
+    : '';
+
+  const giliran = isBotUno(aktif)
+    ? `👉 Giliran ${labelPemain(sesi, aktif)}…`
+    : `👉 Giliran ${labelPemain(sesi, aktif)} — cek DM, ketik \`.u <nomor>\` _(${TURN_TIMEOUT_MS / 1000}s)_`;
 
   return (
-`${judul}
-${kepala}🃏 *Kartu Atas:* ${labelAtas(sesi.atas, sesi.warnaAktif)}
-🔄 *Arah:* ${arah}
-📦 *Sisa Deck:* ${sesi.deck.length} kartu${tumpuk}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-👥 ${barisPemain(sesi)}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-👉 *Giliran:* ${labelPemain(sesi, aktif)}${isBotUno(aktif) ? '' : `\n_Cek DM, lalu ketik_ \`.u <nomor>\` _di grup._\n_⏳ ${TURN_TIMEOUT_MS / 1000} detik_`}`
+`${judul}  ·  ${labelAtas(sesi.atas, sesi.warnaAktif)}  ·  ${arah}  ·  📦${sesi.deck.length}${tumpuk}
+👥 ${barisPemain(sesi)}${jejak}
+${giliran}`
   );
 }
 
@@ -420,6 +430,79 @@ async function dmTangan(sock, sesi, jid, catatan = '') {
   return await dm(sock, jid, renderTangan(sesi, jid, catatan));
 }
 
+// ─── Papan hidup (satu pesan yang diperbarui) ─────────────────────
+//
+// Versi pertama mengirim papan 12 baris SETIAP giliran sambil men-tag seluruh
+// pemain. Satu ronde rata-rata 38 giliran, jadi grup dihujani ~38 pesan panjang
+// dan tiap orang berdering 38 kali — persis keluhan "terlalu rame dan ngespam".
+//
+// Sekarang papannya cuma SATU pesan yang diedit di tempat, memakai pola yang
+// sudah terbukti di umaDerby.js (`edit: key`, dengan cadangan kirim-baru kalau
+// gagal). Yang di-tag pun hanya pemain yang sedang mendapat giliran, bukan
+// semua orang. Notifikasi sungguhan tetap sampai lewat DM berisi kartunya —
+// itulah yang memang perlu dia lihat.
+
+/** Sesudah sekian giliran, papan dikirim ulang supaya tidak terkubur obrolan. */
+const JANGKAR_ULANG_TIAP = 12;
+
+/** Jejak langkah terakhir, ditumpuk di papan supaya tidak perlu pesan sendiri. */
+function catatRiwayat(sesi, baris) {
+  if (!baris) return;
+  sesi.riwayat = [...(sesi.riwayat || []), baris].slice(-3);
+}
+
+/**
+ * Perbarui papan hidup. Mengembalikan true kalau berhasil.
+ *
+ * `pingAktif` hanya dinyalakan saat papan dijangkarkan ulang — mengedit pesan
+ * tidak memicu notifikasi, jadi menaruh mention di setiap edit percuma dan
+ * cuma menambah beban.
+ */
+async function perbaruiPapan(sock, jid, sesi) {
+  const teks = renderMeja(sesi);
+  // Papan menyebut SEMUA pemain manusia sebagai @tag, jadi semuanya harus ikut
+  // di `mentions` supaya tagnya benar-benar tertaut dan bukan tampil sebagai
+  // deretan angka. Ini tidak menambah dering: hanya pesan BARU yang memicu
+  // notifikasi, dan pesan baru cuma terjadi saat papan dijangkarkan ulang.
+  const sebut = mentionsManusia(sesi);
+
+  const kirimBaru = async () => {
+    try {
+      const msg = await send(sock, jid, null, teks, { mentions: sebut });
+      sesi.papanKey = msg?.key || null;
+      sesi.papanUmur = 0;
+      return true;
+    } catch (e) {
+      console.error('[UNO_PAPAN_ERR]', e?.message || e);
+      sesi.papanKey = null;
+      return false;
+    }
+  };
+
+  // Belum ada papan, atau sudah terlalu lama di atas — jangkarkan ulang.
+  if (!sesi.papanKey || (sesi.papanUmur || 0) >= JANGKAR_ULANG_TIAP) {
+    return await kirimBaru();
+  }
+
+  try {
+    await sock.sendMessage(jid, { text: teks, edit: sesi.papanKey, mentions: sebut });
+    sesi.papanUmur = (sesi.papanUmur || 0) + 1;
+    return true;
+  } catch (e) {
+    // WhatsApp menolak mengedit pesan yang terlalu tua (sekitar 15 menit).
+    // Ronde dengan pemain yang berpikir lama pasti menabraknya, jadi ini jalur
+    // normal — bukan kegagalan.
+    return await kirimBaru();
+  }
+}
+
+/** Papan ditutup saat ronde selesai supaya ronde berikutnya punya papan sendiri. */
+function lepasPapan(sesi) {
+  sesi.papanKey = null;
+  sesi.papanUmur = 0;
+  sesi.riwayat = [];
+}
+
 // ─── Alur giliran ─────────────────────────────────────────────────
 
 /**
@@ -442,7 +525,8 @@ async function lanjutGiliran(sock, jid, aksiTerakhir = '') {
   // lawan sudah dapat satu putaran penuh untuk memergokinya.
   if (sesi.lupaUno && samaJid(aktif, sesi.lupaUno.jid)) sesi.lupaUno = null;
 
-  await kirimAman(sock, jid, null, renderMeja(sesi, aksiTerakhir), { mentions: mentionsManusia(sesi) });
+  catatRiwayat(sesi, aksiTerakhir);
+  await perbaruiPapan(sock, jid, sesi);
 
   const seq = sesi.turnSeq;
 
@@ -480,7 +564,7 @@ async function tarikOtomatis(sock, jid, seq) {
       if (!isBotUno(hasil.korban)) {
         await dmTangan(sock, sesi, hasil.korban, `💥 Kamu menelan tumpukan *+${hasil.jumlah}* dan kehilangan giliran.`);
       }
-      await lanjutGiliran(sock, jid, `💥 ${labelPemain(sesi, hasil.korban)} tidak bisa menimpa — menelan *${hasil.ditarik.length} kartu* dan kehilangan giliran!`);
+      await lanjutGiliran(sock, jid, `${labelPemain(sesi, hasil.korban)} · 💥 menelan tumpukan +${hasil.ditarik.length}`);
       return;
     }
 
@@ -488,7 +572,7 @@ async function tarikOtomatis(sock, jid, seq) {
 
     if (!kartu) {
       lewatiGiliran(sesi);
-      await lanjutGiliran(sock, jid, `📦 Deck & tumpukan buangan habis — ${labelPemain(sesi, aktif)} dilewati.`);
+      await lanjutGiliran(sock, jid, `${labelPemain(sesi, aktif)} · 📦 deck habis, dilewati`);
       return;
     }
 
@@ -501,15 +585,18 @@ async function tarikOtomatis(sock, jid, seq) {
         if (langkah.aksi === 'main') {
           // Kunci sudah dipegang di sini — panggil intinya langsung, bukan
           // pembungkusnya, kalau tidak langkah ini ditolak kuncinya sendiri.
-          await eksekusiKartuInti(sock, jid, sesi, aktif, langkah.indeks, langkah.warna, `📥 ${labelPemain(sesi, aktif)} menarik 1 kartu dan langsung memainkannya.`, { nyatakanUno: botMenyatakanUno() });
+          await eksekusiKartuInti(sock, jid, sesi, aktif, langkah.indeks, langkah.warna, `📥`, { nyatakanUno: botMenyatakanUno() });
           return;
         }
         lewatiGiliran(sesi);
-        await lanjutGiliran(sock, jid, `📥 ${labelPemain(sesi, aktif)} menarik 1 kartu dan melewati giliran.`);
+        await lanjutGiliran(sock, jid, `${labelPemain(sesi, aktif)} · 📥 tarik, lewat`);
         return;
       }
 
-      await kirimAman(sock, jid, null, `📥 ${labelPemain(sesi, aktif)} tidak punya kartu yang cocok, jadi menarik 1 kartu — dan kartunya bisa dimainkan! Giliran masih miliknya.`, { mentions: [aktif] });
+      // Papan diperbarui di tempat, bukan ditambahi pesan baru. Pemainnya
+      // sendiri tetap tahu karena kartunya dikirim ke DM sedetik kemudian.
+      catatRiwayat(sesi, `${labelPemain(sesi, aktif)} · 📥 tarik, masih gilirannya`);
+      await perbaruiPapan(sock, jid, sesi);
       await dmTangan(sock, sesi, aktif, `📥 Kamu menarik: *${labelKartu(kartu)}* — kartu ini bisa langsung dimainkan!\n_Ketik_ \`.uno pas\` _kalau mau melewatkannya._`);
       // Nomor giliran disalin ke variabel: kalau dibaca dari `sesi` saat timer
       // meletus, nilainya selalu yang terbaru dan penjaganya jadi tidak berguna.
@@ -519,7 +606,7 @@ async function tarikOtomatis(sock, jid, seq) {
     }
 
     lewatiGiliran(sesi);
-    await lanjutGiliran(sock, jid, `📥 ${labelPemain(sesi, aktif)} tidak punya kartu yang cocok — menarik 1 kartu dan giliran berpindah.`);
+    await lanjutGiliran(sock, jid, `${labelPemain(sesi, aktif)} · 📥 tarik, lewat`);
   } finally {
     sesi.busy = false;
   }
@@ -576,7 +663,7 @@ async function giliranHabis(sock, jid, seq) {
     return;
   }
 
-  await eksekusiKartu(sock, jid, aktif, langkah.indeks, langkah.warna, `⏰ Waktu ${labelPemain(sesi, aktif)} habis — kartunya dimainkan otomatis.`, { nyatakanUno: true });
+  await eksekusiKartu(sock, jid, aktif, langkah.indeks, langkah.warna, `⏰`, { nyatakanUno: true });
 }
 
 /**
@@ -615,15 +702,19 @@ async function eksekusiKartuInti(sock, jid, sesi, pemain, indeks, warnaPilihan, 
     tangan.splice(indeks, 1);
     const hasil = terapkanKartu(sesi, kartu, warnaPilihan);
 
-    let teks = `${catatan ? `${catatan}\n` : ''}🎴 ${labelPemain(sesi, pemain)} memainkan *${labelKartu(kartu)}*`;
-    if (isLiar(kartu)) teks += ` dan memilih warna ${WARNA[sesi.warnaAktif].emoji} *${WARNA[sesi.warnaAktif].nama}*`;
-    teks += '!';
+    // Satu langkah = SATU baris. Baris ini ditumpuk sebagai jejak di papan
+    // hidup, jadi kalimat panjang berbaris-baris akan membuat papannya tumbuh
+    // tak terkendali — persis keramaian yang sedang diberantas.
+    let teks = `${catatan ? `${catatan} ` : ''}${labelPemain(sesi, pemain)} → *${labelKartu(kartu)}*`;
+    if (isLiar(kartu)) teks += ` → ${WARNA[sesi.warnaAktif].emoji}`;
 
-    if (hasil.balik) teks += `\n🔄 Arah putaran dibalik!`;
-    if (hasil.tarik > 0 && hasil.korban) {
-      teks += `\n💥 ${labelPemain(sesi, hasil.korban)} menarik *${hasil.ditarik.length} kartu* dan kehilangan giliran!`;
+    if (hasil.balik) teks += ` · 🔄 balik`;
+    if (hasil.menumpuk > 0) {
+      teks += ` · 🔁 tumpukan +${hasil.menumpuk}`;
+    } else if (hasil.tarik > 0 && hasil.korban) {
+      teks += ` · 💥 ${labelPemain(sesi, hasil.korban)} +${hasil.ditarik.length}`;
     } else if (hasil.lewati && hasil.korban) {
-      teks += `\n⛔ ${labelPemain(sesi, hasil.korban)} kehilangan giliran!`;
+      teks += ` · ⛔ ${labelPemain(sesi, hasil.korban)} lewat`;
     }
 
     // Menang: tangan habis.
@@ -634,7 +725,7 @@ async function eksekusiKartuInti(sock, jid, sesi, pemain, indeks, warnaPilihan, 
       // bertarget skor kartu-kartu itu hilang dari perhitungan.
       const sisaTumpukan = serapTumpukan(sesi);
       if (sisaTumpukan.korban && sisaTumpukan.ditarik.length) {
-        teks += `\n💥 ${labelPemain(sesi, sisaTumpukan.korban)} tetap menelan *${sisaTumpukan.ditarik.length} kartu* dari tumpukan terakhir!`;
+        teks += ` · 💥 ${labelPemain(sesi, sisaTumpukan.korban)} +${sisaTumpukan.ditarik.length}`;
       }
       await selesaikanUno(sock, jid, pemain, teks);
       return true;
@@ -642,17 +733,23 @@ async function eksekusiKartuInti(sock, jid, sesi, pemain, indeks, warnaPilihan, 
 
     // Tinggal satu kartu.
     //
-    // Bawaan: bot yang mengumumkan, tanpa penalti. Kalau aturan `penalti`
-    // dinyalakan, pemain wajib menyatakannya sendiri (`.u 3 uno`) dan kalau
-    // lalai, lawan punya satu putaran penuh untuk menangkapnya lewat
-    // `.uno tangkap`.
+    // Papan sudah menandainya dengan 🔥 di sebelah nama pemain, jadi bawaannya
+    // TIDAK ada pesan sendiri — itu cuma menambah keramaian tanpa memberi
+    // informasi baru.
+    //
+    // Kekecualiannya kalau aturan `penalti` menyala dan pemainnya lalai: di
+    // situ lawan memang perlu didering, karena mereka punya jendela terbatas
+    // untuk mengetik `.uno tangkap`. Mengedit papan diam-diam tidak akan
+    // pernah mereka sadari.
     if (tangan.length === 1) {
       if (sesi.aturan?.penalti && !opsi.nyatakanUno) {
         sesi.lupaUno = { jid: pemain, seq: sesi.turnSeq };
-        teks += `\n\n🤫 ${labelPemain(sesi, pemain)} tinggal *1 kartu* — tapi lupa menyatakan UNO!\n_Pemain lain boleh mengetik_ \`.uno tangkap\` _sebelum gilirannya kembali._`;
+        await kirimAman(sock, jid, null,
+          `🤫 ${labelPemain(sesi, pemain)} tinggal *1 kartu* — tapi lupa menyatakan UNO!\n_Ketik_ \`.uno tangkap\` _sebelum gilirannya kembali._`,
+          { mentions: sesi.players.filter(p => !isBotUno(p) && p !== pemain) });
       } else {
         sesi.lupaUno = null;
-        teks += `\n\n🔔 *U N O !* ${labelPemain(sesi, pemain)} tinggal *1 kartu*!`;
+        teks += ` · 🔔 *UNO!*`;
       }
     }
 
@@ -809,6 +906,11 @@ async function buatLobi(sock, jid, senderNumber, messageObj, args) {
     skor: new Map(),
     ronde: 1,
     lupaUno: null,
+    // Papan hidup: satu pesan grup yang diedit tiap giliran, plus jejak 3
+    // langkah terakhir supaya tiap kejadian kecil tidak butuh pesan sendiri.
+    papanKey: null,
+    papanUmur: 0,
+    riwayat: [],
     createdAt: Date.now()
   };
 
@@ -990,7 +1092,7 @@ async function mulaiPermainan(sock, jid, senderNumber, messageObj) {
     if (!isBotUno(p)) await dmTangan(sock, sesi, p);
   }
 
-  await lanjutGiliran(sock, jid, `🎬 Kartu pembuka: *${labelKartu(pembuka)}*`);
+  await lanjutGiliran(sock, jid, `🎬 kartu pembuka *${labelKartu(pembuka)}*`);
   return true;
 }
 
@@ -1130,12 +1232,12 @@ async function aksiPas(sock, jid, senderNumber, messageObj) {
     if (!isBotUno(hasil.korban)) {
       await dmTangan(sock, sesi, hasil.korban, `💥 Kamu menelan tumpukan *+${hasil.jumlah}*.`);
     }
-    await lanjutGiliran(sock, jid, `💥 ${labelPemain(sesi, pemain)} menyerah pada tumpukan — menelan *${hasil.ditarik.length} kartu* dan kehilangan giliran!`);
+    await lanjutGiliran(sock, jid, `${labelPemain(sesi, pemain)} · 💥 menelan tumpukan +${hasil.ditarik.length}`);
     return true;
   }
 
   lewatiGiliran(sesi);
-  await lanjutGiliran(sock, jid, `⏭️ ${labelPemain(sesi, pemain)} melewatkan gilirannya.`);
+  await lanjutGiliran(sock, jid, `${labelPemain(sesi, pemain)} · ⏭️ lewat`);
   return true;
 }
 
@@ -1228,8 +1330,9 @@ async function nyerahUno(sock, jid, senderNumber, messageObj) {
     return true;
   }
 
-  await kirimAman(sock, jid, null, `🏳️ ${labelPemain(sesi, keluar)} menyerah dan meninggalkan meja. Taruhannya hangus ke pot.`, { mentions: [keluar] });
-  await lanjutGiliran(sock, jid);
+  // Cukup satu pesan: kabarnya masuk ke jejak papan, bukan jadi pesan sendiri
+  // yang diikuti papan lagi sedetik kemudian.
+  await lanjutGiliran(sock, jid, `${labelPemain(sesi, keluar)} · 🏳️ menyerah, taruhannya hangus ke pot`);
   return true;
 }
 
@@ -1286,6 +1389,8 @@ _Ronde ${sesi.ronde + 1} dibagikan sebentar lagi..._`, { mentions: mentionsManus
 /** Bagikan ronde berikutnya pada meja bertarget skor. */
 async function mulaiRondeBaru(sock, jid, sesi, pemenangSebelumnya) {
   sesi.ronde++;
+  // Ronde baru dapat papan hidupnya sendiri; jejak ronde lalu dibuang.
+  lepasPapan(sesi);
   sesi.deck = kocok(buatDeck());
   sesi.buang = [];
   sesi.tumpukan = { jumlah: 0, jenis: null };
@@ -1316,12 +1421,13 @@ async function mulaiRondeBaru(sock, jid, sesi, pemenangSebelumnya) {
     if (!isBotUno(p)) await dmTangan(sock, sesi, p);
   }
 
-  await lanjutGiliran(sock, jid, `🎬 *Ronde ${sesi.ronde}* dimulai — kartu pembuka: *${labelKartu(pembuka)}*`);
+  await lanjutGiliran(sock, jid, `🎬 ronde ${sesi.ronde} dibuka *${labelKartu(pembuka)}*`);
 }
 
 /** Pertandingan benar-benar tuntas: pot dibayarkan dan meja dibubarkan. */
 async function selesaikanPertandingan(sock, jid, sesi, pemenang, rincian, totalRonde, catatan = '') {
   bersihkanTimer(sesi);
+  lepasPapan(sesi);
   bersihkanLobbyTimer(sesi);
   // Dihapus sebelum `await` pertama supaya dua jalur penyelesaian yang beradu
   // (menang & menyerah) tidak pernah membayar pot dua kali.
