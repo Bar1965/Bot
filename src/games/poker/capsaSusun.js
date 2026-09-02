@@ -248,7 +248,7 @@ async function startCapsaGame(sock, jid, senderNumber, messageObj) {
 
   // 🛡️ Rekam sesi aktif ke database
   await db.createActiveGameSession({
-    id: jid,
+    id: db.sesiGameId('capsa', jid),
     gameType: 'Capsa Susun (13 Kartu)',
     jid,
     host: session.host,
@@ -426,7 +426,7 @@ ${breakdownText}
 
 _Ketik \`.capsa [taruhan]\` untuk membuka ronde baru!_`;
 
-  await db.finishActiveGameSession(jid, 'COMPLETED');
+  await db.finishActiveGameSession(db.sesiGameId('capsa', jid), 'COMPLETED');
   activeCapsaGames.delete(jid);
   await send(sock, jid, null, finalMsg, { mentions: session.players });
 }
@@ -448,7 +448,7 @@ async function cancelCapsaGame(sock, jid, senderNumber, messageObj) {
 
   clearSessionTimer(session);
   const refundCount = await refundCapsaSession(session);
-  await db.finishActiveGameSession(jid, 'CANCELLED');
+  await db.finishActiveGameSession(db.sesiGameId('capsa', jid), 'CANCELLED');
   activeCapsaGames.delete(jid);
 
   const refundNote = refundCount > 0 ? `\n💸 Taruhan buy-in dikembalikan ke ${refundCount} pemain.` : '';

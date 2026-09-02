@@ -242,7 +242,7 @@ async function startFastPokerGame(sock, jid, senderNumber, messageObj) {
 
   // 🛡️ Rekam sesi aktif ke database
   await db.createActiveGameSession({
-    id: jid,
+    id: db.sesiGameId('fastpoker', jid),
     gameType: 'Fast 3-Card Poker',
     jid,
     host: session.host,
@@ -312,7 +312,7 @@ ${resultLines}
 
 _Ketik \`.fastpoker [taruhan]\` untuk bermain ronde baru!_`;
 
-  await db.finishActiveGameSession(jid, 'COMPLETED');
+  await db.finishActiveGameSession(db.sesiGameId('fastpoker', jid), 'COMPLETED');
   activeFastPokerGames.delete(jid);
   await send(sock, jid, messageObj, finalMsg, { mentions: session.players });
   return true;
@@ -335,7 +335,7 @@ async function cancelFastPokerGame(sock, jid, senderNumber, messageObj) {
 
   clearSessionTimer(session);
   const refundCount = await refundFastPokerSession(session);
-  await db.finishActiveGameSession(jid, 'CANCELLED');
+  await db.finishActiveGameSession(db.sesiGameId('fastpoker', jid), 'CANCELLED');
   activeFastPokerGames.delete(jid);
 
   const refundNote = refundCount > 0 ? `\n💸 Taruhan buy-in dikembalikan ke ${refundCount} pemain.` : '';

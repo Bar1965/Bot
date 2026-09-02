@@ -23,6 +23,7 @@ import { handlePokerCommand, activeTexasGames, activeCapsaGames, activeFastPoker
 import { activeWireGames, handleCutTheWire } from './cutTheWire.js';
 import { activeBattleships, pendingBattleships, handleBattleshipCommand } from './battleship.js';
 import { activeBuckshots, pendingBuckshots, handleBuckshotCommand } from './buckshotRoulette.js';
+import { activeUno, handleUnoCommand } from './uno/index.js';
 import { getSystemChangelog } from '../utils/changelog.js';
 import { buildCommandMenu } from '../../commandRegistry.js';
 import { jidNormalizedUser } from '@whiskeysockets/baileys';
@@ -61,6 +62,7 @@ const FUN_CMD_TETAP_AKTIF = [
   'batalpoker', 'cancelpoker', 'batalcapsa', 'cancelcapsa', 'batalfastpoker', 'cancelfastpoker',
   'batalbom', 'cancelbom', 'batalkapal', 'tolakkapal',
   'batalbuckshot', 'tolakbuckshot', 'nyerahbuckshot',
+  'bataluno', 'nyerahuno',
   'update', 'changelog', 'patchnotes', 'whatsnew', 'pembaruan',
   'rekomendasi', 'recommend', 'saranproduk',
   'freegames', 'freegame', 'gamegratis', 'freegamestag'
@@ -211,6 +213,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     'bom', 'cutthewire', 'jinakkanbom', 'joinbom', 'gasbom', 'batalbom', 'cancelbom', 'potong', 'cut', 'kabel',
     'battleship', 'kapal', 'perangkapal', 'terimakapal', 'gaskapal', 'tolakkapal', 'batalkapal', 'rudal', 'bomkapal',
     'buckshot', 'shotgun', 'gasbuckshot', 'tolakbuckshot', 'batalbuckshot', 'nyerahbuckshot', 'pakai', 'use', 'rokok', 'kaca', 'gergaji', 'bir', 'borgol',
+    'uno', 'joinuno', 'gasuno', 'bataluno', 'nyerahuno', 'u', 'ambil',
     'heist', 'rampokbank', 'joinheist', 'startheist',
     'balapkuda', 'pasangkuda', 'betkuda', 'pasang', 'bet', 'kuda', 'race', 'startbalap', 'startrace', 'cancelbalap',
     'bank', 'brankas', 'depo', 'setor', 'tarik', 'withdraw',
@@ -749,6 +752,10 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     if (adaSesiPoker) {
       return await handlePokerCommand(sock, jid, senderNumber, messageObj, args, command, isFromGroup);
     }
+    // UNO memakai alias yang sama untuk mengirim ulang tangan ke DM.
+    if (activeUno.has(jid)) {
+      return await handleUnoCommand(sock, jid, senderNumber, messageObj, args, command, isFromGroup);
+    }
   }
 
   // Cut The Wire (Jinakkan Bom Waktu)
@@ -772,6 +779,16 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
   const BUCKSHOT_CMD_SESI = ['pakai', 'use', 'rokok', 'kaca', 'gergaji', 'bir', 'borgol', 'tembak', 'shoot', 'dor', 'fire'];
   if (BUCKSHOT_CMD.includes(command) || (BUCKSHOT_CMD_SESI.includes(command) && activeBuckshots.has(jid))) {
     return await handleBuckshotCommand(sock, jid, senderNumber, messageObj, args, command, isFromGroup);
+  }
+
+  // UNO WhatsApp (party card 2-6 pemain)
+  //
+  // `.u` dan `.ambil` sengaja digerbangi sesi aktif. Keduanya kata terlalu
+  // umum untuk diklaim UNO saat tidak ada meja di grup ini — `.u` bahkan cuma
+  // satu huruf dan gampang tertekan tidak sengaja.
+  if (['uno', 'joinuno', 'gasuno', 'bataluno', 'nyerahuno'].includes(command)
+      || (['u', 'ambil'].includes(command) && activeUno.has(jid))) {
+    return await handleUnoCommand(sock, jid, senderNumber, messageObj, args, command, isFromGroup);
   }
 
   // Rampok Bank Akbar (Group Heist)

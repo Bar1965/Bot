@@ -346,7 +346,7 @@ async function acceptBattleshipChallenge(sock, jid, senderNumber, messageObj) {
 
   // Rekam ke active_game_sessions untuk proteksi restart
   await db.createActiveGameSession({
-    id: jid,
+    id: db.sesiGameId('battleship', jid),
     gameType: 'Battleship',
     jid,
     host: challenge.challenger,
@@ -517,7 +517,7 @@ async function finishBattleshipGame(sock, jid, winnerJid, loserJid) {
   activeBattleships.delete(jid);
 
   await db.addGamePoints(winnerJid, session.pot);
-  await db.finishActiveGameSession(jid, 'FINISHED');
+  await db.finishActiveGameSession(db.sesiGameId('battleship', jid), 'FINISHED');
 
   const victoryAnnouncement =
 `👑🏆 *KEMENANGAN MUTLAK DI LAUTAN!* 🏆👑

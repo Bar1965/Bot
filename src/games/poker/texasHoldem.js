@@ -236,7 +236,7 @@ async function refundTexasSession(session, mode = 'FULL') {
     }
     session.chargedPlayers.clear();
   }
-  await db.finishActiveGameSession(session.jid, 'CANCELLED');
+  await db.finishActiveGameSession(db.sesiGameId('texas', session.jid), 'CANCELLED');
   return { refunded, points };
 }
 
@@ -631,7 +631,7 @@ async function startTexasGame(sock, jid, senderNumber, messageObj) {
 
   // 🛡️ REKAM SESI KE DATABASE UNTUK PROTEKSI CRASH / RESTART
   await db.createActiveGameSession({
-    id: jid,
+    id: db.sesiGameId('texas', jid),
     gameType: "Texas Hold'em Poker",
     jid,
     host: session.host,
@@ -1081,7 +1081,7 @@ async function processBetAction(sock, jid, player, action, amount = 0, messageOb
   }
 
   session.actedThisRound.add(player);
-  await db.updateActiveGameSession(jid, { pot: session.pot });
+  await db.updateActiveGameSession(db.sesiGameId('texas', jid), { pot: session.pot });
   await advanceBettingTurn(sock, jid);
   return true;
 }
@@ -1450,7 +1450,7 @@ _Terima kasih telah bermain! Ketik \`.poker [taruhan]\` atau \`.poker vsbot\` un
   // percuma: objeknya dibuang beberapa baris di bawah.
   dealerButtonTerakhir.set(jid, (session.dealerIndex + 1) % session.players.length);
 
-  await db.finishActiveGameSession(jid, 'COMPLETED');
+  await db.finishActiveGameSession(db.sesiGameId('texas', jid), 'COMPLETED');
   activeTexasGames.delete(jid);
 
   const humanMentions = session.players.filter(p => !isAiPlayer(p));
@@ -1497,7 +1497,7 @@ _Ketik \`.poker [taruhan]\` atau \`.poker vsbot\` untuk membuka meja baru._`;
   // Simpan posisi button untuk ronde berikutnya. Menulis ke session saja
   // percuma: objeknya dibuang beberapa baris di bawah.
   dealerButtonTerakhir.set(jid, (session.dealerIndex + 1) % session.players.length);
-  await db.finishActiveGameSession(jid, 'COMPLETED');
+  await db.finishActiveGameSession(db.sesiGameId('texas', jid), 'COMPLETED');
   activeTexasGames.delete(jid);
 
   const mention = isAiPlayer(winner) ? [] : [winner];

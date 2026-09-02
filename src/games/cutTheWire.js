@@ -66,7 +66,7 @@ async function refundWireSession(session) {
     }
     session.chargedPlayers.clear();
   }
-  await db.finishActiveGameSession(session.jid, 'CANCELLED');
+  await db.finishActiveGameSession(db.sesiGameId('cutthewire', session.jid), 'CANCELLED');
   return refunded;
 }
 
@@ -332,7 +332,7 @@ async function startWireGame(sock, jid, senderNumber, messageObj) {
 
   // Catat sesi aktif ke SQLite untuk proteksi crash
   await db.createActiveGameSession({
-    id: jid,
+    id: db.sesiGameId('cutthewire', jid),
     gameType: 'Cut The Wire',
     jid,
     host: session.host,
@@ -438,7 +438,7 @@ async function executeCutWire(sock, jid, player, wireKey, messageObj = null) {
 
     if (session.alivePlayers.length === 0) {
       activeWireGames.delete(jid);
-      await db.finishActiveGameSession(jid, 'FINISHED');
+      await db.finishActiveGameSession(db.sesiGameId('cutthewire', jid), 'FINISHED');
       await send(sock, jid, null, `💀 *SEMUA PEMAIN TELAH GUGUR!* Tidak ada yang selamat.`);
       return true;
     }
@@ -470,7 +470,7 @@ async function executeCutWire(sock, jid, player, wireKey, messageObj = null) {
   session.multiplier += 0.25;
   const addedBonus = Math.floor(session.buyIn * 0.25);
   session.pot += addedBonus;
-  await db.updateActiveGameSession(jid, { pot: session.pot });
+  await db.updateActiveGameSession(db.sesiGameId('cutthewire', jid), { pot: session.pot });
 
   const safeMsg =
 `✂️ *KREK!* ${tag(player)} memotong kabel *${wireInfo.emoji} ${wireInfo.name}*...
@@ -504,7 +504,7 @@ async function finishWireGame(sock, jid, winner, headerTitle) {
   activeWireGames.delete(jid);
 
   await db.addGamePoints(winner, session.pot);
-  await db.finishActiveGameSession(jid, 'FINISHED');
+  await db.finishActiveGameSession(db.sesiGameId('cutthewire', jid), 'FINISHED');
 
   const winAnnouncement =
 `${headerTitle}

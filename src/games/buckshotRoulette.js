@@ -430,7 +430,7 @@ async function acceptBuckshotChallenge(sock, jid, senderNumber, messageObj) {
   activeBuckshots.set(jid, session);
 
   await db.createActiveGameSession({
-    id: jid,
+    id: db.sesiGameId('buckshot', jid),
     gameType: 'Buckshot Roulette',
     jid,
     host: challenge.challenger,
@@ -818,7 +818,7 @@ async function finishBuckshotGame(sock, jid, winnerJid, loserJid, opsi = {}) {
   activeBuckshots.delete(jid);
 
   await db.addGamePoints(winnerJid, session.pot);
-  await db.finishActiveGameSession(jid, 'FINISHED');
+  await db.finishActiveGameSession(db.sesiGameId('buckshot', jid), 'FINISHED');
 
   const barisKekalahan = opsi.menyerah
     ? `🏳️ ${tag(loserJid)} menyerah dan meninggalkan meja duel!`

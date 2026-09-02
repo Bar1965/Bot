@@ -2144,6 +2144,25 @@ export async function getUnifiedWalletData(jid) {
 // ─── 🛡️ ACTIVE GAME SESSIONS & CRASH RECOVERY DAOs ─────────────────
 
 /**
+ * Kunci baris sesi game — WAJIB dipakai semua game bertaruhan.
+ *
+ * Dulu setiap game memakai JID grup mentah sebagai `id`, padahal tabelnya
+ * ditulis dengan `INSERT OR REPLACE`. Artinya satu grup hanya punya SATU baris
+ * sesi untuk semua game sekaligus: mulai Poker lalu Buckshot di grup yang sama,
+ * dan baris refund poker tertimpa diam-diam. Kalau bot mati saat itu,
+ * `recoverAndRefundStaleGameSessions` cuma mengembalikan taruhan game terakhir
+ * — taruhan yang lain hangus permanen. `finishActiveGameSession` pun ikut salah
+ * sasaran: game mana pun yang selesai duluan menutup baris milik game lain.
+ *
+ * Dengan prefiks jenis game, tiap game punya barisnya sendiri per grup, dan
+ * `INSERT OR REPLACE` tetap bekerja sebagaimana mestinya untuk sesi basi milik
+ * game yang sama.
+ */
+export function sesiGameId(jenisGame, jid) {
+  return `${String(jenisGame || 'game').toLowerCase()}:${jid}`;
+}
+
+/**
  * Menyimpan sesi game aktif ke database untuk proteksi crash/restart
  */
 export async function createActiveGameSession({ id, gameType, jid, host, buyIn = 0, pot = 0, players = [], state = {} }) {

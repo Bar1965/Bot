@@ -12,3 +12,9 @@ ig_cookies.txt
 *-player-script.js
 *.traineddata
 data/
+
+# Cache gambar kartu TCG — dihasilkan otomatis saat dibutuhkan
+public/tcg-cards/
+
+# Cache gambar kartu UNO — 54 wajah, dihasilkan otomatis saat dibutuhkan
+public/uno-cards/
