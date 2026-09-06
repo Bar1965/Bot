@@ -51,11 +51,11 @@ export function createMediaRouter(ctx) {
   // sengaja dibiarkan bebas supaya obrolan grup tidak ikut tersendat.
   const PERINTAH_MEDIA_BERAT = [
     // pengunduh
-    'tt', 'tiktok', 'ttmp3', 'ig', 'instagram', 'igstory',
+    'tt', 'tiktok', 'ttmp3', 'ig', 'instagram',
     'yt', 'youtube', 'ytmp3', 'ytmp4', 'fb', 'facebook',
-    'pin', 'pinterest', 'tw', 'twitter', 'x', 'spotify', 'play', 'song',
+    'pin', 'pinterest', 'tw', 'twitter', 'x', 'play', 'song',
     // pekerjaan berat lain
-    'hd', 'remini', 'upscale', 'ssweb', 'ss', 'draw', 'aiimg', 'dalle',
+    'hd', 'remini', 'upscale', 'ssweb', 'ss', 'draw', 'aiimg',
     'tomp3', 'tovn', 'tovid', 'tovideo', 'togif'
   ];
 
@@ -170,15 +170,21 @@ export function createMediaRouter(ctx) {
       }
     }
 
+    // Gerbang: perintah di luar daftar ini tidak pernah sampai ke rantai di
+    // bawah. Daftar ini masih ditulis tangan, jadi wajib ikut diperbarui
+    // setiap kali ada cabang baru — sampai pemecahan per kategori nanti
+    // membuatnya bisa diturunkan otomatis dari registry.
     const knownMediaCmds = [
       'hd', 'remini', 'upscale', 'stiker', 'sticker', 's', 'gif', 'sgif', 'toimg', 'unstick', 'toimage', 'tovideo', 'tovid', 'togif',
       'getpp', 'colongpp', 'curipp', 'pp', 'ambilpp', 'stikerpp', 'stickerpp', 'spp',
-      'qc', 'quote', 'brat', 'meme', 'draw', 'aiimg', 'dalle', 'editfoto', 'removebg', 'nobg',
+      'qc', 'quote', 'brat', 'meme', 'draw', 'aiimg',
       'ssweb', 'ss', 'khodam', 'tod', 'truth', 'dare', 'tts', 'shortlink', 'short', 'cuaca', 'invoice', 'struk',
-      'tebakgambar', 'tebakangka', 'susunkata', 'bank', 'deposito', 'tarik', 'withdraw', 'transfer', 'rampok', 'rob', 'slot', 'roulette',
-      'ping', 'statusbot', 'owner', 'kontakowner',
-      'tt', 'tiktok', 'ttmp3', 'ig', 'instagram', 'igstory', 'yt', 'youtube', 'ytmp3', 'ytmp4',
-      'fb', 'facebook', 'pin', 'pinterest', 'tw', 'twitter', 'x', 'spotify', 'play', 'song', 'tomp3', 'tovn',
+      'tebakgambar', 'tebakangka', 'susunkata', 'bank', 'deposito', 'tarik', 'withdraw', 'slot', 'roulette',
+      'transfer', 'kirimpoin', 'transferpoin',
+      'kurangpoin', 'kurangipoin', 'delpoint', 'delpoints', 'deductpoint', 'potongpoin',
+      'ping', 'statusbot', 'speed', 'owner', 'kontakowner',
+      'tt', 'tiktok', 'ttmp3', 'ig', 'instagram', 'yt', 'youtube', 'ytmp3', 'ytmp4',
+      'fb', 'facebook', 'pin', 'pinterest', 'tw', 'twitter', 'x', 'play', 'song', 'tomp3', 'tovn',
       'tr', 'translate', 'jadwalsholat', 'sholat', 'menfess', 'confess', 'balasmenfess', 'menfessreply', 'replymenfess', 'stopmenfess', 'closemenfess', 'endmenfess'
     ];
 
@@ -187,7 +193,7 @@ export function createMediaRouter(ctx) {
     }
 
     // REGISTRATION CHECK
-    const exemptMediaCmds = ['owner', 'kontakowner', 'ping', 'statusbot', 'invoice', 'struk'];
+    const exemptMediaCmds = ['owner', 'kontakowner', 'ping', 'statusbot', 'speed', 'invoice', 'struk'];
     if (!exemptMediaCmds.includes(cleanCmd) && !isAdmin && !isOwner) {
       const isReg = await db.isCustomerRegistered(senderNumber);
       if (!isReg) {
