@@ -178,8 +178,8 @@ export function createMediaRouter(ctx) {
       'hd', 'remini', 'upscale', 'stiker', 'sticker', 's', 'gif', 'sgif', 'toimg', 'unstick', 'toimage', 'tovideo', 'tovid', 'togif',
       'getpp', 'colongpp', 'curipp', 'pp', 'ambilpp', 'stikerpp', 'stickerpp', 'spp',
       'qc', 'quote', 'brat', 'meme', 'draw', 'aiimg',
-      'ssweb', 'ss', 'khodam', 'tod', 'truth', 'dare', 'tts', 'shortlink', 'short', 'cuaca', 'invoice', 'struk',
-      'tebakgambar', 'tebakangka', 'susunkata', 'slot', 'roulette',
+      'ssweb', 'ss', 'khodam', 'tts', 'shortlink', 'short', 'cuaca', 'invoice', 'struk',
+      'tebakgambar', 'susunkata', 'roulette',
       'ping', 'statusbot', 'speed', 'owner', 'kontakowner',
       'tt', 'tiktok', 'ttmp3', 'ig', 'instagram', 'yt', 'youtube', 'ytmp3', 'ytmp4',
       'fb', 'facebook', 'pin', 'pinterest', 'tw', 'twitter', 'x', 'play', 'song', 'tomp3', 'tovn',
@@ -745,14 +745,6 @@ _${khodamRes.desc}_`;
       return true;
     }
 
-    // 11. Truth or Dare (.tod, .truth, .dare)
-    if (['tod', 'truth', 'dare'].includes(cleanCmd)) {
-      await react('🎯');
-      const todRes = ent.getTruthOrDare(cleanCmd);
-      await sock.sendMessage(jid, { text: todRes });
-      return true;
-    }
-
     // 12. Text-to-Speech Voice Note (.tts)
     if (['tts'].includes(cleanCmd)) {
       const ttsText = args.slice(1).join(' ');
@@ -943,35 +935,6 @@ _${khodamRes.desc}_`;
       return true;
     }
 
-    // 19.0. Game Tebak Angka (.tebakangka) & Susun Kata (.susunkata)
-    if (['tebakangka'].includes(cleanCmd)) {
-      if (ent.activeGames.has(jid + '_angka')) {
-        const game = ent.activeGames.get(jid + '_angka');
-        return await sock.sendMessage(jid, {
-          text: `🎮 *GAME TEBAK ANGKA AKTIF* 🎮\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n💰 Pot Jackpot Saat Ini: *${game.pot || 200} Poin*\n👥 Jumlah Tebakan: *${game.guesses || 0} kali*\n\n👉 Ketik langsung angka di chat (misal: \`45\`) atau gunakan \`.tebak [angka]\`!`
-        });
-      }
-      const targetNumber = Math.floor(Math.random() * 100) + 1;
-      ent.activeGames.set(jid + '_angka', {
-        answer: targetNumber.toString(),
-        target: targetNumber,
-        type: 'tebakangka',
-        pot: 200,
-        guesses: 0,
-        startTime: Date.now(),
-        isAnswered: false,
-        timeout: setTimeout(async () => {
-          const game = ent.activeGames.get(jid + '_angka');
-          if (!game || game.isAnswered) return;
-          ent.activeGames.delete(jid + '_angka');
-          await sock.sendMessage(jid, { text: `⏳ *WAKTU TEBAK ANGKA HABIS!*\n\nAngka yang benar adalah *${targetNumber}*.\nPot Jackpot tersimpan: *${game.pot || 200} Poin*.\nKetik \`.tebakangka\` untuk memulai game baru.` });
-        }, 10 * 60 * 1000)
-      });
-      return await sock.sendMessage(jid, {
-        text: `🎮 *GAME TEBAK ANGKA DIMULAI!* 🎮\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nBot telah menentukan angka rahasia antara *1 s/d 100*.\n\n💰 *Pot Jackpot Awal:* 200 Poin\n💸 *Biaya Menebak:* 10 Poin per tebakan (langsung masuk ke Pot Jackpot)\n\n👉 *Cara Bermain:*\n• Langsung ketik angka tebakan di chat (misal: \`45\`)\n• Atau ketik \`.tebak 45\`\n• Ketik \`.nyerah\` jika menyerah\n\nSiapa cepat dan tepat, bawa pulang seluruh Pot Jackpot! 🏆`
-      });
-    }
-
     if (['susunkata'].includes(cleanCmd)) {
       if (ent.activeGames.has(jid + '_susunkata')) {
         return await sock.sendMessage(jid, { text: "⚠️ Masih ada permainan Susun Kata yang sedang berlangsung di chat ini!" });
@@ -1001,32 +964,6 @@ _${khodamRes.desc}_`;
         }, 60 * 1000)
       });
       return await sock.sendMessage(jid, { text: `🔠 *SUSUN KATA*\n\nSusun huruf berikut menjadi kata yang benar:\n*${scrambled}*\n\nPetunjuk: ${selected.hint}\nHadiah: +30 Poin\nWaktu: 60 Detik` });
-    }
-
-    if (['slot'].includes(cleanCmd)) {
-      const bet = parseInt(args[1]);
-      if (!bet || isNaN(bet) || bet < 10) return await sock.sendMessage(jid, { text: "⚠️ Ketik: .slot <taruhan>\nMinimal taruhan 10 poin." });
-      
-      const prof = await db.getGameProfile(senderNumber);
-      if (prof.points < bet) return await sock.sendMessage(jid, { text: "❌ Poin di tangan tidak mencukupi untuk taruhan ini." });
-
-      const emojis = ['🍒', '🍎', '🍇', '🍉', '⭐', '💎'];
-      const s1 = emojis[Math.floor(Math.random() * emojis.length)];
-      const s2 = emojis[Math.floor(Math.random() * emojis.length)];
-      const s3 = emojis[Math.floor(Math.random() * emojis.length)];
-
-      let winAmount = 0;
-      if (s1 === s2 && s2 === s3) winAmount = bet * 5;
-      else if (s1 === s2 || s2 === s3 || s1 === s3) winAmount = Math.floor(bet * 1.5);
-      
-      if (winAmount > 0) {
-        await db.awardGamePoints(senderNumber, winAmount - bet);
-      } else {
-        await db.deductCustomerPoints(senderNumber, bet, 'Slot Kalah');
-      }
-
-      const resultText = `🎰 *SLOT MACHINE* 🎰\n\n[ ${s1} | ${s2} | ${s3} ]\n\n${winAmount > 0 ? `🎉 MENANG! +${winAmount} Poin!` : `💥 KALAH! -${bet} Poin`}`;
-      return await sock.sendMessage(jid, { text: resultText });
     }
 
     if (['roulette'].includes(cleanCmd)) {
