@@ -421,10 +421,15 @@ export async function claimGameDaily(customerJid, today, reward = 25) {
  */
 export async function setDailyStreak(customerJid, streak) {
   const aman = Math.min(365, Math.max(0, Math.floor(Number(streak) || 0)));
-  await getGameProfile(customerJid); // pastikan profilnya ada sebelum di-UPDATE
   const hariIni = tanggalWIB();
+  // Sengaja TIDAK lewat getGameProfile(): fungsi itu membuat profil kalau
+  // belum ada, dan di sini profil baru berarti sasarannya salah — streak
+  // hanya bisa dipulihkan pada orang yang memang sudah punya riwayat.
   const sebelum = await getQuery(
     "SELECT daily_streak FROM game_profiles WHERE customer_jid = ?", [customerJid]);
+  if (!sebelum) {
+    return { success: false, message: 'Profil game untuk JID itu belum ada — tidak ada streak yang bisa dipulihkan.' };
+  }
   await runQuery(
     `UPDATE game_profiles
      SET daily_streak = ?, daily_claimed_at = ?, updated_at = CURRENT_TIMESTAMP

@@ -1216,7 +1216,15 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
       if (nomor) {
         const skor = nomor === args[1] ? args[2] : args[1];
         const res = await db.resolveTargetJid(nomor);
-        targetJid = res?.ditemukan ? res.jid : `${digit(nomor)}@s.whatsapp.net`;
+        // Nomor yang tidak ketemu TIDAK ditebak jadi @s.whatsapp.net. Member
+        // yang JID-nya @lid tidak akan cocok lewat nomor mentah, dan tebakan
+        // itu akan membuat profil hantu baru alih-alih memperbaiki yang lama.
+        // Salah ketik satu digit pun berakibat sama. Lebih baik menolak.
+        if (!res?.ditemukan) {
+          await send(sock, jid, messageObj, `❌ Member \`${nomor}\` tidak ditemukan.\n\nPaling aman: *balas pesan orangnya* lalu ketik \`.setstreak ${skor}\`, atau tag dia langsung. Kalau kamu punya JID lengkapnya, boleh juga \`.setstreak 6281xxx@lid ${skor}\`.`);
+          return true;
+        }
+        targetJid = res.jid;
         nilai = parseInt(skor, 10);
       }
     }
@@ -1228,6 +1236,10 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
 
     try {
       const hasil = await db.setDailyStreak(targetJid, nilai);
+      if (!hasil.success) {
+        await send(sock, jid, messageObj, `❌ ${hasil.message}`);
+        return true;
+      }
       const phone = targetJid.split('@')[0];
       const cust = await db.getCustomerByPhone(targetJid);
       const label = cust?.nama ? `*${cust.nama}* (@${phone})` : `@${phone}`;
