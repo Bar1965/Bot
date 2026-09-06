@@ -197,7 +197,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     'afk', 'steal', 'maling', 'copet', 'rampok', 'curi', 'rob', 'hack', 'ww', 'werewolf',
     'jawab', 'answer', 'hint', 'nyerah', 'surrender', 'menyerah',
     'quiz', 'trivia', 'tebakquiz', 'tebakemoji', 'emoji', 'tebakkata', 'hangman', 'kata',
-    'family100', 'f100', 'caklontong', 'tts',
+    'family100', 'f100', 'caklontong',
     'undercover', 'sus', 'impostor', 'joinundercover', 'startundercover', 'tebakwarga', 'guess', 'mrwhite', 'tebakciv', 'intip', 'cekintip', 'v', 'skip', 'lewat', 'pass', 'skipundercover', 'lindung', 'guard', 'protect', 'lindungi', 'sembuhkan', 'revive', 'heal', 'cpr', 'obati', 'doctor', 'fitnah', 'framer', 'frame', 'sabotase',
     'lanjut', 'gasvote', 'mulaivote', 'tukargiliran', 'swapgiliran', 'lempargiliran', 'votekategori', 'katakategori',
     'anon', 'clue', 'setorpetunjuk', 'kirimpetunjuk', 'bersalah', 'guilty', 'bebas', 'innocent', 'vonis',
@@ -717,7 +717,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
   if (['family100', 'f100'].includes(command)) return await startFamily100(sock, jid, senderNumber, messageObj, isFromGroup);
 
   // Cak Lontong
-  if (['caklontong', 'tts'].includes(command)) return await startCakLontong(sock, jid, senderNumber, messageObj, isFromGroup);
+  if (['caklontong'].includes(command)) return await startCakLontong(sock, jid, senderNumber, messageObj, isFromGroup);
 
   // Duel Tembak (Russian Roulette)
   if (['duel'].includes(command)) return await handleDuelCommand(sock, jid, senderNumber, messageObj, args, isFromGroup);
