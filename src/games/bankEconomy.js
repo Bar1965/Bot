@@ -47,7 +47,7 @@ Poin di bank aman dari \`.steal\`, *kecuali setoran yang baru masuk* — dana pe
     return true;
   }
 
-  if (['depo', 'setor'].includes(command)) {
+  if (['depo', 'setor', 'deposito'].includes(command)) {
     let amount = 0;
     if (args[1]?.toLowerCase() === 'all' || args[1]?.toLowerCase() === 'semua') {
       amount = currentWallet;

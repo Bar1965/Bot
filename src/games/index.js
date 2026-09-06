@@ -48,7 +48,7 @@ const FUN_CMD_TETAP_AKTIF = [
   'rank', 'leaderboard', 'top', 'lb', 'papan', 'peringkat',
   'badge', 'badges', 'achievement', 'achievements', 'misi', 'mission', 'challenge',
   'transfer', 'kirimpoin', 'transferpoin', 'tfpoin',
-  'bank', 'brankas', 'depo', 'setor', 'tarik', 'withdraw',
+  'bank', 'brankas', 'depo', 'setor', 'deposito', 'tarik', 'withdraw',
   'daily', 'harian', 'reward', 'bansos', 'sembako', 'kompensasi',
   'addpoint', 'addpoints', 'addpoin', 'tambahpoin', 'tambahpoint', 'pluspoin',
   'kurangpoin', 'kurangipoin', 'delpoint', 'delpoints', 'deductpoint', 'potongpoin', 'minuspoin',
@@ -216,7 +216,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     'uno', 'joinuno', 'gasuno', 'bataluno', 'nyerahuno', 'u', 'ambil',
     'heist', 'rampokbank', 'joinheist', 'startheist',
     'balapkuda', 'pasangkuda', 'betkuda', 'pasang', 'bet', 'kuda', 'race', 'startbalap', 'startrace', 'cancelbalap',
-    'bank', 'brankas', 'depo', 'setor', 'tarik', 'withdraw',
+    'bank', 'brankas', 'depo', 'setor', 'deposito', 'tarik', 'withdraw',
     'tebaklagu', 'lagu', 'musicquiz', 'tebakmusik',
     'tebakbendera', 'tebaknegara', 'bendera', 'negara', 'flag',
     'truth', 'dare', 'tod', 'dadu', 'dice', 'coinflip', 'koin', 'coin',
@@ -817,7 +817,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
   }
 
   // Bank Poin & Bunga Harian
-  if (['bank', 'brankas', 'depo', 'setor', 'tarik', 'withdraw'].includes(command)) {
+  if (['bank', 'brankas', 'depo', 'setor', 'deposito', 'tarik', 'withdraw'].includes(command)) {
     return await handleBankEconomy(sock, jid, senderNumber, messageObj, args, command);
   }
 
