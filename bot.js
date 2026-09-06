@@ -2257,10 +2257,6 @@ _${khodamRes.desc}_`;
       }
     }
 
-    if (['steal', 'maling', 'copet', 'rampok', 'rob', 'hack', 'family100', 'f100', 'caklontong', 'tts', 'duel', 'terimaduel', 'gasduel', 'tolakduel', 'tembak', 'dor', 'blackjack', 'bj', 'hit', 'stand', 'double', 'heist', 'rampokbank', 'joinheist', 'startheist', 'balapkuda', 'pasangkuda', 'betkuda', 'pasang', 'bet', 'kuda', 'race', 'startbalap', 'startrace', 'cancelbalap', 'bank', 'brankas', 'depo', 'setor', 'tarik', 'withdraw'].includes(cleanCmd)) {
-      return await handleFunCommand({ sock, jid, senderNumber, messageObj: m, text: msgText, args, cleanCmd, isFromGroup: isGroup, isAdmin, isOwner, isStoreAdmin, isPrefixCmd: isPrefix });
-    }
-
     if (['slot'].includes(cleanCmd)) {
       const bet = parseInt(args[1]);
       if (!bet || isNaN(bet) || bet < 10) return await sock.sendMessage(jid, { text: "⚠️ Ketik: .slot <taruhan>\nMinimal taruhan 10 poin." });
@@ -2940,17 +2936,7 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
   const handleCustomerMessage = createCustomerHandler(ctx);
   const handleGroupMessage = createGroupAdminHandler(ctx);
 
-
-// [TRACE-SEMENTARA] Pelacak diagnostik alur pesan. HAPUS setelah bug foto ketemu.
-function _trace(tahap, data) {
-  try {
-    const baris = new Date().toISOString() + '  ' + tahap + (data ? '  ' + JSON.stringify(data) : '') + '\n';
-    fs.appendFileSync('./tmp/trace.log', baris);
-  } catch (_) {}
-}
   async function dispatchBotMessagePipeline({ sock, m, senderNormalized, jid, msgText, isGroup, isAdmin, isOwnerSender, isPrefixCmd, isTakenOver, isFromMe, isStoreAdmin }) {
-    _trace('1-dispatch-masuk', { jid, teks: msgText, isGroup, isFromMe, isTakenOver, tipePesan: Object.keys(m.message || {}) });
-
     const routerArgs = msgText.trim().split(/\s+/);
     const routerRawCmd = routerArgs[0].toLowerCase();
     const routerCleanCmd = routerRawCmd.replace(/^[./#]/, '');
@@ -2965,40 +2951,33 @@ function _trace(tahap, data) {
     }
 
     const isPdfMergeFile = await checkPdfMergeSession(sock, m, senderNormalized, jid);
-    if (isPdfMergeFile) { _trace('2-ditelan-pdfMergeSession'); return true; }
+    if (isPdfMergeFile) return true;
 
     const isPlugin = await executePlugin(routerCleanCmd, { sock, jid, senderNumber: senderNormalized, m, msgText, args: routerArgs, cleanCmd: routerCleanCmd, isAdmin, isOwner: isOwnerSender });
-    if (isPlugin) { _trace('3-ditelan-plugin'); return true; }
+    if (isPlugin) return true;
 
     const isPdfCmd = await handlePdfCommands(sock, m, senderNormalized, jid, routerCleanCmd, routerArgs, isGroup, null, isPrefixCmd, isAdmin, isOwnerSender);
-    if (isPdfCmd) { _trace('4-ditelan-pdfCommand'); return true; }
+    if (isPdfCmd) return true;
 
     const isPrem = await handlePremiumCommand({ sock, jid, senderNumber: senderNormalized, messageObj: m, args: routerArgs, cleanCmd: routerCleanCmd, isAdmin, isOwner: isOwnerSender, isStoreAdmin });
-    if (isPrem) { _trace('5-ditelan-premium'); return true; }
+    if (isPrem) return true;
 
     const isFun = await handleFunCommand({ sock, jid, senderNumber: senderNormalized, messageObj: m, text: msgText, args: routerArgs, cleanCmd: routerCleanCmd, isFromGroup: isGroup, isAdmin, isOwner: isOwnerSender, isStoreAdmin });
-    if (isFun) { _trace('6-ditelan-fun'); return true; }
+    if (isFun) return true;
 
     const walletJid = (isFromMe && !isGroup && sock.user?.id) ? jidNormalizedUser(sock.user.id) : senderNormalized;
     const isMedia = await handleMediaCommands(jid, walletJid, m, msgText, isAdmin, isOwnerSender, isStoreAdmin);
-    if (isMedia) { _trace('7-ditelan-mediaCommand'); return true; }
+    if (isMedia) return true;
 
     const isHandledAdmin = await handleGroupMessage(jid, senderNormalized, m, msgText, isAdmin, isPrefixCmd, { isAdmin, isOwner: isOwnerSender, isStoreAdmin });
-    if (isHandledAdmin) { _trace('8-ditelan-groupAdmin'); return true; }
+    if (isHandledAdmin) return true;
 
     if (!isGroup && isTakenOver) {
       console.log(`[BOT] Percakapan dengan ${senderNormalized} sedang diambil alih admin. Auto-reply dinonaktifkan.`);
       return true;
     }
 
-    _trace('9-masuk-customerHandler');
-    try {
-      await handleCustomerMessage(jid, senderNormalized, m, msgText, isGroup, { isAdmin, isOwner: isOwnerSender, isStoreAdmin });
-      _trace('10-customerHandler-selesai-normal');
-    } catch (e) {
-      _trace('10-customerHandler-MELEMPAR-ERROR', { pesan: e.message, tumpukan: String(e.stack || '').split('\n').slice(0, 6) });
-      throw e;
-    }
+    await handleCustomerMessage(jid, senderNormalized, m, msgText, isGroup, { isAdmin, isOwner: isOwnerSender, isStoreAdmin });
     return true;
   }
             
