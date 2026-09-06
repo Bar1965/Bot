@@ -395,9 +395,13 @@ export function createMediaRouter(ctx) {
       return true;
     }
 
-    // 3. YouTube / Shorts Downloader (.yt, .youtube, .ytmp4, .ytmp3, .play, .song)
-    if (['yt', 'youtube', 'ytmp4', 'ytmp3', 'play', 'song'].includes(cleanCmd)) {
-      const isAudio = ['ytmp3', 'play', 'song'].includes(cleanCmd);
+    // 3. YouTube / Shorts Downloader (.yt, .youtube, .ytmp4, .ytmp3)
+    //
+    // .play dan .song sengaja TIDAK di sini. Menu menjanjikan judul lagu,
+    // sedangkan cabang ini menolak apa pun yang bukan tautan YouTube —
+    // pemiliknya cabang pencarian lagu di bawah.
+    if (['yt', 'youtube', 'ytmp4', 'ytmp3'].includes(cleanCmd)) {
+      const isAudio = cleanCmd === 'ytmp3';
       const url = args[1] || (msgText.match(/https?:\/\/[^\s]+/i)?.[0]);
       if (!url || (!url.includes('youtube.com') && !url.includes('youtu.be'))) {
         const cmdExample = isAudio ? '.ytmp3' : '.yt';
@@ -1406,7 +1410,20 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
       }
       try {
         await react('⏳');
-        const songRes = await mediaHandler.downloadSongBySearch(query);
+
+        // Tempelan tautan tetap dilayani: dicari di YouTube hanya kalau yang
+        // diketik memang berupa judul.
+        const tautanYt = query.match(/https?:\/\/[^\s]*(?:youtube\.com|youtu\.be)[^\s]*/i)?.[0];
+        let songRes;
+        if (tautanYt) {
+          const res = await mediaHandler.downloadYouTubeAudio(tautanYt);
+          const siap = res.success ? await mediaHandler.siapkanMediaWA({ buffer: res.buffer, url: res.audioUrl, type: 'audio' }) : null;
+          songRes = siap?.ok
+            ? { success: true, buffer: siap.buffer, title: (res.title || 'YouTube Audio').replace(/[/\\?%*:|"<>]/g, ''), mimetype: siap.mimetype, ext: siap.ext }
+            : { success: false, message: res.success ? mediaHandler.pesanGagalMedia(siap, 'Audio YouTube') : (res.message || 'Gagal mengunduh audio YouTube.') };
+        } else {
+          songRes = await mediaHandler.downloadSongBySearch(query);
+        }
         if (songRes.success && songRes.buffer) {
           await sock.sendMessage(jid, {
             audio: songRes.buffer,
