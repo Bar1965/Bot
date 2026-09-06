@@ -407,6 +407,34 @@ export async function claimGameDaily(customerJid, today, reward = 25) {
   });
 }
 
+/**
+ * Setel langsung streak harian seseorang.
+ *
+ * Streak hanya bisa naik satu per hari lewat `.daily`, jadi kalau putus bukan
+ * karena kesalahan pemain — bot mati seharian, misalnya — tidak ada jalan
+ * mengembalikannya. `claimGameDaily` cuma bisa menambah satu atau mengulang
+ * dari 1, dan `resetGameLeaderboard('total')` justru menolkan semua orang.
+ *
+ * `daily_claimed_at` ikut ditandai hari ini (WIB). Tanpa itu angka yang baru
+ * dipasang langsung hangus di klaim berikutnya: `claimGameDaily` hanya
+ * melanjutkan streak bila klaim terakhir tepat kemarin.
+ */
+export async function setDailyStreak(customerJid, streak) {
+  const aman = Math.min(365, Math.max(0, Math.floor(Number(streak) || 0)));
+  await getGameProfile(customerJid); // pastikan profilnya ada sebelum di-UPDATE
+  const hariIni = tanggalWIB();
+  const sebelum = await getQuery(
+    "SELECT daily_streak FROM game_profiles WHERE customer_jid = ?", [customerJid]);
+  await runQuery(
+    `UPDATE game_profiles
+     SET daily_streak = ?, daily_claimed_at = ?, updated_at = CURRENT_TIMESTAMP
+     WHERE customer_jid = ?`,
+    [aman, hariIni, customerJid]);
+  const lama = Number(sebelum?.daily_streak || 0);
+  await addLog('ADMIN', `Streak harian ${customerJid} disetel ${lama} -> ${aman} (klaim ditandai ${hariIni}).`);
+  return { success: true, sebelum: lama, sesudah: aman, tanggal: hariIni };
+}
+
 
 export async function getGameLeaderboard(limit = 10) {
   const safeLimit = Math.max(1, Math.min(50, Number.parseInt(limit, 10) || 10));

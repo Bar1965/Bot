@@ -433,7 +433,8 @@ const categories = {
           ['.update on / off (Owner)', 'Atur pengumuman rilis otomatis'],
           ['.bansos (Owner)', 'Bagi poin/keping/energi/kartu massal'],
           ['.bansos paket / drop (Owner)', 'Paket campuran & drop kartu semua grup'],
-          ['.backup', 'Backup database (Owner)']
+          ['.backup', 'Backup database (Owner)'],
+          ['.setstreak @user <n>', 'Setel streak harian (Owner)']
         ]
       }
     ]

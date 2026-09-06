@@ -52,6 +52,7 @@ const FUN_CMD_TETAP_AKTIF = [
   'daily', 'harian', 'reward', 'bansos', 'sembako', 'kompensasi',
   'addpoint', 'addpoints', 'addpoin', 'tambahpoin', 'tambahpoint', 'pluspoin',
   'kurangpoin', 'kurangipoin', 'delpoint', 'delpoints', 'deductpoint', 'potongpoin', 'minuspoin',
+  'setstreak', 'aturstreak', 'setberuntun',
   'giveaway', 'setpoints', 'bagipoin',
   'tukar', 'pointshop', 'penukaran',
   'poll', 'voting', 'vote',
@@ -223,6 +224,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     'sambungkata', 'wordchain', 'daily', 'harian', 'reward',
     'addpoint', 'addpoints', 'addpoin', 'tambahpoin', 'tambahpoint', 'pluspoin',
     'kurangpoin', 'kurangipoin', 'delpoint', 'delpoints', 'deductpoint', 'potongpoin', 'minuspoin',
+    'setstreak', 'aturstreak', 'setberuntun',
     'transfer', 'kirimpoin', 'transferpoin', 'tfpoin',
     'poin', 'point', 'points', 'profile', 'profil', 'level', 'me', 'cekpoin',
     'rank', 'leaderboard', 'top', 'lb', 'papan', 'peringkat', 'misi', 'mission', 'challenge',
@@ -1184,6 +1186,56 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
       });
     } catch (err) {
       await send(sock, jid, messageObj, `❌ Gagal menambahkan poin: ${err.message}`);
+    }
+    return true;
+  }
+
+  // ─── OWNER ONLY: SETEL STREAK HARIAN (.setstreak) ───
+  //
+  // Streak cuma naik satu per hari lewat `.daily`, jadi kalau putus bukan gara-gara
+  // pemainnya, tidak ada cara lain mengembalikannya selain ini.
+  if (['setstreak', 'aturstreak', 'setberuntun'].includes(command)) {
+    if (!isOwner) {
+      await send(sock, jid, messageObj, "❌ Perintah setel streak ini khusus untuk *Owner* bot.");
+      return true;
+    }
+
+    const contextInfo = messageObj?.message?.extendedTextMessage?.contextInfo;
+    const mentions = contextInfo?.mentionedJid || [];
+    const digit = (s) => String(s || '').replace(/[^0-9]/g, '');
+    let targetJid = mentions[0] || contextInfo?.participant || null;
+    let nilai = NaN;
+
+    if (targetJid) {
+      const kandidat = args.slice(1).find(a => !a.startsWith('@') && /^[0-9]+$/.test(a));
+      nilai = kandidat === undefined ? NaN : parseInt(kandidat, 10);
+    } else if (args[1] && args[2]) {
+      // Yang panjang pasti nomor HP, yang pendek pasti angka streak-nya —
+      // streak dibatasi 365, jadi tidak mungkin sepanjang nomor telepon.
+      const nomor = digit(args[1]).length > 5 ? args[1] : (digit(args[2]).length > 5 ? args[2] : null);
+      if (nomor) {
+        const skor = nomor === args[1] ? args[2] : args[1];
+        const res = await db.resolveTargetJid(nomor);
+        targetJid = res?.ditemukan ? res.jid : `${digit(nomor)}@s.whatsapp.net`;
+        nilai = parseInt(skor, 10);
+      }
+    }
+
+    if (!targetJid || isNaN(nilai) || nilai < 0 || nilai > 365) {
+      await send(sock, jid, messageObj, "⚠️ *Format Perintah Setel Streak (Owner):*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n▫️ `.setstreak @member [angka]` (tag orang)\n▫️ `.setstreak [nomor] [angka]` (ketik nomor)\n▫️ Balas/Quote pesan member lalu ketik `.setstreak [angka]`\n\nAngka 0–365.\n\n*Contoh:* `.setstreak @628123456789 9`");
+      return true;
+    }
+
+    try {
+      const hasil = await db.setDailyStreak(targetJid, nilai);
+      const phone = targetJid.split('@')[0];
+      const cust = await db.getCustomerByPhone(targetJid);
+      const label = cust?.nama ? `*${cust.nama}* (@${phone})` : `@${phone}`;
+      await send(sock, jid, messageObj,
+        `✅ Streak harian ${label} disetel.\n🔥 ${hasil.sebelum} → *${hasil.sesudah} hari beruntun*\n\n_Klaim hari ini ikut ditandai (${hasil.tanggal}), jadi besok \`.daily\` lanjut ke ${hasil.sesudah + 1} — bukan mengulang dari 1._`,
+        { mentions: [targetJid] });
+    } catch (err) {
+      await send(sock, jid, messageObj, `❌ Gagal menyetel streak: ${err.message}`);
     }
     return true;
   }
