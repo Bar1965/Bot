@@ -2111,6 +2111,74 @@ export async function listCooldowns(scope) {
   return hasil;
 }
 
+// ============================================================
+// EMBER TANGKAPAN MANCING (`.mancing` / `.ikan` / `.jualikan`)
+// ============================================================
+// Ember disimpan sebagai JSON array supaya tidak perlu satu baris per ikan.
+// Batas 60 item menahan ember tumbuh tanpa henti kalau pemain tidak pernah
+// menjual; tangkapan tertua dibuang lebih dulu.
+
+const MAX_ISI_EMBER = 60;
+
+function parseJsonAman(teks, fallback) {
+  try {
+    const hasil = JSON.parse(teks);
+    return hasil ?? fallback;
+  } catch (_) {
+    return fallback;
+  }
+}
+
+/**
+ * Ember + jatah lemparan harian + rekor tangkapan terbesar milik satu pemain.
+ * Jatah harian direset otomatis begitu `tanggalWIB()` berganti hari.
+ */
+export async function getFishingState(jid) {
+  const kosong = { items: [], castsToday: 0, bestCatch: null };
+  if (!jid) return kosong;
+  try {
+    const row = await getQuery("SELECT * FROM fishing_baskets WHERE jid = ?", [jid]);
+    if (!row) return kosong;
+
+    const items = parseJsonAman(row.items_json || '[]', []);
+    const hariIni = tanggalWIB();
+    const castsToday = row.casts_date === hariIni ? Math.max(0, Math.floor(Number(row.casts_today) || 0)) : 0;
+
+    return {
+      items: Array.isArray(items) ? items : [],
+      castsToday,
+      bestCatch: parseJsonAman(row.best_catch_json || 'null', null)
+    };
+  } catch (_) {
+    return kosong;
+  }
+}
+
+export async function saveFishingState(jid, state = {}) {
+  if (!jid) return false;
+  try {
+    const items = (Array.isArray(state.items) ? state.items : []).slice(-MAX_ISI_EMBER);
+    const castsToday = Math.max(0, Math.floor(Number(state.castsToday) || 0));
+    const bestJson = state.bestCatch ? JSON.stringify(state.bestCatch) : null;
+
+    await runQuery(
+      `INSERT INTO fishing_baskets (jid, items_json, casts_date, casts_today, best_catch_json, updated_at)
+       VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(jid) DO UPDATE SET
+         items_json = excluded.items_json,
+         casts_date = excluded.casts_date,
+         casts_today = excluded.casts_today,
+         best_catch_json = COALESCE(excluded.best_catch_json, fishing_baskets.best_catch_json),
+         updated_at = CURRENT_TIMESTAMP`,
+      [jid, JSON.stringify(items), tanggalWIB(), castsToday, bestJson]
+    );
+    return true;
+  } catch (err) {
+    console.error('[FISHING_STATE_SAVE_ERROR]', err);
+    return false;
+  }
+}
+
 /**
  * Ringkasan seluruh aset dan profil finansial terpadu pemain (Unified Multi-Asset Wallet).
  */
@@ -2323,6 +2391,142 @@ export async function recoverAndRefundStaleGameSessions(sock = null) {
   } catch (err) {
     console.error('[CRASH_RECOVERY_ERROR]', err);
     return { recovered: 0, totalRefundedPoints: 0 };
+  }
+}
+
+// --- FUNGSI FISHING & RELIC EXPLORER ---
+
+export async function getFishingBasket(userJid) {
+  try {
+    const rows = await allQuery(
+      "SELECT * FROM fishing_inventory WHERE user_jid = ? ORDER BY id ASC",
+      [userJid]
+    );
+    return rows || [];
+  } catch (err) {
+    console.error('[GET_FISHING_BASKET_ERR]', err);
+    return [];
+  }
+}
+
+export async function addFishToBasket(userJid, item) {
+  try {
+    const res = await runQuery(
+      `INSERT INTO fishing_inventory (user_jid, fish_name, icon, rarity, weight, price, spot_name, is_chest)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        userJid,
+        item.name,
+        item.icon,
+        item.rarity,
+        Number(item.weight) || 0,
+        Math.floor(Number(item.price)) || 0,
+        item.spotName || 'Danau Tenang',
+        item.isChest ? 1 : 0
+      ]
+    );
+    return res?.lastID;
+  } catch (err) {
+    console.error('[ADD_FISH_TO_BASKET_ERR]', err);
+    return null;
+  }
+}
+
+export async function clearFishFromBasket(userJid) {
+  try {
+    // Hanya hapus ikan (is_chest = 0), simpan peti jika ada
+    await runQuery(
+      "DELETE FROM fishing_inventory WHERE user_jid = ? AND is_chest = 0",
+      [userJid]
+    );
+    return true;
+  } catch (err) {
+    console.error('[CLEAR_FISH_BASKET_ERR]', err);
+    return false;
+  }
+}
+
+export async function removeChestFromBasket(userJid) {
+  try {
+    // Ambil 1 peti tertua
+    const chest = await getQuery(
+      "SELECT * FROM fishing_inventory WHERE user_jid = ? AND is_chest = 1 ORDER BY id ASC LIMIT 1",
+      [userJid]
+    );
+    if (!chest) return null;
+    await runQuery("DELETE FROM fishing_inventory WHERE id = ?", [chest.id]);
+    return chest;
+  } catch (err) {
+    console.error('[REMOVE_CHEST_ERR]', err);
+    return null;
+  }
+}
+
+export async function updateFishingStats(userJid, { fishName = '', weight = 0, earned = 0, isChest = false }) {
+  try {
+    await runQuery(
+      "INSERT OR IGNORE INTO fishing_stats (user_jid, total_caught, heaviest_weight, heaviest_fish, total_earned, chests_opened) VALUES (?, 0, 0, '', 0, 0)",
+      [userJid]
+    );
+    const curr = await getQuery("SELECT * FROM fishing_stats WHERE user_jid = ?", [userJid]);
+    const numWeight = Number(weight) || 0;
+    const isNewRecord = numWeight > (Number(curr?.heaviest_weight) || 0);
+
+    const newHeaviestWeight = isNewRecord ? numWeight : (Number(curr?.heaviest_weight) || 0);
+    const newHeaviestFish = isNewRecord && fishName ? fishName : (curr?.heaviest_fish || '');
+    // `total_caught` cuma naik kalau memang ada yang terpancing. Fungsi ini
+    // dipanggil juga oleh `.jualikan` dan `.bukapeti` yang tidak memancing apa
+    // pun (keduanya hanya mengirim `earned`/`isChest`); tanpa penjaga ini angka
+    // "Total Ekor" di papan peringkat ikut membengkak tiap kali jual atau buka peti.
+    const adaTangkapan = Boolean(fishName) || numWeight > 0;
+    const newTotalCaught = (Number(curr?.total_caught) || 0) + (adaTangkapan ? 1 : 0);
+    const newTotalEarned = (Number(curr?.total_earned) || 0) + (Math.floor(Number(earned)) || 0);
+    const newChests = (Number(curr?.chests_opened) || 0) + (isChest ? 1 : 0);
+
+    await runQuery(
+      `UPDATE fishing_stats SET 
+        total_caught = ?, 
+        heaviest_weight = ?, 
+        heaviest_fish = ?, 
+        total_earned = ?, 
+        chests_opened = ?, 
+        updated_at = CURRENT_TIMESTAMP 
+       WHERE user_jid = ?`,
+      [newTotalCaught, newHeaviestWeight, newHeaviestFish, newTotalEarned, newChests, userJid]
+    );
+    return { isNewRecord, heaviestWeight: newHeaviestWeight, heaviestFish: newHeaviestFish };
+  } catch (err) {
+    console.error('[UPDATE_FISHING_STATS_ERR]', err);
+    return null;
+  }
+}
+
+/**
+ * Hapus statistik memancing satu pemain.
+ *
+ * Dipakai smoke test supaya bisa dijalankan berulang kali: tanpa ini rekor
+ * `heaviest_weight` dari run sebelumnya masih tersimpan dan tangkapan pertama
+ * di run berikutnya tidak pernah terhitung sebagai rekor baru.
+ */
+export async function resetFishingStats(userJid) {
+  try {
+    await runQuery("DELETE FROM fishing_stats WHERE user_jid = ?", [userJid]);
+    return true;
+  } catch (err) {
+    console.error("[RESET_FISHING_STATS_ERR]", err);
+    return false;
+  }
+}
+
+export async function getFishingLeaderboard() {
+  try {
+    const rows = await allQuery(
+      "SELECT * FROM fishing_stats WHERE total_caught > 0 ORDER BY heaviest_weight DESC LIMIT 10"
+    );
+    return rows || [];
+  } catch (err) {
+    console.error('[GET_FISHING_LEADERBOARD_ERR]', err);
+    return [];
   }
 }
 
