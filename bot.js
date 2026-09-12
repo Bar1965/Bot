@@ -27,6 +27,7 @@ import { createCustomerHandler } from './src/handlers/customerHandler.js';
 import { createGroupAdminHandler } from './src/handlers/groupAdminHandler.js';
 import { handlePremiumCommand, getPremiumBenefits } from './premiumHandler.js';
 import { handlePdfCommands, checkPdfMergeSession } from './src/handlers/pdfHandler.js';
+import { checkStoreWizardSession } from './src/handlers/storeWizard.js';
 import { buildCommandMenu } from './commandRegistry.js';
 import { createWelcomeGoodbyeCard, createLevelUpCard } from './cardGenerator.js';
 import { tickPesanGrup } from './src/games/tcg/drop.js';
@@ -1219,6 +1220,14 @@ export async function startBot(onSocketReady) {
 
     const isPdfMergeFile = await checkPdfMergeSession(sock, m, senderNormalized, jid);
     if (isPdfMergeFile) return true;
+
+    // Wizard `.tokobaru` menunggu jawaban berupa teks biasa ("Netflix 1 Bulan"),
+    // dan groupAdminHandler pulang di baris pertamanya untuk pesan tanpa prefix.
+    // Jadi pencegatnya harus duduk di sini, bukan di dalam handler admin. Fungsi
+    // ini langsung mengembalikan false kalau pengirimnya tidak sedang di tengah
+    // wizard — yaitu untuk hampir semua pesan yang lewat.
+    const isWizardToko = await checkStoreWizardSession(sock, m, senderNormalized, jid, msgText);
+    if (isWizardToko) return true;
 
     const isPlugin = await executePlugin(routerCleanCmd, { sock, jid, senderNumber: senderNormalized, m, msgText, args: routerArgs, cleanCmd: routerCleanCmd, isAdmin, isOwner: isOwnerSender });
     if (isPlugin) return true;

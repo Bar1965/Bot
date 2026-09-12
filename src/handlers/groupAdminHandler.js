@@ -12,6 +12,7 @@ import { sendInteractiveButtons, extractTargetJid, parseDuration, logToSystem, b
 import { backupDatabase } from '../../scheduler.js';
 import { adalahJidBot } from '../utils/botIdentity.js';
 import { perisaiTarget } from '../utils/perisaiTarget.js';
+import { mulaiWizardProduk, simpanGambarProduk } from './storeWizard.js';
 
 export function createGroupAdminHandler(ctx) {
     const { sock, userPushNamesMap, messageCache, formatPhoneNumber, react, sendInteractiveButtons } = ctx;
@@ -36,12 +37,18 @@ export function createGroupAdminHandler(ctx) {
     'paid', 'done', 'cancel', 'flashsale', 'stats', 'broadcast', 'addcoupon', 
     'delcoupon', 'listcoupon', 'addfaq', 'delfaq', 'listfaq', 'laporan', 
     'restock', 'stock', 'price', 'out', 'ready', 'addproduct', 'takeover', 
-    'release', 'setname', 'setowner', 'eval', 'exec', 'backup', 'resetleaderboard'
+    'release', 'setname', 'setowner', 'eval', 'exec', 'backup', 'resetleaderboard',
+    'addstock', 'tambahstok', 'cekstok', 'liststock', 'delstock', 'setdelivery', 'listproduk', 'katalogadmin',
+    'addproduk', 'editproduk', 'ubahproduk', 'delproduk', 'hapusproduk', 'setgambar', 'tokobaru', 'produkbaru'
   ];
 
   const groupModerationCommands = [
     'add', 'kick', 'promote', 'demote', 'group', 'link', 'tagall', 'hidetag', 
-    'everyone', 'admins', 'mode', 'setmode', 'botmode', 'antilink', 'setantilink', 'globalantilink', 'welcome', 
+    // 'all' dan 'semua' disebut di blok mention massal (:1481) tapi dulu tidak
+    // pernah ada di daftar ini, jadi gerbang di :56 memulangkannya lebih dulu dan
+    // keduanya mati untuk SEMUA ORANG termasuk admin. Kondisi yang menyebut sebuah
+    // perintah tidak membuatnya bisa dijangkau.
+    'everyone', 'all', 'semua', 'admins', 'mode', 'setmode', 'botmode', 'antilink', 'setantilink', 'globalantilink', 'welcome', 
     'autowelcomeswitch', 'setwelcome', 'setupdategroup', 'testupdate', 'autosholat', 'levelup', 'autolevelup',
     'globallevelup', 'setlevelup', 'fitur', 'open', 'close', 'del', 'delete', 'totalchat', 'ceksewabot', 'sponsor',
     'textwelcome', 'textleave',
@@ -673,7 +680,7 @@ Moderator hanya dapat menggunakan \`.ban\`, \`.unban\`, \`.unwarn\`, dan \`.cekw
         return true;
       }
       await sock.sendMessage(jid, { text: "⏳ Sedang membuat file cadangan database SQLite..." });
-      const backupFilePath = backupDatabase();
+      const backupFilePath = await backupDatabase();
       if (backupFilePath && fs.existsSync(backupFilePath)) {
         const dbBuffer = fs.readFileSync(backupFilePath);
         await sock.sendMessage(jid, { 
@@ -1479,6 +1486,21 @@ ${panduanMode}`
 
     const hasAtMentionAll = (text || '').includes('@everyone') || (text || '').includes('@all') || (text || '').includes('@semua');
     if (isGroup && (cleanCmd === 'tagall' || cleanCmd === 'hidetag' || cleanCmd === 'everyone' || cleanCmd === 'all' || cleanCmd === 'semua' || hasAtMentionAll)) {
+      // Penjaga kedua, sengaja diulang di sini.
+      //
+      // Gerbang utama ada ~1.300 baris di atas dan melindungi blok ini hanya
+      // selama `tagall`/`hidetag` tetap terdaftar di groupModerationCommands.
+      // Satu penghapusan tidak sengaja dari daftar itu akan membuka mention
+      // massal untuk semua orang tanpa satu baris pun di blok ini berubah —
+      // dan `hasAtMentionAll` bahkan bisa menyalakannya dari perintah LAIN yang
+      // kebetulan teksnya memuat '@semua'. Untuk alat spam, jarak sejauh itu
+      // antara aturan dan yang diaturnya terlalu berisiko.
+      if (!isAdminUser && !isOwner) {
+        await sock.sendMessage(jid, {
+          text: '❌ Memanggil seluruh member hanya bisa dilakukan *Admin Grup* atau *Owner*.'
+        });
+        return true;
+      }
       try {
         if (sock && m?.key) sock.sendMessage(jid, { react: { text: '📣', key: m.key } }).catch(() => {});
         const groupMeta = (typeof getCachedGroupMetadata === 'function' ? await getCachedGroupMetadata(sock, jid) : null) || await sock.groupMetadata(jid);
@@ -1760,6 +1782,197 @@ Mohon maaf, pesanan Anda dengan Order ID *${orderId}* telah *DIBATALKAN* oleh ad
       return true;
     }
 
+    // ==========================================
+    // MANAJEMEN STOK & PRODUK (PRIVATE MESSAGE / DM / ADMIN)
+    // ==========================================
+
+    if (['addstock', 'tambahstok'].includes(cleanCmd)) {
+      // Dukung input multi-baris (copy-paste banyak akun) dan 1-baris
+      const lines = (text || '').split('\n').map(l => l.trim()).filter(Boolean);
+      const firstTokens = lines[0].split(/\s+/);
+      const code = (firstTokens[1] || '').toUpperCase();
+
+      if (!code) {
+        const helpMsg = `📦 *PANDUAN TAMBAH STOK AKUN DIGITAL (DM / PM)*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+*Format 1: Multi-baris (Banyak akun sekaligus)*
+\`.addstock [KODE_PRODUK]\`
+akun1@gmail.com|pass1
+akun2@gmail.com|pass2
+akun3@gmail.com|pass3
+
+*Format 2: Satu akun*
+\`.addstock [KODE_PRODUK] akun@gmail.com|pass1\`
+
+_Contoh:_
+\`.addstock NET01\`
+user1@gmail.com|pass123
+user2@gmail.com|pass456
+
+💡 _Ketik \`.listproduk\` untuk melihat daftar kode produk toko._`;
+        await sock.sendMessage(jid, { text: helpMsg });
+        return true;
+      }
+
+      const p = await db.getProductByKode(code);
+      if (!p) {
+        await sock.sendMessage(jid, { text: `❌ Produk dengan kode *${code}* tidak ditemukan. Ketik \`.listproduk\` untuk cek daftar produk.` });
+        return true;
+      }
+
+      let rawItems = [];
+      if (lines.length > 1) {
+        rawItems = lines.slice(1);
+      } else if (firstTokens.length > 2) {
+        const itemContent = firstTokens.slice(2).join(' ');
+        if (itemContent.trim()) rawItems = [itemContent.trim()];
+      }
+
+      if (rawItems.length === 0) {
+        await sock.sendMessage(jid, {
+          text: `⚠️ Tidak ada data kredensial/akun yang disertakan.\n\n_Contoh pemakaian:_\n\`.addstock ${code}\`\nakun1@gmail.com|pass123\nakun2@gmail.com|pass456`
+        });
+        return true;
+      }
+
+      const res = await db.addProductItemsBatch(code, rawItems);
+      if (!res.success) {
+        await sock.sendMessage(jid, { text: `❌ Gagal menambah stok: ${res.message}` });
+        return true;
+      }
+
+      let successMsg = `✅ *BERHASIL MENAMBAH STOK DIGITAL!* 🎉\n`;
+      successMsg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+      successMsg += `📦 *Produk:* ${res.productName} (\`${code}\`)\n`;
+      successMsg += `📥 *Akun Ditambahkan:* *+${res.addedCount} pcs*\n`;
+      successMsg += `📊 *Total Stok Ready Sekarang:* *${res.readyCount} pcs*\n`;
+      if (res.switchedToAuto) {
+        successMsg += `🔄 _Mode pengiriman otomatis diaktifkan ke *AUTO*._\n`;
+      }
+      successMsg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+      successMsg += `💡 _Ketik \`.cekstok ${code}\` untuk melihat rincian stok._`;
+
+      await sock.sendMessage(jid, { text: successMsg });
+      await logToSystem('SYSTEM', `📦 Admin menambah ${res.addedCount} stok digital untuk ${code} via PM. Total ready: ${res.readyCount} pcs.`);
+
+      // Picu notifikasi stok ready jika stok baru > 0
+      await checkAndNotifySubscribers(code, res.readyCount);
+      return true;
+    }
+
+    if (['cekstok', 'liststock'].includes(cleanCmd)) {
+      const code = args[1]?.toUpperCase();
+      if (!code) {
+        await sock.sendMessage(jid, { text: "⚠️ Format salah. Gunakan: `.cekstok [KODE_PRODUK]`\nContoh: `.cekstok NET01`\n\n_Ketik \`.listproduk\` untuk melihat ringkasan seluruh produk._" });
+        return true;
+      }
+
+      const details = await db.getProductStockDetails(code);
+      if (!details) {
+        await sock.sendMessage(jid, { text: `❌ Produk dengan kode *${code}* tidak ditemukan.` });
+        return true;
+      }
+
+      let msg = `📦 *RINCIAN STOK: ${details.product.nama.toUpperCase()}* (\`${code}\`)\n`;
+      msg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+      msg += `🏷️ *Mode Kirim:* *${details.deliveryType}*\n`;
+      msg += `💸 *Harga:* Rp${(details.product.harga || 0).toLocaleString('id-ID')}\n`;
+      msg += `🟢 *Stok Siap Jual (READY):* *${details.ready} pcs*\n`;
+      msg += `🟡 *Sedang di Checkout (RESERVED):* ${details.reserved} pcs\n`;
+      msg += `⚪ *Sudah Terjual (USED):* ${details.used} pcs\n`;
+      msg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+
+      if (details.sampleReadyItems.length > 0) {
+        msg += `🔑 *Akun Ready Siap Kirim (Hingga 10 teratas):*\n`;
+        details.sampleReadyItems.forEach((it) => {
+          msg += `[ID: \`${it.id}\`] \`\`\`${it.data_content}\`\`\`\n`;
+        });
+        msg += `\n💡 _Untuk menghapus akun rusak, ketik:_ \`.delstock <ID>\`\n`;
+      } else {
+        msg += `⚠️ _Belum ada akun digital ready untuk produk ini._\n💡 _Isi stok via:_ \`.addstock ${code}\`\n`;
+      }
+
+      msg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+      await sock.sendMessage(jid, { text: msg });
+      return true;
+    }
+
+    if (cleanCmd === 'delstock') {
+      const id = parseInt(args[1], 10);
+      if (isNaN(id) || id <= 0) {
+        await sock.sendMessage(jid, { text: "⚠️ Format salah. Gunakan: `.delstock [ID_ITEM]`\nContoh: `.delstock 15`\n\n_Cek ID item dengan perintah \`.cekstok [KODE]\`._" });
+        return true;
+      }
+
+      const item = await db.getQuery("SELECT * FROM product_items WHERE id = ?", [id]);
+      if (!item) {
+        await sock.sendMessage(jid, { text: `❌ Item stok dengan ID #${id} tidak ditemukan.` });
+        return true;
+      }
+
+      await db.deleteProductItem(id);
+      const newCount = await db.getAvailableItemsCount(item.produk_kode);
+      await sock.sendMessage(jid, {
+        text: `🗑️ *Item Stok #${id} Berhasil Dihapus!*\n📦 Produk: \`${item.produk_kode}\`\n📊 Sisa Stok Ready: *${newCount} pcs*`
+      });
+      await logToSystem('SYSTEM', `🗑️ Item stok #${id} (${item.produk_kode}) dihapus oleh admin.`);
+      return true;
+    }
+
+    if (cleanCmd === 'setdelivery') {
+      const code = args[1]?.toUpperCase();
+      const mode = args[2]?.toUpperCase();
+
+      if (!code || !['AUTO', 'MANUAL'].includes(mode)) {
+        await sock.sendMessage(jid, { text: "⚠️ Format salah. Gunakan: `.setdelivery [KODE] [AUTO/MANUAL]`\nContoh: `.setdelivery NET01 AUTO`" });
+        return true;
+      }
+
+      const res = await db.setProductDeliveryType(code, mode);
+      if (!res.success) {
+        await sock.sendMessage(jid, { text: `❌ ${res.message}` });
+        return true;
+      }
+
+      await sock.sendMessage(jid, {
+        text: `✅ *Mode Pengiriman Berhasil Diubah!*\n📦 Produk: *${res.productName}* (\`${code}\`)\n🚀 Mode Sekarang: *${res.deliveryType}*`
+      });
+      return true;
+    }
+
+    if (['listproduk', 'katalogadmin'].includes(cleanCmd)) {
+      const prods = await db.getAllProductsSummary();
+      if (!prods || prods.length === 0) {
+        await sock.sendMessage(jid, { text: "📦 Belum ada produk di database toko." });
+        return true;
+      }
+
+      let msg = `🏪 *KATALOG & STATUS STOK TOKO (ADMIN)*\n`;
+      msg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+
+      let currentCat = '';
+      prods.forEach(p => {
+        const cat = p.brand_category || 'PRODUK DIGITAL';
+        if (cat !== currentCat) {
+          msg += `📂 *${cat.toUpperCase()}*\n`;
+          currentCat = cat;
+        }
+        const badge = p.delivery_type === 'AUTO' ? '⚡ [AUTO]' : '👨‍💼 [MANUAL]';
+        msg += `• \`${p.kode}\` — *${p.nama}*\n`;
+        msg += `  💸 Rp${(p.harga || 0).toLocaleString('id-ID')} | Stok: *${p.stok || 0}* | ${badge}\n\n`;
+      });
+
+      msg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+      msg += `⚙️ *Perintah Kelola via PM:*\n`;
+      msg += `• \`.addstock <KODE>\` : Tambah akun/voucher\n`;
+      msg += `• \`.cekstok <KODE>\` : Cek rincian akun\n`;
+      msg += `• \`.price <KODE> <HARGA>\` : Ganti harga\n`;
+      msg += `• \`.setdelivery <KODE> <AUTO/MANUAL>\` : Ganti mode kirim`;
+
+      await sock.sendMessage(jid, { text: msg });
+      return true;
+    }
+
     if (cleanCmd === 'stock') {
       const code = args[1]?.toUpperCase();
       const stock = parseInt(args[2]);
@@ -1775,10 +1988,30 @@ Mohon maaf, pesanan Anda dengan Order ID *${orderId}* telah *DIBATALKAN* oleh ad
         return true;
       }
 
-      await db.updateProductStock(code, stock);
+      // Dulu blok ini menulis angka apa pun ke products.stok lalu, khusus produk
+      // AUTO, menempelkan catatan "oh iya, isinya pakai .addstock ya". Angkanya
+      // tetap masuk. Padahal addToCart dan checkoutCart membaca jumlah baris
+      // product_items READY untuk produk AUTO, bukan kolom itu — jadi katalog
+      // memajang "stok 10" yang langsung dibantah sendiri ("stok tidak
+      // mencukupi") begitu pelanggan menekan beli. Sekarang ditolak di database.
+      const hasilStok = await db.setManualStock(code, stock);
+      if (!hasilStok.success) {
+        if (hasilStok.alasan === 'PRODUK_AUTO') {
+          await sock.sendMessage(jid, {
+            text: `⚠️ *Stok produk AUTO tidak diisi manual.*\n\n${hasilStok.message}\n\n` +
+                  `📥 *Tambah stok:*\n\`.addstock ${code}\`\nakun1|pass1\nakun2|pass2\n\n` +
+                  `🗑️ *Kurangi stok:* \`.cekstok ${code}\` lalu \`.delstock <ID>\`\n` +
+                  `🔁 *Mau benar-benar pakai stok angka?* Ubah dulu modenya: \`.setdelivery ${code} MANUAL\``
+          });
+          return true;
+        }
+        await sock.sendMessage(jid, { text: `❌ ${hasilStok.message}` });
+        return true;
+      }
+
       await sock.sendMessage(jid, { text: `📦 Stok *${p.nama}* (\`${code}\`) berhasil diperbarui menjadi *${stock}* pcs.` });
       await logToSystem('SYSTEM', `📦 Stok produk *${code}* diperbarui menjadi *${stock}* oleh admin.`);
-      
+
       // Picu notifikasi stok ready jika stok baru > 0
       await checkAndNotifySubscribers(code, stock);
       return true;
@@ -1818,7 +2051,25 @@ Mohon maaf, pesanan Anda dengan Order ID *${orderId}* telah *DIBATALKAN* oleh ad
         return true;
       }
 
-      await db.updateProductStock(code, 0);
+      // Pada produk AUTO, menulis 0 ke products.stok tidak menghentikan penjualan
+      // sama sekali: addToCart membaca jumlah product_items READY. Jadi perintah
+      // ini hanya akan menghasilkan katalog yang bilang "habis" sambil tetap
+      // melayani pembelian. Ditolak, dengan cara yang benar-benar bekerja.
+      const hasilOut = await db.setManualStock(code, 0);
+      if (!hasilOut.success) {
+        if (hasilOut.alasan === 'PRODUK_AUTO') {
+          await sock.sendMessage(jid, {
+            text: `⚠️ *${p.nama}* (\`${code}\`) bertipe *AUTO*, jadi menandai habis lewat \`.out\` tidak akan menghentikan pembelian.\n\n` +
+                  `Stok AUTO dihitung dari kredensial tersimpan (*${hasilOut.readyCount} pcs*).\n\n` +
+                  `🔒 *Cara benar menutup penjualan:*\n` +
+                  `• Kosongkan stoknya: \`.cekstok ${code}\` lalu \`.delstock <ID>\`\n` +
+                  `• Atau hapus produknya: \`.delproduk ${code}\``
+          });
+          return true;
+        }
+        await sock.sendMessage(jid, { text: `❌ ${hasilOut.message}` });
+        return true;
+      }
       await sock.sendMessage(jid, { text: `🔴 Produk *${p.nama}* (\`${code}\`) ditandai sebagai *Habis* (stok diset ke 0).` });
       await logToSystem('SYSTEM', `🔴 Produk *${code}* diset habis oleh admin.`);
       return true;
@@ -1837,51 +2088,280 @@ Mohon maaf, pesanan Anda dengan Order ID *${orderId}* telah *DIBATALKAN* oleh ad
         return true;
       }
 
-      await db.updateProductStock(code, 10);
+      const hasilReady = await db.setManualStock(code, 10);
+      if (!hasilReady.success) {
+        if (hasilReady.alasan === 'PRODUK_AUTO') {
+          await sock.sendMessage(jid, {
+            text: `⚠️ *${p.nama}* (\`${code}\`) bertipe *AUTO*, stoknya tidak bisa "dinyalakan" dengan angka.\n\n` +
+                  `${hasilReady.message}\n\n` +
+                  `📥 Isi stok sungguhan dengan:\n\`.addstock ${code}\`\nakun1|pass1\nakun2|pass2`
+          });
+          return true;
+        }
+        await sock.sendMessage(jid, { text: `❌ ${hasilReady.message}` });
+        return true;
+      }
       await sock.sendMessage(jid, { text: `🟢 Produk *${p.nama}* (\`${code}\`) ditandai *Ready* kembali dengan isi stok standar (10 pcs).` });
       await logToSystem('SYSTEM', `🟢 Produk *${code}* diset ready (stok 10) oleh admin.`);
-      
+
       // Picu notifikasi stok ready jika stok baru > 0
       await checkAndNotifySubscribers(code, 10);
       return true;
     }
 
-    if (cleanCmd === 'addproduct') {
+    // `.tokobaru` — jalur termudah: bot yang bertanya, admin tinggal menjawab.
+    if (['tokobaru', 'produkbaru'].includes(cleanCmd)) {
+      await mulaiWizardProduk(sock, jid, senderNumber);
+      return true;
+    }
+
+    if (['addproduct', 'addproduk'].includes(cleanCmd)) {
       const rawArgs = args.slice(1).join(' ');
       const parts = rawArgs.split('|').map(p => p.trim());
-      
+
       if (parts.length < 5) {
-        const errorHelp = `⚠️ Format salah. Gunakan pemisah vertikal (\`|\`):\n\`.addproduct [KODE] | [NAMA_PRODUK] | [HARGA] | [STOK] | [DESKRIPSI]\`\n\n_Contoh:_\n\`.addproduct NET02 | Netflix 2 Bulan | 85000 | 5 | Sharing 1 Profil\``;
+        const errorHelp = `⚠️ *Format salah.* Pisahkan dengan tanda \`|\`:\n\n` +
+          `\`.addproduk KODE | NAMA | HARGA | STOK | DESKRIPSI | MODE | KATEGORI | DURASI\`\n\n` +
+          `Empat kolom terakhir *boleh dikosongkan*. MODE diisi \`AUTO\` atau \`MANUAL\` (bawaan MANUAL).\n\n` +
+          `_Contoh singkat:_\n\`.addproduk NET02 | Netflix 2 Bulan | 85000 | 5 | Sharing 1 profil\`\n\n` +
+          `_Contoh lengkap (siap kirim otomatis):_\n\`.addproduk NET03 | Netflix 3 Bulan | 120000 | 0 | Sharing 1 profil | AUTO | NETFLIX | 3 Bulan\`\n\n` +
+          `😵 _Pusing hafal urutannya? Ketik \`.tokobaru\`, saya yang tanya satu per satu._`;
         await sock.sendMessage(jid, { text: errorHelp });
         return true;
       }
 
       const codePart = parts[0].split(' ');
-      const code = codePart[0].toUpperCase();
-      
-      const nama = parts[1];
-      const harga = parseInt(parts[2]);
-      const stok = parseInt(parts[3]);
-      const deskripsi = parts[4];
+      const cekKode = db.validasiKodeProduk(codePart[0]);
+      if (!cekKode.ok) {
+        await sock.sendMessage(jid, { text: `❌ ${cekKode.message}` });
+        return true;
+      }
+      const code = cekKode.nilai;
 
-      if (isNaN(harga) || isNaN(stok)) {
+      const nama = parts[1];
+      // Harga lewat parser yang sama dengan wizard, supaya "85.000" dan "85rb"
+      // sama-sama diterima di dua pintu masuk yang berbeda.
+      const harga = db.parseHargaIndonesia(parts[2]);
+      const stok = parseInt(parts[3], 10);
+      const deskripsi = parts[4] || '';
+      const mode = (parts[5] || 'MANUAL').trim().toUpperCase() || 'MANUAL';
+      const kategori = parts[6] || null;
+      const durasi = parts[7] || null;
+
+      if (harga === null || isNaN(stok)) {
         await sock.sendMessage(jid, { text: "❌ Gagal. Harga dan Stok harus berupa angka/nominal." });
         return true;
       }
+      const cekNama = db.validasiFieldProduk('nama', nama);
+      if (!cekNama.ok) {
+        await sock.sendMessage(jid, { text: `❌ ${cekNama.message}` });
+        return true;
+      }
+      if (!['AUTO', 'MANUAL'].includes(mode)) {
+        await sock.sendMessage(jid, { text: "❌ Mode kirim hanya boleh *AUTO* atau *MANUAL*." });
+        return true;
+      }
 
-      await db.addProduct(code, nama, harga, stok, deskripsi, "");
-      const successText = `🆕 *PRODUK BARU BERHASIL DITAMBAHKAN!*
-      
-• Kode: \`${code}\`
-• Nama: *${nama}*
-• Harga: Rp${harga.toLocaleString('id-ID')}
-• Stok: ${stok} pcs
-• Deskripsi: ${deskripsi}`;
+      const produkLama = await db.getProductByKode(code);
+
+      // Stok produk AUTO selalu dihitung ulang addProduct() dari kredensial yang
+      // tersimpan, jadi angka stok yang diketik di sini memang diabaikan — bukan
+      // dibuang diam-diam, tapi dikatakan ke admin di pesan balasan di bawah.
+      await db.addProduct(code, cekNama.nilai, harga, mode === 'AUTO' ? 0 : stok, deskripsi, "", mode, "", "", kategori, null, durasi);
+      const produkBaru = await db.getProductByKode(code);
+
+      let successText = produkLama
+        ? `♻️ *PRODUK DIPERBARUI* (kode \`${code}\` sudah ada sebelumnya)\n`
+        : `🆕 *PRODUK BARU BERHASIL DITAMBAHKAN!*\n`;
+      successText += `━━━━━━━━━━━━━━━━━━━━\n`;
+      successText += `• Kode: \`${code}\`\n`;
+      successText += `• Nama: *${cekNama.nilai}*\n`;
+      successText += `• Harga: Rp${harga.toLocaleString('id-ID')}\n`;
+      successText += `• Stok: ${produkBaru?.stok ?? 0} pcs\n`;
+      successText += `• Mode kirim: *${mode}*\n`;
+      if (kategori) successText += `• Kategori: ${kategori}\n`;
+      if (durasi) successText += `• Durasi: ${durasi}\n`;
+      if (deskripsi) successText += `• Deskripsi: ${deskripsi}\n`;
+      successText += `━━━━━━━━━━━━━━━━━━━━\n`;
+
+      if (mode === 'AUTO') {
+        successText += (produkBaru?.stok || 0) > 0
+          ? `⚡ Produk siap dikirim otomatis begitu pembayaran lunas.\n`
+          : `⚠️ Stok akun masih kosong, produk belum bisa dibeli. Isi dengan:\n\`.addstock ${code}\`\nakun1|pass1\nakun2|pass2\n`;
+      }
+      successText += `\n💡 _Ubah satu kolom saja:_ \`.editproduk ${code} harga 90000\`\n`;
+      successText += `🖼️ _Pasang gambar:_ kirim foto dengan caption \`.setgambar ${code}\``;
+
       await sock.sendMessage(jid, { text: successText });
-      await logToSystem('SYSTEM', `🆕 Produk baru ditambahkan oleh admin: ${code} - ${nama}`);
-      
+      await logToSystem('SYSTEM', `🆕 Produk ${produkLama ? 'diperbarui' : 'ditambahkan'} oleh admin: ${code} - ${cekNama.nilai} (${mode})`);
+
       // Picu notifikasi jika stok baru > 0
-      await checkAndNotifySubscribers(code, stok);
+      await checkAndNotifySubscribers(code, produkBaru?.stok || 0);
+      return true;
+    }
+
+    if (['editproduk', 'ubahproduk'].includes(cleanCmd)) {
+      const code = args[1]?.toUpperCase();
+      const field = args[2];
+      // Nilainya sengaja diambil dari teks mentah, bukan args, supaya spasi dan
+      // baris baru di deskripsi tidak diratakan jadi satu spasi.
+      const nilai = (text || '').split(/\s+/).slice(3).join(' ').trim();
+
+      const daftarField = Object.entries(db.FIELD_PRODUK)
+        .map(([k, v]) => `• \`${k}\` — ${v.label}`)
+        .join('\n');
+
+      if (!code || !field) {
+        await sock.sendMessage(jid, {
+          text: `⚠️ *Format:* \`.editproduk <KODE> <FIELD> <NILAI BARU>\`\n\n` +
+                `*Field yang bisa diubah:*\n${daftarField}\n\n` +
+                `_Contoh:_\n\`.editproduk NET01 harga 55000\`\n\`.editproduk NET01 nama Netflix Premium 1 Bulan\`\n` +
+                `\`.editproduk NET01 mode AUTO\`\n\n` +
+                `_Kosongkan isi kolom opsional dengan:_ \`.editproduk NET01 durasi -\``
+        });
+        return true;
+      }
+
+      const fieldResolved = db.resolveFieldProduk(field);
+      if (!fieldResolved) {
+        await sock.sendMessage(jid, { text: `❌ Field *${field}* tidak dikenal.\n\n*Pilihan yang ada:*\n${daftarField}` });
+        return true;
+      }
+      if (!nilai) {
+        await sock.sendMessage(jid, { text: `⚠️ Nilai barunya belum diisi.\n\n_Contoh:_ \`.editproduk ${code} ${fieldResolved} <nilai>\`` });
+        return true;
+      }
+
+      // Satu tanda hubung berarti "kosongkan", sesuai kata kunci `lewati` di wizard.
+      const nilaiFinal = nilai === '-' ? '' : nilai;
+      const hasil = await db.updateProductFields(code, { [fieldResolved]: nilaiFinal });
+      if (!hasil.success) {
+        await sock.sendMessage(jid, { text: `❌ ${hasil.message || 'Gagal menyunting produk.'}` });
+        return true;
+      }
+
+      const ubah = hasil.perubahan[0];
+      const tampil = (v) => (v === null || v === undefined || v === '' ? '_(kosong)_' : String(v));
+      let pesan = `✏️ *PRODUK DIPERBARUI*\n━━━━━━━━━━━━━━━━━━━━\n`;
+      pesan += `📦 *${hasil.product.nama}* (\`${hasil.product.kode}\`)\n\n`;
+      pesan += `*${ubah.label}*\n`;
+      pesan += `• Sebelum: ${tampil(ubah.lama)}\n`;
+      pesan += `• Sesudah: ${tampil(ubah.baru)}\n`;
+      pesan += `━━━━━━━━━━━━━━━━━━━━`;
+      if (hasil.readyCount !== null && hasil.readyCount !== undefined) {
+        pesan += `\n\n⚡ Mode *AUTO* aktif. Stok kini mengikuti kredensial tersimpan: *${hasil.readyCount} pcs*.`;
+        if (hasil.readyCount === 0) pesan += `\n⚠️ Masih kosong — isi dengan \`.addstock ${hasil.product.kode}\`.`;
+      }
+
+      await sock.sendMessage(jid, { text: pesan });
+      await logToSystem('SYSTEM', `✏️ Produk ${hasil.product.kode} disunting admin: ${ubah.label}.`);
+      return true;
+    }
+
+    if (['delproduk', 'hapusproduk'].includes(cleanCmd)) {
+      const code = args[1]?.toUpperCase();
+      const konfirmasi = (args[2] || '').toUpperCase();
+
+      if (!code) {
+        await sock.sendMessage(jid, { text: "⚠️ *Format:* `.delproduk <KODE>`\n\n_Bot akan menampilkan dampaknya dulu sebelum benar-benar menghapus._" });
+        return true;
+      }
+
+      const impact = await db.getProductDeleteImpact(code);
+      if (!impact) {
+        await sock.sendMessage(jid, { text: `❌ Produk dengan kode *${code}* tidak ditemukan.` });
+        return true;
+      }
+
+      if (impact.reserved > 0 || impact.orderAktif.length > 0) {
+        const daftarOrder = impact.orderAktif.slice(0, 5).map(o => `• \`${o.order_id}\` (${o.status})`).join('\n');
+        await sock.sendMessage(jid, {
+          text: `🚫 *Tidak bisa dihapus — masih ada transaksi berjalan.*\n━━━━━━━━━━━━━━━━━━━━\n` +
+                `📦 *${impact.product.nama}* (\`${code}\`)\n` +
+                (impact.reserved > 0 ? `🟡 ${impact.reserved} akun sedang dikunci untuk checkout\n` : '') +
+                (impact.orderAktif.length > 0 ? `🧾 ${impact.orderAktif.length} order belum selesai:\n${daftarOrder}\n` : '') +
+                `━━━━━━━━━━━━━━━━━━━━\n` +
+                `_Selesaikan atau batalkan order itu dulu (\`.paid\` / \`.cancel\`), baru produknya bisa dihapus._`
+        });
+        return true;
+      }
+
+      // Penghapusan produk memusnahkan kredensial yang belum terjual, jadi harus
+      // ada langkah kedua yang disengaja — bukan sekali ketik seperti .delstock.
+      if (konfirmasi !== 'YA') {
+        await sock.sendMessage(jid, {
+          text: `⚠️ *KONFIRMASI PENGHAPUSAN PRODUK*\n━━━━━━━━━━━━━━━━━━━━\n` +
+                `📦 *${impact.product.nama}* (\`${code}\`)\n` +
+                `💸 Rp${(impact.product.harga || 0).toLocaleString('id-ID')}\n\n` +
+                `*Yang akan ikut terhapus:*\n` +
+                `• ${impact.ready} kredensial siap jual (hilang permanen)\n` +
+                `• Langganan notifikasi & wishlist produk ini\n\n` +
+                `*Yang tetap disimpan:*\n` +
+                `• ${impact.used} kredensial yang sudah terkirim ke pembeli (bukti garansi)\n` +
+                `• Riwayat order lama\n` +
+                `━━━━━━━━━━━━━━━━━━━━\n` +
+                `Kalau yakin, ketik:\n\`.delproduk ${code} YA\``
+        });
+        return true;
+      }
+
+      const hasil = await db.deleteProductWithItems(code);
+      if (!hasil.success) {
+        await sock.sendMessage(jid, { text: `❌ ${hasil.message || 'Gagal menghapus produk.'}` });
+        return true;
+      }
+
+      await sock.sendMessage(jid, {
+        text: `🗑️ *Produk dihapus.*\n📦 *${impact.product.nama}* (\`${code}\`)\n🔑 ${impact.ready} kredensial siap jual ikut dihapus.\n📁 ${impact.used} kredensial terjual tetap tersimpan sebagai riwayat.`
+      });
+      await logToSystem('SYSTEM', `🗑️ Produk ${code} (${impact.product.nama}) dihapus oleh admin via WhatsApp.`);
+      return true;
+    }
+
+    if (cleanCmd === 'setgambar') {
+      const code = args[1]?.toUpperCase();
+      if (!code) {
+        await sock.sendMessage(jid, { text: "⚠️ *Format:* kirim foto produknya dengan caption `.setgambar <KODE>`\n\n_Atau balas (reply) foto yang sudah terkirim dengan perintah yang sama._" });
+        return true;
+      }
+
+      const p = await db.getProductByKode(code);
+      if (!p) {
+        await sock.sendMessage(jid, { text: `❌ Produk dengan kode *${code}* tidak ditemukan.` });
+        return true;
+      }
+
+      // Foto bisa datang dua cara: menempel pada pesan ini (caption), atau pesan
+      // lama yang di-reply. Keduanya diterima supaya admin tidak perlu mengulang kirim.
+      const quoted = m?.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+      const pesanGambar = m?.message?.imageMessage
+        ? m
+        : (quoted?.imageMessage ? { ...m, message: quoted } : null);
+
+      if (!pesanGambar) {
+        await sock.sendMessage(jid, { text: `⚠️ Tidak ada foto yang terbaca.\n\nKirim fotonya dengan caption \`.setgambar ${code}\`, atau balas foto yang sudah ada dengan perintah itu.` });
+        return true;
+      }
+
+      let pathGambar;
+      try {
+        pathGambar = await simpanGambarProduk(pesanGambar, code);
+      } catch (err) {
+        console.error('[SETGAMBAR] Gagal menyimpan gambar:', err.message);
+        await sock.sendMessage(jid, { text: `❌ Gambar gagal disimpan: ${err.message}` });
+        return true;
+      }
+
+      const hasil = await db.setProductImage(code, pathGambar);
+      if (!hasil.success) {
+        await sock.sendMessage(jid, { text: `❌ ${hasil.message || 'Gagal menyimpan gambar ke produk.'}` });
+        return true;
+      }
+
+      await sock.sendMessage(jid, {
+        text: `🖼️ *Gambar produk tersimpan.*\n📦 *${p.nama}* (\`${code}\`)\n📁 \`${pathGambar}\`\n\n_Gambar ini yang tampil di katalog dan di dashboard._`
+      });
+      await logToSystem('SYSTEM', `🖼️ Gambar produk ${code} diperbarui oleh admin via WhatsApp.`);
       return true;
     }
 

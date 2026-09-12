@@ -106,11 +106,12 @@ absolutely; anything you add in the wrong position silently never runs.
 | 12 | `ent.activeGames` free-text answer check (tebakgambar / `_angka` / `_susunkata`) | `bot.js:2881` |
 | 13 | **the router chain** | `bot.js:3023` (DM) / `bot.js:3055` (group) |
 
-**The router chain**, identical in both branches:
+**The router chain** now lives in ONE function, `dispatchBotMessagePipeline` (`bot.js:1207`):
 
 ```
-checkPdfMergeSession → executePlugin → handlePdfCommands → handlePremiumCommand
-  → handleFunCommand → handleMediaCommands → handleGroupMessage → handleCustomerMessage
+checkPdfMergeSession → checkStoreWizardSession → executePlugin → handlePdfCommands
+  → handlePremiumCommand → handleFunCommand → handleMediaCommands
+  → handleGroupMessage → handleCustomerMessage
 ```
 
 - A handler **claims** a message by returning truthy; the chain then stops.
@@ -119,9 +120,17 @@ checkPdfMergeSession → executePlugin → handlePdfCommands → handlePremiumCo
   lets a message reach `customerHandler`.
 - Earlier handlers **shadow** later ones on a name collision. `funHandler` beats
   `handleMediaCommands`; `groupAdminHandler`'s `.cancel` beats `customerHandler`'s `.batal/.cancel`.
-- The DM branch (`bot.js:3023-3054`) and the group branch (`bot.js:3055-3087`) are two
-  hand-maintained copies. **Every routing change must be made twice.** This is the mechanical
-  reason behind the owner's "test in DM and group" rule.
+- The DM and group branches used to be two hand-maintained copies of the chain. They are not any
+  more: both now call the single `dispatchBotMessagePipeline`, differing only in the flags they
+  pass (`isGroup`, and `isTakenOver` which is forced to `false` for groups). A routing change is
+  made **once**. The owner's "test in DM *and* group" rule still stands — the flags, the admin
+  resolution and the per-group feature toggles diverge even though the chain no longer does.
+- The two handlers at the head of the chain are **session interceptors**, not command handlers:
+  `checkPdfMergeSession` and `checkStoreWizardSession` exist to catch messages that carry no
+  prefix at all (an uploaded PDF, the answer "Netflix 1 Bulan"). Every handler after them returns
+  early on non-prefixed text, so anything conversational has to be caught here or not at all. Both
+  return `false` immediately when the sender has no open session, which is the case for virtually
+  every message — do not add work to that path.
 - There is **no inbound deduplication**. The same message can be processed twice after a
   reconnect — anything touching money or points must be idempotent on its own.
 
@@ -490,6 +499,15 @@ checkout → db.checkoutCart (CART→WAITING_PAYMENT, reserve stock)
 - The worker DMs the owner (`settings.ownerNumber`) on stuck-job recovery and on `MANUAL_REVIEW`.
   There is still **no dashboard route** reading `fulfillment_jobs` — the DM is the only signal.
 
+**The webhook is an optimisation, not a requirement.** `scheduler.js:628` runs
+`reconcileStaleOrders(45)` on its own 45-second interval, which asks Casaku's status API about every
+order that has been PENDING for more than 45 seconds and then walks the same
+`markTransactionPaid → createFulfillmentJob` path the webhook does. A deployment with no public URL
+at all — `DASHBOARD_HOST` unset means Express binds `127.0.0.1`, so no external POST can ever land —
+still delivers automatically, just 45-90 s later instead of ~1 s. `.status` / `.cekbayar` also force
+an immediate check via `reconcileSingleOrder`. Do not tell the owner they need a tunnel before
+payments can work; they need one only to make confirmation instant.
+
 `scheduler.js` is plain `setInterval`, no cron library, no persisted last-run times:
 `processOrderAutomation` every 5 min (expiry + Casaku reconciliation + reminders + abandoned-cart),
 `processAutoSholat` every 60 s, free-games alerts every 6 h, backup check hourly (copies when 24 h
@@ -510,9 +528,11 @@ function's transaction had already committed. The licence was marked `USED` and 
 while the customer received a "payment accepted" notice and no credentials. Retrying `.paid` failed
 at the same point. Fixed; do not reintroduce.
 
-Since `.paid` is currently the only live delivery path (Casaku is unconfigured and Midtrans has no
-server key), any regression here means paid orders are never fulfilled. Treat this call site as
-load-bearing.
+`.paid` is the **fallback** delivery path, and it was the only live one for as long as
+`CASAKU_QRIS_ID` stayed unset (§14) — Midtrans has no server key either, so nothing automatic could
+fire. It stays reachable even with Casaku configured, because a customer who pays by some other
+means still has to be settled by hand. Any regression here means those orders are never fulfilled.
+Treat this call site as load-bearing.
 
 ### 10b. Premium shop discount is applied in `checkoutCart`, and the percentages live in two files
 
@@ -533,6 +553,47 @@ It is now applied in `storeDb.checkoutCart()`, which writes `orders.premium_disc
 
 `checkoutCart` returns `{ success, order, diskonPremium }`; `customerHandler` shows `diskonPremium`
 to the customer, because a discount nobody can see is indistinguishable from one that isn't applied.
+
+### 10c. Managing the shop from WhatsApp — `produkAdminDb.js` + `storeWizard.js`
+
+The owner runs this shop from a phone. Everything a product needs can now be done in chat, and the
+dashboard is optional rather than required.
+
+| Command | Does |
+|---|---|
+| `.tokobaru` | Nine-step question-and-answer wizard; the easiest path |
+| `.addproduk` / `.addproduct` | One-shot, pipe-separated; fields 6-8 (`MODE`, `KATEGORI`, `DURASI`) are optional |
+| `.editproduk <kode> <field> <nilai>` | Partial edit of exactly one column |
+| `.delproduk <kode>` | Shows the blast radius, then needs `.delproduk <kode> YA` |
+| `.setgambar <kode>` | Attach or reply with a photo; saved to `public/uploads/products/` |
+
+- **`updateProductFields` exists because `addProduct` is `INSERT OR REPLACE`.** Calling `addProduct`
+  to "edit" a product blanks every column the caller did not resend. The WhatsApp path edits one
+  field at a time, so it needs a real partial `UPDATE`. Column names come from the `FIELD_PRODUK`
+  whitelist, never from the admin's text.
+- **`.stock` now refuses AUTO products** (`setManualStock`). `products.stok` is authoritative only
+  for MANUAL products: `addToCart` and `checkoutCart` both read `getAvailableItemsCount()` — the
+  count of `product_items` rows with `status='READY'` — when `delivery_type='AUTO'`. Writing `10`
+  into an AUTO product's `stok` therefore produced a catalogue that advertised stock and then
+  refused the sale one tap later. `.out` and `.ready` are refused for the same reason, and `.out`
+  additionally never actually stopped AUTO sales. Restock via `.addstock`, reduce via `.delstock`.
+- Switching a product to `AUTO` through `.editproduk` re-derives `stok` from the credential count.
+  Switching to `MANUAL` leaves the number alone.
+- **`deleteProductWithItems` keeps `USED` items.** Those rows are the record of what was delivered
+  to a buyer and what a warranty claim is checked against; only unsold `READY` credentials are
+  destroyed. Deletion is refused outright while any `RESERVED` item or unfinished order
+  (`CART`/`WAITING_PAYMENT`/`WAITING_CONFIRMATION`/`PROCESSING`) still references the code.
+- **The wizard's session interceptor must stay at the head of the router chain** (§5).
+  `groupAdminHandler` returns `false` on its first line for non-prefixed text, and wizard answers
+  are ordinary sentences. A prefixed command arriving mid-wizard **cancels** the wizard and is
+  passed through rather than swallowed — a wizard that traps the owner is worse than one that
+  gives up too easily. Sessions are in-memory only and expire after 10 minutes of silence.
+- `parseHargaIndonesia` accepts `50000`, `50.000`, `Rp 50.000`, `50rb`, `1jt`. Both the wizard and
+  `.addproduk` go through it, so the two entry points cannot disagree about what a price is.
+- `node scripts/produkAdminSmokeTest.mjs` (`npm run test:produk`) drives all of the above —
+  including the whole wizard conversation through a fake `sock` — against a throwaway database in
+  `os.tmpdir()`. 85 assertions, no WhatsApp session needed. It `chdir`s to the sandbox **before**
+  importing the database layer; keep that order or it will write to the owner's live `shop.db`.
 
 ## 11. Dashboard (`server.js`, ~70 `/api` routes)
 
@@ -640,37 +701,90 @@ to the customer, because a discount nobody can see is indistinguishable from one
   `resellerAccess` and `restockDmAlert` appear only in template strings — there is no discount code
   path in checkout at all.
 
-### 12a. Undercover (`src/games/undercover.js`) — the one game with a state machine
+### 12a. Undercover (`src/games/undercover/`) — the one game with a state machine
 
-`activeUndercoverGames` is a fourth registry, but unlike the three above it **persists** to
-`data/undercover_state.json` and is rehydrated by `restoreUndercoverSessions` from `bot.js`.
+`src/games/undercover.js` is now a **barrel** (`export * from './undercover/index.js'`). Every old
+import path still works; do not add logic to it. The game itself lives in `src/games/undercover/`:
+
+| Module | Owns | May import |
+|---|---|---|
+| `constants.js` | timings, limits, `ROUND_MODIFIERS`, `CARD_DEFS`, `MISSION_DEFS` | nothing (leaf) |
+| `state.js` | `activeUndercoverGames`, pure helpers, save-to-disk | constants, database |
+| `flow.js` | the phase machine, voting, trial, win conditions, `finishGame` | state, stats, roles |
+| `roles.js` | category vote, role dealing, secret missions, role guide | state, flow |
+| `abilities.js` | DM skills, ghost whisper, black market | state, flow |
+| `cards.js` | the action-card shop | state |
+| `stats.js` | recap, Trust Score, mission scoring, leaderboard | state |
+| `index.js` | `handleUndercover` router, lobby, session restore, re-exports | all |
+
+`flow.js ↔ roles.js` and `abilities.js → flow.js` are deliberate ESM cycles. They work **only**
+because every cross-module reference sits inside a function body (AGENTS.md §16). Never dereference
+an imported binding at module-evaluation time in these files.
 
 - **Phase machine** (`session.status`), in order:
-  `LOBBY` → `CATEGORY_VOTE` → `CLUE_PHASE` → `DISCUSSION_PHASE` → `VOTING_PHASE` →
-  (`MR_WHITE_GUESS`) → back to `CLUE_PHASE` for the next round. Round 1 runs **two** clue passes
-  (`session.cluePass` 1 → 2) before discussion opens.
+  `LOBBY` → `CATEGORY_VOTE` → `CLUE_PHASE` (or `ANON_CLUE_PHASE`) → `DISCUSSION_PHASE` →
+  `VOTING_PHASE` → (`TRIAL_PHASE`) → (`MR_WHITE_GUESS`) → back to `CLUE_PHASE` for the next round.
+  Round 1 runs **two** clue passes (`session.cluePass` 1 → 2) before discussion opens.
 - **Never inline a phase transition.** Every path goes through `announceTurn` → `advanceTurn` →
   `finishCluePass` → `startDiscussionPhase` → `startVotingPhase` → `processUndercoverVotes` →
-  `startNextUndercoverRound`. The old file hand-duplicated the "enter voting phase" block in six
-  places and they drifted apart; that is what the refactor removed.
+  (`startTrialPhase` → `resolveTrial`) → `executeElimination` → `startNextUndercoverRound`. The old
+  file hand-duplicated the "enter voting phase" block in six places and they drifted apart; that is
+  what the refactor removed.
 - **Timer safety is `session.turnSeq`, not player identity.** `announceTurn` increments it and the
   timeout closure bails unless `cur.turnSeq === seq`. Any new timer in the clue phase must capture
   and check it, otherwise a stale timer fires against the wrong speaker.
 - **Deaths outside voting go through `killPlayer` + `resyncAfterDeath`.** `killPlayer` returns
   `{idx, wasCurrent}`; it fixes `turnIndex` when the victim sat before the current speaker, and
-  `resyncAfterDeath` re-announces only when the current speaker actually died. Removing a player
-  from `alivePlayers` by hand will hang the round.
+  `resyncAfterDeath` re-announces only when the current speaker actually died. It also unblocks
+  `ANON_CLUE_PHASE` and `TRIAL_PHASE`, which would otherwise hang waiting on a dead player's
+  submission or verdict. Removing a player from `alivePlayers` by hand will hang the round.
+- **Round modifiers are matched on `modifier.key`, never on `modifier.name`.** Renaming a modifier's
+  display text used to silently disable its rule. `pickRoundModifier` gates `ANON`/`ESTAFET` behind
+  `MODIFIER_MIN_ROUND` / `MODIFIER_MIN_ALIVE` so they cannot land on the two-pass round 1.
+- **Sidang Terakhir (trial)** runs only when `round < 4 && alivePlayers.length >= 4`. In the Zona
+  Merah skip is already locked, so an acquittal there would be a skip in disguise; at 3 players it
+  only drags out the endgame. The accused may not vote on themselves, and a tie acquits.
+- **Si Mabuk (`DRUNK`)** is a Civilian holding a decoy word from a *different* pair in the same
+  theme, dealt only at 7+ players and only half the time. `isCivilianRole` includes it on purpose —
+  counting it outside the civilian camp would shift impostor parity. It is revealed **only** in the
+  final recap: every mid-game surface (elimination announcement, Sheriff/Assassin kill, Saboteur
+  hack, dead-chat board) uses `getPublicRoleBadge`, which reports `DRUNK` as a plain Civilian.
+  Shooting the Drunk is treated as a **valid** Sheriff kill — target dies, Sheriff survives, no
+  `sheriff_kills` credit. If it counted as a misfire, one comedy role would double as a bomb that
+  removes two civilians at once.
+- **Split Word:** at 6+ players there is a 25 % chance the second impostor gets `pair.undercover2`,
+  a different word. Both still know each other. `session.pair` is a *copy* (`{...pair, undercover2}`)
+  — never mutate an entry of `WORD_PAIRS`.
+- **Ghost whispers** (`.bisik`) are the only channel a dead player has. They are capped per player
+  and per round and rejected if they contain digits, `@`, any player's name fragment, or any secret
+  word — the dead-chat intel dump would otherwise leak straight into the group.
+- **Mr. White's bought letters live in `roleData.boughtLetters`, not `session.revealedLetters`.**
+  The latter is the public Zona Merah reveal; merging them would broadcast a purchase he paid for
+  privately.
 - **The buy-in is deducted in `assignRolesAndStart`**, not when `.startundercover` is typed — a
   cancel or restart during category voting must not burn points. `refundUndercoverSession` returns
   both the buy-in (`session.buyInCharged`) and every card purchase (`session.cardPurchases`), and
   runs on `.undercover cancel` and lobby expiry.
+- **Mission bonuses use `addGamePoints` + `grantXp`, never `awardGamePoints`** (§12i): the match is
+  already recorded by `recordMatchStats`, and the bonus is paid outside the pot.
 - **Win parity excludes Mr. White**: impostors win on `aliveUndercover >= aliveCivilians`. Mr. White
   has his own solo-survival branch. Role pools are gated by player count — no Assassin/Mr. White
   below 5 players, no Saboteur below 6 — see `assignRolesAndStart`.
 - **Stats** live in `undercover_stats` (schema.js) and are written only via
   `recordUndercoverResult` / `bumpUndercoverCounter` in `gamesDb.js`. The counter column name is
-  whitelisted in `UNDERCOVER_COUNTERS` — never interpolate a caller-supplied column.
+  whitelisted in `UNDERCOVER_COUNTERS` — never interpolate a caller-supplied column. Trust Score,
+  the "deadliest clue" panel and mission scoring are derived at `finishGame` time from
+  `session.voteHistory` / `session.eliminations` / `clueLog` and are **not** persisted.
+- **Command names collide with the rest of the bot; two were resolved deliberately:**
+  `.anon` (not `.petunjuk`, which is customerHandler's tutorial) submits an anonymous-round clue,
+  and `.misi` is split at runtime — a player holding an Undercover mission gets the Undercover
+  screen, everyone else keeps the daily-mission board (same pattern as `.heal`). `.misirahasia`
+  always means Undercover.
 - **`.tukar` is the Power-Up shop** (see 12b). The Undercover turn-swap skill is `.tukargiliran`.
+- **It is testable without WhatsApp.** `node scripts/undercoverSmokeTest.mjs` plays real games
+  (lobby → roles → clues → trial → elimination → recap) against a sandboxed SQLite copy with a fake
+  `sock`, and covers each new mechanic separately so the result does not depend on the modifier
+  draw. Run it after any change here.
 
 ### 12b. Point economy policy — Akbar Poin has no rupiah value
 
@@ -1238,6 +1352,485 @@ forgot to call a recorder. Seasonal titles (Diamond+) are dynamic ids, so `tcg_g
 **Menu numbering changed:** the entries are now 1-10 with **`0`** for help (it used to be `8`).
 `8` is now `.tcg rank`. Anything that documents the shortcuts has to move with it.
 
+### 12t. Bulk salvage, auto-deck, and the unified wallet
+
+Added Aug 27 2026. Three quality-of-life commands, all of which exist because the manual version
+stopped scaling once a collection passed a few dozen duplicates.
+
+**`.tcg serpihsemua [rarity]` / `.tcg jualsemua [rarity]` — `tcgSerpihSemua` / `tcgJualSemua`
+(`tcgDb.js`).** Each runs as one `withTransaction`, and both reuse the duplicate rule of the single
+commands: `minSisa = Math.max(1, inUse)` where `inUse` is the number of `tcg_deck` + `tcg_ekspedisi`
+rows holding that card. A bulk call therefore can never empty a collection, never break an equipped
+deck, and never recall a card that is out on expedition. The rarity argument accepts a `TCG_RARITY`
+value or `semua`/`all`; **anything else returns `RARITY_TIDAK_VALID` instead of falling through to
+"all"** — this command destroys cards, so an unrecognised filter must never widen the selection.
+Two distinct failure reasons exist on purpose: `TIDAK_ADA_DUPLIKAT` (no `qty > 1` at all) versus
+`TIDAK_ADA_DUPLIKAT_BEBAS` (duplicates exist but every one of them is locked in a deck or an
+expedition) — collapsing them tells a player to go get duplicates they already have.
+`tcgJualSemua` writes **one** `tcg_ledger` row (`sumber = 'JUAL_SEMUA'`, `ref = BULK_<n>_CARDS`) for
+the whole batch, not one per card. Neither calls `catatAksi`, which matches the singles: there is no
+SERPIH/JUAL mission type.
+
+**`.tcg autodek` (aliases `bestdek`, `autodeck`, `pasangauto`) — `tcgAutoBuildDeck` (`tcgDb.js`).**
+Brute-forces every 3-card combination whose total star cost fits `TCG_MAX_DECK_COST`, scoring
+`power = atk×2.2 + hp×0.9 + kritis×500` per card and multiplying the trio's total by
+`1 + 0.08 × jumlah sinergi`, so a slightly weaker trio that forms a synergy can and should win.
+Availability is counted, not flagged: a card is usable while `qty > (jumlah baris ekspedisi)`, so
+owning two copies and sending one on expedition still leaves one to equip. The rebuild `DELETE`s the
+whole `tcg_deck` row set before inserting, which is why it must stay inside the transaction — a
+failure halfway through would otherwise leave the player with no deck at all. If no legal trio
+exists, the fallback fills slots with the cheapest cards that fit rather than returning an error.
+The search is O(n³) over available cards; that is fine at the current pool size and is the first
+thing to revisit if the card list grows a lot.
+
+`hitungSinergi` has to be imported into `tcg/index.js` from `cards.js` for the result screen. It was
+missing on the first cut and surfaced as a `ReferenceError` only when someone actually ran the
+command — the router itself loaded fine.
+
+**`.dompet` / `.wallet` / `.aset` / `.assets` / `.rekening` — `getUnifiedWalletData` (`gamesDb.js`),
+handled in `src/games/index.js`.** One `Promise.all` across five domains that used to need five
+separate commands: `customers` (IDR balance, role, name), `game_profiles` (points, bank, pending
+deposit, level, XP, streak, jail), the TCG side (`tcg_wallet.keping`, unique/total cards, shards per
+rarity, `tcg_profil.gelar_aktif`), today's `ai_usage_logs` / `media_usage_logs` counters, and the
+premium tier — the AI quota line is `getPremiumBenefits(tier).aiDailyLimit`, so it moves with the
+tier table instead of restating it.
+
+Column names are the trap here, and every one of these was an actual bug during the build:
+`customers` has **no `id` and no `created_at`** (registration time is `registered_at`),
+`game_profiles` keys on **`customer_jid`**, not `jid`, and the equipped title on `tcg_profil` is
+**`gelar_aktif`**, not `active_title`. Check `schema.js` before adding a join to this query.
+
+The command takes an optional target — a mention, the participant of a quoted message, or a phone
+number resolved through `resolveTargetJid` (never string-built into a JID; see §9a). It is not in
+`isPrivateCommand`, so the card is printed in the group where it was typed. That is deliberate for
+`.dompet @member`, but it does mean a member's rupiah balance is visible to the group, exactly like
+`.saldo`. If that ever has to change, redirect the *self* lookup to DM and keep the targeted form
+public — dropping the target is the more expensive fix.
+
+### 12u. Bringing difficulty back — previews, floor modifiers, Gauntlet, group boss
+
+Added Aug 27 2026 (v3.2). Context for why this exists at all: **the TCG battle has no player
+decisions in it.** `simulate3v3` runs three slots to completion the moment it is called. Everything
+the player can influence happens *before* the fight — which cards they own, what level those cards
+are, and which three go into the deck. So the entire challenge surface of this game is deck
+construction, and `.tcg autodek` (v3.1) solved deck construction mathematically. The five changes
+below put decisions back without touching the combat engine's balance.
+
+**Guardian previews (`ringkasPenjaga` / `elemenDek` / `saranCounter` in `battle.js`).** The 30-floor
+tower used to print only the floor name and its reward. The guardian deck was hidden, so
+counter-picking was impossible and a player learned the matchup only *after* stamina was spent. That
+is difficulty by ignorance, not by design — it tests "have you already lost here once". Both
+`kelolaMenara` and `kelolaAbadi` now list the guardian's three cards with level and star cost, plus
+one hint line naming the **elements** that beat them. Naming elements rather than cards is
+deliberate: it gives direction while leaving the choice inside the player's own collection.
+
+**Floor modifiers (`MODIFIER_ABADI`, `modifierAbadi`, `periksaSyaratModifier`).** From Menara Abadi
+floor `ABADI_MODIFIER_MULAI` (10) upward, every floor carries one of eight extra rules. Three
+properties are load-bearing and must survive any future edit:
+
+1. **Deterministic** — derived from the floor number, like the floor's name and guardian. Randomize
+   it and players re-roll until they get an easy rule, which makes the depth leaderboard meaningless.
+2. **Visible before the fight** — `.tcg abadi` prints the modifier and its effect. A hidden modifier
+   reads as the bot cheating.
+3. **One side only** — a modifier either weakens the player or strengthens the guardian, never both.
+   Mixed modifiers make the measured Abadi win curve (see `ABADI_SKALA_AWAL`) unreadable.
+
+`indeksModifier` walks the chain from floor 10 up so no two consecutive floors share a modifier. The
+short version of that check — comparing only the two raw draws — was tried first and still produced
+three identical floors in a row, because a floor whose draw was already shifted can land exactly on
+the next floor's raw draw. The walk is ~0.1 ms even at floor 5000.
+
+**Deck-construction rules are enforced outside the engine.** `laranganElemen`, `wajibElemen`, and
+`batasBintang` are checked by `periksaSyaratModifier` in `kelolaAbadi` **before stamina is spent** —
+breaking an entry rule is not a loss and must not consume a rationed resource. Only the combat
+effects (`racunPemain`, `atkPemain`, `kritPemain`, `hpPenjaga`, `perisaiPenjaga`) reach the engine,
+through `simulate3v3(..., { modifier })`.
+
+Two engine details worth knowing before adding a modifier: **`racunLantai` is a separate field from
+`racunMasuk`** because the `racun` skill *assigns* `racunMasuk` in `terapkanPukulan` and would wipe a
+floor's poison; and `perisaiLantai` deliberately does **not** reduce super-effective hits — if it
+blocked everything it would just be bonus HP and would teach nothing about countering.
+
+**Gauntlet (`tcg_gauntlet`, `tcgTantanganDb.js`, `tantangan.js`).** The answer to "a player only ever
+needs three good cards". Three fights per week; **cards that won a stage are locked for the rest of
+that week's run**, so a full clear needs nine maintained cards. Enemy decks come from
+`dekGauntlet(kunciPekan, tahap)` — deterministic per week, so everyone faces the same three opponents
+and nobody can re-roll. Losing does **not** lock cards: one loss at stage 1 must not make the rest of
+the week impossible. What is rationed is attempts (`TCG_GAUNTLET_PERCOBAAN`, 5/week), and the attempt
+is spent only after the deck passes the no-reuse check. `tcgMenangGauntlet` takes the expected stage
+number and re-checks it inside the transaction — without that, two `.tcg gauntlet lawan` messages
+arriving together would both read stage 1 and both pay the stage-1 reward.
+
+**Group boss (`tcg_bos`, `tcg_bos_kontribusi`, `tcg_bos_jatah`).** The only arena content whose
+outcome is decided collectively; everything else can be played alone. One HP pool per group per week,
+3 attacks/day/player, rewards split by damage share when it dies.
+
+- **HP scales with participation**: `TCG_BOS_HP_DASAR` + `TCG_BOS_HP_PER_PENANTANG` added the first
+  time each new player attacks, into *both* `hp` and `hp_maks` so already-dealt damage is never
+  erased. A flat number fails twice over — unkillable in a quiet group, dead on day one in a busy one.
+- **Elemental swing is much larger here** (`BOS_PENGALI_UNGGUL` 1.5 / `BOS_PENGALI_LEMAH` 0.7, versus
+  1.13/0.89 in duels). The boss does not hit back, so "which cards do you bring" is the only decision
+  left; at duel-sized swing it would not be felt at all.
+- The daily quota is decremented **inside the same transaction** as the HP subtraction, or two
+  near-simultaneous attacks both pass the quota check before either writes.
+- `tcgBagiHadiahBos` gates on `hadiah_dibagi` inside its transaction, so the reward split is paid
+  exactly once even if two messages land on the killing blow together.
+
+**`tcgAutoBuildDeck(ownerJid, opts)` grew three options** so autodeck stays useful instead of being
+the one answer to everything: `lawanElemen` (score by `power × pengaliElemen(...)` — build to *beat*
+an element rather than to be strongest), `kecuali` (Gauntlet's locked cards), and `batasBintang` /
+`laranganElemen` / `wajibElemen` (a floor's modifier). `.tcg autodek abadi` reads the next Abadi floor
+and passes all of them at once. The raw `power` is still what gets displayed; the elemental weighting
+lives in a separate `nilai` field so the number shown to players is not secretly seasoned.
+
+**Import direction:** `tcgTantanganDb.js` may import `tcgDb.js` and `tcgMetaDb.js`; neither may import
+it back. It also re-implements its own `bayarHadiah` instead of calling the `tcgDb` helpers, because
+both modes pay out *inside* a larger transaction and those helpers open transactions of their own —
+nested transactions in sqlite3 are not dependable.
+
+**Testing:** `node scripts/tcgSmokeTest.mjs` covers all of this — 143 commands / 265 checks. It runs
+against a temp SQLite database in a sandbox directory, so it is safe to run from the repo root, and
+it is the only real test this project has. Run it after any TCG change.
+
+### 12v. What the v3.2 audit found, and what changed in v3.3
+
+An adversarial audit of the v3.2 release (22 agents, findings verified by independent refuters)
+plus a follow-up review turned up six defects. They are recorded here because each one is a
+*category* of mistake that is easy to repeat in this codebase.
+
+**1. `saranCounter` recommended elements that lose.** The first version unioned `pengalahElemen`
+over the *unique* element set of the guardian deck, which throws away the 2-themed + 1-outlier shape
+that `dekAbadi` always produces, then filtered out any candidate sharing an element with the
+guardian — which is exactly where the best counter often sits. Measured over floors 1-200: **147
+floors (73.5%) suggested at least one net-losing element**, and 27% hid their own best answer. It
+now scores every candidate across all three slots as a ratio (`avg pengaliElemen(kandidat → tiap
+penjaga)` ÷ `avg pengaliElemen(tiap penjaga → kandidat)`) and only names candidates above 1.001;
+when nothing qualifies it returns an empty string rather than misleading. `kelolaMenara`'s private
+copy of the old formula is gone — one function now serves all three screens.
+
+**2. The autodeck synergy multiplier never ran.** `hitungSinergi` returns
+`{ atk, hp, sisaBintang, aktif }`, but both `tcgDb.js` and `index.js` read `sinergi.sinergi` — always
+`undefined`. So `synergyMultiplier` was permanently 1.00 and the report permanently printed "no
+synergy". Note the second half of the trap: synergy entries carry `syarat`, not `deskripsi`, so
+renaming only the property would have shipped `undefined` into the player-facing message. **When a
+field name is wrong, check every field on that object, not just the one that threw.**
+
+**3. Gauntlet opponents ignored the star budget.** `dekGauntlet` picked from a rarity pool with no
+cost cap and multiplied by `skala` up to 1.10, while players are capped at `MAKS_BIAYA_DEK` (10).
+Measured: stage-3 decks were 12-14★, and on the week of 2026-08-24 the strongest deck that could
+possibly exist (all 60 cards at Lv.5) won **10%**. Opponents now share the player's 10★ budget,
+`skala` is back to 1.00 on all three stages, and difficulty comes from card level (3/4/5).
+
+Two calibration lessons are baked into that fix. Enforcing the budget alone made stage 3 a **100%**
+win for the best deck, because a random pick from a rarity pool is a bad deck — so the opponent now
+draws from the strongest cards that fit, keeping weekly variety by picking among the top four.
+And the honest measurement must enforce the **no-reuse rule**: measuring one optimal deck against all
+three stages overstates the player badly. With the rule enforced, a complete Lv.5 collection wins
+100% / 93-100% / 40-83%.
+
+**4. Gauntlet accepted decks with empty slots.** `simulate3v3` concedes an empty slot but the match
+is still won on majority, so a 2-card deck could win 2-1 and lock only two cards — clearing the mode
+with six cards instead of the nine it exists to demand. Three filled slots are now required, and the
+rejection happens *before* an attempt is consumed.
+
+**5. `tcgAutoBuildDeck` claimed success while violating `wajibElemen`.** Only the main combination
+loop enforced it; the `availableCards.length <= 3` shortcut and the cheapest-fit fallback did not.
+The result was a loop the player could not escape: autodeck printed "Syarat dipatuhi", `kelolaAbadi`
+rejected the deck, and the rejection message told them to run the same command again. **Any
+constraint passed into that function must be enforced on all three paths.**
+
+**6. Boss rewards could vanish two different ways.** Each new challenger added a flat
+`TCG_BOS_HP_PER_PENANTANG` regardless of how much week was left — someone joining Sunday has 3
+attacks and would need 10,000 damage each just to pay for the HP they brought (ceiling is ~6,900).
+Casual participation therefore pushed the boss *further* from dying, and since rewards were paid
+only by the killing blow, a boss that survived to Sunday paid **nothing to anyone**. The added HP is
+now scaled by `tcgSisaHariPekan`, holding the break-even at ~1,429 damage/attack whenever you join.
+Separately, `tcgBagiHadiahBos` no longer requires `status = 'TUMBANG'`: `tcgBosBelumDibereskan` finds
+bosses that died without paying (the crash window between the two transactions) or whose week ended
+alive, and `kelolaBos` settles them on sight — partial payouts scale by the fraction of HP removed.
+There is no scheduler for TCG (`scheduler.js` does not mention it at all), so **a screen someone
+actually opens is the only reliable trigger for weekly settlement.**
+
+**Mission plumbing:** `catatAksi(key, 'GAUNTLET')` and `catatAksi(key, 'BOS')` were being called
+against action ids no mission listed, so both were silently discarded. `GAUNTLET` joined `M_TEMPUR`
+and a new `M_BOS` weekly mission was added. Gauntlet deliberately did **not** become a daily mission:
+it is 3 stages per week, so a player finishing on Monday would stare at an impossible daily until
+Sunday — the same trap §12s records for the MENARA daily after floor 30.
+
+**Testing:** `scripts/tcgSmokeTest.mjs` is now 144 commands / 286 checks and has a section 9d that
+locks each of these fixes. Writing those fixes also produced a `ReferenceError` in the tower defeat
+screen that the smoke test caught — the exact failure mode §3 warns about, where a fatal bug shows up
+as **silence** rather than a crash.
+
+### 12w. Card naming — Indonesian names, English epithets
+
+The catalogue is a deliberate ladder: ordinary animals at Common (`Katak Rawa`, `Tokek Batu`),
+predators at Rare, half-myths at Epic, Nusantara legends at Legendary (`Nyi Blorong`,
+`Batara Kala`), gods at Mythic (`Barong Agni`, `Sang Hyang Bayu`). **Do not translate card names
+to English.**
+
+The reason is structural, not aesthetic. The game's chrome is already English — rarity tiers,
+`Gauntlet`, `Void` — while the creatures are local; that is the standard gacha formula. Translating
+the names *inverts* the ladder, because the top two tiers are proper nouns with no translation:
+`Batara Kala` stays `Batara Kala` while `Tikus Bara` becomes `Ember Rat`, so the cheap cards end up
+sounding more premium than the endgame ones.
+
+What carries the English flavour instead is `GELAR` in `cards.js` — a one-line epithet attached to
+**Legendary and Mythic only**. Its absence on Common-Epic is a tier marker doing the same job as the
+frame colour, so do not extend it downward. A loop at the bottom of the catalogue copies the map
+onto `kartu.gelar`; every consumer must guard on it, since 45 of 60 cards have none. Each epithet is
+anchored to that card's skill or stat (`Kala Rau` / *The Eclipse Devourer* has skill `GERHANA`;
+`Kala Gledek` / *The Thunder That Splits Stone* has `GLEDEK_SELO`, and *selo* is Javanese for stone).
+
+`MYT03` was renamed `Voidreaper` → `Kala Rau` in v3.5 for exactly this reason: it was the only pure
+English name among 60 cards, and it sat in the tier where every other entry is a deity. The id did
+not change, so collections, decks, and levels were untouched — but **`cariKartu` matches on the name
+string**, so a rename does break `.tcg kartu <nama>` for anyone who memorised the old one.
+
+**Renaming a card or touching the card layout means bumping `VERSI_KARTU` in `gambar.js`.** The
+cache key is `<id>_<lv>_v<VERSI_KARTU>.png` with no content hash, so without the bump players are
+served the old picture forever. `bersihkanCacheKartu()` exists but is called from nowhere and deletes
+*every* PNG including the current version, so it is a purge, not a stale sweep — the version bump is
+the mechanism, and stale files simply accumulate (`public/tcg-cards/` is gitignored, so they never
+reach a commit).
+
+Section 12 of the smoke test locks all of this: gelar confined to the two top tiers, no orphan ids,
+epithets unique and ≤34 characters (longer ones get shrunk to mush by `tulisMuat` at 300px wide),
+and — most importantly — that the epithet actually **reaches the screen**, since a populated map that
+is never printed is precisely the silent failure §12v is about.
+
+### 12x. Refine (R1-R5), Picis, and the tier watchdog
+
+The owner asked for a gacha where some cards are must-pull and others are skippable. Measurement
+showed that hierarchy **already existed** and was merely invisible: over a full same-rarity
+round-robin (elemental exposure verified flat at 1.008-1.010, so the gap is not element luck),
+MYTHIC ranged 41%-60%, LEGENDARY 45%-57%, EPIC 42%-54%. Cards of one rarity share an `atk x hp`
+budget, so the entire spread comes from **skill quality**.
+
+**R scales the skill, never the stats.** `skillEfektif(kartu, refine)` multiplies every numeric
+coefficient by `REFINE_SKALA` (R1 x1.00 ... R5 x2.00) under per-coefficient caps in `BATAS_SKILL`.
+Stats are untouched, so `periksaKeseimbangan()` stays green and the rarity budget promise in §12r
+survives intact. The tier spread the owner wanted then emerges on its own: Gerhana's +60% opener
+becomes +120%, while a flat `HP maks +10%` stays flat. **No hand-written tier list exists, and none
+should** — the owner's instruction was that players judge for themselves and we only watch that
+nothing gets too strong.
+
+**`skillEfektif(kartu, 1)` must return the original `SKILL` object by identity**, not a copy. Every
+measured calibration in this repo — the Menara Abadi curve, the Gauntlet numbers, boss HP — was
+taken at R1 values. If R1 drifts, all of them drift silently. The smoke test and the tier meter
+both assert identity, not equality.
+
+Two traps, both caught by `scripts/tcgTierMeter.mjs` on its first run, both of which broke the
+rarity ladder:
+
+1. Skills that are a bare boolean (`bertahanMati`) have no number to scale, so R would be worthless
+   for them. A `pulihSetelahMaut` rider was added — but giving it to *every* card with that flag
+   handed Lahar Purba (Naga Merapi) a second reward on top of its already-scaling `tahan`, and it
+   hit **67% against MYTHIC R1**. The rider now applies only when `punyaAngkaSkala()` is false.
+2. The rider peaked at 0.26, which pushed Musang Gaib (RARE) to **63% against EPIC R1**. Lowered
+   to 0.16. Both rungs now sit at 45% and 59%.
+
+**The watchdog is the deliverable, not a tier list.** `node scripts/tcgTierMeter.mjs` fails with a
+non-zero exit on three conditions: R1 identity drift, intra-rarity spread past `AMBANG_SEBARAN`,
+and any R5 card beating the rarity above it past `AMBANG_NAIK_KELAS`. A card whose R is *weak* is
+only ever a warning — that is a player's judgement to make, not the bot's. Run it after any change
+to skill numbers, `BATAS_SKILL`, or the catalogue.
+
+**Picis is the second currency, and it exists for one measured reason.** Levels used to cost Keping,
+the same currency as gacha, and the production data showed who won that fight: **212 of 218
+collection rows were still Lv.1**. The level system was dead. Picis separates the two decisions the
+way Mora never competes with Primogems:
+
+```
+Keping   -> gacha, and only gacha
+Picis    -> card levels (stats)
+Serpihan -> card levels (per-rarity material)
+Duplikat -> refine R1-R5 (skill)
+```
+
+The name survived the same Levenshtein collision check that killed `Manik` and `Koin` earlier:
+`kepeng` is distance 1 from `keping`, `gobang` distance 2 from `gerbang`, `wang` distance 2 from
+`rank`/`.bank`/`.ping`. `picis` is distance 5 from `keping` and collides with nothing.
+
+Picis is credited from Gerbang and Ekspedisi, and **never written to `tcg_ledger.delta`** — that
+column is summed by audit screens to compute Keping circulation, so putting Picis amounts in it
+would poison the figure. `tcgAddPicis` records the trace with `delta = 0`.
+
+Two migration facts worth keeping: existing wallets get `TCG_PICIS_WARISAN` exactly once, because
+the grant sits *inside* the `try` block whose `ALTER TABLE` throws on every later boot. And new
+players get `TCG_BONUS_STARTER_PICIS` — without it a fresh account has 0 Picis and cannot level
+anything until its first Gerbang clear. The smoke test caught exactly that: every `.tcg naik` in the
+suite failed with "Butuh 250 Picis, kamu punya 0".
+
+`tcgRefineKartu` must never eat a duplicate that is on duty. A card can be standing in a deck slot
+*and* away on an expedition at the same time, each holding one copy; checking only `qty > 1` would
+let refine steal a card out from under the player's own deck.
+
+### 12y. Banners, rate on/off, and the 50/50
+
+`src/games/tcg/banner.js` is computed from the date, never stored. A 14-day period number derived
+from days-since-epoch selects the featured MYTHIC from an explicit `GILIRAN` rotation, and the two
+featured LEGENDARY are picked by rule: one sharing the mythic's element (so the banner has a
+readable theme) and one from a different element (so a banner is never a trap for a player weak in
+that element). This follows `dekAbadi` / `dekGauntlet` / `bosPekan` — **`scheduler.js` never touches
+TCG**, so anything that must rotate on its own has to be derived from time, or it will silently stop
+rotating the first time the bot is down at the changeover.
+
+`GILIRAN` is written out explicitly rather than read from `KARTU` order: adding a Mythic to the
+catalogue must not silently reshuffle a banner schedule that players are already planning around.
+
+**Small pools need rotation, not randomness.** The first version picked the same-element Legendary
+with a hash. With only two AIR legendaries, that produced Ratu Laut Selatan in 3 of 6 consecutive
+banners — indistinguishable from a bug to a player. `p % seelemen.length` guarantees clean
+alternation; the different-element pick is stepped by an odd multiple so the pool is walked before
+anything repeats. Measured over 10 banners: all 10 Legendaries appear, 1-3 times each.
+
+**Rate ON / rate OFF is a visibility requirement, not just a mechanic.** The owner's instruction was
+that it be clearly visible. `.tcg banner` therefore states the featured cards, the exact percentage,
+how many cards are rate-off, that rate-off cards **still drop**, and whether the player's guarantee
+is lit. Pull results prefix featured cards with ⬆️. If you change the rates, change that screen in
+the same commit — a probability the player cannot see is a probability they will assume is worse
+than it is.
+
+The 50/50 works the standard way: a non-featured card of that rarity sets `kalah_mythic` /
+`kalah_legendary`, and the next card of that rarity is then forced to be featured. Mythic and
+Legendary hold **separate** flags so one cannot consume the other's guarantee. The worst case is
+provably two Mythics, and the smoke test asserts exactly that over 500 trials.
+
+`tcg_banner` rows are keyed by `(owner_jid, banner_id)`, so an unused guarantee **does not carry**
+into the next banner. That is deliberate — carrying it would remove any reason to pull now rather
+than later. What is *not* reset is the global `tcg_pity` progress toward a Mythic at all; players
+keep everything they have accumulated. Both facts are stated on the screen, because a gacha that
+quietly resets progress is the fastest way to lose a player's trust.
+
+`undiKartuBanner` mutates the `status` object in place and the caller must save it. `prosesTarikan`
+reads it once, mutates through all ten pulls, and writes once — writing per pull would issue ten
+round-trips for one outcome.
+
+**Consecutive banners must not repeat a Legendary, and that cannot be done by looking backwards.**
+Three attempts, all measured:
+
+1. No ban at all -> 4 of 19 consecutive pairs shared a card (21%).
+2. Ban the previous period's picks, computed one level back -> 3 of 23 (13%). Still wrong, because
+   what it banned was "what period p-1 would have picked if it had no ban of its own", and p-1 did
+   have one.
+3. Two levels back -> **worse**, 10 of 59 (17%). The regress gets deeper, not shallower: knowing
+   p-1 needs p-2, which needs p-3, forever. There is no fixed point.
+
+The fix is to stop looking backwards. `JADWAL` computes one whole cycle (`GILIRAN.length * 5`
+periods) front-to-back once at module load, so each period sees the previous period's **real**
+picks, and the wrap from the last period back to the first is checked too. `bannerAktif` is then a
+lookup at `p % SIKLUS`. Measured over 81 consecutive banners (3.1 years): zero repeats, zero
+consecutive same-element mythics, all 10 Legendaries featured.
+
+A second measurement trap in the same code: the featured non-matching Legendary was originally
+picked by indexing the *filtered* pool. That pool changes membership every period (a different
+element is excluded), so the same index means a different card each time and the results clump —
+Naga Krakatau landed in 4 of the first 8 banners. Walking a **stable full-list order** with a stride
+of 3 fixed it. When you index into a collection, check whether the collection itself is stable.
+
+Elements holding two Mythics (PETIR, ANGIN, DARK) naturally feature their Legendaries more often
+than AIR's, which holds one. That spread (8x-25x over 81 banners) is structural, not a defect.
+
+### 12z. Liar's Dice (`src/games/liarsDice.js`)
+
+Perudo for 2-6 players. Five secret dice each, sent by DM every round; 1 (⚀) is wild for every face
+except 1 itself. Turn timer 45 s, lobby timeout 60 s, buy-in 20-100,000 like every other betting
+game. Winner takes the pot via `addGamePoints` (not `awardGamePoints` — see §12i; a 600k pot would
+be truncated to 1000).
+
+- **`session.resolving` is the anti-double gate, and it is load-bearing.** Between the DUDO reveal
+  and the 3-second pause before the next round, `status` is still `PLAYING` but nobody holds the
+  turn. Without the flag a second `.dudo` in that window resolves the same bid twice: the loser
+  drops two dice and `finishLiarsGame` can pay the pot twice. `startNewDiceRound` is the only place
+  that clears it.
+- **Two timers, two fields.** `session.timer` is the per-turn 45 s timer; `session.roundTimer` is
+  the 3 s pause to the next round. Both must be cleared when the game ends — a stray `roundTimer`
+  re-rolls dice for a session that no longer exists.
+- **The turn after an elimination is the *seat* after the eliminated player**, computed from the
+  index taken *before* the filter (`loserIdxSebelum % alivePlayers.length`). Falling back to index 0
+  hands player #1 the opening bid every single round.
+- **Crash-recovery row uses `db.sesiGameId('liarsdice', jid)`**, never the raw JID. See the comment
+  above `sesiGameId` in `gamesDb.js` for what raw JIDs cost the last time.
+- **The group gets one live board** (§12ab): a bid is a `catatJejak` line, not a message. The only
+  real messages are the lobby, each round's dice reveal, and the winner. Secret dice go to DM every
+  round — that is the notification the player who must act actually needs.
+- **Pure rules live in exported functions** — `hitungDaduDiMeja`, `bidLebihTinggi`, `rollDice`,
+  `formatDice`. `node scripts/liarsDiceSmokeTest.mjs` runs them for real, including 300 full tables
+  played to a winner. Do not restate a rule inside the test.
+- **Alias gating (`src/games/index.js`)**: `liar` / `bohong` / `cekdadu` / `daduku` are claimed only
+  while a table exists in that group; `tebak` is stolen from Tebak Angka only when the sender is a
+  live player at a `PLAYING` table; `bid` is deliberately **not** claimed at all — it belongs to
+  Lelang Kotak Misteri, which can run in the same group. `.kartu` needs its own hook inside the
+  poker/UNO gate higher up the file or `checkSecretDice` is unreachable.
+
+### 12aa. Mancing & Harta Karun (`src/games/fishingExplorer.js`)
+
+Three spots (Danau free, Laut 20 poin, Palung 50 poin), weighted catch table, chests opened
+separately with `.bukapeti`. Works in DM and in groups.
+
+- **This is the only point source in the bot that needs no opponent**, so it carries three brakes
+  and all three are persisted — the owner restarts the bot after every code change, and an
+  in-memory brake would hand everyone a fresh allowance each time:
+  1. 60 s cooldown per cast → `user_cooldowns`, kind `MANCING`.
+  2. 30 casts per WIB day → `fishing_baskets.casts_today` (+ `casts_date`, reset via `tanggalWIB()`).
+  3. 18 % miss chance — **the cooldown and the daily quota are consumed before the roll**, so a
+     failed strike still costs a cast. Rolling first would let players re-cast until they hit.
+- **The catch table is weighted (`chance`), not uniform.** The first version picked with a flat
+  `Math.random()` over the pool, which made a Mythic Putri Duyung exactly as likely as a Sepatu
+  Butut and gave Palung an EV of ~4,400 poin per 50-poin cast.
+- **Treasure entries carry `baseVal: 0` on purpose.** Their value is paid at `.bukapeti`; giving
+  them a sale price too pays for the same chest twice. The smoke test asserts this.
+- **`fishing_baskets` is the basket, the daily quota and the personal record in one row.** Read it
+  with `getFishingState`, write it with `saveFishingState`; 60-item cap, oldest discarded first.
+  Both `.jualikan` and `.bukapeti` write the emptied basket **before** crediting points — a failure
+  mid-way costs one sale rather than allowing the same fish to be sold twice.
+- **`keranjang` is NOT a fishing alias and must never become one.** It is the customer's shopping
+  cart (`customerHandler.js`, and the `id: '.keranjang'` button in five places). funHandler runs
+  earlier in the chain, so claiming it makes the "🛒 Lihat Keranjang" button answer with a bucket of
+  fish. Use `ember` / `ikan` / `tangkapan` / `fishbasket` instead.
+- `node scripts/fishingSmokeTest.mjs` guards the economy: it recomputes the expected value per cast
+  from the live tables and fails if the free spot or the daily ceiling drifts upward.
+
+### 12ab. The live board — one message that is edited, not N that pile up
+
+`catatJejak` / `perbaruiPapan` / `lepasPapan` in `src/games/helpers.js`. **Every turn-based group
+game must use these.** The pattern originated in `umaDerby.js`, was proven in `uno/index.js`, and is
+now the shared default.
+
+The problem it solves: each game used to send **two** messages per turn — a narration of the action
+and the full board — tagging every player in both. Battleship averages ~40 shots a match, so one
+game meant 80 long messages and 80 phone buzzes per player. The game worked; sitting in the group
+was unbearable.
+
+```js
+catatJejak(session, `🌊 ${tag(p)} tembak *B3* — meleset`);  // one action = one line, max 3 kept
+await perbaruiPapan(sock, jid, session, renderPapan, { mentions: pemain });
+```
+
+- `perbaruiPapan` sends once, keeps `session.papanKey`, then `edit: key` afterwards. **Editing does
+  not notify**, so the group only rings for things that genuinely matter.
+- It re-anchors as a fresh message every `JANGKAR_ULANG_TIAP` (12) updates, so the board does not
+  end up buried under chat, and falls back to a fresh send whenever WhatsApp refuses the edit
+  (messages older than ~15 minutes — a normal path, not a failure).
+- `mentions` is passed on **every** edit. The board writes players as `@tag`; without the array the
+  tags render as bare phone numbers. It costs no extra notifications.
+- `lepasPapan(session)` at the end of a round/match so the next one gets its own board. It also
+  clears `session.jejak`.
+- **Keep as real messages only what must ring**: match start, a round resolving (a dice reveal, an
+  elimination), a magazine reload, the winner. Everything else is a `catatJejak` line.
+- The board render itself must be short — it is re-rendered on every turn, so each decorative
+  `━━━━` line is paid dozens of times per match. Target 3-5 lines. Icons instead of names
+  (`🎒🚬🔍` not `🎒 Item: 🚬 Rokok, 🔍 Kaca Pembesar`).
+
+Converted so far: `uno/index.js` (own copy, tied to `mentionsManusia` — leave it), `battleship.js`,
+`cutTheWire.js`, `buckshotRoulette.js`, `liarsDice.js`. Still on the old two-messages-per-turn
+shape: `mysteryAuction.js`, `raidBoss.js`, `poker/texasHoldem.js`.
+
+**Every smoke test in `scripts/` ends with `process.exit(0)`.** Game modules reach `bot.js` →
+`mediaHandler.js`, which fires `pip install -U yt-dlp` at import; without the explicit exit a test
+that already passed hangs until its timeout and reads as a failure in CI-style loops.
+
 ### 12e. Release announcements (`src/utils/startupAnnounce.js`)
 
 `umumkanBotOnline(sock)` is called from the `connection === 'open'` handler in `bot.js`. Two guards
@@ -1309,14 +1902,27 @@ socket connections rejected) · `NODE_ENV` (only checked `=== 'production'` for 
 `PAIRING_NUMBER` (switches first-time login from QR to an 8-digit pairing code — the only
 headless-friendly way to link a session) · `BACKUP_RETENTION_DAYS` (14) · `GEMINI_API_KEY` ·
 `APP_URL` · `CASAKU_LICENSE_KEY` · `CASAKU_WEBHOOK_SECRET` · `CASAKU_QRIS_ID` ·
-`CASAKU_PACKAGE_IDS` (`id.dana`) · `CASAKU_QR_EXPIRY_MINUTES` (15)
+`CASAKU_PACKAGE_IDS` (`id.dana`) · `CASAKU_QR_EXPIRY_MINUTES` (15) · `DASHBOARD_HOST` (`127.0.0.1`)
 
 **Set by code, never by you:** `FFMPEG_PATH`, `YTDL_NO_UPDATE`
 
-⚠️ `.env.example` is materially incomplete: it omits the **required** `ADMIN_PASSWORD_HASH` (so a
-clone built from it cannot boot), plus `GEMINI_API_KEY`, `PAIRING_NUMBER`, `NODE_ENV`, `APP_URL`
-and the whole `CASAKU_*` block. It also lists `OWNER_NUMBER`, which nothing in the runtime reads —
-the owner number comes from the `settings` table seeded from `config.defaults.ownerNumber`.
+⚠️ **`CASAKU_QRIS_ID` is the single switch between an automatic shop and a manual one.** Checkout
+takes the dynamic-QRIS branch only when `CASAKU_LICENSE_KEY` **and** `CASAKU_QRIS_ID` are both
+non-empty (`customerHandler.js`, the `if (casakuKey && casakuQrisId)` gate). With the licence key
+set but the QRIS id missing — the exact state this deployment was in until Sep 2026 — every
+checkout silently falls through Midtrans (no server key) to a static QRIS image, the customer
+uploads a screenshot, the order parks at `WAITING_CONFIRMATION`, and the owner has to type `.paid`
+by hand. Nothing logs a warning about it. If the owner reports "the shop is too manual", check this
+variable before reading any code.
+
+⚠️ `.env.example` still omits the **required** `ADMIN_PASSWORD_HASH` (so a clone built from it
+cannot boot), plus `GEMINI_API_KEY`, `PAIRING_NUMBER` and `NODE_ENV`. The `CASAKU_*` block and
+`DASHBOARD_HOST` are documented there as of Sep 2026. It also lists `OWNER_NUMBER`, which nothing
+in the runtime reads — the owner number comes from the `settings` table seeded from
+`config.defaults.ownerNumber`.
+
+⚠️ `.gitignore` ignores `.env.*` (with `!.env.example`) so that a stray `.env.bak` cannot reach
+this public repo. Do not "simplify" that back to a bare `.env`.
 
 ⚠️ Three different config homes in one subsystem: `CASAKU_WEBHOOK_SECRET` is read from
 `process.env` **only**; Casaku license/qrisId read env with a `config.casaku` fallback; Midtrans
@@ -1353,7 +1959,8 @@ why so many call sites use dynamic `import()` instead.
 
 ## 17. Known dead code — do not "fix" by wiring it up without asking
 
-- `bot.js:2677` `knownCmdList` — ~130 entries, never referenced. (verified)
+- `bot.js:1483` `knownCmdList` — ~130 entries, never referenced. (re-verified Sep 2026; the gate
+  right below it uses `isPrefixCmd`, not this list. New commands do **not** need adding here.)
 - `src/utils/circuitBreaker.js` — all four functions imported by `mediaHandler.js:18`, **never
   called**. Nothing protects the Casaku HTTP calls either.
 - `askGeminiOCR` — exported and imported, never called.

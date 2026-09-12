@@ -8,6 +8,7 @@
     "start": "node index.js",
     "test:tcg": "node scripts/tcgSmokeTest.mjs",
     "test:identity": "node scripts/botIdentityTest.mjs",
+    "test:produk": "node scripts/produkAdminSmokeTest.mjs",
     "balance:tcg": "node scripts/tcgBalance.mjs",
     "kalibrasi:abadi": "node scripts/tcgAbadiKalibrasi.mjs"
   },

@@ -21,3 +21,7 @@ public/uno-cards/
 
 # Log runtime bot — dihasilkan saat berjalan, tidak perlu masuk repo
 *.log
+
+# Salinan/cadangan .env — isinya kunci API asli, jangan pernah masuk repo publik
+.env.*
+!.env.example

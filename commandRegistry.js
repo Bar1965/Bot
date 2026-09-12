@@ -35,6 +35,7 @@ const categories = {
         title: '🛒 BELI & LAPAK',
         items: [
           ['.beli <kode> <qty>', 'Masukkan produk ke keranjang'],
+          ['.buynow <kode> [qty]', 'Beli langsung & QRIS otomatis 🆕'],
           ['.lapak', 'Lihat lapak komunitas penjual'],
           ['.lapak add <nama> <harga> <stok> <isi>', 'Buka lapak sendiri (Premium)']
         ]
@@ -69,6 +70,7 @@ const categories = {
         title: '📦 PESANAN SAYA',
         items: [
           ['.status', 'Status pesanan terakhir'],
+          ['.cekbayar / .sudahbayar', 'Verifikasi instan status bank QRIS 🆕'],
           ['.riwayat', '5 transaksi terakhir'],
           ['.garansi [orderId]', 'Cek & klaim garansi akun'],
           ['.batal', 'Batalkan pesanan belum dibayar']
@@ -145,6 +147,9 @@ const categories = {
           ['.battleship @lawan [taruhan]', 'Perang armada kapal laut 1v1 🆕'],
           ['.buckshot @lawan [taruhan]', 'Shotgun roulette taktis 1v1 + item 🆕'],
           ['.uno [taruhan]', 'UNO 2-6 pemain, kartu via DM + bot AI 🆕'],
+          ['.liarsdice [taruhan]', 'Dadu bajak laut perudo 2-6 pemain 🆕'],
+          ['.mancing [spot]', 'Mancing ikan langka & harta karun 🆕'],
+          ['.topmancing', 'Papan rekor ikan terberat pemancing 🆕'],
           ['.capsa / .capsasusun [taruhan]', 'Capsa Susun 13 kartu adu tingkat 🆕'],
           ['.fastpoker / .poker3 [taruhan]', 'Fast 3-Card Poker kilat 🆕'],
           ['.bj / .blackjack [taruhan]', 'Kartu 21 lawan Dealer (10-5.000)'],
@@ -154,7 +159,7 @@ const categories = {
           ['.suit @member [taruhan]', 'Suit gunting-batu-kertas'],
           ['.balapkuda', 'Pacuan kuda multi-betting grup']
         ],
-        inGame: ['.hit', '.stand', '.double', '.buka', '.cashout', '.infomines', '.pasangkuda', '.check', '.call', '.raise', '.allin', '.fold', '.kartu', '.capsa ready', '.potong <warna>', '.tembak <koordinat>', '.pakai <item>']
+        inGame: ['.hit', '.stand', '.double', '.buka', '.cashout', '.infomines', '.pasangkuda', '.check', '.call', '.raise', '.allin', '.fold', '.kartu', '.capsa ready', '.potong <warna>', '.tembak <koordinat>', '.pakai <item>', '.tebak <jumlah> <angka>', '.dudo', '.nyerahliar']
       },
       {
         title: '🎴 ARENA KARTU MONSTER — DASAR',
@@ -236,7 +241,12 @@ const categories = {
           ['.heist / .rampokbank [1-4]', 'Misi bobol brankas bank grup'],
           ['.steal / .maling @member', 'Curi poin member lain'],
           ['.jailbreak / .kabur', 'Teka-teki kabur dari penjara'],
-          ['.tebus @napi', 'Bayar jaminan bebaskan teman']
+          ['.tebus @napi', 'Bayar jaminan bebaskan teman'],
+          ['.mancing [danau/laut/palung]', 'Mancing ikan langka & peti karun 🆕'],
+          ['.ikan / .tangkapan', 'Isi ember & rekor tangkapanmu 🆕'],
+          ['.jualikan', 'Jual seluruh ikan ke Pasar Ikan 🆕'],
+          ['.bukapeti', 'Buka peti karun, jackpot poin 🆕'],
+          ['.tokopancing', 'Panduan spot & sisa jatah harian 🆕']
         ]
       }
     ]
@@ -409,6 +419,29 @@ const categories = {
           ['.daftar <nama>', 'Registrasi member baru'],
           ['.gantinama <nama baru>', 'Ganti nama profil'],
           ['.profil', 'Detail lengkap profil member']
+        ]
+      },
+      {
+        title: '🏪 KELOLA PRODUK (Owner / Admin)',
+        items: [
+          ['.tokobaru', 'Bikin produk lewat tanya-jawab 🆕'],
+          ['.addproduk <kode>|<nama>|...', 'Tambah produk sekali ketik 🆕'],
+          ['.editproduk <kode> <field> <nilai>', 'Ubah satu kolom produk 🆕'],
+          ['.delproduk <kode>', 'Hapus produk (minta konfirmasi) 🆕'],
+          ['.setgambar <kode>', 'Pasang gambar (kirim/balas foto) 🆕'],
+          ['.listproduk', 'Ringkasan semua produk & stok toko'],
+          ['.price <kode> <harga>', 'Ubah harga produk']
+        ]
+      },
+      {
+        title: '📦 KELOLA STOK & ORDER (Owner / Admin)',
+        items: [
+          ['.addstock <kode> [akun]', 'Tambah stok digital (multi-baris)'],
+          ['.cekstok <kode>', 'Cek rincian akun ready & terjual'],
+          ['.delstock <id>', 'Hapus item akun rusak per ID'],
+          ['.setdelivery <kode> <auto/manual>', 'Ubah mode kirim produk'],
+          ['.stock <kode> <qty>', 'Ubah stok — produk MANUAL saja'],
+          ['.paid <orderId>', 'Konfirmasi manual order lunas']
         ]
       },
       {
