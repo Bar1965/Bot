@@ -382,6 +382,33 @@ const ordG = await db.getQuery("SELECT warranty_until FROM orders WHERE order_id
 cek('warranty_until tersimpan di order -> .garansi bisa membacanya',
   Number(ordG?.warranty_until) > Date.now(), `nilai=${ordG?.warranty_until}`);
 
+bagian('20. Kepemilikan pesanan: @lid vs nomor HP');
+// `.garansi` dan `.review` memakai ini untuk memutuskan apakah penanya benar
+// pemilik pesanan. Mayoritas baris orders tersimpan sebagai @lid sementara
+// pengirim yang sama di DM datang sebagai nomor HP, jadi perbandingan
+// huruf-per-huruf menolak pembeli yang sah.
+const LID_A = '59837887057934@lid';
+const HP_A = '628111222333@s.whatsapp.net';
+const LID_B = '11111111111111@lid';
+const HP_B = '628999888777@s.whatsapp.net';
+
+await db.catatPetaLid(LID_A, '628111222333');
+
+cek('JID sama persis', (await db.samaOrangnya(HP_A, HP_A)) === true);
+cek('nomor sama, sufiks perangkat beda', (await db.samaOrangnya('628111222333:12@s.whatsapp.net', HP_A)) === true);
+cek('dua nomor berbeda ditolak', (await db.samaOrangnya(HP_A, HP_B)) === false);
+cek('@lid terpetakan cocok dengan nomornya', (await db.samaOrangnya(LID_A, HP_A)) === true);
+cek('urutan dibalik tetap cocok', (await db.samaOrangnya(HP_A, LID_A)) === true);
+cek('@lid terpetakan vs nomor LAIN ditolak', (await db.samaOrangnya(LID_A, HP_B)) === false);
+cek('@lid BELUM terpetakan ditolak, bukan ditebak', (await db.samaOrangnya(LID_B, HP_B)) === false);
+cek('dua @lid berbeda tanpa peta ditolak', (await db.samaOrangnya(LID_A, LID_B)) === false);
+cek('kosong ditolak', (await db.samaOrangnya('', HP_A)) === false);
+cek('null ditolak', (await db.samaOrangnya(null, LID_A)) === false);
+
+// Dua @lid berbeda milik orang yang sama (ganti perangkat) harus dikenali.
+await db.catatPetaLid(LID_B, '628111222333');
+cek('dua @lid berbeda, nomor sama -> orang yang sama', (await db.samaOrangnya(LID_A, LID_B)) === true);
+
 console.log(`\n${'='.repeat(50)}`);
 console.log(`HASIL: ${lulus} lulus, ${gagal} gagal`);
 console.log('='.repeat(50));

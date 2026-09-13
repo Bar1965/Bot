@@ -389,6 +389,15 @@ constructed JID.
 are ever visible together: Baileys group metadata, where `participant.id` is the `@lid` and
 `participant.jid` is the phone. It fills in gradually, so mention/reply remains the reliable path.
 
+**Never compare two customer identities with `===` / `!==`.** Use **`db.samaOrangnya(a, b)`**, which
+tries exact match → both-are-phones via `isPhoneMatch` → `@lid` translated through `lid_phone_map`,
+and returns `false` rather than guessing when a `@lid` has never been mapped. The same human is
+`@lid` writing in a group and `628…@s.whatsapp.net` writing in DM, and **6 of the 7 rows in
+`orders` are stored under `@lid`**. `.garansi` and `.review` both gated ownership on `!==` and so
+told genuine buyers their own order "tidak ditemukan pada akun Anda" — `.garansi` most of all,
+since the delivery message tells the buyer to type `.garansi <ORDER_ID>`, which is exactly the
+branch that compares. Section 20 of `produkAdminSmokeTest.mjs` pins the accept *and* refuse cases.
+
 ### 9b. The bot has two identities too — `src/utils/botIdentity.js`
 
 The same LID split applies to the bot's **own** account, and getting it wrong is worse than a failed

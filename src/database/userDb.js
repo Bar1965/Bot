@@ -112,6 +112,38 @@ export async function cariNomorDariLid(lidJid) {
 }
 
 /**
+ * Apakah dua identitas ini milik orang yang sama?
+ *
+ * Membandingkan JID pelanggan dengan `!==` tidak bisa dipercaya di bot ini.
+ * Satu orang muncul sebagai `@lid` saat menulis di grup dan sebagai
+ * `628xxx@s.whatsapp.net` saat menulis di DM, dan mayoritas baris `orders`
+ * tersimpan dengan bentuk `@lid` — jadi perbandingan huruf-per-huruf akan
+ * memberitahu pembeli yang sah bahwa pesanannya "tidak ditemukan".
+ *
+ * Urutannya: sama persis → dua-duanya nomor HP → terjemahkan `@lid` lewat
+ * `lid_phone_map` lalu bandingkan digitnya. Kalau sebuah `@lid` belum pernah
+ * terpetakan, jawabannya `false` — tidak bisa dibuktikan orang yang sama, dan
+ * menebak di jalur kepemilikan pesanan lebih berbahaya daripada menolak.
+ */
+export async function samaOrangnya(a, b) {
+  const bersih = (s) => String(s || '').trim().toLowerCase().replace(/:[0-9]+@/, '@');
+  const A = bersih(a);
+  const B = bersih(b);
+  if (!A || !B) return false;
+  if (A === B) return true;
+
+  const aLid = A.endsWith('@lid');
+  const bLid = B.endsWith('@lid');
+
+  if (!aLid && !bLid) return isPhoneMatch(A, B);
+
+  const digitA = aLid ? await cariNomorDariLid(A) : normalizePhoneDigits(A);
+  const digitB = bLid ? await cariNomorDariLid(B) : normalizePhoneDigits(B);
+  if (!digitA || !digitB) return false;
+  return isPhoneMatch(digitA, digitB);
+}
+
+/**
  * Ubah masukan mentah dari perintah admin menjadi JID yang BENAR-BENAR dipakai
  * orangnya, atau akui terus terang kalau tidak bisa.
  *

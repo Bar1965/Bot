@@ -1834,7 +1834,13 @@ ${itemsText}
       targetOrder = await db.getCustomerLastOrder(senderNumber);
     }
 
-    if (!targetOrder || (targetOrder.customer_nomor !== senderNumber && !actor.isAdmin && !actor.isOwner)) {
+    // Perbandingan `!==` di sini dulu menolak pemilik pesanan yang sah. Mayoritas
+    // baris `orders` tersimpan dengan JID `@lid` (pembeli menulis dari grup),
+    // sementara pengirim yang sama di DM datang sebagai `628xxx@s.whatsapp.net`.
+    // Dan pesan pengirimannya sendiri menyuruh mereka mengetik `.garansi <ORDER_ID>`
+    // — jalur yang justru paling sering kena.
+    const pemilikSah = targetOrder && await db.samaOrangnya(targetOrder.customer_nomor, senderNumber);
+    if (!targetOrder || (!pemilikSah && !actor.isAdmin && !actor.isOwner)) {
       await sock.sendMessage(responseJid, {
         text: `❌ Tidak ditemukan riwayat pembelian untuk nomor Anda.\n\nKetik \`.list\` untuk berbelanja produk digital.`
       });
@@ -2246,7 +2252,9 @@ ${casakuPayment.uniqueCode > 0 ? `_(Nominal top-up Rp${amount.toLocaleString('id
     const comment = reviewMatch[3].trim();
 
     const orderObj = await db.getOrderById(orderId);
-    if (!orderObj || orderObj.customer_nomor !== senderNumber) {
+    // Sama seperti `.garansi`: pembeli yang pesanannya tercatat sebagai `@lid`
+    // tidak akan pernah lolos perbandingan huruf-per-huruf saat menulis dari DM.
+    if (!orderObj || !(await db.samaOrangnya(orderObj.customer_nomor, senderNumber))) {
       await sock.sendMessage(responseJid, { text: `❌ Transaksi #${orderId} tidak ditemukan pada akun Anda.` });
       return;
     }
