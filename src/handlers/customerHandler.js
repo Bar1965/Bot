@@ -4,6 +4,7 @@ import { jidNormalizedUser, downloadMediaMessage, downloadContentFromMessage } f
 import { createMidtransTransaction, botState } from '../../server.js';
 import { buildCommandMenu, resolveCategoryId } from '../../commandRegistry.js';
 import { getSystemChangelog } from '../utils/changelog.js';
+import { keWaktu, tanggalJamWib, tanggalWib, tanggalPanjangWib } from '../utils/waktu.js';
 import * as mediaHandler from '../../mediaHandler.js';
 import * as ent from '../../entertainmentHandler.js';
 import { sendInteractiveButtons } from '../../bot.js';
@@ -1799,7 +1800,7 @@ ${itemsText}
     }
     msg += `📊 *STATUS PESANAN*\n━━━━━━━━━━━━━━━━━━\n`;
     msg += `Order ID: *${details.order_id}*\n`;
-    msg += `Tanggal: ${new Date(details.created_at).toLocaleString('id-ID')}\n`;
+    msg += `Tanggal: ${tanggalJamWib(details.created_at)}\n`;
     msg += `Total: *Rp${details.total.toLocaleString('id-ID')}*\n`;
     msg += `Status: *${statusTranslate}*\n\n`;
     msg += `*Item yang dipesan:*\n`;
@@ -1855,9 +1856,14 @@ ${itemsText}
     }
 
     const now = Date.now();
-    const wUntil = targetOrder.warranty_until ? Number(targetOrder.warranty_until) : (targetOrder.created_at ? new Date(targetOrder.created_at).getTime() + 30 * 24 * 60 * 60 * 1000 : null);
+    // Cadangan 30 hari dihitung dari created_at, yang tersimpan UTC tanpa penanda
+    // zona — dibaca `new Date()` mentah, masa garansinya meleset 7 jam.
+    const dibuatPada = keWaktu(targetOrder.created_at);
+    const wUntil = targetOrder.warranty_until
+      ? Number(targetOrder.warranty_until)
+      : (dibuatPada ? dibuatPada.getTime() + 30 * 24 * 60 * 60 * 1000 : null);
     const isExpired = wUntil ? (now > wUntil) : false;
-    const wDateStr = wUntil ? new Date(wUntil).toLocaleDateString('id-ID', { dateStyle: 'full' }) : '30 Hari sejak pembelian';
+    const wDateStr = wUntil ? tanggalPanjangWib(wUntil) : "30 Hari sejak pembelian";
 
     let warrantyMsg = `━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🛡️ *STATUS GARANSI & LAYANAN PURNA JUAL*
@@ -1933,7 +1939,7 @@ Kami akan otomatis mengirimkan pesan WhatsApp ke nomor ini begitu produk *${p.na
       msg += `${statusEmoji} *${o.order_id}*\n`;
       msg += `   Total: Rp${o.total.toLocaleString('id-ID')}`;
       if (o.discount_amount > 0) msg += ` (Diskon: -Rp${o.discount_amount.toLocaleString('id-ID')})`;
-      msg += `\n   Status: ${o.status}\n   Tanggal: ${new Date(o.created_at).toLocaleDateString('id-ID')}\n   Item: ${o.items_summary || '-'}\n\n`;
+      msg += `\n   Status: ${o.status}\n   Tanggal: ${tanggalWib(o.created_at)}\n   Item: ${o.items_summary || '-'}\n\n`;
     }
     msg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
     await sock.sendMessage(responseJid, { text: msg });
@@ -2309,7 +2315,7 @@ Ketik *.list* atau *.produk* untuk melihat daftar produk toko kami!`;
 Halo *${customerName}*, berikut adalah daftar voucher / akun digital dari pesanan Anda sebelumnya:\n\n`;
 
     history.forEach((order, idx) => {
-      const dateStr = new Date(order.created_at).toLocaleString('id-ID');
+      const dateStr = tanggalJamWib(order.created_at);
       msg += `📦 *[${idx + 1}] Order ID:* \`${order.order_id}\`
 ⏰ Waktu: ${dateStr}
 💰 Total: Rp${order.total.toLocaleString('id-ID')}\n`;
@@ -2369,8 +2375,10 @@ Halo *${customerName}*, berikut adalah daftar voucher / akun digital dari pesana
       console.log('Bukti pembayaran terdeteksi. Mengunduh media...');
       const buffer = await downloadMediaMessage(messageObj, 'buffer', {});
 
-      // Buat struktur direktori bertingkat YYYY/MM
-      const date = new Date(lastOrder.created_at);
+      // Buat struktur direktori bertingkat YYYY/MM. Dibaca lewat keWaktu supaya
+      // bukti transfer pesanan dini hari tidak jatuh ke folder bulan sebelumnya
+      // (created_at tersimpan UTC, dan pergeseran 7 jam melewati batas bulan).
+      const date = keWaktu(lastOrder.created_at) || new Date();
       const year = date.getFullYear().toString();
       const month = (date.getMonth() + 1).toString().padStart(2, '0');
       const dirPath = `./public/receipts/${year}/${month}`;

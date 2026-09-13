@@ -12,9 +12,11 @@
  * klaim garansi kembali jadi pekerjaan tangan pemilik toko, padahal perintah
  * swalayannya sudah ada.
  *
- * Modul ini tidak mengimpor apa pun, jadi aman dipanggil dari mana saja tanpa
- * menutup siklus impor (AGENTS.md §16).
+ * Modul ini hanya mengimpor `waktu.js` — yang sendirinya tidak mengimpor apa pun
+ * — jadi aman dipanggil dari mana saja tanpa menutup siklus (AGENTS.md §16).
  */
+
+import { tanggalPanjangWib } from './waktu.js';
 
 /**
  * Baris "garansi aktif hingga <tanggal>".
@@ -23,9 +25,10 @@
  */
 export function barisGaransiAktif(warrantyUntil) {
   if (!warrantyUntil) return '';
-  const tanggal = new Date(Number(warrantyUntil));
-  if (isNaN(tanggal.getTime())) return '';
-  const teks = tanggal.toLocaleDateString('id-ID', { dateStyle: 'full' });
+  // Lewat helper WIB, bukan zona mesin: kalau bot suatu saat pindah ke server
+  // UTC, tanggal garansi tidak boleh ikut bergeser di mata pelanggan.
+  const teks = tanggalPanjangWib(warrantyUntil, '');
+  if (!teks) return '';
   return `🛡️ *Garansi Aktif Hingga:* ${teks}\n`;
 }
 

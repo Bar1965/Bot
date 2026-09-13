@@ -995,6 +995,17 @@ the AI quota (`getAiUsageToday` / `incrementAiUsage`, which reset at 07:00 WIB a
 twice inside two minutes across that boundary). Note `getDailySalesReport` already filters with
 `DATE(created_at, '+7 hours')`, so passing it a UTC date silently queried the wrong day.
 
+**Displaying a stored timestamp is the other half, and it was wrong everywhere.** `created_at`
+columns use SQLite `CURRENT_TIMESTAMP`, which writes **UTC** as `"2026-09-13 03:55:38"` — no zone
+marker. V8 parses that shape as **local** time, so `new Date(row.created_at)` on a WIB machine is
+off by exactly 7 hours in the wrong direction: an order placed 10:55 WIB was shown to the customer
+as 03:55, and `toLocaleDateString` moved late-night orders back a whole day. Use
+**`src/utils/waktu.js`** — `keWaktu()` to parse (handles the SQLite shape, epoch ms as number or
+string, and zoned ISO), then `tanggalJamWib` / `tanggalWib` / `tanggalPanjangWib` to render, all
+pinned to `Asia/Jakarta` rather than the machine's zone so a move to a UTC VPS changes nothing.
+Fixed at `.status`, `.riwayat`, the review screen, `.listmod`, the `.garansi` fallback window, and
+the `receipts/YYYY/MM` folder for payment proofs. Section 21 of `produkAdminSmokeTest.mjs` pins it.
+
 Database backups use the same pattern: `KUNCI_BACKUP` in `scheduler.js`. `lastBackupTime` was an
 in-memory variable that reset to 0 on every start while `startScheduler()` also ran a backup on its
 last line, so **every restart produced a backup**. Combined with `MAX_BACKUPS = 15` OR-ed against the

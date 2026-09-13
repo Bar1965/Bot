@@ -409,6 +409,28 @@ cek('null ditolak', (await db.samaOrangnya(null, LID_A)) === false);
 await db.catatPetaLid(LID_B, '628111222333');
 cek('dua @lid berbeda, nomor sama -> orang yang sama', (await db.samaOrangnya(LID_A, LID_B)) === true);
 
+bagian('21. Stempel waktu database dibaca sebagai UTC, ditampilkan WIB');
+const { keWaktu, tanggalJamWib, tanggalWib, tanggalPanjangWib } =
+  await import(REPO + 'src/utils/waktu.js');
+
+// Bentuk yang dihasilkan CURRENT_TIMESTAMP SQLite: UTC, tanpa penanda zona.
+const UTC_STR = '2026-09-13 03:55:38';
+const d = keWaktu(UTC_STR);
+cek('string SQLite terbaca sebagai UTC', d.toISOString() === '2026-09-13T03:55:38.000Z', d?.toISOString());
+cek('ditampilkan sebagai 10.55 WIB, bukan 03.55', tanggalJamWib(UTC_STR).includes('10.55.38'), tanggalJamWib(UTC_STR));
+
+// Pesanan dini hari WIB: 2026-09-13 01:00 WIB = 2026-09-12 18:00 UTC.
+// Dibaca mentah, tanggalnya mundur sehari menjadi 12 September.
+cek('tanggal dini hari tidak mundur sehari', tanggalWib('2026-09-12 18:00:00').includes('13/9/2026'), tanggalWib('2026-09-12 18:00:00'));
+
+cek('epoch milidetik (angka) terbaca', keWaktu(1789000000000) instanceof Date);
+cek('epoch milidetik (string angka) terbaca', keWaktu('1789000000000') instanceof Date);
+cek('string ISO ber-zona tidak digeser lagi', keWaktu('2026-09-13T03:55:38.000Z').toISOString() === '2026-09-13T03:55:38.000Z');
+cek('null -> null', keWaktu(null) === null);
+cek('teks ngawur -> null', keWaktu('bukan tanggal') === null);
+cek('tampilan null memakai cadangan', tanggalJamWib(null) === '-');
+cek('tanggal panjang WIB terbentuk', tanggalPanjangWib(UTC_STR).includes('2026'));
+
 console.log(`\n${'='.repeat(50)}`);
 console.log(`HASIL: ${lulus} lulus, ${gagal} gagal`);
 console.log('='.repeat(50));

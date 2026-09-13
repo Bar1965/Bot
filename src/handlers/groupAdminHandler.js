@@ -14,6 +14,7 @@ import { adalahJidBot } from '../utils/botIdentity.js';
 import { perisaiTarget } from '../utils/perisaiTarget.js';
 import { mulaiWizardProduk, simpanGambarProduk } from './storeWizard.js';
 import { penutupGaransi } from '../utils/pesanGaransi.js';
+import { tanggalWib } from '../utils/waktu.js';
 
 export function createGroupAdminHandler(ctx) {
     const { sock, userPushNamesMap, messageCache, formatPhoneNumber, react, sendInteractiveButtons } = ctx;
@@ -562,7 +563,7 @@ User ini sekarang bisa kembali berinteraksi dengan bot.`,
 Belum ada moderator yang terdaftar.
 Gunakan \`.addmod @user\` untuk menambahkan.` });
       } else {
-        const modList = mods.map((mod, i) => `${i+1}. \`${mod.jid}\`\n   📅 ${new Date(mod.created_at).toLocaleDateString('id-ID')}`).join('\n');
+        const modList = mods.map((mod, i) => `${i+1}. \`${mod.jid}\`\n   📅 ${tanggalWib(mod.created_at)}`).join('\n');
         await sock.sendMessage(jid, { text: `📋 *Daftar Moderator Bot* (${mods.length} orang)
 
 ${modList}
