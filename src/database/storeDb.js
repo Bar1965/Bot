@@ -743,8 +743,9 @@ export async function checkoutCart(customerNomor) {
   await runQuery("UPDATE orders SET premium_discount = ? WHERE order_id = ?", [diskonPrem.rupiah, cart.order_id]);
   await updateOrderTotal(cart.order_id);
 
+  // waiting_since distempel DI SINI, bukan dibaca dari created_at.
   await runQuery(
-    "UPDATE orders SET status = 'WAITING_PAYMENT' WHERE order_id = ?",
+    "UPDATE orders SET status = 'WAITING_PAYMENT', waiting_since = CURRENT_TIMESTAMP WHERE order_id = ?",
     [cart.order_id]
   );
 
@@ -998,8 +999,20 @@ export async function updateOrderStatus(orderId, status, paymentStatus = null) {
     }
   }
 
-  // Jika berubah dari SUDAH BAYAR ke BATAL/BELUM BAYAR, kembalikan stok produk MANUAL
-  if (oldStatus !== newStatus && !isPaidStatus(newStatus)) {
+  // Stok hanya dilepas kalau pesanannya BENAR-BENAR batal.
+  //
+  // Syaratnya dulu `!isPaidStatus(newStatus)`, yang juga mencakup
+  // WAITING_CONFIRMATION — status yang dipasang begitu pelanggan mengirim foto
+  // bukti transfer. Jadi pada detik pembeli mengirim bukti bayarnya, kredensial
+  // yang sudah dikunci untuk dia dilepas kembali ke READY dan stok MANUAL-nya
+  // dikembalikan ke katalog. Pesanannya masih hidup, menunggu admin, sementara
+  // barangnya sudah boleh dibeli orang lain. Saat admin akhirnya mengetik
+  // `.paid`, stoknya bisa sudah tidak ada.
+  //
+  // CART juga bukan pembatalan — itu keranjang yang belum di-checkout dan
+  // memang belum memesan apa pun.
+  const statusBatal = (st) => st === 'CANCELLED';
+  if (oldStatus !== newStatus && statusBatal(newStatus)) {
     const items = await allQuery("SELECT * FROM order_items WHERE order_id = ?", [orderId]);
     for (const item of items) {
       const product = await getProductByKode(item.produk_kode);
@@ -1104,13 +1117,30 @@ export async function setReminderSent(orderId) {
 }
 
 // Mengambil order yang menunggu pembayaran selama lebih dari 24 jam (untuk dibatalkan otomatis)
+/**
+ * Pesanan yang menunggu bayar lebih dari 24 jam.
+ *
+ * MASALAH YANG DIPERBAIKI: ambangnya dulu `created_at`, yaitu saat baris order
+ * dibuat — dan baris itu lahir sebagai KERANJANG, saat item pertama dimasukkan.
+ * checkoutCart hanya membalik statusnya dan tidak pernah menyentuh created_at.
+ *
+ * Jadi pelanggan yang menyusun keranjang tiga hari lalu, lalu hari ini menekan
+ * checkout, langsung memenuhi syarat "lewat 24 jam" — dan penyapu berikutnya
+ * (jalan tiap 5 menit) membatalkan pesanannya beberapa menit setelah QRIS-nya
+ * terbit, lengkap dengan DM "pesanan Anda dibatalkan karena tidak ada
+ * pembayaran dalam 24 jam". Kalau dia terlanjur membayar, uangnya masuk ke
+ * pesanan yang sudah CANCELLED.
+ *
+ * COALESCE dipakai supaya baris lama yang belum punya waiting_since tetap
+ * tertangani memakai perilaku lama.
+ */
 export async function getExpiredOrders() {
   return await allQuery(`
     SELECT o.*, c.nama as customer_nama 
     FROM orders o 
     JOIN customers c ON o.customer_nomor = c.nomor 
     WHERE o.status = 'WAITING_PAYMENT' 
-      AND o.created_at <= datetime('now', '-24 hours')
+      AND COALESCE(o.waiting_since, o.created_at) <= datetime('now', '-24 hours')
   `);
 }
 

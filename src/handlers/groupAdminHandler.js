@@ -1646,8 +1646,17 @@ ${panduanMode}`
         await sock.sendMessage(jid, { text: "⚠️ Format salah. Gunakan: `.release [NOMOR]`\nContoh: `.release 6281234567890`" });
         return true;
       }
-      const targetJid = targetNumber.includes('@') ? targetNumber : `${targetNumber}@s.whatsapp.net`;
-      await db.updateConversationState(targetJid, 'BOT');
+      // Kembaran `.takeover` ini ikut diperbaiki. Kalau hanya salah satunya yang
+      // memakai resolveTargetJid, chat bisa diambil alih tapi TIDAK PERNAH bisa
+      // dikembalikan: `.takeover` menulis status di bawah identitas @lid yang
+      // benar, sementara `.release` mencari baris `628...@s.whatsapp.net` yang
+      // tidak pernah ada.
+      const sasaranRilis = await db.resolveTargetJid(targetNumber);
+      if (!sasaranRilis.ditemukan) {
+        await sock.sendMessage(jid, { text: `❌ Nomor *${targetNumber}* tidak dikenali. Balas (reply) pesan pelanggannya lalu ketik \`.release\`.` });
+        return true;
+      }
+      await db.updateConversationState(sasaranRilis.jid, 'BOT');
       await sock.sendMessage(jid, { text: `✅ Chat dengan ${targetNumber} telah dikembalikan ke Bot. Bot akan membalas otomatis kembali.` });
       return true;
     }

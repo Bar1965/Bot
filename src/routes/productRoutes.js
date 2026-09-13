@@ -93,10 +93,43 @@ router.post('/products/:kode/restock-broadcast', authenticateJWT, authorizeRoles
 });
 
 // Owner dan Admin bisa menghapus produk
+// Tombol Hapus di dashboard memakai penjaga yang SAMA dengan `.delproduk`.
+//
+// Dulu route ini memanggil db.deleteProduct(), yaitu satu baris
+// `DELETE FROM products WHERE kode = ?` tanpa pemeriksaan apa pun. Tiga
+// akibatnya:
+//
+//   1. Produk yang kredensialnya sedang RESERVED untuk pesanan yang menunggu
+//      pembayaran tetap terhapus — pembeli membayar, lalu tidak ada yang dikirim.
+//   2. Seluruh baris product_items ditinggalkan YATIM (tidak ada ON DELETE
+//      CASCADE di skema). Membuat ulang produk dengan kode yang sama kemudian
+//      MENGHIDUPKAN kembali kredensial lama itu, termasuk yang sudah pernah
+//      terjual.
+//   3. Baris USED — satu-satunya bukti apa yang pernah dikirim ke pembeli, yang
+//      dipakai klaim `.garansi` — ikut kehilangan induknya.
+//
+// deleteProductWithItems menolak selama masih ada RESERVED atau pesanan aktif,
+// menyapu subscriptions/wishlist, dan sengaja MENYIMPAN baris USED.
 router.delete('/products/:kode', authenticateJWT, authorizeRoles('Owner', 'Admin'), async (req, res) => {
   try {
     const { kode } = req.params;
-    await db.deleteProduct(kode);
+    const hasil = await db.deleteProductWithItems(kode);
+
+    if (!hasil.success) {
+      if (hasil.alasan === 'TIDAK_ADA') {
+        return res.status(404).json({ success: false, message: hasil.message });
+      }
+      const im = hasil.impact || {};
+      const daftar = (im.orderAktif || []).map(o => `${o.order_id} (${o.status})`).join(', ');
+      return res.status(409).json({
+        success: false,
+        message: `Produk ini masih terikat transaksi berjalan: ${im.reserved || 0} kredensial terkunci` +
+                 (daftar ? `, pesanan aktif: ${daftar}` : '') +
+                 '. Selesaikan atau batalkan dulu pesanannya.',
+        impact: { reserved: im.reserved || 0, ready: im.ready || 0, used: im.used || 0, orderAktif: im.orderAktif || [] }
+      });
+    }
+
     res.json({ success: true, message: "Produk berhasil dihapus." });
   } catch (err) {
     res.status(500).json({ success: false, message: pesanErrorAman(err, 'PRODUCT') });

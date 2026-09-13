@@ -72,7 +72,23 @@ export function parseHargaIndonesia(teks) {
     s = s.slice(0, -satuan[1].length);
   }
 
-  // Titik dan koma di Indonesia adalah pemisah ribuan, bukan desimal.
+  // Titik dan koma di Indonesia adalah pemisah RIBUAN — kecuali saat dipakai
+  // bersama satuan, di mana orang menulis pecahan: "12,5rb" berarti Rp12.500 dan
+  // "1,5jt" berarti Rp1.500.000.
+  //
+  // Dulu pemisahnya dibuang lebih dulu tanpa syarat, jadi "12,5rb" menjadi 125
+  // lalu dikalikan 1000 = Rp125.000. Sepuluh kali lipat dari yang dimaksud
+  // pemiliknya, tanpa satu pun peringatan.
+  if (pengali > 1) {
+    const pecahan = s.match(/^(\d+)[.,](\d{1,3})$/);
+    if (pecahan) {
+      const utuh = Number(pecahan[1]);
+      const sisa = Number(pecahan[2].padEnd(3, '0')) / 1000;
+      const hasil = Math.round((utuh + sisa) * pengali);
+      return Number.isSafeInteger(hasil) && hasil >= 0 ? hasil : null;
+    }
+  }
+
   s = s.replace(/[.,]/g, '');
   if (!/^\d+$/.test(s)) return null;
 
@@ -277,11 +293,18 @@ export async function getProductDeleteImpact(kode) {
 
   // Order yang belum selesai: menghapus produknya membuat checkout dan pengiriman
   // kehilangan acuan harga/nama di tengah jalan.
+  //
+  // 'PAID' WAJIB ada di daftar ini. Itu keadaan pesanan yang uangnya SUDAH masuk
+  // tapi produknya belum terkirim — job pengirimannya masih antre, sedang
+  // dicoba ulang, atau berhenti di MANUAL_REVIEW. Tanpa 'PAID', penjaga ini
+  // mengizinkan penghapusan produk yang sudah dibayar orang, dan
+  // claimAndDeliverItems yang meng-JOIN products tidak menemukan apa pun lagi:
+  // pembeli membayar penuh dan tidak pernah menerima apa-apa.
   const orderAktif = await allQuery(`
     SELECT DISTINCT o.order_id, o.status
     FROM orders o
     JOIN order_items oi ON oi.order_id = o.order_id
-    WHERE oi.produk_kode = ? AND o.status IN ('CART', 'WAITING_PAYMENT', 'WAITING_CONFIRMATION', 'PROCESSING')
+    WHERE oi.produk_kode = ? AND o.status IN ('CART', 'WAITING_PAYMENT', 'WAITING_CONFIRMATION', 'PROCESSING', 'PAID')
   `, [code]);
 
   return {

@@ -972,8 +972,12 @@ export async function getOrderPublicInvoice(orderId) {
       nama: i.produk_nama,
       kode: i.produk_kode,
       qty: i.qty || i.jumlah || 1,
-      harga: i.harga_satuan,
-      subtotal: i.subtotal || (i.harga_satuan * (i.qty || i.jumlah || 1)),
+      // Kolomnya bernama `harga`, bukan `harga_satuan` — order_items tidak punya
+      // kolom itu sama sekali (lihat schema.js). Jadi dua baris ini dulu selalu
+      // undefined, dan halaman bayar publik /pay/<order> menampilkan harga satuan
+      // kosong di setiap barisnya.
+      harga: i.harga ?? 0,
+      subtotal: i.subtotal ?? ((i.harga ?? 0) * (i.qty || i.jumlah || 1)),
       delivery_type: i.delivery_type
     }))
   };

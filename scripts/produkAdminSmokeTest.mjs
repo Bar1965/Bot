@@ -608,6 +608,72 @@ await db.runQuery("INSERT OR REPLACE INTO orders (order_id, customer_nomor, tota
 const dipilih = await db.getOrderUntukDibatalkan(PELANGGAN_B);
 cek('WAITING_PAYMENT didahulukan dari CART yang lebih baru', dipilih.order_id === 'ORD-LAMA', dipilih.order_id);
 
+bagian('31. Pecahan pada harga bersatuan');
+// "12,5rb" berarti Rp12.500. Dulu pemisahnya dibuang lebih dulu sehingga
+// menjadi 125 x 1000 = Rp125.000 — sepuluh kali lipat, tanpa peringatan.
+cek('12,5rb -> 12500', db.parseHargaIndonesia('12,5rb') === 12500, db.parseHargaIndonesia('12,5rb'));
+cek('12.5rb -> 12500', db.parseHargaIndonesia('12.5rb') === 12500, db.parseHargaIndonesia('12.5rb'));
+cek('1,5jt -> 1500000', db.parseHargaIndonesia('1,5jt') === 1500000, db.parseHargaIndonesia('1,5jt'));
+cek('2,25jt -> 2250000', db.parseHargaIndonesia('2,25jt') === 2250000, db.parseHargaIndonesia('2,25jt'));
+cek('0,5rb -> 500', db.parseHargaIndonesia('0,5rb') === 500, db.parseHargaIndonesia('0,5rb'));
+// Pemisah ribuan TANPA satuan harus tetap dibuang seperti semula.
+cek('50.000 tetap 50000', db.parseHargaIndonesia('50.000') === 50000);
+cek('1.250.000 tetap 1250000', db.parseHargaIndonesia('1.250.000') === 1250000, db.parseHargaIndonesia('1.250.000'));
+cek('50rb tetap 50000', db.parseHargaIndonesia('50rb') === 50000);
+
+bagian('32. Bukti transfer tidak melepas stok yang masih dikunci');
+const KODE_BUKTI = 'UJIBUKTI';
+const PEMBELI_BUKTI = '628999000333';
+await db.getOrCreateCustomer(PEMBELI_BUKTI, 'Uji Bukti');
+await db.addProduct(KODE_BUKTI, 'Produk Uji Bukti', 20000, 5, 'uji', '', 'MANUAL', '', '', null, null, '30 Hari');
+await db.addToCart(PEMBELI_BUKTI, KODE_BUKTI, 2);
+const coBukti = await db.checkoutCart(PEMBELI_BUKTI);
+cek('checkout berhasil', coBukti.success === true, coBukti.message);
+const stokSesudahCheckout = (await db.getProductByKode(KODE_BUKTI)).stok;
+cek('stok MANUAL berkurang saat checkout', stokSesudahCheckout === 3, stokSesudahCheckout);
+
+// Inilah yang terjadi saat pelanggan mengirim foto bukti transfer.
+await db.updateOrderStatus(coBukti.order.order_id, 'WAITING_CONFIRMATION');
+const stokSesudahBukti = (await db.getProductByKode(KODE_BUKTI)).stok;
+cek('stok TIDAK dikembalikan saat menunggu verifikasi', stokSesudahBukti === 3, stokSesudahBukti);
+const reservedMasih = await db.getQuery("SELECT stock_reserved FROM order_items WHERE order_id = ?", [coBukti.order.order_id]);
+cek('tanda stock_reserved tetap menyala', reservedMasih.stock_reserved === 1, reservedMasih.stock_reserved);
+
+// Pembatalan sungguhan tetap harus mengembalikannya.
+await db.updateOrderStatus(coBukti.order.order_id, 'CANCELLED');
+const stokSesudahBatal = (await db.getProductByKode(KODE_BUKTI)).stok;
+cek('pembatalan tetap mengembalikan stok', stokSesudahBatal === 5, stokSesudahBatal);
+
+bagian('33. Penjaga hapus produk mengenal pesanan yang SUDAH DIBAYAR');
+const KODE_PAID = 'UJIPAID';
+const PEMBELI_PAID = '628999000444';
+await db.getOrCreateCustomer(PEMBELI_PAID, 'Uji Paid');
+await db.addProduct(KODE_PAID, 'Produk Uji Paid', 30000, 5, 'uji', '', 'MANUAL', '', '', null, null, '30 Hari');
+await db.addToCart(PEMBELI_PAID, KODE_PAID, 1);
+const coPaid = await db.checkoutCart(PEMBELI_PAID);
+await db.updateOrderStatus(coPaid.order.order_id, 'PAID');
+const dampak = await db.getProductDeleteImpact(KODE_PAID);
+cek('pesanan berstatus PAID terhitung sebagai transaksi aktif',
+  dampak.orderAktif.some(o => o.status === 'PAID'), JSON.stringify(dampak.orderAktif));
+const hapus = await db.deleteProductWithItems(KODE_PAID);
+cek('penghapusan ditolak selama ada pesanan PAID', hapus.success === false && hapus.alasan === 'ADA_TRANSAKSI', JSON.stringify(hapus));
+
+bagian('34. Penyapu 24 jam memakai umur TAGIHAN, bukan umur keranjang');
+const kolom = await db.allQuery("PRAGMA table_info(orders)");
+cek('kolom waiting_since ada', kolom.some(k => k.name === 'waiting_since'));
+const ordBaru = await db.getQuery("SELECT waiting_since FROM orders WHERE order_id = ?", [coPaid.order.order_id]);
+cek('checkout menstempel waiting_since', Boolean(ordBaru.waiting_since), String(ordBaru.waiting_since));
+// Keranjang lahir 3 hari lalu, tagihannya baru terbit barusan -> JANGAN disapu.
+await db.runQuery("UPDATE orders SET status='WAITING_PAYMENT', created_at = datetime('now','-3 days'), waiting_since = CURRENT_TIMESTAMP WHERE order_id = ?", [coPaid.order.order_id]);
+const kedaluwarsa = await db.getExpiredOrders();
+cek('keranjang lama + tagihan baru TIDAK ikut disapu',
+  !kedaluwarsa.some(o => o.order_id === coPaid.order.order_id), kedaluwarsa.map(o => o.order_id).join(','));
+// Tagihan yang memang sudah 25 jam -> harus disapu.
+await db.runQuery("UPDATE orders SET waiting_since = datetime('now','-25 hours') WHERE order_id = ?", [coPaid.order.order_id]);
+const kedaluwarsa2 = await db.getExpiredOrders();
+cek('tagihan lewat 24 jam tetap disapu',
+  kedaluwarsa2.some(o => o.order_id === coPaid.order.order_id), kedaluwarsa2.map(o => o.order_id).join(','));
+
 console.log(`\n${'='.repeat(50)}`);
 console.log(`HASIL: ${lulus} lulus, ${gagal} gagal`);
 console.log('='.repeat(50));

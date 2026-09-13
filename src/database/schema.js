@@ -745,6 +745,13 @@ export async function initDb() {
   try {
     await runQuery("ALTER TABLE orders ADD COLUMN coupon_redeemed INTEGER DEFAULT 0");
   } catch (e) {}
+  // Kapan pesanan MULAI menunggu pembayaran. `created_at` tidak bisa dipakai
+  // untuk itu: baris order lahir saat item PERTAMA masuk keranjang, dan
+  // checkoutCart cuma membalik status tanpa menyentuhnya. Penyapu 24 jam yang
+  // memakai created_at karenanya menghitung umur KERANJANG, bukan umur tagihan.
+  try {
+    await runQuery("ALTER TABLE orders ADD COLUMN waiting_since DATETIME");
+  } catch (e) {}
   try {
     await runQuery("ALTER TABLE order_items ADD COLUMN stock_reserved INTEGER DEFAULT 0");
   } catch (e) {}
@@ -865,13 +872,25 @@ You can now enjoy:
 
   // Seed / update sample variant products for Netflix & Spotify and enrich existing products
   try {
-    const netflixCheck = await getQuery("SELECT COUNT(*) as count FROM products WHERE UPPER(brand_category) = 'NETFLIX' OR UPPER(kode) LIKE 'NET%'");
-    if (!netflixCheck || netflixCheck.count === 0) {
+    // Benih katalog contoh HANYA untuk pemasangan yang benar-benar baru, dan
+    // stoknya HARUS nol.
+    //
+    // Dulu penjaganya cuma "belum ada produk NET*", dan stok benihnya diisi
+    // 15/8/10/4. Empat baris itu masih hidup di database toko ini sampai
+    // sekarang: NET-SH-7D, NET-SH-14D, NET-SH-30D dan NET-PV-30D bertipe MANUAL
+    // dengan total 37 unit yang tidak pernah dimiliki siapa pun. Katalog
+    // mengiklankannya, checkoutCart berhasil menguranginya, pembeli membayar —
+    // lalu tidak ada apa pun untuk dikirim.
+    //
+    // Menghapus produk NET* juga membuatnya lahir kembali saat restart berikutnya.
+    // Sekarang penjaganya: tabel products harus KOSONG SAMA SEKALI.
+    const produkCheck = await getQuery("SELECT COUNT(*) as count FROM products");
+    if (!produkCheck || produkCheck.count === 0) {
       const defaultVariants = [
-        { kode: 'NET-SH-7D', nama: 'Netflix Sharing 7 Hari', harga: 12000, stok: 15, deskripsi: '1 Profil Privat 4K Ultra HD, Anti-Screen Limit, All Device', gambar: '', delivery_type: 'MANUAL', brand_category: 'Netflix', variant_type: 'Sharing (1 Profil)', duration: '7 Hari' },
-        { kode: 'NET-SH-14D', nama: 'Netflix Sharing 14 Hari', harga: 20000, stok: 8, deskripsi: '1 Profil Privat 4K Ultra HD, Garansi Penuh, All Device', gambar: '', delivery_type: 'MANUAL', brand_category: 'Netflix', variant_type: 'Sharing (1 Profil)', duration: '14 Hari' },
-        { kode: 'NET-SH-30D', nama: 'Netflix Sharing 30 Hari', harga: 35000, stok: 10, deskripsi: '1 Profil Privat 4K Ultra HD, Garansi 30 Hari, All Device', gambar: '', delivery_type: 'MANUAL', brand_category: 'Netflix', variant_type: 'Sharing (1 Profil)', duration: '30 Hari' },
-        { kode: 'NET-PV-30D', nama: 'Netflix Private 30 Hari', harga: 150000, stok: 4, deskripsi: '1 Akun Full Milik Anda (5 Profil), 5 Device Simultan, Bebas Buat Profil & PIN', gambar: '', delivery_type: 'MANUAL', brand_category: 'Netflix', variant_type: 'Private (1 Akun Full)', duration: '30 Hari' }
+        { kode: 'NET-SH-7D', nama: 'Netflix Sharing 7 Hari', harga: 12000, stok: 0, deskripsi: '1 Profil Privat 4K Ultra HD, Anti-Screen Limit, All Device', gambar: '', delivery_type: 'MANUAL', brand_category: 'Netflix', variant_type: 'Sharing (1 Profil)', duration: '7 Hari' },
+        { kode: 'NET-SH-14D', nama: 'Netflix Sharing 14 Hari', harga: 20000, stok: 0, deskripsi: '1 Profil Privat 4K Ultra HD, Garansi Penuh, All Device', gambar: '', delivery_type: 'MANUAL', brand_category: 'Netflix', variant_type: 'Sharing (1 Profil)', duration: '14 Hari' },
+        { kode: 'NET-SH-30D', nama: 'Netflix Sharing 30 Hari', harga: 35000, stok: 0, deskripsi: '1 Profil Privat 4K Ultra HD, Garansi 30 Hari, All Device', gambar: '', delivery_type: 'MANUAL', brand_category: 'Netflix', variant_type: 'Sharing (1 Profil)', duration: '30 Hari' },
+        { kode: 'NET-PV-30D', nama: 'Netflix Private 30 Hari', harga: 150000, stok: 0, deskripsi: '1 Akun Full Milik Anda (5 Profil), 5 Device Simultan, Bebas Buat Profil & PIN', gambar: '', delivery_type: 'MANUAL', brand_category: 'Netflix', variant_type: 'Private (1 Akun Full)', duration: '30 Hari' }
       ];
       for (const v of defaultVariants) {
         await runQuery(
@@ -1264,6 +1283,24 @@ You can now enjoy:
   // Buang buff kedaluwarsa yang tertinggal dari sesi sebelumnya.
   await runQuery("DELETE FROM user_buffs WHERE expires_at IS NOT NULL AND expires_at < ?", [Date.now()]);
 
+  // Tabel Ember Tangkapan Mancing (`.mancing` / `.ikan` / `.jualikan`).
+  // Satu baris per pemain berisi JSON array hasil tangkapan yang belum dijual.
+  // Wajib persisten: bot ini di-restart setiap kali ada perubahan kode, dan
+  // ember di memori berarti ikan pemain lenyap tiap restart.
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS fishing_baskets (
+      jid TEXT PRIMARY KEY,
+      items_json TEXT NOT NULL DEFAULT '[]',
+      casts_date TEXT,
+      casts_today INTEGER DEFAULT 0,
+      best_catch_json TEXT,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  try { await runQuery("ALTER TABLE fishing_baskets ADD COLUMN casts_date TEXT"); } catch (e) { /* ignore if exists */ }
+  try { await runQuery("ALTER TABLE fishing_baskets ADD COLUMN casts_today INTEGER DEFAULT 0"); } catch (e) { /* ignore if exists */ }
+  try { await runQuery("ALTER TABLE fishing_baskets ADD COLUMN best_catch_json TEXT"); } catch (e) { /* ignore if exists */ }
+
   // 57. Tabel Sesi Game Aktif (Crash & Restart Persistence Protection)
   await runQuery(`
     CREATE TABLE IF NOT EXISTS active_game_sessions (
@@ -1282,6 +1319,35 @@ You can now enjoy:
   `);
   await runQuery("CREATE INDEX IF NOT EXISTS idx_active_game_sessions_jid ON active_game_sessions(jid)");
   await runQuery("CREATE INDEX IF NOT EXISTS idx_active_game_sessions_status ON active_game_sessions(status)");
+
+  // Tabel Inventaris Ikan & Statistik Mancing (Fishing Explorer)
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS fishing_inventory (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_jid TEXT NOT NULL,
+      fish_name TEXT NOT NULL,
+      icon TEXT NOT NULL,
+      rarity TEXT NOT NULL,
+      weight REAL NOT NULL,
+      price INTEGER NOT NULL,
+      spot_name TEXT NOT NULL,
+      is_chest INTEGER DEFAULT 0,
+      caught_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_fishing_inv_user ON fishing_inventory(user_jid)");
+
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS fishing_stats (
+      user_jid TEXT PRIMARY KEY,
+      total_caught INTEGER DEFAULT 0,
+      heaviest_weight REAL DEFAULT 0,
+      heaviest_fish TEXT DEFAULT '',
+      total_earned INTEGER DEFAULT 0,
+      chests_opened INTEGER DEFAULT 0,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
 
   // Cleanup & Migration untuk mencegah NULL/NaN/Non-Integer points/xp di database
   await runQuery("UPDATE game_profiles SET points = 0 WHERE points IS NULL OR typeof(points) != 'integer' OR points < 0 OR points > 1000000");

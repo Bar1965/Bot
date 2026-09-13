@@ -166,8 +166,28 @@ export function createCustomerHandler(ctx = {}) {
     const isNumericDial = /^[1-9]\d?$/.test(cleanText);
     const hasNavSession = Boolean(getUserNavSession(senderNumber));
 
+    // Foto tanpa caption dari pelanggan yang sedang punya tagihan adalah BUKTI
+    // TRANSFER, dan gerbang prefix di bawah membuangnya.
+    //
+    // Bot sendiri yang menyuruhnya: pesan tagihan QRIS manual berbunyi "harap
+    // kirimkan foto/screenshot *BUKTI TRANSFER* langsung ke chat ini". Pelanggan
+    // menurut, mengirim tangkapan layar tanpa menulis apa-apa — dan karena
+    // pesannya tidak diawali titik, handler ini pulang di baris berikutnya.
+    // Bukti tidak tersimpan, pelanggan tidak dibalas, owner tidak diberi tahu,
+    // dan blok penerima bukti di bawah tidak pernah tersentuh sekali pun.
+    //
+    // Pemeriksaan database hanya dijalankan untuk pesan bergambar tanpa perintah,
+    // jadi tidak menambah beban pada percakapan biasa.
+    let fotoBuktiBayar = false;
+    if (!isPrefix && messageObj?.message?.imageMessage) {
+      try {
+        const pesananTerakhir = await db.getCustomerLastOrder(senderNumber);
+        fotoBuktiBayar = Boolean(pesananTerakhir && pesananTerakhir.status === 'WAITING_PAYMENT');
+      } catch (_) {}
+    }
+
     // STRICT PREFIX RULE: Hanya perbolehkan pesan ber-prefix atau angka dial saat sesi navigasi aktif
-    if (!isPrefix && !(isNumericDial && hasNavSession)) {
+    if (!isPrefix && !(isNumericDial && hasNavSession) && !fotoBuktiBayar) {
       return false;
     }
 
