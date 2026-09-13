@@ -286,6 +286,41 @@ await jawab('lewati');
 cek('kode wajib diisi', teksTerakhir().includes('wajib diisi'));
 hapusSesiToko(JID, PENGIRIM);
 
+// ============================================================
+// 4. STOK TIDAK BOLEH TERKUNCI SAAT QRIS GAGAL DIBUAT
+// ============================================================
+
+bagian('17. Order gagal bayar melepas kembali kredensial AUTO');
+const KODE_R = 'RSV01';
+await db.addProduct(KODE_R, 'Produk Reservasi', 30000, 0, '', '', 'AUTO', '', '', null, null, null);
+await db.addProductItemsBatch(KODE_R, ['resv1@mail.com|p1', 'resv2@mail.com|p2']);
+cek('2 kredensial READY tersedia', (await db.getAvailableItemsCount(KODE_R)) === 2);
+
+const PEMBELI = '628222222222@s.whatsapp.net';
+await db.runQuery("INSERT OR IGNORE INTO customers (nomor, nama) VALUES (?, ?)", [PEMBELI, 'Pembeli Uji']);
+const tambah = await db.addToCart(PEMBELI, KODE_R, 1);
+cek('masuk keranjang', tambah.success === true, JSON.stringify(tambah));
+
+const co = await db.checkoutCart(PEMBELI);
+cek('checkout berhasil', co.success === true, JSON.stringify(co));
+const orderId = co.order?.order_id;
+cek('1 kredensial terkunci RESERVED', (await db.getAvailableItemsCount(KODE_R)) === 1);
+
+// Inilah sebabnya pembatalan harus eksplisit: createCasakuTransaction yang gagal
+// tidak pernah mengisi expired_at, dan penyapu 15 menit membandingkan NULL.
+const ordSebelum = await db.getQuery("SELECT expired_at FROM orders WHERE order_id = ?", [orderId]);
+cek('expired_at masih NULL (QRIS belum sempat dibuat)', ordSebelum.expired_at === null, `nilai=${ordSebelum.expired_at}`);
+await db.expireStaleOrders(15);
+cek('penyapu 15 menit TIDAK melepasnya', (await db.getAvailableItemsCount(KODE_R)) === 1,
+  'kalau ini berubah, catatan di customerHandler perlu diperbarui');
+
+// Yang dilakukan blok catch di customerHandler saat QRIS gagal dibuat.
+await db.updateOrderStatus(orderId, 'CANCELLED');
+cek('pembatalan mengembalikan kredensial jadi READY', (await db.getAvailableItemsCount(KODE_R)) === 2,
+  `sisa=${await db.getAvailableItemsCount(KODE_R)}`);
+const ordSesudah = await db.getQuery("SELECT status FROM orders WHERE order_id = ?", [orderId]);
+cek('order berstatus CANCELLED', ordSesudah.status === 'CANCELLED');
+
 console.log(`\n${'='.repeat(50)}`);
 console.log(`HASIL: ${lulus} lulus, ${gagal} gagal`);
 console.log('='.repeat(50));

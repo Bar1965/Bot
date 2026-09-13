@@ -15,12 +15,14 @@ const userNavSessions = new Map();
 
 // Auto-cleanup userNavSessions setiap 5 menit
 setInterval(() => {
-  const now = Date.now();
-  for (const [userJid, session] of userNavSessions.entries()) {
-    if (now - session.updatedAt > 10 * 60 * 1000) {
-      userNavSessions.delete(userJid);
+  try {
+    const now = Date.now();
+    for (const [userJid, session] of userNavSessions.entries()) {
+      if (now - session.updatedAt > 10 * 60 * 1000) {
+        userNavSessions.delete(userJid);
+      }
     }
-  }
+  } catch (e) {}
 }, 5 * 60 * 1000);
 
 function setUserNavSession(userJid, sessionData) {
@@ -186,8 +188,8 @@ export function createCustomerHandler(ctx = {}) {
 
     const memberProfile = await db.getCustomerMembershipProfile(senderNumber);
     const isPrivateCommand =
-      ['beli', 'buy'].includes(cleanCmd) ||
-      ['cart', 'keranjang', 'checkout', 'bayar', 'cancel', 'batal', 'status', 'riwayat', 'history'].includes(cleanCmd);
+      ['beli', 'buy', 'buynow'].includes(cleanCmd) ||
+      ['cart', 'keranjang', 'checkout', 'bayar', 'cancel', 'batal', 'status', 'cekbayar', 'sudahbayar', 'riwayat', 'history'].includes(cleanCmd);
     const responseJid = (isFromGroup && isPrivateCommand) ? senderNumber : jid;
 
     if (memberProfile?.account_status === 'BANNED' && !actor.isAdmin && !actor.isOwner) {
@@ -592,8 +594,14 @@ Ketik *bayar* atau klik tombol *Bayar QRIS Langsung* di bawah untuk langsung mem
   }
 
   if (['setmemberstatus', 'memberstatus'].includes(cleanCmd)) {
-    if (!actor.isAdmin) {
-      await sock.sendMessage(responseJid, { text: '⛔ Hanya Admin atau Owner yang boleh mengubah status member.' });
+    // Status BANNED memutus akses seseorang ke seluruh bot: dia tidak bisa lagi
+    // membuka katalog, checkout, atau membalas apa pun. Gerbang lamanya cuma
+    // `actor.isAdmin`, dan isAdmin bernilai `isOwner || isGroupAdmin || isStoreAdmin`
+    // — jadi admin di grup WhatsApp MANA PUN yang bot ikuti, termasuk tiga grup
+    // sewaan milik orang lain, bisa mem-BANNED akun pelanggan toko ini. Wewenang
+    // atas data pelanggan harus datang dari toko, bukan dari status admin grup.
+    if (!actor.isStoreAdmin && !actor.isOwner) {
+      await sock.sendMessage(responseJid, { text: '⛔ Hanya *Admin Toko* atau *Owner* yang boleh mengubah status member. Status admin grup WhatsApp saja tidak cukup.' });
       return true;
     }
     const target = extractTargetMember();
@@ -627,18 +635,36 @@ Ketik *bayar* atau klik tombol *Bayar QRIS Langsung* di bawah untuk langsung mem
   // ==========================================
   // LOGIKA NAVIGASI MENU TERKATEGORI (ASCII ART DESIGN)
   // ==========================================
-  const menuMatch = cleanTextLower.match(/^(?:menu|help|bantuan)(?:\s+(1|2|3|4|5|6|jualan|produk|transaksi|bayar|downloader|media|hiburan|game|games|fun|promo|diskon|referral|poin|rank|reward|favorit|wishlist|admin|daftar|registrasi|profil|akun|setmemberrole|memberrole|setmemberstatus|memberstatus|all|semua))?$/i);
+  // Daftar kategori yang sah dimiliki commandRegistry, BUKAN regex ini. Versi
+  // lama menuliskan ulang alias-nya di sini dan ketinggalan: registry punya 9
+  // kategori (1-9) tapi regex hanya menerima 1-6, sehingga `.menu 7` (pdf),
+  // `.menu 8` (hiburan), `.menu 9` (admin), dan `.menu full` tidak cocok sama
+  // sekali -> tidak ada balasan apa pun, padahal beranda menu sendiri
+  // menyarankan nomor-nomor itu. Sekarang sufiks apa pun ditangkap dan
+  // `resolveCategory` yang memutuskan; sufiks tak dikenal jatuh ke beranda menu.
+  const menuMatch = cleanTextLower.match(/^(?:menu|help|bantuan)(?:\s+([a-z0-9]+))?$/i);
 
   if (menuMatch) {
     const subCat = menuMatch[1] ? menuMatch[1].toLowerCase() : '';
 
-    // Deteksi mode grup (Sales Mode vs All Mode)
+    // Deteksi mode grup (Sales Mode vs All Mode) + sakelar game per-grup
     let isSalesModeGroup = false;
+    let gameDimatikan = false;
     if (isFromGroup) {
       const gSettings = await db.getGroupSettings(jid);
       if (gSettings.bot_mode === 'sales') {
         isSalesModeGroup = true;
       }
+      gameDimatikan = (gSettings.features_config || {}).game === false;
+    }
+
+    // Percuma menampilkan katalog game kalau perintahnya memang sedang dikunci
+    // admin lewat `.mode game off` — jelaskan sekalian cara menyalakannya.
+    if (gameDimatikan && ['3', 'game', 'games', 'gaming', 'arcade', 'play', 'mabar', 'permainan'].includes(subCat)) {
+      await sock.sendMessage(responseJid, {
+        text: "🚫 *GAME DIMATIKAN DI GRUP INI*\n\nAdmin grup sedang mematikan seluruh fitur game & hiburan di sini.\n\n_Admin dapat menyalakannya lagi dengan_ `.mode game on`"
+      });
+      return true;
     }
 
     if (isSalesModeGroup && ['3', '4', '6', '7', '8', 'downloader', 'media', 'hiburan', 'game', 'games', 'fun', 'pdf', 'premium', 'sosial', 'social'].includes(subCat)) {
@@ -1196,11 +1222,12 @@ Ketik *bayar* atau klik tombol *Bayar QRIS Langsung* di bawah untuk langsung mem
     }
   }
 
-  // 3. BELI [KODE] [JUMLAH]
-  const buyRegex = /^(?:beli|buy)\s+([a-zA-Z0-9_-]+)(?:\s+(\d+))?$/i;
+  // 3. BELI [KODE] [JUMLAH] / BUYNOW [KODE] [JUMLAH] (Beli Langsung 1-Klik)
+  const buyRegex = /^(?:beli|buy|buynow)\s+([a-zA-Z0-9_-]+)(?:\s+(\d+))?(?:\s+(langsung|instant|now|fast))?$/i;
   if (buyRegex.test(cleanText)) {
     const match = cleanText.match(buyRegex);
     const code = match[1].toUpperCase();
+    const isInstantCheckout = (cleanCmd === 'buynow' || !!match[3]);
 
     // Cek apakah kode produk benar-benar terdaftar di database toko
     const existingProduct = await db.getProductByKode(code);
@@ -1241,7 +1268,8 @@ _Silakan klik link di atas untuk bergabung, kemudian ulangi perintah \`${text}\`
       return;
     }
 
-    const successMsg = `✅ *Berhasil ditambahkan ke keranjang!*
+    if (!isInstantCheckout) {
+      const successMsg = `✅ *Berhasil ditambahkan ke keranjang!*
     
 *${res.productName}*
 Jumlah: ${res.qty} pcs
@@ -1249,18 +1277,22 @@ Subtotal: *Rp${res.subtotal.toLocaleString('id-ID')}*
 
 Ketik *keranjang* atau *cart* untuk melihat detail belanjaan Anda, atau ketik *checkout* untuk langsung melakukan pembayaran.`;
 
-    await sendInteractiveButtons(sock, responseJid, {
-      text: successMsg,
-      title: '✅ BERHASIL DITAMBAHKAN',
-      footer: 'Pilih langkah selanjutnya di bawah ini',
-      buttons: [
-        { type: 'reply', text: '🛒 Lihat Keranjang', id: '.keranjang' },
-        { type: 'reply', text: '💳 Checkout Pembayaran', id: '.checkout' },
-        { type: 'reply', text: '🛍️ Katalog Produk', id: '.produk' }
-      ]
-    });
-    await sendRedirectNotice();
-    return;
+      await sendInteractiveButtons(sock, responseJid, {
+        text: successMsg,
+        title: '✅ BERHASIL DITAMBAHKAN',
+        footer: 'Pilih langkah selanjutnya di bawah ini',
+        buttons: [
+          { type: 'reply', text: '⚡ Beli Langsung (QRIS)', id: '.checkout' },
+          { type: 'reply', text: '🛒 Lihat Keranjang', id: '.keranjang' },
+          { type: 'reply', text: '🛍️ Katalog Produk', id: '.produk' }
+        ]
+      });
+      await sendRedirectNotice();
+      return;
+    }
+
+    // Jika isInstantCheckout = true, ubah cleanTextLower menjadi 'checkout' agar langsung mengeksekusi pembuatan QRIS!
+    cleanTextLower = 'checkout';
   }
 
   // 4. KERANJANG / CART
@@ -1354,10 +1386,7 @@ ${casakuPayment.uniqueCode > 0 ? `_(Harga produk Rp${lastOrder.total.toLocaleStr
 
 📱 *Scan QRIS di atas untuk membayar:*
 ✅ DANA / GoPay / OVO / ShopeePay / BCA / BRI / Mandiri / dll.
-
-🌐 *Invoice & Checkout Online:*
-http://localhost:3000/pay/${lastOrder.order_id}
-
+${process.env.APP_URL ? `\n🌐 *Invoice & Checkout Online:*\n${process.env.APP_URL}/pay/${lastOrder.order_id}\n` : ''}
 🔄 *Pembayaran diverifikasi OTOMATIS.*
 Tidak perlu kirim bukti transfer — produk langsung terkirim begitu bayar!`;
 
@@ -1424,6 +1453,14 @@ _Silakan klik link di atas untuk bergabung, kemudian ulangi perintah \`checkout\
     const order = res.order;
     const itemsText = order.items.map(item => `- ${item.produk_nama} (x${item.qty})`).join('\n');
 
+    // Diskon premium harus TERLIHAT. Kalau potongannya diam-diam masuk ke total,
+    // pelanggan yang membayar untuk benefit ini tidak punya cara tahu dia menerimanya.
+    if (res.diskonPremium?.rupiah > 0) {
+      await sock.sendMessage(responseJid, {
+        text: `👑 *DISKON PREMIUM ${res.diskonPremium.tier.toUpperCase()} DIPAKAI*\n\n🏷️ Potongan *${res.diskonPremium.persen}%* — hemat *Rp${res.diskonPremium.rupiah.toLocaleString('id-ID')}*\n💸 Total setelah diskon: *Rp${order.total.toLocaleString('id-ID')}*`
+      });
+    }
+
     // ================================================================
     // INSTANT SALDO DEPOSIT CHECKOUT (Priority 1)
     // Jika saldo deposit mencukupi, bayar instan tanpa perlu QRIS
@@ -1472,9 +1509,52 @@ _Silakan klik link di atas untuk bergabung, kemudian ulangi perintah \`checkout\
         casakuPayment = await createPayment(order.order_id, order.total);
       } catch (err) {
         console.error('[BOT] Casaku QRIS generation failed:', err.message);
+
+        // Jalur ini jadi sering dilewati sejak opsi "Wajibkan Aplikasi Aktif"
+        // dinyalakan di dashboard Casaku: begitu perangkat listener offline,
+        // Casaku MENOLAK membuat transaksi. Itu perilaku yang benar — pembeli
+        // tidak jadi mengirim uang yang tak akan pernah terdeteksi — tapi
+        // penanganannya di sini dulu meninggalkan tiga masalah.
+        //
+        // (1) checkoutCart sudah berjalan sebelum baris ini, jadi stok SUDAH
+        // dipesan dan order sudah WAITING_PAYMENT. Yang mengisi `expired_at`
+        // adalah createCasakuTransaction — yang barusan gagal — sehingga kolom
+        // itu NULL, dan penyapu 15 menit (`expired_at < ?`) tidak pernah cocok
+        // dengan NULL. Stok baru bebas lewat penyapu 24 jam. Satu kredensial
+        // AUTO terkunci sehari penuh hanya karena HP listener sempat mati.
+        try {
+          await db.updateOrderStatus(order.order_id, 'CANCELLED');
+        } catch (batalErr) {
+          console.error('[BOT] Gagal melepas order setelah QRIS gagal:', batalErr.message);
+        }
+
+        // (2) err.message dulu ditempelkan mentah ke pesan pembeli. Isinya
+        // keadaan infrastruktur toko ("listener device offline"), bukan urusan
+        // pembeli, dan tidak memberitahu dia hal yang benar-benar ingin dia tahu:
+        // uangnya aman.
         await sock.sendMessage(responseJid, {
-          text: `❌ *Gagal membuat QRIS Otomatis.*\n\nSilakan coba lagi dalam beberapa saat atau hubungi admin.\n\n_Error: ${err.message}_`
+          text: `❌ *Pembayaran otomatis sedang tidak tersedia.*\n\nPesananmu belum jadi dan *tidak ada uang yang terpotong*. Stok sudah kami kembalikan.\n\n📌 Coba checkout lagi beberapa saat lagi, atau hubungi admin kalau tetap gagal.`
         });
+
+        // (3) Owner tidak diberi tahu apa pun. Pembeli melihat pesan gagal,
+        // owner mengira toko baik-baik saja, dan penjualan berhenti total tanpa
+        // satu pun tanda — persis pola yang sudah pernah terjadi pada `.deposit`.
+        try {
+          const ownerJid = botSettings?.ownerJid || botSettings?.ownerNumber;
+          if (ownerJid) {
+            await sock.sendMessage(ownerJid, {
+              text: `⚠️ *QRIS OTOMATIS GAGAL DIBUAT*\n\n` +
+                    `🧾 Order: ${order.order_id}\n` +
+                    `👤 Pelanggan: ${senderNumber}\n` +
+                    `💸 Nominal: Rp${(order.total || 0).toLocaleString('id-ID')}\n\n` +
+                    `Sebab: ${err.message}\n\n` +
+                    `💡 Kalau sebabnya perangkat listener offline, buka aplikasi Casaku di HP dan pastikan tetap online.\n\n` +
+                    `_Pesanan ini sudah dibatalkan otomatis dan stoknya dikembalikan, jadi tidak ada kredensial yang terkunci._`
+            });
+          }
+        } catch (_) {}
+
+        await logToSystem('PAYMENT', `❌ Gagal membuat QRIS Casaku untuk order ${order.order_id}: ${err.message}`);
         await sendRedirectNotice();
         return;
       }
@@ -1514,10 +1594,7 @@ ${casakuPayment.uniqueCode > 0 ? `_(Harga produk Rp${order.total.toLocaleString(
 
 📱 *Scan QRIS di atas untuk membayar:*
 ✅ Bisa bayar dari DANA / GoPay / OVO / ShopeePay / BCA / BRI / Mandiri / dll.
-
-🌐 *Invoice & Checkout Online:*
-http://localhost:3000/pay/${order.order_id}
-
+${process.env.APP_URL ? `\n🌐 *Invoice & Checkout Online:*\n${process.env.APP_URL}/pay/${order.order_id}\n` : ''}
 🔄 *Pembayaran diverifikasi otomatis.*
 Begitu Anda selesai bayar, produk langsung dikirim ke chat ini tanpa perlu konfirmasi manual.
 
@@ -1638,8 +1715,8 @@ ${itemsText}
   }
 
 
-  // 7. STATUS
-  if (cleanTextLower === 'status') {
+  // 7. STATUS & VERIFIKASI PEMBAYARAN INSTAN (.status / .cekbayar / .sudahbayar)
+  if (['status', 'cekbayar', 'sudahbayar', 'cekstatus', 'konfirmasi'].includes(cleanCmd) || cleanTextLower === 'status') {
     const lastOrder = await db.getCustomerLastOrder(senderNumber);
     if (!lastOrder) {
       await sock.sendMessage(responseJid, { text: "Anda belum pernah melakukan pemesanan di toko kami." });
@@ -1647,34 +1724,60 @@ ${itemsText}
       return;
     }
 
+    // ⚡ ON-DEMAND RECONCILIATION:
+    // Jika order masih menunggu pembayaran dan menggunakan Casaku QRIS, cek status bank secara real-time detik ini juga!
+    let justConfirmedPaid = false;
+    if (lastOrder.casaku_transaction_id && ['WAITING_PAYMENT', 'PENDING'].includes(lastOrder.status)) {
+      try {
+        const { reconcileSingleOrder } = await import('../payment/paymentService.js');
+        const recResult = await reconcileSingleOrder(lastOrder.order_id);
+        if (recResult.success && recResult.status === 'paid') {
+          justConfirmedPaid = true;
+          lastOrder.status = 'COMPLETED';
+          lastOrder.payment_status = 'PAID';
+        }
+      } catch (recErr) {
+        console.error('[STATUS_CHECK] Reconcile error:', recErr.message);
+      }
+    }
+
     const details = await db.getOrderDetails(lastOrder.order_id);
     let statusTranslate = details.status;
     
     switch (details.status) {
       case 'CART': statusTranslate = '🛒 Keranjang Belanja'; break;
-      case 'WAITING_PAYMENT': statusTranslate = '⏳ Menunggu Pembayaran'; break;
+      case 'WAITING_PAYMENT': statusTranslate = '⏳ Menunggu Pembayaran (Scan QRIS)'; break;
       case 'WAITING_CONFIRMATION': statusTranslate = '🔍 Menunggu Verifikasi Admin'; break;
-      case 'PAID': statusTranslate = '🟢 Pembayaran Diterima (Sedang Diproses)'; break;
-      case 'COMPLETED': statusTranslate = '✅ Selesai'; break;
+      case 'PAID': statusTranslate = '🟢 Pembayaran Diterima (Sedang Mengirim Akun)'; break;
+      case 'COMPLETED': statusTranslate = '✅ Selesai (Produk Terkirim)'; break;
       case 'CANCELLED': statusTranslate = '❌ Dibatalkan'; break;
     }
 
-    let msg = `━━━━━━━━━━━━━━━━━━
-📊 *STATUS PESANAN*
-━━━━━━━━━━━━━━━━━━
-Order ID: *${details.order_id}*
-Tanggal: ${new Date(details.created_at).toLocaleString('id-ID')}
-Total: *Rp${details.total.toLocaleString('id-ID')}*
-Status: *${statusTranslate}*
-
-*Item yang dipesan:*
-`;
+    let msg = `━━━━━━━━━━━━━━━━━━\n`;
+    if (justConfirmedPaid) {
+      msg += `🎉 *PEMBAYARAN TERDETEKSI & LUNAS!* 🎉\n`;
+      msg += `Dana Anda telah berhasil diverifikasi oleh sistem. Kredensial digital Anda sedang dikirimkan ke chat ini!\n━━━━━━━━━━━━━━━━━━\n`;
+    }
+    msg += `📊 *STATUS PESANAN*\n━━━━━━━━━━━━━━━━━━\n`;
+    msg += `Order ID: *${details.order_id}*\n`;
+    msg += `Tanggal: ${new Date(details.created_at).toLocaleString('id-ID')}\n`;
+    msg += `Total: *Rp${details.total.toLocaleString('id-ID')}*\n`;
+    msg += `Status: *${statusTranslate}*\n\n`;
+    msg += `*Item yang dipesan:*\n`;
 
     details.items.forEach(item => {
       msg += `- ${item.produk_nama} (x${item.qty || item.jumlah || 1})\n`;
     });
     
-    msg += `━━━━━━━━━━━━━━━━━━\n🌐 *Invoice Web:* http://localhost:3000/pay/${details.order_id}\n━━━━━━━━━━━━━━━━━━`;
+    msg += `━━━━━━━━━━━━━━━━━━`;
+    if (process.env.APP_URL) {
+      msg += `\n🌐 *Invoice Web:* ${process.env.APP_URL}/pay/${details.order_id}\n━━━━━━━━━━━━━━━━━━`;
+    }
+
+    if (details.status === 'WAITING_PAYMENT') {
+      msg += `\n\n💡 _Setelah transfer QRIS, sistem otomatis mendeteksi dalam hitungan detik. Untuk cek ulang status bank, ketik:_ \`.cekbayar\``;
+    }
+
     await sock.sendMessage(responseJid, { text: msg });
     await sendRedirectNotice();
     return;
@@ -1888,16 +1991,37 @@ Kami akan otomatis mengirimkan pesan WhatsApp ke nomor ini begitu produk *${p.na
     const refCode = await db.generateReferralCode(senderNumber);
     const stats = await db.getReferralStats(senderNumber);
     const total = stats.totalReferred;
-    const claimed = stats.rewardsClaimed;
+
+    // `stats.rewardsClaimed` menghitung BARIS REFERRAL yang sudah ditandai — yaitu
+    // jumlah TEMAN, bukan jumlah kupon. Dulu angka itu langsung dikurangkan dari
+    // `Math.floor(total / 3)` yang satuannya KUPON, jadi dua satuan berbeda diadu:
+    //
+    //   3 teman  -> berhak 1, tertandai 0 -> 1 kupon. claimReferralRewardCount
+    //               lalu menandai 1 x 3 = 3 baris, sehingga claimed menjadi 3.
+    //   6 teman  -> berhak 2, "claimed" 3 -> -1  -> TIDAK DAPAT APA-APA.
+    //   9 teman  -> berhak 3, "claimed" 3 ->  0  -> TIDAK DAPAT APA-APA.
+    //  12 teman  -> berhak 4, "claimed" 3 ->  1  -> baru dapat kupon kedua.
+    //
+    // Jadi janjinya "setiap 3 teman", kenyataannya kupon turun di teman ke-3, lalu
+    // ke-12, lalu ke-21: satu kupon per SEMBILAN teman setelah yang pertama.
+    // Diperbaiki dengan menyamakan satuan lebih dulu.
+    const kuponSudahDiklaim = Math.floor(stats.rewardsClaimed / 3);
     const eligibleRewards = Math.floor(total / 3);
-    const unclaimed = eligibleRewards - claimed;
+    const unclaimed = Math.max(0, eligibleRewards - kuponSudahDiklaim);
 
     let rewardStatusMsg = "";
     if (unclaimed > 0) {
-      const newCouponCode = 'REF10-' + Math.random().toString(36).substring(2, 7).toUpperCase();
-      await db.addCoupon(newCouponCode, 'percent', 10, 0, 1, null);
+      // Kalau seseorang berhak atas beberapa kupon sekaligus (misalnya baru
+      // mengecek setelah mengajak 9 teman), semuanya diterbitkan — bukan satu saja.
+      const kodeBaru = [];
+      for (let i = 0; i < unclaimed; i++) {
+        const kode = 'REF10-' + Math.random().toString(36).substring(2, 7).toUpperCase() + i;
+        await db.addCoupon(kode, 'percent', 10, 0, 1, null);
+        kodeBaru.push(kode);
+      }
       await db.claimReferralRewardCount(senderNumber, unclaimed);
-      rewardStatusMsg = `🎉 *SELAMAT! Anda telah mengundang ${total} teman!*\n\n🏷️ *KUPON DISKON 10% ANDA:* \`${newCouponCode}\`\n💡 _Gunakan dengan mengetik:_ \`kupon ${newCouponCode}\` _saat checkout!_\n\n`;
+      const daftarKode = kodeBaru.map(k => `\`${k}\``).join('\n');
+      rewardStatusMsg = `🎉 *SELAMAT! Anda telah mengundang ${total} teman!*\n\n🏷️ *KUPON DISKON 10% ANDA (${kodeBaru.length}x):*\n${daftarKode}\n💡 _Gunakan dengan mengetik:_ \`kupon <kode>\` _saat checkout!_\n\n`;
     } else {
       const progress = total % 3;
       const needed = 3 - progress;
@@ -1912,7 +2036,7 @@ Kode Referral Anda: *${refCode}*
 
 ${rewardStatusMsg}📋 *Detail Statistik:*
 • Total Teman Diajak: *${total}*
-• Kupon Diskon Diklaim: *${claimed + (unclaimed > 0 ? unclaimed : 0)}x Kupon 10%*
+• Kupon Diskon Diklaim: *${kuponSudahDiklaim + unclaimed}x Kupon 10%*
 
 💡 *Cara Menggunakan:*
 Ajak teman Anda untuk mengetik \`ref ${refCode}\` di chat ini. Setiap 3 teman yang diajak, Anda berhak mendapatkan 1 Kupon Diskon 10%!
@@ -2046,8 +2170,29 @@ ${casakuPayment.uniqueCode > 0 ? `_(Nominal top-up Rp${amount.toLocaleString('id
 
       await logToSystem('BALANCE', `💳 Top-up deposit Rp${amount.toLocaleString('id-ID')} diajukan oleh ${senderNumber} (${depositOrderId})`);
     } catch (depErr) {
+      // Pesan mentahnya membocorkan urusan dalam ke chat pelanggan. Saat Casaku
+      // belum dikonfigurasi, casakuProvider melempar teks yang menyebut nama
+      // variabel .env apa adanya ("CASAKU_LICENSE_KEY atau CASAKU_QRIS_ID belum
+      // dikonfigurasi di .env") — pelanggan melihat isi perut sistem, dan tetap
+      // tidak tahu harus berbuat apa. Detail lengkapnya tetap masuk console+log.
       console.error('[DEPOSIT_ERR]', depErr.message);
-      await sock.sendMessage(responseJid, { text: `❌ Gagal membuat QRIS Top Up: ${depErr.message}` });
+      try {
+        await db.addLog('ERROR', `Gagal membuat QRIS deposit untuk ${senderNumber}: ${depErr.message}`);
+      } catch (_) {}
+      await sock.sendMessage(responseJid, {
+        text: `❌ *TOP UP SALDO BELUM BISA DIPROSES*\n\nPembayaran otomatis sedang tidak tersedia.\n\n📌 Silakan hubungi admin untuk top up manual, atau langsung *checkout* pesananmu — pembayaran QRIS manual tetap berjalan normal.`
+      });
+
+      // Owner harus tahu fitur ini mati; tanpa notifikasi, `.deposit` bisa gagal
+      // 100% berbulan-bulan tanpa satu pun tanda.
+      try {
+        const ownerJid = botSettings?.ownerJid || botSettings?.ownerNumber;
+        if (ownerJid) {
+          await sock.sendMessage(ownerJid, {
+            text: `⚠️ *FITUR .deposit GAGAL*\n\nPelanggan: ${senderNumber}\nNominal: Rp${amount.toLocaleString('id-ID')}\n\nSebab: ${depErr.message}`
+          });
+        }
+      } catch (_) {}
     }
     return;
   }
@@ -2148,6 +2293,22 @@ Halo *${customerName}*, berikut adalah daftar voucher / akun digital dari pesana
     const lastOrder = await db.getCustomerLastOrder(senderNumber);
     try { fs.appendFileSync('./tmp/trace.log', new Date().toISOString() + '  C-lastOrder  ' + JSON.stringify({ order: lastOrder?.order_id || null, status: lastOrder?.status || null }) + '\n'); } catch (_) {}
     if (lastOrder && lastOrder.status === 'WAITING_PAYMENT') {
+      // ⚡ Jika pesanan dibuat menggunakan Casaku QRIS Dinamis, cek real-time terlebih dahulu!
+      if (lastOrder.casaku_transaction_id) {
+        try {
+          const { reconcileSingleOrder } = await import('../payment/paymentService.js');
+          const rec = await reconcileSingleOrder(lastOrder.order_id);
+          if (rec.success && rec.status === 'paid') {
+            await sock.sendMessage(jid, {
+              text: `✅ *PEMBAYARAN QRIS TERDETEKSI & TERVERIFIKASI OTOMATIS!* 🎉\n\nDana Anda sudah terkonfirmasi di sistem bank. Pesanan *${lastOrder.order_id}* sedang diproses dan produk digital akan segera dikirimkan ke chat ini.`
+            });
+            return;
+          }
+        } catch (e) {
+          console.error('[RECEIPT_CHECK] Error checking Casaku status on image receipt:', e.message);
+        }
+      }
+
       console.log('Bukti pembayaran terdeteksi. Mengunduh media...');
       const buffer = await downloadMediaMessage(messageObj, 'buffer', {});
 

@@ -491,6 +491,17 @@ checkout → db.checkoutCart (CART→WAITING_PAYMENT, reserve stock)
   must be changed in all of them.
 - `.pay` / `.qris` on an already-WAITING_PAYMENT order calls `createPayment` again, inserting a
   second `payment_transactions` row and orphaning the first.
+- **A failed `createPayment` must cancel the order explicitly.** Casaku's dashboard has a
+  *"Wajibkan Aplikasi Aktif"* toggle: with it on, Casaku **refuses to mint a transaction** while no
+  listener device is online. That is the correct setting — it converts the catastrophic failure
+  (customer pays, Casaku never sees it, order auto-cancels at 24 h with the money already gone)
+  into a harmless refusal before any money moves. But `checkoutCart` has already reserved stock and
+  set `WAITING_PAYMENT` by then, and `expired_at` is written by `createCasakuTransaction` — the call
+  that just failed. It stays NULL, `expireStaleOrders`'s `expired_at < ?` never matches NULL, and
+  the credential sits RESERVED until the 24-hour sweeper. The catch block in `customerHandler` now
+  calls `updateOrderStatus(order_id, 'CANCELLED')`, DMs the owner, and keeps `err.message` out of
+  the customer's message. Section 17 of `produkAdminSmokeTest.mjs` pins all of this down, including
+  the NULL-comparison behaviour — if that test starts failing, this note is what changed.
 - `getPendingFulfillmentJobs` also reclaims jobs stuck in `PROCESSING` for longer than its
   `staleProcessingMs` (default 5 min). A job only reaches that state if the process died
   mid-delivery, and re-running is safe because `claimAndDeliverItems` looks for this order's USED
