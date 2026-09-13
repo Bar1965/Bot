@@ -1,5 +1,6 @@
 import express from 'express';
 import * as db from '../../database.js';
+import { pesanErrorAman } from './responErr.js';
 import {
   authenticateJWT,
   authorizeRoles
@@ -13,7 +14,7 @@ router.get('/customers', authenticateJWT, authorizeRoles('Owner', 'Admin'), asyn
     const customers = await db.getCustomersWithTiers();
     res.json({ success: true, customers });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'CUSTOMER') });
   }
 });
 
@@ -26,7 +27,7 @@ router.get('/customers/:nomor', authenticateJWT, authorizeRoles('Owner', 'Admin'
     }
     res.json({ success: true, customer: details });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'CUSTOMER') });
   }
 });
 

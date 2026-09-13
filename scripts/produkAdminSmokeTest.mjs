@@ -490,6 +490,124 @@ cek('nominal bukan angka -> 0 poin', poinEmpat === 0, poinEmpat);
 const profilEmpat = await db.getGameProfile(PEMBELANJA);
 cek('poin tidak jadi NaN', profilEmpat.points === 100, profilEmpat.points);
 
+bagian('24. Penjaga menu mode jualan memakai registry, bukan salinan alias');
+const { resolveCategoryId, kategoriDisembunyikanModeJualan, buildCommandMenu, KATEGORI_MODE_JUALAN } =
+  await import(REPO + 'commandRegistry.js');
+
+// Daftar alias yang DULU ditulis tangan di customerHandler sebagai penjaga.
+const PENJAGA_LAMA = ['3', '4', '6', '7', '8', 'downloader', 'media', 'hiburan',
+  'game', 'games', 'fun', 'pdf', 'premium', 'sosial', 'social'];
+
+// Setiap alias yang mengurai ke kategori tersembunyi HARUS tertangkap penjaga.
+// Kalau tidak, buildCommandMenu mengembalikan null di mode jualan dan pelanggan
+// jatuh ke cabang yang salah. Ini yang dulu terjadi pada 13 alias.
+const ALIAS_SEMUA = ['1', 'jualan', 'produk', 'katalog', 'list', 'shop', 'store',
+  '2', 'transaksi', 'bayar', 'order', 'checkout', 'payment',
+  '3', 'game', 'games', 'gaming', 'arcade', 'play', 'mabar', 'permainan',
+  '4', 'media', 'downloader', 'tools', 'download', 'alat',
+  '5', 'poin', 'reward', 'bank', 'ekonomi', 'saldo', 'level',
+  '6', 'premium', 'vip', 'ai', 'gemini',
+  '7', 'pdf', 'dokumen', 'ocr',
+  '8', 'hiburan', 'fun', 'sosial', 'social',
+  '9', 'admin', 'owner', 'pengaturan', 'setting'];
+
+const bocorLama = ALIAS_SEMUA.filter(a =>
+  kategoriDisembunyikanModeJualan(resolveCategoryId(a)) && !PENJAGA_LAMA.includes(a));
+cek('penjaga tulisan tangan memang bocor (13 alias)', bocorLama.length === 13, bocorLama.join(','));
+
+// Penjaga sekarang: satu pertanyaan ke registry, jadi tidak bisa melenceng.
+const bocorBaru = ALIAS_SEMUA.filter(a => {
+  const kat = resolveCategoryId(a);
+  return kategoriDisembunyikanModeJualan(kat) && !kategoriDisembunyikanModeJualan(kat);
+});
+cek('penjaga berbasis registry tidak bocor', bocorBaru.length === 0, bocorBaru.join(','));
+
+// Kategori tersembunyi memang membuat buildCommandMenu mengembalikan null —
+// itulah yang dulu menjatuhkan pelanggan ke menu warisan.
+cek('kategori tersembunyi -> null di mode jualan', buildCommandMenu('gaming', { salesMode: true }) === null);
+cek('kategori tampil -> tetap berisi teks', typeof buildCommandMenu('jualan', { salesMode: true }) === 'string');
+cek('tanpa sufiks -> beranda menu, tidak pernah null', typeof buildCommandMenu('all', { salesMode: true }) === 'string');
+cek('mode all: tidak ada kategori yang tersembunyi', ALIAS_SEMUA.every(a => typeof buildCommandMenu(a, { salesMode: false }) === 'string'));
+cek('daftar kategori mode jualan ada 4', KATEGORI_MODE_JUALAN.length === 4, KATEGORI_MODE_JUALAN.join(','));
+
+bagian('25. Masa garansi dibaca dari angka+satuan, bukan potongan teks');
+const { masaGaransiMs } = await import(REPO + 'src/utils/pesanGaransi.js');
+const HARI_MS = 86400000;
+const garansiHari = (d) => masaGaransiMs(d) / HARI_MS;
+
+// Empat produk toko ini SALAH hitung dengan pencocokan potongan teks yang lama.
+cek('"12 Bulan" -> 360 hari, bukan 60', garansiHari('12 Bulan') === 360, garansiHari('12 Bulan'));
+cek('"6 Bulan" -> 180 hari, bukan 30', garansiHari('6 Bulan') === 180, garansiHari('6 Bulan'));
+cek('"18 Bulan" -> 540 hari, bukan 30', garansiHari('18 Bulan') === 540, garansiHari('18 Bulan'));
+cek('"1 Tahun" -> 365 hari', garansiHari('1 Tahun') === 365, garansiHari('1 Tahun'));
+// Yang dulu kebetulan benar harus tetap benar.
+cek('"7 Hari" -> 7 hari', garansiHari('7 Hari') === 7);
+cek('"14 Hari" -> 14 hari', garansiHari('14 Hari') === 14);
+cek('"30 Hari" -> 30 hari', garansiHari('30 Hari') === 30);
+cek('"3 Bulan" -> 90 hari', garansiHari('3 Bulan') === 90);
+cek('"17 Hari" tidak dibaca jadi 7', garansiHari('17 Hari') === 17, garansiHari('17 Hari'));
+cek('kosong -> 30 hari (perilaku lama dipertahankan)', garansiHari('') === 30);
+cek('"Lifetime" -> 30 hari (kebijakan owner, bukan urusan parser)', garansiHari('Lifetime') === 30);
+cek('salah ketik besar dibatasi 10 tahun', garansiHari('9999 Bulan') === 3650, garansiHari('9999 Bulan'));
+
+bagian('26. Tanggal kedaluwarsa polos berarti AKHIR hari WIB');
+const { akhirHariWib } = await import(REPO + 'src/utils/waktu.js');
+const kuponHabis = akhirHariWib('2026-12-31');
+cek('tanggal polos -> 16:59:59 UTC (= 23.59.59 WIB)',
+  kuponHabis.toISOString().startsWith('2026-12-31T16:59:59'), kuponHabis.toISOString());
+// Pukul 10 pagi WIB tanggal 31 Des = 03:00Z. Kupon harus MASIH hidup.
+cek('kupon masih hidup siang hari terakhir',
+  kuponHabis.getTime() > Date.parse('2026-12-31T03:00:00Z'));
+// new Date() mentah memberi 00:00Z, yaitu 07.00 WIB -> sudah mati sejak pagi.
+cek('cara lama memang mematikannya pukul 07.00 WIB',
+  new Date('2026-12-31').getTime() < Date.parse('2026-12-31T03:00:00Z'));
+cek('nilai ber-jam diteruskan apa adanya',
+  akhirHariWib('2026-12-31T05:00:00Z').toISOString() === '2026-12-31T05:00:00.000Z');
+cek('kosong -> null', akhirHariWib('') === null);
+
+bagian('27. Job pengiriman idempoten per pesanan');
+const ORDER_FJ = 'ORD-FJ-UJI';
+await db.getOrCreateCustomer('628999000111', 'Uji Job');
+await db.runQuery("INSERT OR REPLACE INTO orders (order_id, customer_nomor, total, status) VALUES (?, ?, ?, 'WAITING_PAYMENT')",
+  [ORDER_FJ, '628999000111', 50000]);
+await db.createFulfillmentJob(ORDER_FJ, '628999000111');
+await db.createFulfillmentJob(ORDER_FJ, '628999000111');
+const jobs = await db.allQuery("SELECT job_id FROM fulfillment_jobs WHERE order_id = ?", [ORDER_FJ]);
+cek('dua panggilan -> tetap SATU job', jobs.length === 1, `${jobs.length} job: ${jobs.map(j => j.job_id).join(', ')}`);
+cek('job_id tidak mengandung stempel waktu', jobs[0].job_id === `FJ-${ORDER_FJ}`, jobs[0].job_id);
+
+bagian('28. Kupon: ditebus sekali, dan tidak menyandera pesanan');
+await db.runQuery("INSERT OR REPLACE INTO coupons (code, type, value, min_order, max_uses, used_count, is_active) VALUES ('UJISEKALI', 'percent', 10, 0, 1, 0, 1)");
+const pesananKupon = { order_id: ORDER_FJ, coupon_code: 'UJISEKALI', coupon_redeemed: 0 };
+const tebus1 = await db.tebusKupon(pesananKupon);
+cek('penebusan pertama berhasil', tebus1.ditebus === true && tebus1.habis === false);
+const kuponRow = await db.getQuery("SELECT used_count FROM coupons WHERE code = 'UJISEKALI'");
+cek('used_count naik jadi 1', kuponRow.used_count === 1, kuponRow.used_count);
+// Pesanan KEDUA yang memakai kupon sama: kuotanya sudah habis.
+const tebus2 = await db.tebusKupon({ order_id: 'ORD-LAIN', coupon_code: 'UJISEKALI', coupon_redeemed: 0 });
+cek('penebusan kedua dilaporkan habis', tebus2.habis === true && tebus2.ditebus === false);
+const kuponRow2 = await db.getQuery("SELECT used_count FROM coupons WHERE code = 'UJISEKALI'");
+cek('used_count TIDAK melewati max_uses', kuponRow2.used_count === 1, kuponRow2.used_count);
+// Sudah ditebus -> dilewati, bukan dihitung lagi.
+const tebus3 = await db.tebusKupon({ order_id: ORDER_FJ, coupon_code: 'UJISEKALI', coupon_redeemed: 1 });
+cek('pesanan yang sudah ditebus dilewati', tebus3.ditebus === false && tebus3.habis === false);
+
+bagian('29. updateOrderStatus menulis payment_status saat pesanan jadi lunas');
+await db.updateOrderStatus(ORDER_FJ, 'PAID');
+const ordLunas = await db.getQuery("SELECT status, payment_status FROM orders WHERE order_id = ?", [ORDER_FJ]);
+cek('status jadi PAID', ordLunas.status === 'PAID', ordLunas.status);
+cek('payment_status ikut jadi PAID', ordLunas.payment_status === 'PAID', String(ordLunas.payment_status));
+// Inilah penjaga yang dipakai markTransactionPaid; kalau tetap PENDING, webhook
+// yang terlambat akan melunaskan ulang pesanan yang sudah di-`.paid`.
+
+bagian('30. .batal memilih pesanan yang sama dengan yang QRIS-nya dibatalkan');
+const PELANGGAN_B = '628999000222';
+await db.getOrCreateCustomer(PELANGGAN_B, 'Uji Batal');
+await db.runQuery("INSERT OR REPLACE INTO orders (order_id, customer_nomor, total, status, created_at) VALUES ('ORD-LAMA', ?, 10000, 'WAITING_PAYMENT', '2026-09-01 00:00:00')", [PELANGGAN_B]);
+await db.runQuery("INSERT OR REPLACE INTO orders (order_id, customer_nomor, total, status, created_at) VALUES ('ORD-BARU', ?, 10000, 'CART', '2026-09-10 00:00:00')", [PELANGGAN_B]);
+const dipilih = await db.getOrderUntukDibatalkan(PELANGGAN_B);
+cek('WAITING_PAYMENT didahulukan dari CART yang lebih baru', dipilih.order_id === 'ORD-LAMA', dipilih.order_id);
+
 console.log(`\n${'='.repeat(50)}`);
 console.log(`HASIL: ${lulus} lulus, ${gagal} gagal`);
 console.log('='.repeat(50));

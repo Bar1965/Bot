@@ -5,6 +5,7 @@ import * as db from '../../database.js';
 import { botState } from '../../server.js';
 import { reloadBotSettings, startBot } from '../../bot.js';
 import { backupDatabase, startScheduler } from '../../scheduler.js';
+import { pesanErrorAman } from './responErr.js';
 import {
   authenticateJWT,
   authorizeRoles,
@@ -64,7 +65,7 @@ router.get('/settings', authenticateJWT, authorizeRoles('Owner'), async (req, re
     const settings = await db.getSettings();
     res.json({ success: true, settings });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'SETTING') });
   }
 });
 
@@ -74,7 +75,7 @@ router.post('/settings', authenticateJWT, authorizeRoles('Owner'), async (req, r
     await reloadBotSettings();
     res.json({ success: true, message: "Pengaturan berhasil diperbarui." });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'SETTING') });
   }
 });
 
@@ -86,7 +87,7 @@ router.post('/settings/qris', authenticateJWT, authorizeRoles('Owner'), uploadQr
     await db.addLog("SYSTEM", "Gambar QRIS pembayaran diperbarui via Web Dashboard.");
     res.json({ success: true, message: "Gambar QRIS pembayaran berhasil diperbarui." });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'SETTING') });
   }
 });
 
@@ -100,7 +101,7 @@ router.get('/settings/backup', authenticateJWT, authorizeRoles('Owner'), async (
       res.status(500).json({ success: false, message: "Gagal membuat file cadangan database." });
     }
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'SETTING') });
   }
 });
 
@@ -133,7 +134,7 @@ router.post('/settings/session/reset', authenticateJWT, authorizeRoles('Owner'),
       startBot((newSock) => startScheduler(newSock));
     }, 2000);
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'SETTING') });
   }
 });
 
@@ -144,7 +145,7 @@ router.get('/logs', authenticateJWT, authorizeRoles('Owner'), async (req, res) =
     const logs = await db.getLogs(filter);
     res.json({ success: true, logs });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'SETTING') });
   }
 });
 
@@ -154,7 +155,7 @@ router.get('/broadcast/history', authenticateJWT, authorizeRoles('Owner', 'Admin
     const history = await db.getBroadcastHistoryList();
     res.json({ success: true, history });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'SETTING') });
   }
 });
 
@@ -199,7 +200,7 @@ router.post('/broadcast', authenticateJWT, authorizeRoles('Owner'), async (req, 
       targetCount: targetGroupJids.length
     });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'SETTING') });
   }
 });
 

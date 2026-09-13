@@ -28,7 +28,7 @@ const sudahDiperingatkan = new Set();
  *
  * ALREADY_PAID tidak dilaporkan — itu wajar, cuma dua rekonsiliasi berbarengan.
  */
-async function laporGagalSettle(order, result) {
+export async function laporGagalSettle(order, result) {
   if (!result || result.reason === 'ALREADY_PAID') return;
   if (sudahDiperingatkan.has(order.order_id)) return;
   sudahDiperingatkan.add(order.order_id);

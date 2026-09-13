@@ -12,6 +12,7 @@
  */
 import crypto from 'crypto';
 import * as db from '../../database.js';
+import { laporGagalSettle as laporkanGagalSettle } from './paymentService.js';
 
 const WEBHOOK_SECRET = () => process.env.CASAKU_WEBHOOK_SECRET || '';
 
@@ -57,29 +58,39 @@ export async function handleCasakuWebhook(req, res) {
     return res.status(400).json({ error: 'Invalid JSON body' });
   }
 
+  // Step 2: Verify HMAC signature — SEBELUM apa pun ditulis ke database.
+  //
+  // Dulu logWebhookEvent berjalan lebih dulu, jadi siapa pun yang bisa menjangkau
+  // port ini dapat mem-POST JSON tanpa tanda tangan sama sekali dan tetap
+  // menyisipkan satu baris berisi payload pilihannya (sampai 100 KB, batas
+  // bawaan express.raw) ke tabel payment_webhooks. Requestnya memang dibalas 401
+  // sesudahnya, tapi tulisannya sudah terjadi — tanpa autentikasi, tanpa
+  // pembatasan laju, ke berkas SQLite yang sama yang dipakai jalur uang.
+  //
+  // verifySignature sendiri sudah benar: gagal-tertutup saat rahasia kosong,
+  // menolak non-heksadesimal, dan memeriksa panjang sebelum timingSafeEqual.
+  // Yang salah cuma urutannya.
+  const signatureValid = verifySignature(rawBody, signatureHeader);
+  if (!signatureValid) {
+    console.warn('[WEBHOOK] Signature INVALID:', signatureHeader?.substring(0, 10), '...');
+    // Yang dicatat hanya jejak penolakannya, bukan isi payload yang tidak
+    // tepercaya — cukup untuk menyelidiki, tidak cukup untuk dijadikan tempat
+    // menumpuk data oleh orang asing.
+    try {
+      await db.logWebhookEvent(null, signatureHeader, { ditolak: 'signature_invalid' }, 'REJECTED');
+    } catch {}
+    return res.status(401).json({ error: 'Invalid signature' });
+  }
+
   try {
     webhookLogId = await db.logWebhookEvent(
       parsedPayload?.transactionId,
       signatureHeader,
       parsedPayload,
-      'RECEIVED'
+      'VERIFIED'
     );
   } catch (logErr) {
     console.error('[WEBHOOK] Failed to log webhook receipt:', logErr.message);
-  }
-
-  // Step 2: Verify HMAC signature
-  const signatureValid = verifySignature(rawBody, signatureHeader);
-  if (!signatureValid) {
-    console.warn('[WEBHOOK] Signature INVALID:', signatureHeader?.substring(0, 10), '...');
-    if (webhookLogId) {
-      try { await db.updateWebhookStatus(webhookLogId, 'REJECTED'); } catch {}
-    }
-    return res.status(401).json({ error: 'Invalid signature' });
-  }
-
-  if (webhookLogId) {
-    try { await db.updateWebhookStatus(webhookLogId, 'VERIFIED'); } catch {}
   }
 
   // Step 3: Validate required fields
@@ -107,6 +118,12 @@ export async function handleCasakuWebhook(req, res) {
     if (webhookLogId) {
       try { await db.updateWebhookStatus(webhookLogId, 'REJECTED'); } catch {}
     }
+    // Casaku sudah menyatakan LUNAS, dan kita tidak menemukan transaksinya.
+    // Uang pembeli sudah masuk. Dulu jalur ini hanya console.warn lalu membalas
+    // 200 — yang justru memberi tahu Casaku agar TIDAK mengulang. Alarm §10e
+    // hanya terpasang di reconcileStaleOrders dan reconcileSingleOrder, tidak
+    // di sini.
+    await laporkanGagalSettle({ order_id: `transaksi ${transactionId}`, payment_amount: amount }, result);
     return res.status(200).json({ received: true, processed: false, reason: 'transaction_not_found' });
   }
 
@@ -123,6 +140,7 @@ export async function handleCasakuWebhook(req, res) {
     if (webhookLogId) {
       try { await db.updateWebhookStatus(webhookLogId, 'REJECTED'); } catch {}
     }
+    await laporkanGagalSettle({ order_id: result.orderId || `transaksi ${transactionId}`, customer_nomor: result.customerNumber, payment_amount: amount }, result);
     // Return 200 to prevent retry loop for wrong amount
     return res.status(200).json({ received: true, processed: false, reason: 'amount_mismatch' });
   }

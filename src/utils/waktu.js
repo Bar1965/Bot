@@ -85,3 +85,30 @@ export function jamWib(nilai, fallback = '-') {
   if (!d) return fallback;
   return d.toLocaleTimeString('id-ID', { timeZone: ZONA, hour: '2-digit', minute: '2-digit' });
 }
+
+/**
+ * Batas akhir sebuah tanggal kedaluwarsa.
+ *
+ * Kolom seperti `coupons.expires_at` diisi tanggal POLOS — "2026-12-31" — dari
+ * dua pintu: `.addcoupon ... | 2026-12-31` dan `<input type="date">` di
+ * dashboard. `new Date("2026-12-31")` dibaca V8 sebagai tengah malam **UTC**,
+ * yaitu pukul 07.00 WIB. Jadi kupon yang dimaksudkan owner berlaku "sampai 31
+ * Desember" sebenarnya mati pukul tujuh pagi di hari itu, sementara dashboard
+ * masih menampilkannya aktif.
+ *
+ * Yang dimaksud manusia saat menulis tanggal tanpa jam adalah AKHIR hari itu di
+ * zona sendiri. WIB tidak mengenal DST, jadi "+07:00" cukup dan tepat.
+ *
+ * Nilai yang sudah membawa jam diteruskan apa adanya ke keWaktu.
+ */
+export function akhirHariWib(nilai, fallback = null) {
+  if (nilai === null || nilai === undefined || nilai === '') return fallback;
+
+  const s = String(nilai).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const d = new Date(`${s}T23:59:59.999+07:00`);
+    return isNaN(d.getTime()) ? fallback : d;
+  }
+
+  return keWaktu(s) || fallback;
+}

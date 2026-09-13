@@ -1,6 +1,7 @@
 import express from 'express';
 import * as db from '../../database.js';
 import { botState } from '../../server.js';
+import { pesanErrorAman } from './responErr.js';
 import {
   authenticateJWT,
   authorizeRoles
@@ -32,7 +33,7 @@ router.get('/orders', authenticateJWT, async (req, res) => {
     const orders = await db.getAllOrders();
     res.json({ success: true, orders });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'ORDER') });
   }
 });
 
@@ -40,7 +41,7 @@ router.get('/orders', authenticateJWT, async (req, res) => {
 router.post('/orders/:orderId/action', authenticateJWT, async (req, res) => {
   try {
     const { orderId } = req.params;
-    const { action } = req.body; // approve, complete, reject
+    const { action } = req.body || {}; // approve, complete, reject
     const userRole = req.user.role;
 
     if (!['approve', 'complete', 'reject'].includes(action)) {
@@ -105,7 +106,7 @@ router.post('/orders/:orderId/action', authenticateJWT, async (req, res) => {
       waNotified: waSent 
     });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'ORDER') });
   }
 });
 
@@ -119,19 +120,51 @@ router.delete('/orders/:orderId', authenticateJWT, authorizeRoles('Owner', 'Admi
     }
     res.json(result);
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'ORDER') });
   }
 });
 
-// Endpoint pembersihan riwayat order massal (Admin & Owner)
-router.post('/orders/clear', authenticateJWT, authorizeRoles('Owner', 'Admin'), async (req, res) => {
+// Endpoint pembersihan riwayat order massal — OWNER SAJA.
+//
+// Ini perintah paling merusak di seluruh dashboard: `clearOrders('ALL')` menghapus
+// SETIAP baris `orders` dan `order_items` tanpa soft-delete, tanpa cadangan, tanpa
+// jalur pengembalian. Yang hilang bukan cuma daftar pesanan, tapi seluruh dasar
+// perhitungan omzet, produk terlaris, dan riwayat belanja tiap pelanggan.
+//
+// Dua cacat yang diperbaiki di sini:
+//   1. `authorizeRoles('Owner', 'Admin')` — peran Admin boleh MENGHAPUS seluruh
+//      riwayat penjualan, padahal untuk sekadar MELIHAT omzet di /api/stats dan
+//      /api/analytics dia harus Owner. Wewenang menghapus tidak boleh melebihi
+//      wewenang membaca.
+//   2. Gagal-terbuka: `validFilters.includes(req.body.filter) ? ... : 'ALL'`.
+//      Body kosong, salah ketik nama filter, Content-Type salah, atau permintaan
+//      yang tidak sengaja terkirim SEMUANYA jatuh ke 'ALL' — pilihan paling
+//      merusak dijadikan nilai bawaan. Sekarang gagal-tertutup: filter tidak
+//      dikenal ditolak 400, dan 'ALL' wajib disertai kalimat konfirmasi persis.
+router.post('/orders/clear', authenticateJWT, authorizeRoles('Owner'), async (req, res) => {
   try {
+    const KALIMAT_KONFIRMASI = 'HAPUS SEMUA RIWAYAT';
     const validFilters = ['ALL', 'CANCELLED_CART', 'COMPLETED'];
-    const filter = validFilters.includes(req.body.filter) ? req.body.filter : 'ALL';
-    const result = await db.clearOrders(filter);
+    const filter = String(req.body?.filter || '').trim().toUpperCase();
+
+    if (!validFilters.includes(filter)) {
+      return res.status(400).json({
+        success: false,
+        message: `Filter wajib salah satu dari: ${validFilters.join(', ')}.`
+      });
+    }
+
+    if (filter === 'ALL' && String(req.body?.confirm || '').trim() !== KALIMAT_KONFIRMASI) {
+      return res.status(400).json({
+        success: false,
+        message: `Penghapusan SELURUH riwayat wajib disertai konfirmasi. Kirim confirm: "${KALIMAT_KONFIRMASI}".`
+      });
+    }
+
+    const result = await db.clearOrders(filter, req.user?.username || 'unknown');
     res.json(result);
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'ORDER') });
   }
 });
 

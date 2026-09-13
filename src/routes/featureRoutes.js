@@ -1,5 +1,6 @@
 import express from 'express';
 import * as db from '../../database.js';
+import { pesanErrorAman } from './responErr.js';
 import {
   authenticateJWT,
   authorizeRoles
@@ -13,7 +14,7 @@ router.get('/coupons', authenticateJWT, async (req, res) => {
     const coupons = await db.getAllCoupons();
     res.json({ success: true, coupons });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'FEATURE') });
   }
 });
 
@@ -43,7 +44,7 @@ router.post('/coupons', authenticateJWT, authorizeRoles('Owner', 'Admin'), async
     await db.addCoupon(normalizedCode, normalizedType, parsedValue, parsedMinOrder, parsedMaxUses, expires_at || null);
     res.json({ success: true, message: `Kupon ${normalizedCode} berhasil dibuat!` });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'FEATURE') });
   }
 });
 
@@ -52,7 +53,7 @@ router.delete('/coupons/:code', authenticateJWT, authorizeRoles('Owner', 'Admin'
     const deleted = await db.deleteCoupon(req.params.code);
     res.json({ success: true, deleted, message: deleted ? "Kupon berhasil dihapus." : "Kupon tidak ditemukan." });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'FEATURE') });
   }
 });
 
@@ -62,7 +63,7 @@ router.get('/faqs', authenticateJWT, async (req, res) => {
     const faqs = await db.getAllFaqs();
     res.json({ success: true, faqs });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'FEATURE') });
   }
 });
 
@@ -75,7 +76,7 @@ router.post('/faqs', authenticateJWT, authorizeRoles('Owner', 'Admin'), async (r
     const id = await db.addFaq(keywords, answer);
     res.json({ success: true, id, message: "FAQ berhasil ditambahkan!" });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'FEATURE') });
   }
 });
 
@@ -84,7 +85,7 @@ router.delete('/faqs/:id', authenticateJWT, authorizeRoles('Owner', 'Admin'), as
     const deleted = await db.deleteFaq(req.params.id);
     res.json({ success: true, deleted, message: deleted ? "FAQ berhasil dihapus." : "FAQ tidak ditemukan." });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'FEATURE') });
   }
 });
 
@@ -100,7 +101,7 @@ router.get('/referrals', authenticateJWT, authorizeRoles('Owner', 'Admin'), asyn
     );
     res.json({ success: true, referrals });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'FEATURE') });
   }
 });
 

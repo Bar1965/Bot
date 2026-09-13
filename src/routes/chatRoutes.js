@@ -6,6 +6,7 @@ import path from 'path';
 import * as db from '../../database.js';
 import * as chatManager from '../../chatManager.js';
 import { broadcastToAdmins } from '../../websocket.js';
+import { pesanErrorAman } from './responErr.js';
 import {
   authenticateJWT,
   ensureDirExists
@@ -114,7 +115,7 @@ router.get('/chats', authenticateJWT, async (req, res) => {
     const list = await db.getConversationsList();
     res.json({ success: true, data: list });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'CHAT') });
   }
 });
 
@@ -125,7 +126,7 @@ router.get('/chats/:nomor/messages', authenticateJWT, async (req, res) => {
     const messages = await db.getConversationMessages(nomor);
     res.json({ success: true, data: messages });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'CHAT') });
   }
 });
 
@@ -150,7 +151,7 @@ router.post('/chats/:nomor/send', authenticateJWT, async (req, res) => {
 
     res.json({ success: true, data: result });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'CHAT') });
   }
 });
 
@@ -175,7 +176,7 @@ router.post('/chats/:nomor/takeover', authenticateJWT, async (req, res) => {
 
     res.json({ success: true, message: `Status percakapan diubah ke ${state}.` });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'CHAT') });
   }
 });
 
@@ -191,7 +192,7 @@ router.post('/chats/:nomor/read', authenticateJWT, async (req, res) => {
 
     res.json({ success: true, message: "Status unread berhasil di-reset." });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'CHAT') });
   }
 });
 
@@ -211,7 +212,7 @@ router.post('/chats/:nomor/notes', authenticateJWT, async (req, res) => {
 
     res.json({ success: true, message: "Catatan internal berhasil diperbarui." });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'CHAT') });
   }
 });
 
@@ -231,7 +232,7 @@ router.post('/chats/:nomor/labels', authenticateJWT, async (req, res) => {
 
     res.json({ success: true, message: "Label customer berhasil diperbarui." });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'CHAT') });
   }
 });
 
@@ -250,7 +251,7 @@ router.post('/chats/:nomor/pin', authenticateJWT, async (req, res) => {
 
     res.json({ success: true, message: `Status pin chat diubah.` });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'CHAT') });
   }
 });
 

@@ -986,6 +986,39 @@ export async function getOrderPublicInvoice(orderId) {
  * @param {number} receivedAmount
  * @returns {{ success: boolean, orderId: string|null, customerNumber: string|null }}
  */
+/**
+ * Tebus kupon milik satu pesanan yang baru saja lunas. Aman dipanggil berkali-kali:
+ * pesanan yang `coupon_redeemed`-nya sudah 1 langsung dilewati.
+ *
+ * Dulu logika ini ditulis DUA KALI dengan kesimpulan yang berlawanan, dan
+ * dua-duanya salah arah:
+ *
+ *   markTransactionPaid (QRIS) membuang hasil UPDATE-nya. Kupon `max_uses = 1`
+ *   yang dipasang di dua keranjang berbeda sebelum salah satunya dibayar akan
+ *   menaikkan used_count sekali, lalu pesanan kedua tetap dilayani penuh dengan
+ *   kupon yang sudah habis — diskonnya sudah terlanjur menempel di orders.total.
+ *
+ *   updateOrderStatus (`.paid`, dashboard) melakukan kebalikannya: `changes !== 1`
+ *   membuatnya MENOLAK melunaskan pesanan. Uangnya sudah diterima admin, tapi
+ *   pesanannya mentok di WAITING_PAYMENT tanpa jalan keluar selain menyunting
+ *   database langsung.
+ *
+ * Sikap yang benar untuk dua-duanya sama: uang sudah masuk, jadi pelunasannya
+ * JALAN TERUS. Kupon yang ternyata sudah habis dilaporkan lewat `habis: true`
+ * supaya pemanggil bisa memberi tahu owner, bukan menyandera pesanannya.
+ */
+export async function tebusKupon(order) {
+  if (!order?.coupon_code || order.coupon_redeemed) return { ditebus: false, habis: false };
+
+  const hasil = await runQuery(
+    "UPDATE coupons SET used_count = used_count + 1 WHERE code = ? AND (max_uses = 0 OR used_count < max_uses)",
+    [order.coupon_code]
+  );
+  await runQuery("UPDATE orders SET coupon_redeemed = 1 WHERE order_id = ?", [order.order_id]);
+
+  return { ditebus: hasil.changes === 1, habis: hasil.changes !== 1, kode: order.coupon_code };
+}
+
 export async function markTransactionPaid(casakuTransactionId, receivedAmount) {
   return withTransaction(async () => {
     const tx = await getQuery(
@@ -1019,13 +1052,10 @@ export async function markTransactionPaid(casakuTransactionId, receivedAmount) {
       await addCustomerBalance(tx.customer_nomor, tx.expected_amount, 'DEPOSIT', `Top-up deposit via QRIS #${tx.order_id}`);
       await addLog('BALANCE', `💰 Auto-deposit Rp${tx.expected_amount.toLocaleString('id-ID')} berhasil via Casaku QRIS untuk ${tx.customer_nomor}`);
     } else {
-      // Redim kupon jika ada
-      if (tx.coupon_code && !tx.coupon_redeemed) {
-        await runQuery(
-          "UPDATE coupons SET used_count = used_count + 1 WHERE code = ? AND (max_uses = 0 OR used_count < max_uses)",
-          [tx.coupon_code]
-        );
-        await runQuery("UPDATE orders SET coupon_redeemed = 1 WHERE order_id = ?", [tx.order_id]);
+      // Kupon ditebus lewat satu fungsi bersama yang MEMERIKSA hasil UPDATE-nya.
+      const kupon = await tebusKupon({ ...tx, order_id: tx.order_id });
+      if (kupon.habis) {
+        await addLog('PAYMENT', `\u26a0\ufe0f Kupon ${kupon.kode} pada order ${tx.order_id} ternyata sudah habis terpakai, tetapi diskonnya sudah menempel pada total. Pesanan tetap dilunaskan.`);
       }
 
       // Poin belanja + pembukaan referral memakai awardPurchasePoints, sama
@@ -1033,6 +1063,26 @@ export async function markTransactionPaid(casakuTransactionId, receivedAmount) {
       // SQL-nya sendiri dengan `points = points + ?` tanpa COALESCE.
       await awardPurchasePoints(tx.customer_nomor, receivedAmount, tx.order_id);
     }
+
+    // Job pengiriman dibuat DI DALAM transaksi yang sama dengan pelunasannya.
+    //
+    // Dulu setiap pemanggil melakukannya SETELAH transaksi ini commit, dan kalau
+    // INSERT itu gagal — SQLITE_BUSY wajar terjadi di sini, karena bot,
+    // scheduler, worker dan dashboard menulis berkas yang sama — ordernya jadi
+    // yatim PERMANEN, bukan sekadar tertunda:
+    //
+    //   getPendingFulfillmentJobs melakukan JOIN ke fulfillment_jobs, jadi tanpa
+    //   baris job tidak ada yang bisa dipungut, sekarang maupun sesudah restart.
+    //
+    //   getStalePendingOrders mensyaratkan payment_status = 'PENDING' AND
+    //   status = 'WAITING_PAYMENT'. Dua-duanya baru saja diubah beberapa baris di
+    //   atas, jadi rekonsiliasi 45 detik tidak akan pernah melihat order ini lagi.
+    //
+    // Hasilnya: pembeli membayar, produk tidak pernah dikirim, tidak ada pesan
+    // error, dan tidak ada satu pun mekanisme pemulihan yang tersisa. Di dalam
+    // transaksi, kegagalan INSERT membatalkan pelunasannya juga, order tetap
+    // PENDING, dan rekonsiliasi mencobanya lagi 45 detik kemudian.
+    await createFulfillmentJob(tx.order_id, tx.customer_nomor);
 
     return { success: true, reason: 'PAID', orderId: tx.order_id, customerNumber: tx.customer_nomor, isDeposit: tx.order_id.startsWith('DEP-') };
   });
@@ -1045,7 +1095,12 @@ export async function markTransactionPaid(casakuTransactionId, receivedAmount) {
  */
 export async function createFulfillmentJob(orderId, customerNumber) {
   const now = Date.now();
-  const jobId = `FJ-${orderId}-${now}`;
+  // job_id sengaja DETERMINISTIK per order. Dulu ia menyertakan Date.now(),
+  // sehingga `INSERT OR IGNORE` tidak pernah benar-benar menolak apa pun:
+  // job_id-nya selalu baru, dan order_id tidak punya batasan UNIQUE. Dua
+  // pemanggilan untuk satu order menghasilkan dua job, dan worker mengirim
+  // kredensial yang sama dua kali ke pembeli.
+  const jobId = `FJ-${orderId}`;
   await runQuery(
     `INSERT OR IGNORE INTO fulfillment_jobs (job_id, order_id, customer_number, status, attempts, created_at, updated_at)
      VALUES (?, ?, ?, 'PENDING', 0, ?, ?)`,
@@ -1129,15 +1184,39 @@ export async function updateWebhookStatus(webhookLogId, processingStatus) {
 /**
  * Expire stale PENDING orders older than given minutes. Releases RESERVED product_items.
  */
+/**
+ * `expiryMinutes` sengaja TIDAK dipakai menghitung ambang: kolom `expired_at`
+ * sudah berisi waktu kedaluwarsa yang ditulis createCasakuTransaction, jadi
+ * membandingkannya dengan Date.now() adalah jawaban yang benar. Dulu ada
+ * `const cutoff` di sini yang dihitung lalu tidak pernah dipakai sama sekali —
+ * yang membuat parameternya terlihat berpengaruh padahal tidak.
+ */
 export async function expireStaleOrders(expiryMinutes = 15) {
-  const cutoff = Date.now() - expiryMinutes * 60 * 1000;
   const staleOrders = await allQuery(
     `SELECT order_id FROM orders WHERE payment_status = 'PENDING' AND status = 'WAITING_PAYMENT' AND expired_at < ?`,
     [Date.now()]
   );
 
+  let benarKedaluwarsa = 0;
+
   for (const order of staleOrders) {
     await withTransaction(async () => {
+      // Ordernya DIKLAIM lebih dulu, dengan predikat lengkap diulang di sini.
+      //
+      // SELECT di atas berjalan di luar transaksi, dan antrean withTransaction
+      // memang bisa menyelipkan transaksi lain di setiap titik `await`. Dulu
+      // UPDATE penutupnya tidak mengulang `payment_status = 'PENDING'`, jadi
+      // webhook yang mendarat di sela dua langkah itu sudah menandai order LUNAS
+      // — lalu penyapu ini menimpanya jadi CANCELLED dan mengembalikan
+      // kredensial yang SUDAH DIBAYAR ke stok READY.
+      const klaim = await runQuery(
+        `UPDATE orders SET payment_status = 'EXPIRED', status = 'CANCELLED', updated_at = ?
+         WHERE order_id = ? AND payment_status = 'PENDING' AND status = 'WAITING_PAYMENT'`,
+        [Date.now(), order.order_id]
+      );
+      if (klaim.changes !== 1) return;
+      benarKedaluwarsa++;
+
       // Release reserved product_items back to READY
       await runQuery(
         `UPDATE product_items SET status = 'READY', order_id = NULL WHERE order_id = ? AND status = 'RESERVED'`,
@@ -1155,11 +1234,6 @@ export async function expireStaleOrders(expiryMinutes = 15) {
         `UPDATE order_items SET stock_reserved = 0 WHERE order_id = ?`,
         [order.order_id]
       );
-      // Mark order expired
-      await runQuery(
-        `UPDATE orders SET payment_status = 'EXPIRED', status = 'CANCELLED', updated_at = ? WHERE order_id = ?`,
-        [Date.now(), order.order_id]
-      );
       await runQuery(
         `UPDATE payment_transactions SET status = 'EXPIRED' WHERE order_id = ? AND status = 'PENDING'`,
         [order.order_id]
@@ -1167,7 +1241,10 @@ export async function expireStaleOrders(expiryMinutes = 15) {
     });
   }
 
-  return staleOrders.length;
+  // Yang dilaporkan adalah yang BENAR-BENAR disapu, bukan panjang daftar
+  // kandidat: order yang keburu lunas di sela SELECT dan transaksi tidak ikut
+  // dihitung, supaya angka di log scheduler tidak berbohong.
+  return benarKedaluwarsa;
 }
 
 /**

@@ -661,6 +661,66 @@ outside `src/utils/`; the settings reader is injected rather than imported, to s
 `notifikasiOwner` returns `false` instead of throwing when no socket is attached yet, because every
 caller sits on the money path and a failed notification must never fail a payment.
 
+### 10f. Settlement invariants — four rules that hold the money path together
+
+These were each broken in a different place, and each failure was silent.
+
+**1. A paid order must always carry `payment_status = 'PAID'`.** `updateOrderStatus` used to write
+only `status`, so an order settled by `.paid` or the dashboard stayed `payment_status = 'PENDING'` —
+and that column is the *sole* idempotency guard in `markTransactionPaid`. A late webhook would then
+settle the same order a second time: points, loyalty, `total_spent`, a second fulfillment job and a
+second "payment received" DM. `updateOrderStatus` now sets it whenever the new status is PAID or
+COMPLETED.
+
+**2. The fulfillment job must be created inside the settling transaction.** It used to be created by
+each caller *after* `markTransactionPaid` committed. If that INSERT failed — SQLITE_BUSY is routine,
+four writers share the file — the order was orphaned permanently, not merely delayed:
+`getPendingFulfillmentJobs` INNER JOINs `fulfillment_jobs` so there was no row to pick up, and
+`getStalePendingOrders` requires `payment_status = 'PENDING' AND status = 'WAITING_PAYMENT'`, both of
+which had just changed. Now it happens inside the transaction, so a failure rolls the settlement back
+and the 45 s reconciler retries.
+
+**3. `createFulfillmentJob` must be idempotent per order.** `job_id` used to embed `Date.now()`, so
+`INSERT OR IGNORE` never ignored anything (`order_id` has no UNIQUE constraint) and two calls meant
+two jobs — the buyer receiving their credentials twice. The id is now `FJ-<orderId>`.
+
+**4. Coupon redemption goes through `tebusKupon` and never blocks a settlement.** Three settlement
+paths existed; the QRIS one discarded the UPDATE's `changes` (so a `max_uses = 1` coupon staged in
+two carts was honoured twice), the `.paid`/dashboard one returned `success: false` on `changes !== 1`
+(holding hostage an order whose money the admin had already received), and the deposit-balance one
+never redeemed at all — leaving `used_count` at 0 forever, so a single-use coupon could be reused
+without limit. `tebusKupon` in `gamesDb.js` is now the only implementation; it reports
+`habis: true` for an exhausted coupon and lets the settlement proceed, because the money is already
+in and bookkeeping is not a reason to withhold a product.
+
+`settleOrderWithBalance` in `storeDb.js` is the deposit-balance path. It exists because the handler
+previously ran the deduction, the order update, the job creation and the points award in four
+separate transactions; a crash between the first two (Antigravity restarts this bot on its own) left
+the balance spent and the order still `WAITING_PAYMENT`, so the customer paid again by QRIS.
+
+### 10g. Warranty length is parsed from the number and its unit — never from a substring
+
+`claimAndDeliverItems` derives `orders.warranty_until` from `products.duration`. The old code matched
+fragments in priority order (`d.includes('7')`, then `'14'`, then `'60' || '2 bulan'`, …), which is
+wrong for four of the shop's real products:
+
+| product | duration | old | correct |
+| --- | --- | --- | --- |
+| OFFICE | `12 Bulan` | 60 days | 360 |
+| ADOBE | `12 Bulan` | 60 days | 360 |
+| APPLEMUSIC | `6 Bulan` | 30 days | 180 |
+| GEMINI | `18 Bulan` | 30 days | 540 |
+
+`"12 bulan"` contains `"2 bulan"`, so the 60-day branch won and the `'12 bulan'` branch below it was
+unreachable. A one-year Office account carried a two-month warranty: it dies in month five, `.garansi`
+refuses the claim, and a buyer who is genuinely covered gets turned away.
+
+Use `masaGaransiMs()` in `src/utils/pesanGaransi.js`. It reads the first number+unit pair
+(hari/minggu/bulan/tahun and their abbreviations), caps at ten years, and falls back to 30 days for
+text with no number — `Lifetime`, `Permanen`, empty. That fallback is the owner's policy question,
+not the parser's, and is deliberately left as it was. An order with mixed durations takes the longest,
+because `warranty_until` is one column per order; that favours the buyer, on purpose.
+
 ### 10b. Premium shop discount is applied in `checkoutCart`, and the percentages live in two files
 
 `PREMIUM_TIERS[*].benefits.shopDiscountPct` (5 / 10 / 15) was advertised in nine places and used in
@@ -722,6 +782,42 @@ dashboard is optional rather than required.
   `os.tmpdir()`. 85 assertions, no WhatsApp session needed. It `chdir`s to the sandbox **before**
   importing the database layer; keep that order or it will write to the owner's live `shop.db`.
 
+### 10h. Admin store commands — what each one must not destroy
+
+`.addproduk` calls `addProduct`, which is `INSERT OR REPLACE`: **every column the caller does not
+resend is blanked.** The handler used to pass `""` for `gambar`, `""` for `petunjuk` and `null` for
+`variant_type`, so re-running `.addproduk` on an existing code silently deleted the image set by
+`.setgambar` and the whole usage guide — which ships to the buyer alongside their credentials. It
+also defaulted MODE to `MANUAL`, flipping an AUTO product holding 20 credentials over to manual and
+taking its stock from a typed number. It now carries the old product's image, guide, variant type and
+delivery mode forward. Stock is validated against `addProduct`'s own bounds (0–1 000 000) *before* the
+call, because `-5` is not `NaN`, and the throw it caused reached only the top-level catch in
+`bot.js` — the admin got no reply at all.
+
+`.delstock` must refuse `RESERVED` and `USED` rows. RESERVED means the credential is locked to an
+order awaiting payment; deleting it means the buyer pays and `claimAndDeliverItems` finds nothing.
+USED is the only record of what was delivered, which is what a `.garansi` claim is checked against —
+`.delproduk` deliberately preserves USED rows for exactly this reason (§10c), while `.delstock` was
+deleting them one at a time.
+
+`.flashsale` was the third price entrance still using raw `parseInt`: `.flashsale NET01 15.000` sold
+the product for **Rp15**, and a negative price passed (`-50000` is not `NaN`) straight into
+`setFlashSale`, which validates nothing — `addToCart` then uses it as `activePrice`, making the cart
+subtotal negative and discounting the other items in the same cart. It now uses
+`validasiFieldProduk('harga', …)` like `.price` and the wizard, rejects a price that is not below the
+normal one, and bounds the duration.
+
+`.takeover` / `.release` must resolve an identity, never assemble one. They wrote
+`<digits>@s.whatsapp.net` while the bot reads conversation state under the sender's own identity,
+which for ~98 % of customers is `@lid` (§9a) — so the bot kept auto-replying while the confirmation
+said the chat had been taken over. Use `db.resolveTargetJid`.
+
+Finally, a command being *referenced* in this file does not make it reachable: `acc`, `terima`,
+`konfirmasi` and `selesai` were matched at their handlers but missing from `adminStoreCommands`, so
+the gate returned first and all four were dead — including `.acc`, which `.paid`'s own help text
+tells admins to use. `batal` is deliberately **not** in that list: it is the customer's
+cancel-my-order command, and adding it would hijack the owner's own `.batal` when they shop.
+
 ## 11. Dashboard (`server.js`, ~70 `/api` routes)
 
 - Routes are `app.VERB(path, authenticateJWT, authorizeRoles(...), handler)`. Roles are exactly
@@ -775,6 +871,32 @@ dashboard is optional rather than required.
   `getOrderPublicInvoice` becomes world-readable to anyone holding an ID.
 - `chatManager.js` runs a **second, independent** outbound queue for dashboard-originated messages,
   and rewrites a message's primary key after send (`admin_<ts>_<rand>` → real WhatsApp id).
+
+### 11a. Route hygiene — three rules the dashboard broke
+
+**Every webhook route needs its own parser.** The webhook block is registered *above*
+`app.use(express.json())` so Casaku can verify a signature against the raw body. The
+`/api/payment/webhook/midtrans` route was given no parser at all and answers without calling
+`next()`, so `req.body` was always `undefined` and **every** Midtrans notification got a 400. Midtrans
+retries a while, gives up, and `expireStaleOrders` then cancels an order whose money arrived. It now
+carries `express.json()` as route middleware (Midtrans signs `order_id + status_code + gross_amount +
+serverKey`, not the raw body, so a JSON parser is safe there).
+
+**Verify before you write.** `handleCasakuWebhook` used to call `logWebhookEvent` before
+`verifySignature`, so anyone who could reach the port could insert an attacker-sized row into
+`payment_webhooks` — unauthenticated, unthrottled, into the same SQLite file the money path uses.
+Verification now runs first; a rejected request logs a marker, not its payload. `verifySignature`
+itself was always sound (fails closed on a missing secret, rejects non-hex, length-checks before
+`timingSafeEqual`) — only the ordering was wrong.
+
+**Never return `err.message` to a client.** 57 catch blocks across nine route modules did. On
+`/api/login` that client is unauthenticated: `POST /api/login` with `Content-Type: text/plain` left
+`req.body` undefined, the destructure threw, and the response was
+`"Cannot destructure property 'username' of 'req.body' as it is undefined."` The same shape returned
+SQLite driver messages with table and column names. Use `pesanErrorAman(err, konteks)` from
+`src/routes/responErr.js`, which logs the real cause server-side and returns a neutral sentence. The
+remaining `err.message` responses are 400s from DB helpers that throw deliberately user-facing
+validation text — those are intentional.
 
 ## 12. Features, games, media, AI
 
@@ -2011,7 +2133,22 @@ nothing and the bot answered with **complete silence** — while the menu home s
 
 The regex now captures any single alphanumeric token and lets `resolveCategory` in
 `commandRegistry.js` decide; an unknown suffix falls back to the menu home instead of silence.
-`commandRegistry.js` is the only place that may own the alias list. Note that `.menu full` renders
+`commandRegistry.js` is the only place that may own the alias list.
+
+The same mistake had been made one layer down, in the two `includes([...])` guards that decide
+whether a category is refused in a sales-mode group. Those arrays were written by hand and missed
+**13** aliases — `gaming`, `arcade`, `play`, `mabar`, `permainan`, `tools`, `download`, `alat`,
+`vip`, `ai`, `gemini`, `dokumen`, `ocr`. Typing `.menu gaming` in a sales group slipped past the
+guard, `buildCommandMenu` returned `null` because the category is hidden in that mode, and the
+handler fell through to **333 lines of hand-written legacy menu** — a second copy of the whole
+command list, with a completely different layout, still advertising `.checkout` as a
+"Link pembayaran QRIS/Midtrans" long after Casaku started sending a QR image. That block could only
+ever be reached through the bug, yet it was edited every time a command was added.
+
+Both guards now ask the registry (`resolveCategoryId` +
+`kategoriDisembunyikanModeJualan`), `KATEGORI_MODE_JUALAN` is exported so the visible-category list
+has one home, and the legacy block is gone — the fallback renders the registry's own index. Section
+24 of `produkAdminSmokeTest.mjs` asserts that no alias leaks past the guard. Note that `.menu full` renders
 ~7 400 characters — long, but it is what the user asked for.
 
 ## 13. Plugins

@@ -63,7 +63,21 @@ app.post(
   }
 );
 
-app.post('/api/payment/webhook/midtrans', async (req, res) => {
+// express.json() dipasang PER RUTE di sini, bukan diandalkan dari global.
+//
+// Blok webhook ini sengaja berdiri di atas `app.use(express.json())` supaya
+// Casaku bisa memeriksa tanda tangan terhadap body mentah. Tapi rute Midtrans
+// ini tidak diberi parser apa pun, dan handler-nya menjawab tanpa memanggil
+// next() — jadi express.json() di bawah TIDAK PERNAH jalan untuknya. req.body
+// selalu undefined, pemeriksaan "Payload tidak lengkap" selalu kena, dan SETIAP
+// notifikasi Midtrans dibalas 400. Midtrans mengulang beberapa kali lalu
+// menyerah, dan ordernya menunggu sampai dibatalkan penyapu kedaluwarsa —
+// uang masuk, pesanan batal.
+//
+// Rute warisan di atas selamat hanya karena ia mem-parse JSON-nya sendiri.
+// Tanda tangan Midtrans dihitung dari order_id + status_code + gross_amount +
+// serverKey, bukan dari body mentah, jadi parser JSON biasa aman di sini.
+app.post('/api/payment/webhook/midtrans', express.json(), async (req, res) => {
   return processMidtransWebhook(req, res);
 });
 
@@ -296,7 +310,7 @@ async function processMidtransWebhook(req, res) {
 
   } catch (err) {
     console.error("[WEBHOOK ERROR]", err.message);
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: "Terjadi kesalahan di server." });
   }
 }
 
@@ -312,8 +326,23 @@ export async function startServer() {
   // Bind Socket.IO ke server
   initWebSocket(serverInstance);
 
-  serverInstance.listen(port, () => {
-    console.log(`=== Dashboard Admin Web Berjalan di http://localhost:${port} ===`);
+  // Dashboard ini memegang 194 nomor WhatsApp pelanggan, seluruh riwayat penjualan,
+  // dan tombol yang bisa mengirim pesan atas nama toko. `listen(port)` tanpa host
+  // mengikat SEMUA antarmuka jaringan, sehingga siapa pun yang satu Wi-Fi dengan
+  // komputer ini bisa membuka halaman login. Bawaannya sekarang localhost saja.
+  //
+  // Butuh akses dari HP atau komputer lain di rumah? Isi DASHBOARD_HOST=0.0.0.0 di
+  // .env. Itu WAJIB juga sebelum webhook Casaku/Midtrans dinyalakan, karena panggilan
+  // balik dari server pembayaran datang dari luar mesin ini.
+  const host = process.env.DASHBOARD_HOST || '127.0.0.1';
+  serverInstance.listen(port, host, () => {
+    if (host === '127.0.0.1') {
+      console.log(`=== Dashboard Admin Web Berjalan di http://localhost:${port} (hanya dari komputer ini) ===`);
+      console.log(`    Ingin buka dari HP / komputer lain, atau mau menyalakan webhook pembayaran?`);
+      console.log(`    Tambahkan DASHBOARD_HOST=0.0.0.0 di file .env lalu jalankan ulang bot.`);
+    } else {
+      console.log(`=== Dashboard Admin Web Berjalan di http://${host}:${port} (TERBUKA ke jaringan) ===`);
+    }
   }).on('error', (err) => {
     console.error(`Gagal menjalankan server di port ${port}:`, err.message);
   });

@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { config } from '../../config.js';
 import * as db from '../../database.js';
+import { pesanErrorAman } from './responErr.js';
 import {
   authCookieOptions,
   isLoginAllowed,
@@ -19,7 +20,11 @@ const router = express.Router();
 
 router.post('/login', async (req, res) => {
   try {
-    const { username, password, otp } = req.body;
+    // `req.body || {}` karena Express 5 meninggalkan body undefined saat tidak
+    // ada parser yang cocok (mis. Content-Type: text/plain). Tanpa ini
+    // destrukturisasinya melempar, dan penangkap di bawah dulu memulangkan pesan
+    // internal mentah ke klien yang BELUM login.
+    const { username, password, otp } = req.body || {};
     if (typeof username !== 'string' || typeof password !== 'string' || !username.trim() || !password) {
       return res.status(400).json({ success: false, message: "Username dan password harus diisi." });
     }
@@ -59,9 +64,12 @@ router.post('/login', async (req, res) => {
 
     const authenticatedUser = user || { username: config.adminUser, role: 'Owner' };
 
+    // `iatMs` adalah waktu terbit berpresisi MILIDETIK. Klaim `iat` bawaan hanya
+    // berpresisi detik, sehingga pemeriksaan pencabutan di authMiddleware tidak
+    // bisa membedakan token yang lahir pada detik yang sama dengan pencabutannya.
     const token = jwt.sign(
-      { username: authenticatedUser.username, role: authenticatedUser.role },
-      config.jwtSecret, 
+      { username: authenticatedUser.username, role: authenticatedUser.role, iatMs: Date.now() },
+      config.jwtSecret,
       { expiresIn: '24h' }
     );
 
@@ -72,11 +80,19 @@ router.post('/login', async (req, res) => {
       role: authenticatedUser.role
     });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'AUTH') });
   }
 });
 
-router.post('/logout', authenticateJWT, (req, res) => {
+router.post('/logout', authenticateJWT, async (req, res) => {
+  // Menghapus cookie saja tidak mencabut apa pun — token yang sudah disalin keluar
+  // browser tetap sah sampai 24 jamnya habis. Menaikkan epoch membuat SEMUA token
+  // lama akun ini langsung ditolak, termasuk yang dipegang perangkat lain.
+  try {
+    await db.bumpTokenEpoch(req.user.username);
+  } catch (err) {
+    console.error('[AUTH] Gagal mencabut token saat logout:', err.message);
+  }
   res.clearCookie('auth_token', {
     httpOnly: true,
     sameSite: 'lax',
@@ -95,7 +111,7 @@ router.get('/2fa/status', authenticateJWT, authorizeRoles('Owner'), async (req, 
     const user = await db.getUserByUsername(req.user.username);
     res.json({ success: true, enabled: Boolean(user?.two_factor_enabled), hasSecret: Boolean(user?.two_factor_secret) });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'AUTH') });
   }
 });
 
@@ -112,7 +128,7 @@ router.post('/2fa/setup', authenticateJWT, authorizeRoles('Owner'), async (req, 
     const otpauthUri = `otpauth://totp/${label}?secret=${secret}&issuer=Akbar%20Store`;
     res.json({ success: true, secret, otpauthUri, message: "Secret 2FA dibuat. Tambahkan ke aplikasi authenticator lalu verifikasi kodenya." });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'AUTH') });
   }
 });
 
@@ -126,7 +142,7 @@ router.post('/2fa/enable', authenticateJWT, authorizeRoles('Owner'), async (req,
     await db.setTwoFactorEnabled(user.username, true);
     res.json({ success: true, message: "2FA berhasil diaktifkan untuk akun Owner." });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'AUTH') });
   }
 });
 
@@ -139,7 +155,7 @@ router.post('/2fa/disable', authenticateJWT, authorizeRoles('Owner'), async (req
     await db.disableTwoFactor(user.username);
     res.json({ success: true, message: "2FA berhasil dinonaktifkan." });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'AUTH') });
   }
 });
 
@@ -149,7 +165,7 @@ router.get('/users', authenticateJWT, authorizeRoles('Owner'), async (req, res) 
     const users = await db.getUsers();
     res.json({ success: true, users });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'AUTH') });
   }
 });
 
@@ -174,7 +190,7 @@ router.post('/users', authenticateJWT, authorizeRoles('Owner'), async (req, res)
     await db.addUser(username, password, role);
     res.json({ success: true, message: `Akun ${username} (${role}) berhasil ditambahkan.` });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'AUTH') });
   }
 });
 
@@ -187,9 +203,10 @@ router.put('/users/:username', authenticateJWT, authorizeRoles('Owner'), async (
     }
 
     await db.updateUserPassword(username, password);
-    res.json({ success: true, message: `Password untuk akun ${username} berhasil diubah.` });
+    // updateUserPassword menaikkan epoch token, jadi sesi lama akun itu ikut mati.
+    res.json({ success: true, message: `Password untuk akun ${username} berhasil diubah. Sesi lamanya dicabut.` });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'AUTH') });
   }
 });
 
@@ -201,9 +218,11 @@ router.delete('/users/:username', authenticateJWT, authorizeRoles('Owner'), asyn
     }
 
     await db.deleteUser(username);
-    res.json({ success: true, message: `Akun ${username} berhasil dihapus.` });
+    // deleteUser sudah menaikkan epoch token akun tersebut, jadi sesi yang sedang
+    // berjalan milik akun ini langsung mati — bukan menunggu 24 jam.
+    res.json({ success: true, message: `Akun ${username} berhasil dihapus. Sesi aktifnya langsung dicabut.` });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'AUTH') });
   }
 });
 

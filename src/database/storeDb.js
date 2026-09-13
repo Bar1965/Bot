@@ -1,7 +1,8 @@
 import { runQuery, getQuery, allQuery, withTransaction, formatPhoneNumber, normalizePhoneDigits, isPhoneMatch } from './connection.js';
 
 import { addLog, generateOrderId, addLoyaltyPoints } from './userDb.js';
-import { addCustomerBalance, deductCustomerBalance } from './gamesDb.js';
+import { addCustomerBalance, deductCustomerBalance, tebusKupon, createFulfillmentJob, awardPurchasePoints } from './gamesDb.js';
+import { masaGaransiMs } from '../utils/pesanGaransi.js';
 
 
 // --- FUNGSI SUBSCRIPTIONS (NOTIFIKASI STOK) ---
@@ -53,8 +54,29 @@ export function getBrandEmoji(brand) {
   return '📦';
 }
 
+/**
+ * Ekspresi SELECT untuk kolom `stok` yang BENAR.
+ *
+ * Untuk produk AUTO, `products.stok` cuma cache tampilan: checkoutCart memesan
+ * kredensial dengan mengubah product_items READY -> RESERVED dan sama sekali
+ * tidak menyentuh kolom itu; sinkronisasinya baru terjadi jauh kemudian di
+ * claimAndDeliverItems, saat pengiriman.
+ *
+ * Akibatnya: produk AUTO dengan satu kredensial yang sudah di-checkout pelanggan
+ * A tetap diiklankan "Ready (1)" kepada pelanggan B di `.produk`, `.p` dan
+ * `.cari` — lalu `.beli` menolaknya dengan "Stok tidak mencukupi. Sisa stok saat
+ * ini: 0", karena addToCart memakai getAvailableItemsCount yang benar. Pelanggan
+ * ditolak satu ketikan setelah tokonya sendiri menjanjikan barang itu ada.
+ *
+ * Dihitung di SQL supaya semua layar katalog memakai angka yang sama tanpa perlu
+ * ada yang ingat menyinkronkan kolomnya.
+ */
+const STOK_ASLI = `CASE WHEN p.delivery_type = 'AUTO'
+       THEN (SELECT COUNT(*) FROM product_items pi WHERE pi.produk_kode = p.kode AND pi.status = 'READY')
+       ELSE p.stok END AS stok`;
+
 export async function getGroupedCatalog() {
-  const allProducts = await allQuery("SELECT * FROM products ORDER BY brand_category ASC, harga ASC");
+  const allProducts = await allQuery(`SELECT p.*, ${STOK_ASLI} FROM products p ORDER BY p.brand_category ASC, p.harga ASC`);
   if (!allProducts || allProducts.length === 0) return [];
 
   const groupsMap = new Map();
@@ -102,11 +124,11 @@ export async function getProductVariants(query) {
   if (!q) return { exactProduct: null, variants: [] };
 
   // 1. Cek jika query adalah kode produk yang persis
-  const exact = await getQuery("SELECT * FROM products WHERE UPPER(kode) = ?", [q]);
+  const exact = await getQuery(`SELECT p.*, ${STOK_ASLI} FROM products p WHERE UPPER(p.kode) = ?`, [q]);
   
   // 2. Cari semua produk yang punya brand_category sama atau nama mengandung kata kunci
   const variants = await allQuery(
-    "SELECT * FROM products WHERE UPPER(brand_category) = ? OR UPPER(brand_category) LIKE ? OR UPPER(nama) LIKE ? OR UPPER(kode) LIKE ? ORDER BY variant_type ASC, harga ASC",
+    `SELECT p.*, ${STOK_ASLI} FROM products p WHERE UPPER(p.brand_category) = ? OR UPPER(p.brand_category) LIKE ? OR UPPER(p.nama) LIKE ? OR UPPER(p.kode) LIKE ? ORDER BY p.variant_type ASC, p.harga ASC`,
     [q, `%${q}%`, `%${q}%`, `%${q}%`]
   );
 
@@ -117,11 +139,11 @@ export async function getProductVariants(query) {
 }
 
 export async function getProducts() {
-  return await allQuery("SELECT * FROM products ORDER BY brand_category ASC, harga ASC");
+  return await allQuery(`SELECT p.*, ${STOK_ASLI} FROM products p ORDER BY p.brand_category ASC, p.harga ASC`);
 }
 
 export async function getProductByKode(kode) {
-  return await getQuery("SELECT * FROM products WHERE UPPER(kode) = ?", [kode.toUpperCase()]);
+  return await getQuery(`SELECT p.*, ${STOK_ASLI} FROM products p WHERE UPPER(p.kode) = ?`, [kode.toUpperCase()]);
 }
 
 export async function addProduct(
@@ -224,6 +246,121 @@ export async function addProductItems(kode, itemsArray) {
   return readyCount;
 }
 
+/**
+ * Menambahkan stok kredensial digital secara batch dari Private Message (DM) WhatsApp.
+ * Otomatis mengalihkan status produk ke AUTO jika sebelumnya MANUAL.
+ */
+export async function addProductItemsBatch(kode, itemsArray) {
+  const code = kode.toUpperCase();
+  const product = await getProductByKode(code);
+  if (!product) {
+    return { success: false, message: `Produk dengan kode *${code}* tidak ditemukan.` };
+  }
+  if (!Array.isArray(itemsArray) || itemsArray.length === 0) {
+    return { success: false, message: 'Daftar kredensial kosong.' };
+  }
+
+  const validItems = itemsArray
+    .map(it => String(it || '').trim())
+    .filter(it => it.length > 0 && it.length <= 5000);
+
+  if (validItems.length === 0) {
+    return { success: false, message: 'Tidak ada kredensial valid untuk ditambahkan.' };
+  }
+
+  return withTransaction(async () => {
+    for (const item of validItems) {
+      await runQuery(
+        "INSERT INTO product_items (produk_kode, data_content, status) VALUES (?, ?, 'READY')",
+        [code, item]
+      );
+    }
+
+    let switchedToAuto = false;
+    if (product.delivery_type !== 'AUTO') {
+      await runQuery("UPDATE products SET delivery_type = 'AUTO' WHERE kode = ?", [code]);
+      switchedToAuto = true;
+    }
+
+    const readyCount = await getAvailableItemsCount(code);
+    await runQuery("UPDATE products SET stok = ? WHERE kode = ?", [readyCount, code]);
+    await addLog("SYSTEM", `📦 Stok produk ${code} ditambah ${validItems.length} pcs via WhatsApp PM. Total ready: ${readyCount} pcs.`);
+
+    return {
+      success: true,
+      code,
+      productName: product.nama,
+      addedCount: validItems.length,
+      readyCount,
+      switchedToAuto
+    };
+  });
+}
+
+/**
+ * Mengambil ringkasan rincian stok produk untuk audit di WhatsApp PM:
+ * Jumlah READY, RESERVED, USED, dan 10 sampel item ready teratas.
+ */
+export async function getProductStockDetails(kode) {
+  const code = kode.toUpperCase();
+  const product = await getProductByKode(code);
+  if (!product) return null;
+
+  const readyRow = await getQuery("SELECT COUNT(*) as count FROM product_items WHERE produk_kode = ? AND status = 'READY'", [code]);
+  const reservedRow = await getQuery("SELECT COUNT(*) as count FROM product_items WHERE produk_kode = ? AND status = 'RESERVED'", [code]);
+  const usedRow = await getQuery("SELECT COUNT(*) as count FROM product_items WHERE produk_kode = ? AND status = 'USED'", [code]);
+
+  const readyItems = await allQuery(
+    "SELECT id, data_content FROM product_items WHERE produk_kode = ? AND status = 'READY' ORDER BY id ASC LIMIT 10",
+    [code]
+  );
+
+  return {
+    code,
+    product,
+    ready: readyRow?.count || 0,
+    reserved: reservedRow?.count || 0,
+    used: usedRow?.count || 0,
+    manualStok: product.stok,
+    deliveryType: product.delivery_type || 'MANUAL',
+    sampleReadyItems: readyItems || []
+  };
+}
+
+/**
+ * Mengatur mode pengiriman produk ('AUTO' atau 'MANUAL') dari WhatsApp PM.
+ */
+export async function setProductDeliveryType(kode, type) {
+  const code = kode.toUpperCase();
+  const normalizedType = String(type || '').trim().toUpperCase();
+  if (!['AUTO', 'MANUAL'].includes(normalizedType)) {
+    return { success: false, message: "Tipe pengiriman harus 'AUTO' atau 'MANUAL'." };
+  }
+  const product = await getProductByKode(code);
+  if (!product) {
+    return { success: false, message: `Produk dengan kode *${code}* tidak ditemukan.` };
+  }
+
+  await runQuery("UPDATE products SET delivery_type = ? WHERE kode = ?", [normalizedType, code]);
+  if (normalizedType === 'AUTO') {
+    const readyCount = await getAvailableItemsCount(code);
+    await runQuery("UPDATE products SET stok = ? WHERE kode = ?", [readyCount, code]);
+  }
+  await addLog("SYSTEM", `Mode pengiriman produk ${code} diubah menjadi ${normalizedType} oleh admin.`);
+  return { success: true, code, productName: product.nama, deliveryType: normalizedType };
+}
+
+/**
+ * Mengambil ringkasan semua produk di toko untuk katalog admin via PM.
+ */
+export async function getAllProductsSummary() {
+  return await allQuery(`
+    SELECT kode, nama, harga, stok, delivery_type, brand_category, duration 
+    FROM products 
+    ORDER BY brand_category ASC, kode ASC
+  `);
+}
+
 export async function getAvailableItemsCount(kode) {
   const res = await getQuery(
     "SELECT COUNT(*) as count FROM product_items WHERE produk_kode = ? AND status = 'READY'",
@@ -268,14 +405,14 @@ export async function claimAndDeliverItems(orderId) {
     let maxWarrantyMs = 0;
 
     for (const item of itemsPurchased) {
-      // Hitung masa garansi dari durasi
-      const durStr = (item.duration || '').toLowerCase();
-      let itemWarrantyMs = 30 * 24 * 60 * 60 * 1000; // default 30 hari
-      if (durStr.includes('7')) itemWarrantyMs = 7 * 24 * 60 * 60 * 1000;
-      else if (durStr.includes('14')) itemWarrantyMs = 14 * 24 * 60 * 60 * 1000;
-      else if (durStr.includes('60') || durStr.includes('2 bulan')) itemWarrantyMs = 60 * 24 * 60 * 60 * 1000;
-      else if (durStr.includes('90') || durStr.includes('3 bulan')) itemWarrantyMs = 90 * 24 * 60 * 60 * 1000;
-      else if (durStr.includes('tahun') || durStr.includes('12 bulan')) itemWarrantyMs = 365 * 24 * 60 * 60 * 1000;
+      // Masa garansi dibaca dari angka+satuan pada `duration`, bukan dari
+      // potongan teks. Cara lama memberi akun Office 12 bulan hanya 60 hari
+      // garansi — lihat masaGaransiMs() di src/utils/pesanGaransi.js.
+      //
+      // Satu pesanan hanya punya SATU kolom warranty_until, jadi pesanan
+      // campuran memakai masa terpanjang. Itu memihak pembeli, dan disengaja:
+      // garansi per item butuh perubahan skema tersendiri.
+      const itemWarrantyMs = masaGaransiMs(item.duration);
       if (itemWarrantyMs > maxWarrantyMs) maxWarrantyMs = itemWarrantyMs;
 
       if (item.delivery_type === 'AUTO') {
@@ -300,6 +437,20 @@ export async function claimAndDeliverItems(orderId) {
             [item.produk_kode, item.qty - readyItems.length]
           );
           readyItems = readyItems.concat(fallbackItems);
+        }
+
+        // 🚨 Guard Out-of-Stock: Jangan kirim kredensial kosong jika akun digital tidak mencukupi!
+        if (readyItems.length < item.qty) {
+          return {
+            success: false,
+            outOfStock: true,
+            outOfStockDetails: {
+              kode: item.produk_kode,
+              nama: item.produk_nama,
+              needed: item.qty,
+              found: readyItems.length
+            }
+          };
         }
 
         const creds = readyItems.map(ri => ri.data_content);
@@ -466,8 +617,17 @@ const DISKON_PREMIUM_PERSEN = { Silver: 5, Gold: 10, Diamond: 15 };
 /** Berapa rupiah potongan premium untuk subtotal ini, 0 kalau bukan premium aktif. */
 async function hitungDiskonPremium(customerNomor, subtotal) {
   if (!customerNomor || !subtotal || subtotal <= 0) return { rupiah: 0, tier: null, persen: 0 };
+  // datetime() DI KEDUA SISI. grantPremium menyimpan `expires_at` lewat
+  // toISOString() -> "2026-09-13T02:00:00.000Z", sedangkan datetime('now')
+  // memulangkan "2026-09-13 10:00:00". Dibandingkan mentah sebagai teks, indeks
+  // ke-10 menentukan: 'T' (0x54) selalu lebih besar dari ' ' (0x20), jadi untuk
+  // tanggal kalender yang sama perbandingannya SELALU benar berapa pun jamnya.
+  // Premium yang habis pukul 02.00 tetap menerima potongan 5/10/15% sampai
+  // pergantian hari UTC — sementara `.cekpremium` (userDb.getPremiumUser) sudah
+  // memakai datetime() di dua sisi dan menjawab "Free". Dua fungsi, satu hari,
+  // dua jawaban berbeda.
   const row = await getQuery(
-    "SELECT tier FROM premium_users WHERE jid = ? AND expires_at > datetime('now')",
+    "SELECT tier FROM premium_users WHERE jid = ? AND datetime(expires_at) > datetime('now')",
     [customerNomor]
   );
   const persen = DISKON_PREMIUM_PERSEN[row?.tier] || 0;
@@ -479,9 +639,29 @@ async function updateOrderTotal(orderId) {
   const result = await getQuery("SELECT SUM(subtotal) as total FROM order_items WHERE order_id = ?", [orderId]);
   const rawTotal = result.total || 0;
 
-  const order = await getQuery("SELECT discount_amount, premium_discount FROM orders WHERE order_id = ?", [orderId]);
-  const discount = order ? (order.discount_amount || 0) : 0;
+  const order = await getQuery("SELECT coupon_code, discount_amount, premium_discount FROM orders WHERE order_id = ?", [orderId]);
   const diskonPremium = order ? (order.premium_discount || 0) : 0;
+
+  // Kupon PERSEN wajib dihitung ulang dari subtotal terbaru, bukan dibaca dari
+  // rupiah yang dibekukan saat `.kupon` diketik.
+  //
+  // Dulu `.kupon` menghitung sekali lalu menyimpan hasilnya sebagai angka mati.
+  // Keranjang Rp50.000 + kupon 10% -> discount_amount = 5.000. Pelanggan lalu
+  // menambah produk Rp150.000: totalnya jadi 200.000 - 5.000, yaitu potongan
+  // 2,5%, bukan 10% yang dijanjikan bot beberapa detik sebelumnya. Tidak ada
+  // yang bisa menyadarinya, karena layar `.keranjang` tidak pernah mencetak
+  // baris diskon sama sekali.
+  //
+  // Kupon nominal tetap (type != 'percent') memang harus tetap seperti tersimpan.
+  let discount = order ? (order.discount_amount || 0) : 0;
+  if (order?.coupon_code) {
+    const kupon = await getQuery("SELECT type, value FROM coupons WHERE code = ?", [order.coupon_code]);
+    if (kupon?.type === 'percent') {
+      discount = Math.min(rawTotal, Math.floor(rawTotal * (Number(kupon.value) || 0) / 100));
+      await runQuery("UPDATE orders SET discount_amount = ? WHERE order_id = ?", [discount, orderId]);
+    }
+  }
+  if (discount > rawTotal) discount = rawTotal;
 
   const finalTotal = Math.max(0, rawTotal - discount - diskonPremium);
   await runQuery("UPDATE orders SET total = ? WHERE order_id = ?", [finalTotal, orderId]);
@@ -528,10 +708,20 @@ export async function checkoutCart(customerNomor) {
       }
     }
   } catch (err) {
+    // Blok ini TIDAK melempar ulang, jadi transaksinya tetap commit dan
+    // kompensasinya harus lengkap. Dulu ia mengembalikan products.stok dan
+    // melepas product_items, tapi lupa menurunkan order_items.stock_reserved.
+    //
+    // Akibatnya: beli produk MANUAL lalu produk AUTO yang stoknya kurang ->
+    // checkout gagal -> baris MANUAL-nya stoknya sudah dikembalikan TAPI masih
+    // bertanda stock_reserved = 1. Pelanggan ketik `.batal`, updateOrderStatus
+    // melihat tanda itu, dan mengembalikan stok yang sama untuk KEDUA KALINYA.
+    // Toko lalu mengiklankan satu unit yang tidak ada, dan menjualnya.
     for (const item of reservedManual) {
       await runQuery("UPDATE products SET stok = stok + ? WHERE kode = ?", [item.qty, item.produkKode]);
     }
     await runQuery("UPDATE product_items SET status = 'READY', order_id = NULL WHERE order_id = ? AND status = 'RESERVED'", [cart.order_id]);
+    await runQuery("UPDATE order_items SET stock_reserved = 0 WHERE order_id = ?", [cart.order_id]);
     return { success: false, message: `Checkout gagal. ${err.message}` };
   }
 
@@ -555,6 +745,78 @@ export async function checkoutCart(customerNomor) {
     order: orderDetails,
     diskonPremium: diskonPrem
   };
+  });
+}
+
+/**
+ * Lunaskan satu pesanan memakai saldo deposit — potong saldo, tandai lunas,
+ * tebus kupon, buat job pengiriman dan berikan poin, SEMUANYA dalam satu
+ * transaksi.
+ *
+ * DUA MASALAH YANG DIPERBAIKI, keduanya di jalur yang sama di customerHandler:
+ *
+ * (1) Kupon tidak pernah ditebus. Jalur ini meng-UPDATE kolom order langsung,
+ *     melewati updateOrderStatus *dan* markTransactionPaid — dua-duanya
+ *     satu-satunya tempat `coupons.used_count` naik. Jadi used_count tetap 0
+ *     selamanya, dan pemeriksaan `used_count >= max_uses` saat memasang kupon
+ *     selalu lolos. Kupon sekali-pakai bisa dipakai tak terhingga oleh orang
+ *     yang sama: punya saldo -> beli -> kupon -> checkout -> ulangi.
+ *
+ * (2) Pemotongan saldo dan pelunasan order berada di TRANSAKSI BERBEDA.
+ *     deductCustomerBalance punya withTransaction sendiri dan sudah commit saat
+ *     kembali; UPDATE ordernya menyusul di transaksi lain. Kalau proses mati di
+ *     antara keduanya — dan bot ini memang dinyalakan ulang sendiri oleh
+ *     Antigravity — saldonya sudah terpotong sementara ordernya masih
+ *     WAITING_PAYMENT dengan stok terkunci. Pelanggan lalu mengetik `.pay`,
+ *     menerima QRIS, dan membayar untuk kedua kalinya.
+ *
+ * withTransaction bersifat re-entrant (connection.js), jadi deductCustomerBalance
+ * di dalam sini ikut bergabung ke transaksi yang sama: kalau langkah mana pun
+ * gagal, potongan saldonya ikut dibatalkan.
+ */
+export async function settleOrderWithBalance(customerNomor, orderId) {
+  return withTransaction(async () => {
+    const order = await getQuery(
+      "SELECT * FROM orders WHERE order_id = ? AND customer_nomor = ?",
+      [orderId, customerNomor]
+    );
+    if (!order) return { success: false, message: 'Pesanan tidak ditemukan.' };
+    if (order.payment_status === 'PAID' || ['PAID', 'COMPLETED'].includes(order.status)) {
+      return { success: false, message: 'Pesanan ini sudah lunas.' };
+    }
+
+    const total = Number(order.total) || 0;
+    if (total <= 0) return { success: false, message: 'Nilai pesanan tidak valid.' };
+
+    const potong = await deductCustomerBalance(customerNomor, total, `Pembelian Order #${orderId}`);
+    if (!potong.success) {
+      return { success: false, message: potong.message || 'Saldo deposit tidak mencukupi.' };
+    }
+
+    // Predikat diulang di sini supaya dua pelunasan yang berbarengan tidak
+    // dua-duanya berhasil. Melempar (bukan return) agar potongan saldo di atas
+    // ikut dibatalkan.
+    const hasil = await runQuery(
+      `UPDATE orders SET payment_status = 'PAID', status = 'COMPLETED', updated_at = ?
+       WHERE order_id = ? AND payment_status != 'PAID' AND status NOT IN ('PAID', 'COMPLETED')`,
+      [Date.now(), orderId]
+    );
+    if (hasil.changes !== 1) {
+      throw new Error('Status pesanan berubah saat pembayaran saldo diproses.');
+    }
+
+    const kupon = await tebusKupon(order);
+    await createFulfillmentJob(orderId, customerNomor);
+    const poin = await awardPurchasePoints(customerNomor, total, orderId);
+
+    return {
+      success: true,
+      total,
+      poin,
+      newBalance: potong.newBalance,
+      kuponHabis: kupon.habis,
+      kuponKode: kupon.kode || null
+    };
   });
 }
 
@@ -585,11 +847,38 @@ export async function settleDepositOrder(orderId, customerNomor, total, midtrans
   });
 }
 
-export async function cancelActiveOrder(customerNomor) {
-  const activeOrder = await getQuery(
-    "SELECT * FROM orders WHERE customer_nomor = ? AND status IN ('CART', 'WAITING_PAYMENT')",
+/**
+ * Pesanan mana yang akan dibatalkan `.batal`.
+ *
+ * Ini HARUS jadi satu-satunya pemilih, karena dulu ada dua yang berbeda:
+ * handler `.batal` memakai getLastOrderByCustomer (ORDER BY created_at DESC)
+ * untuk memutuskan QRIS mana yang dibatalkan ke Casaku, sementara
+ * cancelActiveOrder memilih tanpa ORDER BY sama sekali — yaitu baris pertama,
+ * biasanya yang TERLAMA.
+ *
+ * Urutan yang memicu: `checkout` (ORD-A jadi WAITING_PAYMENT dengan QRIS hidup)
+ * lalu `.beli KODE` lagi (ORD-B baru berstatus CART) lalu `.batal`. Handler
+ * melihat ORD-B yang tidak punya transaksi Casaku, jadi cancelPayment tidak
+ * pernah dipanggil; tetapi yang dibatalkan di database justru ORD-A. QRIS ORD-A
+ * tetap hidup di Casaku, sementara rekonsiliasi hanya menyaring status
+ * WAITING_PAYMENT — order CANCELLED tidak pernah dilihat lagi. Pembeli yang
+ * men-scan QR lama di riwayat chatnya mengirim uang yang tidak akan pernah
+ * terdeteksi jalur mana pun.
+ *
+ * WAITING_PAYMENT didahulukan: di situlah uang dipertaruhkan.
+ */
+export async function getOrderUntukDibatalkan(customerNomor) {
+  return await getQuery(
+    `SELECT * FROM orders
+     WHERE customer_nomor = ? AND status IN ('CART', 'WAITING_PAYMENT')
+     ORDER BY CASE status WHEN 'WAITING_PAYMENT' THEN 0 ELSE 1 END, created_at DESC
+     LIMIT 1`,
     [customerNomor]
   );
+}
+
+export async function cancelActiveOrder(customerNomor) {
+  const activeOrder = await getOrderUntukDibatalkan(customerNomor);
 
   if (!activeOrder) {
     return { success: false, message: "Tidak ada pesanan aktif yang bisa dibatalkan." };
@@ -669,15 +958,14 @@ export async function updateOrderStatus(orderId, status, paymentStatus = null) {
     return { success: false, message: "Status order tidak valid." };
   }
 
-  if (!isPaidStatus(oldStatus) && isPaidStatus(newStatus) && order.coupon_code && !order.coupon_redeemed) {
-    const couponResult = await runQuery(
-      "UPDATE coupons SET used_count = used_count + 1 WHERE code = ? AND (max_uses = 0 OR used_count < max_uses)",
-      [order.coupon_code]
-    );
-    if (couponResult.changes !== 1) {
-      return { success: false, message: "Kupon pada order ini sudah tidak tersedia." };
-    }
-    await runQuery("UPDATE orders SET coupon_redeemed = 1 WHERE order_id = ?", [orderId]);
+  let kuponHabis = false;
+  if (!isPaidStatus(oldStatus) && isPaidStatus(newStatus)) {
+    // Dulu `changes !== 1` di sini MENOLAK pelunasannya. Uang sudah diterima
+    // admin, tapi pesanannya mentok di WAITING_PAYMENT tanpa jalan keluar selain
+    // menyunting database. Kupon yang habis adalah persoalan pembukuan, bukan
+    // alasan menyandera pesanan yang sudah dibayar.
+    const kupon = await tebusKupon(order);
+    kuponHabis = kupon.habis;
   }
 
   // Jika berubah dari BELUM BAYAR ke SUDAH BAYAR, kurangi stok produk MANUAL & Tambah Poin Loyalitas
@@ -716,9 +1004,26 @@ export async function updateOrderStatus(orderId, status, paymentStatus = null) {
     await runQuery("UPDATE product_items SET status = 'READY', order_id = NULL, used_at = NULL WHERE order_id = ? AND status = 'RESERVED'", [orderId]);
   }
 
-  await runQuery("UPDATE orders SET status = ?, midtrans_status = COALESCE(?, midtrans_status) WHERE order_id = ?", [status, paymentStatus, orderId]);
+  // `payment_status` ikut ditulis saat pesanan menjadi lunas.
+  //
+  // Dulu kolom itu tidak pernah disentuh di sini, sehingga pesanan yang sudah
+  // di-`.paid` admin tetap ber-payment_status 'PENDING'. Itu satu-satunya
+  // penjaga idempotensi markTransactionPaid, dan webhookHandler memanggilnya
+  // lewat provider_transaction_id tanpa melihat orders.status sama sekali. Jadi:
+  // pelanggan bayar QRIS -> webhook telat karena HP listener offline -> pembeli
+  // kirim bukti transfer -> admin `.paid` -> webhook akhirnya mendarat ->
+  // penjaganya lolos -> poin, Poin Loyalty, total_spent, job pengiriman dan DM
+  // "pembayaran diterima" semuanya terjadi untuk KEDUA KALINYA.
+  const statusBayar = isPaidStatus(status) ? 'PAID' : null;
+  await runQuery(
+    `UPDATE orders SET status = ?,
+            payment_status = COALESCE(?, payment_status),
+            midtrans_status = COALESCE(?, midtrans_status)
+     WHERE order_id = ?`,
+    [status, statusBayar, paymentStatus, orderId]
+  );
   await addLog("ORDER", `Status Order ${orderId} diubah dari ${order.status} ke ${status}`);
-  return { success: true, customerNomor: order.customer_nomor };
+  return { success: true, customerNomor: order.customer_nomor, kuponHabis };
   });
 }
 
@@ -971,7 +1276,7 @@ export async function getCustomerOrderHistory(customerNomor, limit = 5) {
 // --- FUNGSI PENCARIAN PRODUK ---
 export async function searchProducts(keyword) {
   return await allQuery(
-    "SELECT * FROM products WHERE nama LIKE ? OR deskripsi LIKE ? OR kode LIKE ?",
+    `SELECT p.*, ${STOK_ASLI} FROM products p WHERE p.nama LIKE ? OR p.deskripsi LIKE ? OR p.kode LIKE ?`,
     [`%${keyword}%`, `%${keyword}%`, `%${keyword}%`]
   );
 }

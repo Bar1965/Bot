@@ -2,9 +2,9 @@ import * as db from '../../database.js';
 import { config } from '../../config.js';
 import { jidNormalizedUser, downloadMediaMessage, downloadContentFromMessage } from '@whiskeysockets/baileys';
 import { createMidtransTransaction, botState } from '../../server.js';
-import { buildCommandMenu, resolveCategoryId } from '../../commandRegistry.js';
+import { buildCommandMenu, resolveCategoryId, kategoriDisembunyikanModeJualan } from '../../commandRegistry.js';
 import { getSystemChangelog } from '../utils/changelog.js';
-import { keWaktu, tanggalJamWib, tanggalWib, tanggalPanjangWib, jamWib } from '../utils/waktu.js';
+import { keWaktu, tanggalJamWib, tanggalWib, tanggalPanjangWib, jamWib, akhirHariWib } from '../utils/waktu.js';
 import * as mediaHandler from '../../mediaHandler.js';
 import * as ent from '../../entertainmentHandler.js';
 import { sendInteractiveButtons } from '../../bot.js';
@@ -130,7 +130,14 @@ export function createCustomerHandler(ctx = {}) {
   return async function handleCustomerMessage(jid, senderNumber, messageObj, text, isFromGroup = false, actor = {}) {
     const textLower = (text || '').toLowerCase();
     const cleanText = (text || '').replace(/^[./#]/, '').trim();
-    const cleanTextLower = textLower.replace(/^[./#]/, '').trim();
+    // `let`, bukan `const`: jalur pembelian instan (.buynow / `.beli KODE 1
+    // langsung`) menugaskan ulang variabel ini menjadi 'checkout' supaya QRIS
+    // langsung dibuat. Selama ini deklarasinya `const`, jadi baris itu SELALU
+    // melempar "Assignment to constant variable" — dan melemparnya SESUDAH
+    // addToCart berhasil. Barangnya masuk keranjang, lemparannya mendarat di
+    // penangkap teratas bot.js yang cuma console.error, dan pelanggan tidak
+    // menerima apa pun: tanpa QRIS, tanpa konfirmasi, tanpa pesan gagal.
+    let cleanTextLower = textLower.replace(/^[./#]/, '').trim();
     const args = (text || '').trim().split(/\s+/);
     const rawCmd = args[0]?.toLowerCase() || '';
     const cleanCmd = rawCmd.replace(/^[./#]/, '');
@@ -356,6 +363,16 @@ export function createCustomerHandler(ctx = {}) {
       if (navSession) {
         // Kasus 1: Sesi Memilih Brand Kategori ([1] Netflix, [2] Spotify, dll)
         if (navSession.type === 'BRAND_LIST') {
+          // Angka di luar jangkauan tidak boleh berakhir senyap. Dulu
+          // `items[dialNum - 1]` yang undefined membuat blok ini jatuh keluar
+          // tanpa satu pun sendMessage, dan tidak ada penangkap di ekor handler —
+          // katalog 7 brand lalu dibalas angka "8" berarti bot diam saja.
+          if (dialNum < 1 || dialNum > navSession.items.length) {
+            await sock.sendMessage(responseJid, {
+              text: `\u26a0\ufe0f Nomor *${dialNum}* tidak ada di daftar. Balas angka *1* sampai *${navSession.items.length}*, atau ketik \`.produk\` untuk membuka katalog lagi.`
+            });
+            return true;
+          }
           const selectedItem = navSession.items[dialNum - 1];
           if (selectedItem) {
             if (selectedItem.isMulti) {
@@ -364,12 +381,22 @@ export function createCustomerHandler(ctx = {}) {
             } else {
               const prod = await db.getProductByKode(selectedItem.targetId);
               if (prod) return await handleProductDetail(prod);
+              await sock.sendMessage(responseJid, {
+                text: `\u26a0\ufe0f Produk itu sudah tidak tersedia. Ketik \`.produk\` untuk melihat katalog terbaru.`
+              });
+              return true;
             }
           }
         }
 
         // Kasus 2: Sesi Memilih Varian Paket ([1] 7 Hari, [2] 14 Hari, [3] 30 Hari, dll)
         if (navSession.type === 'VARIANT_LIST') {
+          if (dialNum < 1 || dialNum > navSession.items.length) {
+            await sock.sendMessage(responseJid, {
+              text: `\u26a0\ufe0f Nomor *${dialNum}* tidak ada di daftar paket. Balas angka *1* sampai *${navSession.items.length}*, atau ketik \`.produk\` untuk kembali ke katalog.`
+            });
+            return true;
+          }
           const selectedVariant = navSession.items[dialNum - 1];
           if (selectedVariant) {
             const addRes = await db.addToCart(senderNumber, selectedVariant.kode, 1);
@@ -395,7 +422,7 @@ export function createCustomerHandler(ctx = {}) {
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 💡 *Langkah Selanjutnya:*
-Ketik *bayar* untuk langsung memperoleh kode QRIS tagihan Anda!`;
+Ketik `.bayar` untuk langsung memperoleh kode QRIS tagihan Anda!`;
 
             await sendInteractiveButtons(sock, responseJid, {
               text: confirmMsg,
@@ -668,14 +695,27 @@ Ketik *bayar* untuk langsung memperoleh kode QRIS tagihan Anda!`;
 
     // Percuma menampilkan katalog game kalau perintahnya memang sedang dikunci
     // admin lewat `.mode game off` — jelaskan sekalian cara menyalakannya.
-    if (gameDimatikan && ['3', 'game', 'games', 'gaming', 'arcade', 'play', 'mabar', 'permainan'].includes(subCat)) {
+    //
+    // Kategorinya ditanyakan ke registry, TIDAK ditulis ulang di sini. Versi lama
+    // menyalin daftar aliasnya sendiri dan ketinggalan: registry mengenal
+    // 'gaming', 'arcade', 'play', 'mabar' dan 'permainan' sebagai alias game,
+    // sementara salinan di sini cuma punya sebagian. Lihat AGENTS.md §12l.
+    const kategoriDiminta = resolveCategoryId(subCat);
+
+    if (gameDimatikan && kategoriDiminta === 'game') {
       await sock.sendMessage(responseJid, {
         text: "🚫 *GAME DIMATIKAN DI GRUP INI*\n\nAdmin grup sedang mematikan seluruh fitur game & hiburan di sini.\n\n_Admin dapat menyalakannya lagi dengan_ `.mode game on`"
       });
       return true;
     }
 
-    if (isSalesModeGroup && ['3', '4', '6', '7', '8', 'downloader', 'media', 'hiburan', 'game', 'games', 'fun', 'pdf', 'premium', 'sosial', 'social'].includes(subCat)) {
+    // Daftar alias yang dulu berdiri di sini melenceng jauh lebih parah: ia
+    // melewatkan 'gaming', 'arcade', 'play', 'mabar', 'permainan', 'tools',
+    // 'download', 'alat', 'vip', 'ai', 'gemini', 'dokumen' dan 'ocr'. Mengetik
+    // `.menu gaming` di grup jualan lolos dari penjaga ini, lalu buildCommandMenu
+    // mengembalikan null karena kategorinya memang disembunyikan — dan bot
+    // menjatuhkan pelanggan ke menu warisan yang tampilannya sama sekali berbeda.
+    if (isSalesModeGroup && kategoriDisembunyikanModeJualan(kategoriDiminta)) {
       await sock.sendMessage(responseJid, { 
         text: "🛍️ *MODE JUALAN AKTIF:* Grup ini berada dalam *Mode Jualan/Toko*. Fitur media, downloader, dan game tidak diaktifkan di grup ini agar grup tetap tertib khusus jualan." 
       });
@@ -687,7 +727,7 @@ Ketik *bayar* untuk langsung memperoleh kode QRIS tagihan Anda!`;
       // Tombol navigasi disaring supaya tidak menawarkan kategori yang sedang
       // dibuka, dan saat berada di dalam kategori tombol pertama jadi jalan
       // pulang ke beranda menu.
-      const kategoriAktif = resolveCategoryId(subCat);
+      const kategoriAktif = kategoriDiminta;
       let quickButtons;
 
       if (isSalesModeGroup) {
@@ -716,336 +756,27 @@ Ketik *bayar* untuk langsung memperoleh kode QRIS tagihan Anda!`;
       return true;
     }
 
-    // Hitung Uptime
-    const uptimeSec = Math.floor(process.uptime());
-    const hours = Math.floor(uptimeSec / 3600);
-    const mins = Math.floor((uptimeSec % 3600) / 60);
-    const secs = uptimeSec % 60;
-    const uptimeStr = `${hours}j ${mins}m ${secs}d`;
-    const storeTitle = (botSettings.storeName || config.defaults.storeName).toUpperCase();
-    const modeBadge = isSalesModeGroup ? "🛍️ MODE JUALAN" : "🌐 MODE ALL";
-
-    const headerCard = `📋 *MENU UTAMA TOKO*
-━━━━━━━━━━━━━━━━━━━
-👤 *User:* ${customerName}
-⏱️ *Uptime:* ${uptimeStr}
-⚙️ *Mode:* ${modeBadge}
-⌨️ *Prefix:* \`.\` / \`/\` / \`#\`
-━━━━━━━━━━━━━━━━━━━\n\n`;
-
-    // Sub-Menu 1: Jualan & Produk
-    if (['1', 'jualan', 'produk', 'list'].includes(subCat)) {
-      const msg = headerCard + `🛍️ *PRODUK & JUALAN*
-▫️ \`.list\` / \`.produk\` — Katalog produk ringkas & status stok
-▫️ \`.p <kode>\` / \`.detail <kode>\` — Detail spesifikasi & deskripsi produk
-▫️ \`.beli <kode> <qty>\` — Beli produk digital
-▫️ \`.cari <kata kunci>\` — Cari produk toko
-▫️ \`.bundle\` — Lihat paket hemat bundling
-
-━━━━━━━━━━━━━━━━━━━
-💡 _Contoh: Ketik .list untuk lihat katalog atau .p NET01 untuk detail_`;
-      await sendInteractiveButtons(sock, responseJid, {
-        text: msg,
-        title: '🛍️ PRODUK & JUALAN',
-        footer: 'Pilih aksi di bawah atau ketik perintah langsung',
-        buttons: [
-          { type: 'reply', text: '🛍️ Katalog Produk', id: '.list' },
-          { type: 'reply', text: '🛒 Keranjang Saya', id: '.keranjang' },
-          { type: 'reply', text: '📋 Menu Utama', id: '.menu' }
-        ]
-      });
-      return true;
-    }
-
-    // Sub-Menu 2: Transaksi & Pembayaran
-    if (['2', 'transaksi', 'bayar'].includes(subCat)) {
-      const msg = headerCard + `🛒 *TRANSAKSI & PEMBAYARAN*
-▫️ \`.keranjang\` — Cek isi keranjang belanja
-▫️ \`.checkout\` — Link pembayaran QRIS/Midtrans
-▫️ \`.status\` — Cek status transaksi terbaru
-▫️ \`.riwayat\` — 5 riwayat transaksi terakhir
-▫️ \`.batal\` — Batalkan pesanan aktif
-
-━━━━━━━━━━━━━━━━━━━
-💡 _Contoh penggunaan: .keranjang atau .status_`;
-      await sendInteractiveButtons(sock, responseJid, {
-        text: msg,
-        title: '🛒 TRANSAKSI & PEMBAYARAN',
-        footer: 'Pilih opsi transaksi di bawah ini',
-        buttons: [
-          { type: 'reply', text: '🛒 Keranjang', id: '.keranjang' },
-          { type: 'reply', text: '💳 Checkout', id: '.checkout' },
-          { type: 'reply', text: '📋 Menu Utama', id: '.menu' }
-        ]
-      });
-      return true;
-    }
-
-    // Sub-Menu 3: Downloader, Media & Hiburan
-    if (['3', 'downloader', 'media', 'hiburan', 'game'].includes(subCat)) {
-      const msg = headerCard + `📥 *DOWNLOADER & MEDIA*
-▫️ \`.tt <link>\` — Download video TikTok
-▫️ \`.ig <link>\` — Download Reels/Foto IG
-▫️ \`.fb <link>\` — Download video Facebook
-▫️ \`.yt <link>\` — Download MP3/MP4 YouTube
-▫️ \`.stiker\` — Foto/Video ke Stiker WA
-▫️ \`.toimg\` / \`.tovid\` — Stiker ke Foto/Video
-▫️ \`.qc <teks>\` — Stiker Quote Chat
-▫️ \`.brat <teks>\` — Stiker Brat Aesthetics
-▫️ \`.draw <prompt>\` — Generate foto AI
-▫️ \`.hd\` — Jernihkan foto buram
-▫️ \`.tts <teks>\` — Ubah teks ke Voice Note
-
-🎮 *HIBURAN & GAME*
-▫️ \`.tebakbendera\` — Game tebak bendera negara
-▫️ \`.tebaklagu\` — Game kuis tebak audio lagu
-▫️ \`.tebakgambar\` — Game tebak gambar visual
-▫️ \`.tebakangka\` — Game tebak angka 1-100
-▫️ \`.susunkata\` — Game anagram susun kata
-▫️ \`.ww\` — Main Werewolf multiplayer
-▫️ \`.khodam <nama>\` — Cek khodam lucu
-
-━━━━━━━━━━━━━━━━━━━
-💡 _Contoh penggunaan: .brat kamu nanya? atau .tebakbendera_`;
-      await sendInteractiveButtons(sock, responseJid, {
-        text: msg,
-        title: '📥 MEDIA & GAME',
-        footer: 'Pilih aksi cepat di bawah ini',
-        buttons: [
-          { type: 'reply', text: '💸 Bank & Ekonomi', id: '.menu bank' },
-          { type: 'reply', text: '🛍️ Katalog Produk', id: '.produk' },
-          { type: 'reply', text: '📋 Menu Utama', id: '.menu' }
-        ]
-      });
-      return true;
-    }
-
-    // Sub-Menu 4: Promo & Diskon
-    if (['4', 'promo', 'diskon', 'referral'].includes(subCat)) {
-      const msg = headerCard + `🎟️ *PROMO & REFERRAL*
-▫️ \`.kupon <kode>\` — Gunakan kupon diskon
-▫️ \`.referral\` — Ajak teman & dapatkan kupon 10%
-▫️ \`.bundle\` — Lihat paket hemat bundling
-
-━━━━━━━━━━━━━━━━━━━
-💡 _Contoh penggunaan: .kupon DISKON10_`;
-      await sendInteractiveButtons(sock, responseJid, {
-        text: msg,
-        title: '🎟️ PROMO & REFERRAL',
-        footer: 'Ajak teman & nikmati diskon',
-        buttons: [
-          { type: 'reply', text: '👥 Program Referral', id: '.referral' },
-          { type: 'reply', text: '📦 Paket Bundle', id: '.bundle' },
-          { type: 'reply', text: '📋 Menu Utama', id: '.menu' }
-        ]
-      });
-      return true;
-    }
-
-    // Sub-Menu 5: Wishlist & Notifikasi Stok
-    if (['5', 'favorit', 'wishlist'].includes(subCat)) {
-      const msg = headerCard + `💝 *FAVORIT & NOTIFIKASI*
-▫️ \`.simpan <kode>\` — Simpan produk ke wishlist
-▫️ \`.favorit\` — Lihat daftar produk favorit
-▫️ \`.notify <kode>\` — Langganan notifikasi restok
-
-━━━━━━━━━━━━━━━━━━━
-💡 _Contoh penggunaan: .favorit atau .notify NET01_`;
-      await sendInteractiveButtons(sock, responseJid, {
-        text: msg,
-        title: '💝 FAVORIT & WISHLIST',
-        footer: 'Kelola produk impian Anda',
-        buttons: [
-          { type: 'reply', text: '💝 Lihat Wishlist', id: '.favorit' },
-          { type: 'reply', text: '🛍️ Katalog Produk', id: '.produk' },
-          { type: 'reply', text: '📋 Menu Utama', id: '.menu' }
-        ]
-      });
-      return true;
-    }
-
-    // Sub-Menu 6: Admin & Owner
-    if (['6', 'admin'].includes(subCat)) {
-      const msg = headerCard + `👑 *ADMIN & OWNER*
-▫️ \`.owner\` — Kontak resmi Pemilik Toko
-▫️ \`.ping\` — Cek status & kecepatan respon
-▫️ \`.mode <jualan/all>\` — Atur mode grup
-▫️ \`.join <link> <hari>\` — Masukkan bot ke grup via link
-▫️ \`.antidelete\` — Nyala/matikan fitur anti-hapus pesan
-▫️ \`.autosholat <on/off>\` — Nyala/matikan fitur adzan per-grup
-▫️ \`.paid <order_id>\` — Konfirmasi pembayaran
-▫️ \`.done <order_id>\` — Pesanan selesai
-▫️ \`.cancel <order_id>\` — Batalkan pesanan
-▫️ \`.tagall <pesan>\` — Mention semua member
-
-━━━━━━━━━━━━━━━━━━━
-💡 _Contoh penggunaan: .mode jualan atau .join linkgrup 7_`;
-      await sendInteractiveButtons(sock, responseJid, {
-        text: msg,
-        title: '👑 ADMIN & OWNER',
-        footer: 'Fitur khusus admin & pengelola',
-        buttons: [
-          { type: 'reply', text: '👑 Kontak Owner', id: '.owner' },
-          { type: 'reply', text: '⚡ Cek Status Ping', id: '.ping' },
-          { type: 'reply', text: '📋 Menu Utama', id: '.menu' }
-        ]
-      });
-      return true;
-    }
-
-    // Sub-Menu 7: Ekonomi & Perbankan
-    if (['7', 'bank', 'ekonomi', 'economy'].includes(subCat)) {
-      const msg = headerCard + `💸 *EKONOMI & PERBANKAN*
-▫️ \`.bank <jumlah>\` — Simpan poin ke bank agar aman
-▫️ \`.tarik <jumlah>\` — Tarik poin dari bank (pajak 2%)
-▫️ \`.transfer <@user> <jml>\` — Transfer poin (pajak 1%)
-▫️ \`.rampok <@user>\` — Rampok poin member (risiko ditangkap!)
-▫️ \`.slot <taruhan>\` — Main mesin slot (min 10 poin)
-▫️ \`.roulette <taruhan> <warna>\` — Kasino roulette (merah/hitam/hijau)
-
-━━━━━━━━━━━━━━━━━━━
-💡 _Contoh penggunaan: .rampok @member atau .bank 500_`;
-      await sendInteractiveButtons(sock, responseJid, {
-        text: msg,
-        title: '💸 EKONOMI & BANK',
-        footer: 'Sistem ekonomi, bank & perampokan',
-        buttons: [
-          { type: 'reply', text: '🏆 Lihat Poin', id: '.poin' },
-          { type: 'reply', text: '🎁 Klaim Daily', id: '.daily' },
-          { type: 'reply', text: '📋 Menu Utama', id: '.menu' }
-        ]
-      });
-      return true;
-    }
-
-    // TAMPILAN MENU UTAMA KHUSUS MODE JUALAN / TOKO
-    const menuSections = [
-      {
-        title: '📂 Pilih Kategori Menu Toko',
-        rows: [
-          { title: '🛍️ Produk & Jualan', id: '.menu jualan', description: 'Katalog, sisa stok & paket hemat' },
-          { title: '🛒 Transaksi & Pembayaran', id: '.menu transaksi', description: 'Keranjang, checkout, status & riwayat' },
-          { title: '📥 Downloader & Media', id: '.menu media', description: 'TikTok, IG, YT, FB, stiker & AI draw' },
-          { title: '🎮 Hiburan & Game', id: '.menu hiburan', description: 'Susun kata, tebak angka/gambar, T-o-D' },
-          { title: '💸 Ekonomi & Bank', id: '.menu bank', description: 'Rampok, slot, roulette & transfer' },
-          { title: '🏆 Poin & Reward', id: '.menu reward', description: 'Daily claim, poin, rank & referral' },
-          { title: '👑 Admin & Owner', id: '.menu admin', description: 'Kontak owner, status bot & pengeluaran' }
-        ]
-      }
-    ];
-
-    const menuQuickButtons = [
-      { type: 'reply', text: '🛍️ Katalog Produk', id: '.produk' },
-      { type: 'reply', text: '🛒 Keranjang Saya', id: '.keranjang' },
-      { type: 'reply', text: '🎁 Klaim Daily', id: '.daily' }
-    ];
-
-    if (isSalesModeGroup) {
-      const salesMenu = headerCard + `🛍️ *PRODUK & JUALAN*
-▫️ \`.list\` / \`.produk\` — Katalog produk ringkas
-▫️ \`.p <kode>\` — Detail spesifikasi & deskripsi produk
-▫️ \`.beli <kode> <qty>\` — Beli produk digital
-▫️ \`.cari <kata kunci>\` — Cari produk toko
-▫️ \`.bundle\` — Lihat paket hemat bundling
-
-🛒 *TRANSAKSI & PEMBAYARAN*
-▫️ \`.keranjang\` — Cek isi keranjang belanja
-▫️ \`.checkout\` — Link pembayaran QRIS/Midtrans
-▫️ \`.status\` — Cek status transaksi terbaru
-▫️ \`.riwayat\` — 5 riwayat transaksi terakhir
-▫️ \`.batal\` — Batalkan pesanan aktif
-
-🎟️ *PROMO & REFERRAL*
-▫️ \`.kupon <kode>\` — Gunakan kupon diskon
-▫️ \`.referral\` — Ajak teman & dapatkan diskon
-
-👑 *ADMIN & OWNER*
-▫️ \`.owner\`  •  \`.ping\`  •  \`.mode\`  •  \`.tagall\`
-
-━━━━━━━━━━━━━━━━━━━
-💡 _Ketik perintah langsung di atas atau pilih menu interaktif di bawah_`;
-
-      await sendInteractiveButtons(sock, responseJid, {
-        text: salesMenu,
-        title: '📋 MENU TOKO (MODE JUALAN)',
-        footer: 'Ketik perintahnya langsung, atau .menu <nomor> untuk kategori',
-        buttons: menuQuickButtons,
-        sections: menuSections
-      });
-      return true;
-    }
-
-    // TAMPILAN MENU UTAMA FULL (MODE ALL)
-    const fullMenu = headerCard + `🛍️ *PRODUK & JUALAN*
-▫️ \`.list\` / \`.produk\` — Katalog produk ringkas
-▫️ \`.p <kode>\` — Detail spesifikasi & deskripsi produk
-▫️ \`.beli <kode> <qty>\` — Beli produk digital
-▫️ \`.cari <kata kunci>\` — Cari produk toko
-▫️ \`.bundle\` — Lihat paket hemat bundling
-
-🛒 *TRANSAKSI & PEMBAYARAN*
-▫️ \`.keranjang\` — Cek isi keranjang belanja
-▫️ \`.checkout\` — Link pembayaran QRIS/Midtrans
-▫️ \`.status\` — Cek status transaksi terbaru
-▫️ \`.riwayat\` — 5 riwayat transaksi terakhir
-▫️ \`.batal\` — Batalkan pesanan aktif
-
-📥 *DOWNLOADER & MEDIA*
-▫️ \`.tt <link>\` — Download video TikTok
-▫️ \`.ig <link>\` — Download Reels/Foto IG
-▫️ \`.fb <link>\` — Download video Facebook
-▫️ \`.tw <link>\` — Download media Twitter/X
-▫️ \`.yt <link>\` — Download MP3/MP4 YouTube
-▫️ \`.getpp <@user>\` — Ambil foto profil HD
-▫️ \`.stikerpp <@user>\` — Colong PP jadi stiker
-▫️ \`.stiker\` — Foto/Video ke Stiker WA
-▫️ \`.toimg\` / \`.tovid\` — Stiker ke Foto/Video
-▫️ \`.qc <teks>\` — Stiker Quote Chat
-▫️ \`.brat <teks>\` — Stiker Brat Aesthetics
-▫️ \`.draw <prompt>\` — Generate foto AI
-▫️ \`.hd\` — Jernihkan foto buram
-▫️ \`.tts <teks>\` — Ubah teks ke Voice Note
-
-🎮 *HIBURAN & GAME*
-▫️ \`.tebakbendera\` — Game tebak bendera negara
-▫️ \`.tebaklagu\` — Game kuis tebak audio lagu
-▫️ \`.tebakgambar\` — Game tebak gambar visual
-▫️ \`.tebakangka\` — Game tebak angka 1-100
-▫️ \`.susunkata\` — Game anagram susun kata
-▫️ \`.ww\` — Main Werewolf multiplayer
-▫️ \`.khodam <nama>\` — Cek khodam lucu
-
-💸 *EKONOMI & PERBANKAN*
-▫️ \`.bank <jumlah>\` — Simpan poin ke bank agar aman
-▫️ \`.tarik <jumlah>\` — Tarik poin dari bank (pajak 2%)
-▫️ \`.transfer <@user> <jml>\` — Transfer poin (pajak 1%)
-▫️ \`.rampok <@user>\` — Rampok poin member (risiko!)
-▫️ \`.slot <taruhan>\` — Main mesin slot (min 10)
-▫️ \`.roulette <taruhan> <warna>\` — Kasino roulette
-
-🎟️ *PROMO & REFERRAL*
-▫️ \`.kupon <kode>\` — Gunakan kupon diskon
-▫️ \`.referral\` — Kode referral ajak teman
-▫️ \`.favorit\` — Lihat produk favorit/wishlist
-
-👑 *ADMIN & OWNER*
-▫️ \`.owner\` — Kontak resmi Owner
-▫️ \`.ping\` — Cek status & kecepatan respon
-▫️ \`.mode <jualan/all>\` — Atur mode grup
-▫️ \`.join <link> <hari>\` — Masuk grup via link
-▫️ \`.antidelete\` — Nyala/matikan anti-hapus pesan
-▫️ \`.autosholat <on/off>\` — Nyala/matikan fitur adzan per-grup
-▫️ \`.tagall <pesan>\` — Mention semua member
-
-━━━━━━━━━━━━━━━━━━━
-💡 _Ketik perintah langsung di atas atau pilih menu interaktif di bawah_`;
-
+    // Sampai di sini artinya buildCommandMenu mengembalikan null: sufiksnya
+    // mengurai ke kategori yang tidak tampil di mode sekarang. Dua penjaga di
+    // atas sudah menangkap kasus itu lewat registry, jadi baris ini tinggal
+    // jaring pengaman — tampilkan beranda menu, jangan diam.
+    //
+    // Dulu di titik ini berdiri 333 baris menu tulisan tangan: beranda sendiri,
+    // sembilan sub-menu, satu "MENU TOKO (MODE JUALAN)" dan satu "MENU FULL" —
+    // salinan kedua dari seluruh daftar perintah toko, lengkap dengan daftar
+    // aliasnya sendiri. Blok itu hanya bisa tampil lewat celah alias yang baru
+    // ditutup di atas, tapi tetap ikut disunting tiap kali ada perintah baru,
+    // dan isinya sudah lama berbeda dari commandRegistry: ia masih menjanjikan
+    // `.checkout` sebagai "Link pembayaran QRIS/Midtrans" padahal sekarang yang
+    // dikirim gambar QRIS Casaku. AGENTS.md §12l: registry satu-satunya pemilik
+    // daftar perintah beserta aliasnya.
     await sendInteractiveButtons(sock, responseJid, {
-      text: fullMenu,
-      title: '📋 MENU UTAMA AKBAR STORE',
-      footer: 'Ketik .menu <nomor> untuk membuka kategori',
-      buttons: menuQuickButtons,
-      sections: menuSections
+      text: buildCommandMenu('all', { salesMode: isSalesModeGroup }),
+      buttons: [
+        { type: 'reply', text: '🛍️ Katalog Produk', id: '.list' },
+        { type: 'reply', text: '🛒 Keranjang Saya', id: '.keranjang' },
+        { type: 'reply', text: '🏆 Hadiah Harian', id: '.daily' }
+      ]
     });
     return true;
   }
@@ -1214,7 +945,7 @@ _Balas nomornya untuk lihat varian & harga._\n\n`;
 🛍️ ${item.nama}
 💰 *Rp${item.harga.toLocaleString('id-ID')}* · kode \`${item.kode}\`
 
-💡 Ketik *bayar* untuk dapat QRIS tagihannya.`;
+💡 Ketik `.bayar` untuk dapat QRIS tagihannya.`;
 
       await sendInteractiveButtons(sock, responseJid, {
         text: confirmMsg,
@@ -1282,7 +1013,7 @@ _Silakan klik link di atas untuk bergabung, kemudian ulangi perintah \`${text}\`
 🛍️ ${res.productName} × ${res.qty}
 💰 Subtotal *Rp${res.subtotal.toLocaleString('id-ID')}*
 
-💡 Ketik *checkout* untuk bayar sekarang.`;
+💡 Ketik `.checkout` untuk bayar sekarang.`;
 
       await sendInteractiveButtons(sock, responseJid, {
         text: successMsg,
@@ -1306,7 +1037,7 @@ _Silakan klik link di atas untuk bergabung, kemudian ulangi perintah \`${text}\`
     const cart = await db.getCartDetails(senderNumber);
     if (cart.items.length === 0) {
       await sendInteractiveButtons(sock, responseJid, {
-        text: "🛒 *Keranjang belanja Anda masih kosong.*\nKetik *produk* untuk melihat produk yang tersedia.",
+        text: "🛒 *Keranjang belanja Anda masih kosong.*\nKetik `.produk` untuk melihat produk yang tersedia.",
         title: '🛒 KERANJANG KOSONG',
         footer: 'Silakan pilih produk terlebih dahulu',
         buttons: [
@@ -1333,7 +1064,7 @@ Order ID: *${cart.order_id}*
     msg += `━━━━━━━━━━━━━━━━━━
 *Total Belanja:* *Rp${cart.total.toLocaleString('id-ID')}*
 ━━━━━━━━━━━━━━━━━━
-Ketik *checkout* untuk melanjutkan ke pembayaran, atau *batal* untuk mengosongkan keranjang.`;
+Ketik `.checkout` untuk melanjutkan ke pembayaran, atau `.batal` untuk mengosongkan keranjang.`;
 
     await sendInteractiveButtons(sock, responseJid, {
       text: msg,
@@ -1450,9 +1181,9 @@ Tidak perlu kirim bukti transfer — produk langsung terkirim begitu bayar!`;
 • Mendukung DANA, GoPay, OVO, ShopeePay, BCA, BRI, Mandiri, dll.
 
 💡 *Cara Belanja:*
-1. Ketik *list* untuk melihat produk toko.
-2. Ketik *beli [kode_produk]* untuk memilih produk.
-3. Ketik *checkout* untuk memperoleh kode QRIS tagihan Anda!`;
+1. Ketik `.list` untuk melihat produk toko.
+2. Ketik `.beli [kode_produk]` untuk memilih produk.
+3. Ketik `.checkout` untuk memperoleh kode QRIS tagihan Anda!`;
       await sendQris(responseJid, qrisInfo);
     }
 
@@ -1504,34 +1235,37 @@ _Silakan klik link di atas untuk bergabung, kemudian ulangi perintah \`checkout\
     // INSTANT SALDO DEPOSIT CHECKOUT (Priority 1)
     // Jika saldo deposit mencukupi, bayar instan tanpa perlu QRIS
     // ================================================================
+    // Potong saldo, tandai lunas, tebus kupon, buat job kirim dan beri poin —
+    // SEMUANYA di satu transaksi di dalam settleOrderWithBalance. Dulu blok ini
+    // melakukannya sendiri dalam TIGA transaksi terpisah, dan melewatkan
+    // penebusan kupon sama sekali sehingga kupon sekali-pakai bisa dipakai tanpa
+    // batas lewat jalur saldo.
     const custProfile = await db.getCustomerMembershipProfile(senderNumber);
     if ((custProfile?.balance || 0) >= order.total) {
-      const deductRes = await db.deductCustomerBalance(senderNumber, order.total, `Pembelian Order #${order.order_id}`);
-      if (deductRes.success) {
-        const now = Date.now();
-        await db.runQuery(
-          "UPDATE orders SET payment_status = 'PAID', status = 'COMPLETED', updated_at = ? WHERE order_id = ?",
-          [now, order.order_id]
-        );
-        await db.createFulfillmentJob(order.order_id, senderNumber);
-
-        // Poin belanja + referral + Poin Loyalty. Jalur ini meng-UPDATE kolom
-        // order langsung (bukan lewat updateOrderStatus), jadi Poin Loyalty-nya
-        // memang harus diberikan dari sini.
-        const pts = await db.awardPurchasePoints(senderNumber, order.total, order.order_id);
-
+      const lunas = await db.settleOrderWithBalance(senderNumber, order.order_id);
+      if (lunas.success) {
         let successMsg = `✅ *PEMBAYARAN SALDO DEPOSIT BERHASIL!* ✅\n\n`;
         successMsg += `📦 *Order ID:* ${order.order_id}\n`;
-        successMsg += `💸 *Total Dibayar:* Rp${order.total.toLocaleString('id-ID')}\n`;
-        successMsg += `💳 *Sisa Saldo Deposit:* Rp${deductRes.newBalance.toLocaleString('id-ID')}\n`;
-        if (pts > 0) successMsg += `🪙 *Bonus Poin:* +${pts} Akbar Poin\n\n`;
-        successMsg += `_Pesanan Anda berhasil dan produk digital sedang dikirimkan otomatis ke chat ini!_`;
+        successMsg += `💸 *Total Dibayar:* Rp${lunas.total.toLocaleString('id-ID')}\n`;
+        successMsg += `💳 *Sisa Saldo Deposit:* Rp${lunas.newBalance.toLocaleString('id-ID')}\n`;
+        if (lunas.poin > 0) successMsg += `🪙 *Bonus Poin:* +${lunas.poin} Akbar Poin\n`;
+        successMsg += `\n_Pesanan Anda berhasil dan produk digital sedang dikirimkan otomatis ke chat ini!_`;
 
         await sock.sendMessage(responseJid, { text: successMsg });
         await db.addLog('ORDER', `🛍️ Order #${order.order_id} dibayar lunas via Saldo Deposit oleh ${senderNumber}`);
+
+        if (lunas.kuponHabis) {
+          await db.addLog('ORDER', `⚠️ Kupon ${lunas.kuponKode} pada order ${order.order_id} ternyata sudah habis kuotanya, tetapi diskonnya sudah menempel pada total.`);
+        }
+
         await sendRedirectNotice();
         return;
       }
+
+      // Gagal melunaskan lewat saldo bukan alasan mendiamkan pelanggan. Dulu
+      // blok ini hanya `if (deductRes.success)` tanpa cabang lain, jadi
+      // kegagalannya jatuh diam-diam ke jalur QRIS tanpa satu pun catatan.
+      await db.addLog('ORDER', `⚠️ Pelunasan saldo gagal untuk order ${order.order_id}: ${lunas.message}`);
     }
 
     // ================================================================
@@ -1733,7 +1467,12 @@ ${itemsText}
 
   // 6. CANCEL / BATAL
   if (cleanTextLower === 'cancel' || cleanTextLower === 'batal') {
-    const activeOrder = await db.getLastOrderByCustomer(senderNumber);
+    // Pemilih order yang SAMA dipakai di dua langkah ini. Dulu baris pertama
+    // memakai getLastOrderByCustomer (pesanan terbaru) sedangkan
+    // cancelActiveOrder memilih tanpa ORDER BY (biasanya yang terlama) — jadi
+    // QRIS yang dibatalkan ke Casaku dan order yang dibatalkan di database bisa
+    // berlainan, meninggalkan QRIS hidup untuk order yang sudah CANCELLED.
+    const activeOrder = await db.getOrderUntukDibatalkan(senderNumber);
     if (activeOrder && activeOrder.casaku_transaction_id) {
       try {
         const { cancelPayment } = await import('../payment/paymentService.js');
@@ -1953,7 +1692,7 @@ Kami akan otomatis mengirimkan pesan WhatsApp ke nomor ini begitu produk *${p.na
     const keyword = cleanText.match(cariRegex)[1];
     const results = await db.searchProducts(keyword);
     if (results.length === 0) {
-      await sock.sendMessage(responseJid, { text: `🔎 Tidak ditemukan produk dengan kata kunci "*${keyword}*".\nKetik *produk* untuk melihat semua katalog.` });
+      await sock.sendMessage(responseJid, { text: `🔎 Tidak ditemukan produk dengan kata kunci "*${keyword}*".\nKetik `.produk` untuk melihat semua katalog.` });
       return;
     }
     let msg = `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🔎 *HASIL PENCARIAN:* "${keyword}"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
@@ -1961,7 +1700,7 @@ Kami akan otomatis mengirimkan pesan WhatsApp ke nomor ini begitu produk *${p.na
       const stockLabel = p.stok === 0 ? '🔴 Habis' : p.stok <= 3 ? `🟡 Sisa ${p.stok}` : `🟢 ${p.stok} pcs`;
       msg += `📌 *${p.nama}* (\`${p.kode}\`)\n   Harga: *Rp${p.harga.toLocaleString('id-ID')}* | Stok: ${stockLabel}\n\n`;
     }
-    msg += `Ketik *beli [KODE] [JUMLAH]* untuk membeli.`;
+    msg += `Ketik `.beli [KODE] [JUMLAH]` untuk membeli.`;
     await sock.sendMessage(responseJid, { text: msg });
     return;
   }
@@ -1976,7 +1715,14 @@ Kami akan otomatis mengirimkan pesan WhatsApp ke nomor ini begitu produk *${p.na
       return;
     }
     // Validasi: cek expired
-    if (coupon.expires_at && new Date(coupon.expires_at) < new Date()) {
+    // keWaktu, bukan new Date() mentah. `coupons.expires_at` diisi sebagai
+    // tanggal polos ("2026-12-31") dari `.addcoupon` maupun dari <input
+    // type="date"> di dashboard, dan V8 membaca bentuk itu sebagai tengah malam
+    // UTC — yaitu pukul 07.00 WIB. Kupon yang owner set berlaku "sampai 31 Des"
+    // mati pukul 7 pagi di hari itu, sementara dashboard masih menampilkannya
+    // aktif.
+    const habisPada = akhirHariWib(coupon.expires_at);
+    if (habisPada && habisPada.getTime() < Date.now()) {
       await sock.sendMessage(responseJid, { text: `❌ Kupon *${code}* sudah kedaluwarsa.` });
       return;
     }
@@ -2011,7 +1757,7 @@ Kami akan otomatis mengirimkan pesan WhatsApp ke nomor ini begitu produk *${p.na
     
     await db.applyCouponToOrder(lastOrder.order_id, code, discount);
     const discountLabel = coupon.type === 'percent' ? `${coupon.value}%` : `Rp${coupon.value.toLocaleString('id-ID')}`;
-    await sock.sendMessage(responseJid, { text: `✅ *Kupon ${code} berhasil diterapkan!*\n\n🏷️ Diskon: ${discountLabel}\n💰 Potongan: *-Rp${discount.toLocaleString('id-ID')}*\n🧾 Total setelah diskon: *Rp${(lastOrder.total - discount).toLocaleString('id-ID')}*\n\nKetik *checkout* untuk melanjutkan pembayaran.` });
+    await sock.sendMessage(responseJid, { text: `✅ *Kupon ${code} berhasil diterapkan!*\n\n🏷️ Diskon: ${discountLabel}\n💰 Potongan: *-Rp${discount.toLocaleString('id-ID')}*\n🧾 Total setelah diskon: *Rp${(lastOrder.total - discount).toLocaleString('id-ID')}*\n\nKetik `.checkout` untuk melanjutkan pembayaran.` });
     await sendRedirectNotice();
     return;
   }
@@ -2025,7 +1771,13 @@ Kami akan otomatis mengirimkan pesan WhatsApp ke nomor ini begitu produk *${p.na
       await sock.sendMessage(responseJid, { text: `❌ Kode referral *${targetCode}* tidak ditemukan.` });
       return;
     }
-    if (referrer.nomor === senderNumber) {
+    // samaOrangnya, bukan ===. Orang yang sama tersimpan sebagai `@lid` saat
+    // menulis di grup dan `628...@s.whatsapp.net` saat menulis di DM (AGENTS §9a:
+    // 231 dari 236 pelanggan ber-@lid). Dengan perbandingan huruf, siapa pun bisa
+    // mengambil kodenya sendiri lewat `.referral` di DM lalu memakainya di grup —
+    // hitungan temannya naik untuk dirinya sendiri, dan tiap 3 hitungan
+    // menerbitkan kupon diskon 10% yang asli.
+    if (await db.samaOrangnya(referrer.nomor, senderNumber)) {
       await sock.sendMessage(responseJid, { text: `⚠️ Anda tidak dapat menggunakan kode referral sendiri.` });
       return;
     }
@@ -2090,7 +1842,7 @@ ${rewardStatusMsg}📋 *Detail Statistik:*
 • Kupon Diskon Diklaim: *${kuponSudahDiklaim + unclaimed}x Kupon 10%*
 
 💡 *Cara Menggunakan:*
-Ajak teman Anda untuk mengetik \`ref ${refCode}\` di chat ini. Setiap 3 teman yang diajak, Anda berhak mendapatkan 1 Kupon Diskon 10%!
+Ajak teman Anda untuk mengetik \`.ref ${refCode}\` di chat ini. Setiap 3 teman yang diajak, Anda berhak mendapatkan 1 Kupon Diskon 10%!
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
     await sock.sendMessage(responseJid, { text: refMsg });
@@ -2124,7 +1876,7 @@ Ajak teman Anda untuk mengetik \`ref ${refCode}\` di chat ini. Setiap 3 teman ya
       return;
     }
     await db.addToWishlist(senderNumber, code);
-    await sock.sendMessage(responseJid, { text: `💝 Produk *${p.nama}* (\`${code}\`) berhasil ditambahkan ke wishlist Anda!\nKetik *favorit* untuk melihat daftar wishlist.` });
+    await sock.sendMessage(responseJid, { text: `💝 Produk *${p.nama}* (\`${code}\`) berhasil ditambahkan ke wishlist Anda!\nKetik `.favorit` untuk melihat daftar wishlist.` });
     return;
   }
 
@@ -2132,7 +1884,7 @@ Ajak teman Anda untuk mengetik \`ref ${refCode}\` di chat ini. Setiap 3 teman ya
   if (cleanTextLower === 'favorit' || cleanTextLower === 'wishlist') {
     const items = await db.getWishlist(senderNumber);
     if (items.length === 0) {
-      await sock.sendMessage(responseJid, { text: "💝 Wishlist Anda masih kosong.\nKetik *simpan [KODE]* untuk menambahkan produk favorit." });
+      await sock.sendMessage(responseJid, { text: "💝 Wishlist Anda masih kosong.\nKetik `.simpan [KODE]` untuk menambahkan produk favorit." });
       return;
     }
     let msg = `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n💝 *WISHLIST / FAVORIT ANDA*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
@@ -2140,7 +1892,7 @@ Ajak teman Anda untuk mengetik \`ref ${refCode}\` di chat ini. Setiap 3 teman ya
       const stockLabel = item.stok === 0 ? '🔴 Habis' : `🟢 ${item.stok} pcs`;
       msg += `📌 *${item.nama}* (\`${item.produk_kode}\`)\n   Harga: *Rp${item.harga.toLocaleString('id-ID')}* | Stok: ${stockLabel}\n\n`;
     }
-    msg += `Ketik *beli [KODE] [JUMLAH]* untuk memesan.\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+    msg += `Ketik `.beli [KODE] [JUMLAH]` untuk memesan.\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
     await sock.sendMessage(responseJid, { text: msg });
     return;
   }

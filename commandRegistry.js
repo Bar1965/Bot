@@ -515,11 +515,27 @@ function renderGroup(group, lines) {
   lines.push('');
 }
 
+/**
+ * Kategori yang boleh tampil di grup Mode Jualan. Sisanya (game, media, premium,
+ * pdf, hiburan) sengaja disembunyikan supaya grup jualan tetap tertib.
+ *
+ * Diekspor karena customerHandler perlu tahu daftar ini SEBELUM memanggil
+ * buildCommandMenu, untuk menolak `.menu game` dengan penjelasan yang benar.
+ * Dulu daftarnya ditulis ulang di sana sebagai deretan alias — dan langsung
+ * melenceng. Lihat AGENTS.md §12l: berkas ini satu-satunya pemilik daftar alias.
+ */
+export const KATEGORI_MODE_JUALAN = ['jualan', 'transaksi', 'reward', 'admin'];
+
+/** true kalau kategori ini disembunyikan saat grup berada di Mode Jualan. */
+export function kategoriDisembunyikanModeJualan(idKategori) {
+  return Boolean(idKategori) && !KATEGORI_MODE_JUALAN.includes(idKategori);
+}
+
 export function buildCommandMenu(value = 'all', { salesMode = false } = {}) {
   const normalized = String(value || 'all').toLowerCase();
   const selected = resolveCategory(normalized);
   const visibleCategories = salesMode
-    ? ['jualan', 'transaksi', 'reward', 'admin']
+    ? KATEGORI_MODE_JUALAN
     : Object.keys(categories);
 
   // KONDISI 1: Beranda menu (.menu)

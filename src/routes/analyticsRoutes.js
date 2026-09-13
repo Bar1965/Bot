@@ -1,6 +1,7 @@
 import express from 'express';
 import * as db from '../../database.js';
 import { botState } from '../../server.js';
+import { pesanErrorAman } from './responErr.js';
 import {
   authenticateJWT,
   authorizeRoles
@@ -20,7 +21,7 @@ router.get('/stats', authenticateJWT, authorizeRoles('Owner'), async (req, res) 
       }
     });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'ANALYTICS') });
   }
 });
 
@@ -30,7 +31,7 @@ router.get('/analytics', authenticateJWT, authorizeRoles('Owner'), async (req, r
     const data = await db.getAnalyticsData();
     res.json({ success: true, analytics: data });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'ANALYTICS') });
   }
 });
 
@@ -41,7 +42,7 @@ router.get('/analytics/timeline', authenticateJWT, authorizeRoles('Owner'), asyn
     const data = await db.getDailySalesTimeline(days);
     res.json({ success: true, data });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'ANALYTICS') });
   }
 });
 
@@ -52,7 +53,7 @@ router.get('/analytics/top-products', authenticateJWT, authorizeRoles('Owner'), 
     const data = await db.getTopProducts(limit);
     res.json({ success: true, data });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'ANALYTICS') });
   }
 });
 
@@ -63,7 +64,7 @@ router.get('/analytics/top-customers', authenticateJWT, authorizeRoles('Owner'),
     const data = await db.getTopCustomers(limit);
     res.json({ success: true, data });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'ANALYTICS') });
   }
 });
 
@@ -73,7 +74,7 @@ router.get('/analytics/summary', authenticateJWT, authorizeRoles('Owner'), async
     const data = await db.getAnalyticsSummary();
     res.json({ success: true, data });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'ANALYTICS') });
   }
 });
 
@@ -86,7 +87,7 @@ router.get('/analytics/heatmap', authenticateJWT, authorizeRoles('Owner'), async
     const data = await db.getSalesHeatmap(year, month);
     res.json({ success: true, data, year, month });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'ANALYTICS') });
   }
 });
 
@@ -122,7 +123,7 @@ router.get('/analytics/export', authenticateJWT, authorizeRoles('Owner'), async 
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send('\uFEFF' + csv); // BOM untuk Excel
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'ANALYTICS') });
   }
 });
 

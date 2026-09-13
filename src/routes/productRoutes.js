@@ -1,6 +1,7 @@
 import express from 'express';
 import * as db from '../../database.js';
 import { checkAndNotifySubscribers } from '../../bot.js';
+import { pesanErrorAman } from './responErr.js';
 import {
   authenticateJWT,
   authorizeRoles,
@@ -15,7 +16,7 @@ router.get('/products', authenticateJWT, async (req, res) => {
     const products = await db.getProducts();
     res.json({ success: true, products });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'PRODUCT') });
   }
 });
 
@@ -75,7 +76,7 @@ router.post('/products', authenticateJWT, authorizeRoles('Owner', 'Admin'), uplo
     await checkAndNotifySubscribers(normalizedKode, parsedStok);
     res.json({ success: true, message: "Produk berhasil disimpan." });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'PRODUCT') });
   }
 });
 
@@ -87,7 +88,7 @@ router.post('/products/:kode/restock-broadcast', authenticateJWT, authorizeRoles
     const result = await triggerRestockBroadcast(kode);
     res.json(result);
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'PRODUCT') });
   }
 });
 
@@ -98,7 +99,7 @@ router.delete('/products/:kode', authenticateJWT, authorizeRoles('Owner', 'Admin
     await db.deleteProduct(kode);
     res.json({ success: true, message: "Produk berhasil dihapus." });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'PRODUCT') });
   }
 });
 
@@ -109,7 +110,7 @@ router.get('/products/:kode/items', authenticateJWT, authorizeRoles('Owner', 'Ad
     const items = await db.getProductItems(kode);
     res.json({ success: true, items });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'PRODUCT') });
   }
 });
 
@@ -127,7 +128,7 @@ router.post('/products/:kode/items', authenticateJWT, authorizeRoles('Owner', 'A
     const updatedStock = await db.addProductItems(kode, items);
     res.json({ success: true, message: `Berhasil menambahkan ${items.length} kredensial stok.`, stock: updatedStock });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'PRODUCT') });
   }
 });
 
@@ -138,7 +139,7 @@ router.delete('/products/items/:id', authenticateJWT, authorizeRoles('Owner', 'A
     await db.deleteProductItem(id);
     res.json({ success: true, message: "Item kredensial berhasil dihapus." });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: pesanErrorAman(err, 'PRODUCT') });
   }
 });
 

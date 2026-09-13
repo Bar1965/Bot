@@ -14,7 +14,7 @@ import { adalahJidBot } from '../utils/botIdentity.js';
 import { perisaiTarget } from '../utils/perisaiTarget.js';
 import { mulaiWizardProduk, simpanGambarProduk } from './storeWizard.js';
 import { penutupGaransi } from '../utils/pesanGaransi.js';
-import { tanggalWib } from '../utils/waktu.js';
+import { tanggalWib, jamWib } from '../utils/waktu.js';
 
 export function createGroupAdminHandler(ctx) {
     const { sock, userPushNamesMap, messageCache, formatPhoneNumber, react, sendInteractiveButtons } = ctx;
@@ -36,7 +36,15 @@ export function createGroupAdminHandler(ctx) {
   const cleanCmd = rawCmd.replace(/^[./#]/, '');
 
   const adminStoreCommands = [
-    'paid', 'done', 'cancel', 'flashsale', 'stats', 'broadcast', 'addcoupon', 
+    // `acc`, `terima`, `konfirmasi` dan `selesai` sudah lama dirujuk di bawah
+    // (baris ~1656 dan ~1770) tapi tidak pernah ada di daftar ini, sehingga
+    // gerbang di baris 66 memulangkannya lebih dulu: keempatnya mati. Pesan
+    // bantuan `.paid` sendiri menyuruh admin memakai `.acc`.
+    //
+    // `batal` SENGAJA tidak ditambahkan: itu perintah pelanggan untuk
+    // membatalkan pesanannya sendiri, dan memasukkannya ke sini akan membajak
+    // `.batal` milik owner saat ia berbelanja sebagai pelanggan biasa.
+    'paid', 'acc', 'terima', 'konfirmasi', 'done', 'selesai', 'cancel', 'flashsale', 'stats', 'broadcast', 'addcoupon', 
     'delcoupon', 'listcoupon', 'addfaq', 'delfaq', 'listfaq', 'laporan', 
     'restock', 'stock', 'price', 'out', 'ready', 'addproduct', 'takeover', 
     'release', 'setname', 'setowner', 'eval', 'exec', 'backup', 'resetleaderboard',
@@ -1133,10 +1141,18 @@ ${panduanMode}`
     // PERINTAH ADMIN: .flashsale <KODE_PRODUK> <HARGA_FLASH> <DURASI_JAM>
     if (cleanCmd === 'flashsale') {
       const pKode = args[1]?.toUpperCase();
-      const hFlash = parseInt(args[2]);
+      // Pintu harga KETIGA. Dulu di sini berdiri `parseInt(args[2])` mentah,
+      // jadi `.flashsale NET01 15.000` menjual produknya seharga *Rp15*, dan
+      // `.flashsale NET01 15rb` seharga Rp15 juga — padahal `.price` dan wizard
+      // `.tokobaru` sama-sama menerima bentuk itu dengan benar. Harga negatif
+      // pun lolos (`-50000` bukan NaN) dan setFlashSale tidak memvalidasi apa
+      // pun, sehingga subtotal keranjang bisa jadi minus dan menggratiskan
+      // produk lain di keranjang yang sama.
+      const cekFlash = db.validasiFieldProduk('harga', String(args[2] || ''));
+      const hFlash = cekFlash.ok ? cekFlash.nilai : NaN;
       const dur = parseInt(args[3]) || 2;
 
-      if (!pKode || isNaN(hFlash)) {
+      if (!pKode || !cekFlash.ok) {
         await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Gunakan `.flashsale <KODE_PRODUK> <HARGA_FLASH> [DURASI_JAM]`\n\n_Contoh:_ `.flashsale NET01 15000 2`" });
         return true;
       }
@@ -1147,8 +1163,18 @@ ${panduanMode}`
         return true;
       }
 
+      if (dur <= 0 || dur > 720) {
+        await sock.sendMessage(jid, { text: "\u26a0\ufe0f Durasi flash sale harus antara *1* dan *720* jam (30 hari)." });
+        return true;
+      }
+
+      if (hFlash >= p.harga) {
+        await sock.sendMessage(jid, { text: `\u26a0\ufe0f Harga flash sale (*Rp${hFlash.toLocaleString('id-ID')}*) tidak lebih murah dari harga normal (*Rp${p.harga.toLocaleString('id-ID')}*). Flash sale dibatalkan.` });
+        return true;
+      }
+
       const endTime = await db.setFlashSale(pKode, hFlash, dur);
-      const endStr = new Date(endTime).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+      const endStr = jamWib(endTime);
 
       await sock.sendMessage(jid, { 
         text: `⚡ *FLASH SALE BERHASIL DIAKTIFKAN!* ⚡
@@ -1599,8 +1625,17 @@ ${panduanMode}`
         await sock.sendMessage(jid, { text: "⚠️ Format salah. Gunakan: `.takeover [NOMOR]`\nContoh: `.takeover 6281234567890`" });
         return true;
       }
-      const targetJid = targetNumber.includes('@') ? targetNumber : `${targetNumber}@s.whatsapp.net`;
-      await db.updateConversationState(targetJid, 'ADMIN');
+      // Nomor HP TIDAK boleh dirakit jadi JID (AGENTS §9a). Dulu baris ini
+      // menulis `6281...@s.whatsapp.net`, sementara bot membaca status percakapan
+      // memakai identitas pengirim yang untuk ~98% pelanggan berbentuk `@lid`.
+      // Jadi bot terus membalas otomatis sementara balasannya berkata "chat telah
+      // diambil alih" — pengambilalihannya tidak pernah benar-benar terjadi.
+      const sasaran = await db.resolveTargetJid(targetNumber);
+      if (!sasaran.ditemukan) {
+        await sock.sendMessage(jid, { text: `❌ Nomor *${targetNumber}* belum pernah berinteraksi dengan bot, jadi identitasnya tidak bisa dipastikan.\n\n_Minta pelanggan mengirim satu pesan dulu, atau balas (reply) pesannya lalu ketik_ \`.takeover\`` });
+        return true;
+      }
+      await db.updateConversationState(sasaran.jid, 'ADMIN');
       await sock.sendMessage(jid, { text: `✅ Chat dengan ${targetNumber} telah diambil alih. Bot tidak akan membalas otomatis pesannya.` });
       return true;
     }
@@ -1662,6 +1697,47 @@ function extractOrderIdFromMessage(args, m) {
         return true;
       }
 
+      const det = await db.getOrderDetails(orderId);
+      if (!det) {
+        await sock.sendMessage(jid, { text: `❌ Order ID *${orderId}* tidak ditemukan.` });
+        return true;
+      }
+
+      // Penjaga idempoten. updateOrderStatus tidak menolak PAID -> PAID, dan
+      // awardPurchasePoints tidak mengenali order yang sudah pernah diberi poin,
+      // jadi `.paid` yang diketik dua kali — kebiasaan admin yang sangat wajar —
+      // mencetak Akbar Poin dan Poin Loyalty berulang kali, sekaligus menurunkan
+      // kembali status order dari COMPLETED ke PAID. markTransactionPaid punya
+      // `WHERE payment_status = 'PENDING'` justru untuk alasan ini; jalur `.paid`
+      // tidak punya padanannya.
+      if (det.payment_status === 'PAID' || ['PAID', 'COMPLETED'].includes(det.status)) {
+        await sock.sendMessage(jid, {
+          text: `ℹ️ Order *${orderId}* sudah berstatus *${det.status}* — tidak ada yang diubah.\n\n_Kalau produknya belum terkirim, pakai_ \`.done ${orderId}\` _setelah mengirim manual._`
+        });
+        return true;
+      }
+
+      // Top up saldo BUKAN pembelian. Dua jalur otomatis punya cabang `DEP-`
+      // (markTransactionPaid dan fulfillmentWorker); `.paid` tidak punya, jadi
+      // konfirmasi manual sebuah top-up memberi Akbar Poin, Poin Loyalty dan
+      // hadiah referral — lalu TIDAK PERNAH menambah saldonya. Pelanggan dibilangi
+      // "Pembayaran Anda telah DITERIMA" dengan saldo tetap nol.
+      if (String(orderId).startsWith('DEP-')) {
+        const nominal = det.total || 0;
+        const berhasil = await db.settleDepositOrder(orderId, det.customer_nomor, nominal, 'manual_admin');
+        if (!berhasil) {
+          await sock.sendMessage(jid, { text: `❌ Gagal menambahkan saldo untuk *${orderId}*. Statusnya mungkin sudah berubah — cek dengan \`.cekorder ${orderId}\`.` });
+          return true;
+        }
+        const profil = await db.getCustomerMembershipProfile(det.customer_nomor);
+        await sock.sendMessage(jid, { text: `✅ Top up *${orderId}* dikonfirmasi. Saldo pelanggan sekarang *Rp${(profil?.balance || 0).toLocaleString('id-ID')}*.` });
+        await sock.sendMessage(det.customer_nomor, {
+          text: `🎉 *TOP UP SALDO DEPOSIT BERHASIL!* 🎉\n\n🆔 *Deposit ID:* ${orderId}\n💰 *Nominal:* Rp${nominal.toLocaleString('id-ID')}\n💳 *Total Saldo Sekarang:* Rp${(profil?.balance || 0).toLocaleString('id-ID')}\n\n_Saldo sudah bisa dipakai berbelanja. Terima kasih! 🙏_`
+        });
+        await logToSystem('PAYMENT', `💰 Top up ${orderId} dikonfirmasi manual oleh admin (wa.me/${senderNumber.split('@')[0]})`);
+        return true;
+      }
+
       const res = await db.updateOrderStatus(orderId, 'PAID');
       if (!res.success) {
         await sock.sendMessage(jid, { text: `❌ Gagal: ${res.message}` });
@@ -1670,20 +1746,22 @@ function extractOrderIdFromMessage(args, m) {
 
       await sock.sendMessage(jid, { text: `✅ Order ID *${orderId}* berhasil diubah ke status *PAID*. Memproses pengiriman otomatis...` });
 
+      if (res.kuponHabis) {
+        await sock.sendMessage(jid, { text: `⚠️ Catatan: kupon pada order ini ternyata sudah habis kuotanya, tetapi diskonnya sudah menempel pada total. Pesanan tetap dilunaskan.` });
+      }
+
       // Pembeli jalur `.paid` dulu tidak menerima Akbar Poin sama sekali, dan
       // pengajaknya tidak pernah menerima hadiah referral, karena keduanya hanya
       // diberikan di markTransactionPaid (jalur QRIS). Padahal pembeli transfer
       // manual justru yang paling lama menunggu.
       //
       // sertakanLoyalty: false karena updateOrderStatus di atas SUDAH menambah
-      // Poin Loyalty lewat transisi BELUM BAYAR -> SUDAH BAYAR. Tanpa penanda
-      // ini, jalur `.paid` akan menghitungnya dua kali.
+      // Poin Loyalty lewat transisi BELUM BAYAR -> SUDAH BAYAR.
       let poinBelanja = 0;
       try {
-        const det = await db.getOrderDetails(orderId);
         poinBelanja = await db.awardPurchasePoints(
           res.customerNomor,
-          det?.payment_amount || det?.total || 0,
+          det.payment_amount || det.total || 0,
           orderId,
           { sertakanLoyalty: false }
         );
@@ -1946,6 +2024,25 @@ user2@gmail.com|pass456
         return true;
       }
 
+      // Dulu perintah ini hanya memastikan barisnya ADA, bukan statusnya.
+      //
+      // RESERVED berarti kredensial itu sedang dikunci untuk pesanan yang
+      // menunggu pembayaran. Menghapusnya membuat pelanggan membayar lalu
+      // claimAndDeliverItems tidak menemukan apa pun.
+      //
+      // USED adalah satu-satunya catatan tentang apa yang pernah dikirim ke
+      // pembeli — itulah acuan klaim `.garansi`. `.delproduk` sengaja menyimpan
+      // baris USED justru karena itu (AGENTS §10c); `.delstock` malah menghapusnya
+      // satu per satu.
+      if (item.status === 'RESERVED') {
+        await sock.sendMessage(jid, { text: `🚫 Item #${id} sedang *DIKUNCI* untuk pesanan \`${item.order_id || '-'}\` yang menunggu pembayaran.\n\nBatalkan dulu pesanannya dengan \`.cancel ${item.order_id || '<ORDER_ID>'}\`, baru item ini bisa dihapus.` });
+        return true;
+      }
+      if (item.status === 'USED') {
+        await sock.sendMessage(jid, { text: `🚫 Item #${id} sudah *TERKIRIM* ke pembeli (pesanan \`${item.order_id || '-'}\`).\n\nBarisnya sengaja disimpan sebagai bukti garansi — kalau dihapus, klaim \`.garansi\` pembeli itu tidak punya acuan lagi.` });
+        return true;
+      }
+
       await db.deleteProductItem(id);
       const newCount = await db.getAvailableItemsCount(item.produk_kode);
       await sock.sendMessage(jid, {
@@ -2190,14 +2287,35 @@ user2@gmail.com|pass456
       // Harga lewat parser yang sama dengan wizard, supaya "85.000" dan "85rb"
       // sama-sama diterima di dua pintu masuk yang berbeda.
       const harga = db.parseHargaIndonesia(parts[2]);
-      const stok = parseInt(parts[3], 10);
       const deskripsi = parts[4] || '';
-      const mode = (parts[5] || 'MANUAL').trim().toUpperCase() || 'MANUAL';
       const kategori = parts[6] || null;
       const durasi = parts[7] || null;
 
-      if (harga === null || isNaN(stok)) {
-        await sock.sendMessage(jid, { text: "❌ Gagal. Harga dan Stok harus berupa angka/nominal." });
+      const produkLama = await db.getProductByKode(code);
+
+      // MODE yang dikosongkan tidak boleh membalik produk yang sudah ada.
+      // Dulu defaultnya selalu 'MANUAL', jadi `.addproduk NET01 | ... | 85000 | 5`
+      // tanpa kolom MODE mengubah produk AUTO berisi 20 kredensial menjadi MANUAL
+      // diam-diam, dan stoknya diambil dari angka yang diketik.
+      const modeDefault = produkLama?.delivery_type || 'MANUAL';
+      const mode = (parts[5] || modeDefault).trim().toUpperCase() || modeDefault;
+
+      // Stok diperiksa dengan batas yang SAMA dengan addProduct (0-1.000.000).
+      // Dulu di sini hanya ada `isNaN(stok)`, sehingga `-5` dan `9999999` lolos —
+      // lalu addProduct melempar "Stok produk tidak valid", dan panggilan itu
+      // tidak dibungkus try/catch. Lemparannya berakhir di penangkap teratas
+      // bot.js yang cuma console.error, jadi admin tidak menerima balasan apa
+      // pun: perintahnya seperti diabaikan.
+      //
+      // `stok` sengaja bukan bagian dari FIELD_PRODUK — untuk produk AUTO angka
+      // itu dihitung dari kredensial, bukan diketik — jadi divalidasi di sini.
+      const stok = parseInt(String(parts[3] ?? '').trim(), 10);
+      if (harga === null) {
+        await sock.sendMessage(jid, { text: "❌ Gagal. Harga harus berupa angka/nominal, misalnya `85000`, `85.000`, atau `85rb`." });
+        return true;
+      }
+      if (!Number.isInteger(stok) || stok < 0 || stok > 1_000_000) {
+        await sock.sendMessage(jid, { text: "❌ Gagal. Stok harus bilangan bulat antara *0* dan *1.000.000*." });
         return true;
       }
       const cekNama = db.validasiFieldProduk('nama', nama);
@@ -2210,12 +2328,22 @@ user2@gmail.com|pass456
         return true;
       }
 
-      const produkLama = await db.getProductByKode(code);
-
       // Stok produk AUTO selalu dihitung ulang addProduct() dari kredensial yang
       // tersimpan, jadi angka stok yang diketik di sini memang diabaikan — bukan
       // dibuang diam-diam, tapi dikatakan ke admin di pesan balasan di bawah.
-      await db.addProduct(code, cekNama.nilai, harga, mode === 'AUTO' ? 0 : stok, deskripsi, "", mode, "", "", kategori, null, durasi);
+      //
+      // gambar, petunjuk dan variant_type diambil dari produk lama kalau ada.
+      // addProduct adalah INSERT OR REPLACE: kolom yang tidak dikirim ulang jadi
+      // KOSONG. Dulu ketiganya dikirim sebagai "" / null, jadi `.addproduk` pada
+      // kode yang sudah ada MENGHAPUS gambar hasil `.setgambar` dan seluruh teks
+      // petunjuk pakai — padahal petunjuk itu ikut dikirim ke pembeli bersama
+      // kredensialnya. Balasannya bahkan berbunyi "PRODUK DIPERBARUI" tanpa
+      // menyebut dua kolom yang barusan dihapus. Lihat AGENTS §10c.
+      await db.addProduct(
+        code, cekNama.nilai, harga, mode === 'AUTO' ? 0 : stok, deskripsi,
+        produkLama?.gambar || "", mode, "", produkLama?.petunjuk || "",
+        kategori, produkLama?.variant_type || null, durasi
+      );
       const produkBaru = await db.getProductByKode(code);
 
       let successText = produkLama
