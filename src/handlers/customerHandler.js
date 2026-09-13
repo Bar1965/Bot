@@ -214,7 +214,7 @@ export function createCustomerHandler(ctx = {}) {
         typeGroups.get(typeKey).push(v);
       }
 
-      let msg = `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n${icon} *${brandName.toUpperCase()} — PILIHAN PAKET & VARIAN*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n_Balas nomor paket atau pilih dari menu di bawah:_\n\n`;
+      let msg = `${icon} *${brandName.toUpperCase()} — PILIHAN PAKET*\n_Balas nomor paketnya untuk langsung memesan._\n\n`;
 
       const variantRows = [];
       const quickBuyButtons = [];
@@ -264,7 +264,7 @@ export function createCustomerHandler(ctx = {}) {
         items: allNumberedVariants
       });
 
-      msg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n💡 *CARA SUPER CEPAT:*\nBalas angka: *1* s/d *${allNumberedVariants.length}* untuk langsung beli!\nAtau klik salah satu tombol varian di bawah.\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+      msg += `💡 _Balas *1*–*${allNumberedVariants.length}* untuk langsung beli._`;
 
       const sections = variantRows.length > 0 ? [
         {
@@ -273,14 +273,22 @@ export function createCustomerHandler(ctx = {}) {
         }
       ] : [];
 
-      quickBuyButtons.push({ type: 'reply', text: '💝 Wishlist', id: `.simpan ${variants[0]?.kode}` });
-      quickBuyButtons.push({ type: 'reply', text: '📦 Katalog Utama', id: '.list' });
+      // quickBuyButtons sengaja TIDAK dipakai di pesan ini. Selama tombolnya
+      // belum bisa ditekan, isinya cuma jadi baris teks `.beli NET01 1` yang
+      // mengulang persis apa yang sudah bisa dilakukan pelanggan dengan membalas
+      // "1" — dan nomornya sudah ditulis besar-besar di atas. Datanya dibiarkan
+      // tetap disusun supaya langsung terpakai begitu tombol asli dinyalakan.
+      const tombolLanjut = [
+        { type: 'reply', text: '💝 Wishlist', id: `.simpan ${variants[0]?.kode}` },
+        { type: 'reply', text: '📦 Katalog', id: '.list' }
+      ];
 
       await sendInteractiveButtons(sock, responseJid, {
         text: msg,
-        title: `${icon} ${brandName.toUpperCase()} — PILIHAN VARIAN`,
-        footer: 'Balas nomor pilihan Anda atau klik menu dropdown di bawah',
-        buttons: quickBuyButtons,
+        // `title` dan `footer` tidak diisi: `msg` sudah membuka dengan nama
+        // brand-nya dan menutup dengan ajakan membalas nomor. Mengisi keduanya
+        // membuat instruksi yang sama tercetak dua kali di satu pesan.
+        buttons: tombolLanjut,
         sections
       });
       return true;
@@ -291,7 +299,7 @@ export function createCustomerHandler(ctx = {}) {
       const limit = botSettings.lowStockLimit || config.defaults.lowStockLimit;
       let stockStatus = "";
       if (product.stok === 0) {
-        stockStatus = "🔴 *Stok Habis* (Restok segera / klik tombol notifikasi)";
+        stockStatus = "🔴 *Stok Habis* — ketik `notif <kode>` untuk dikabari saat ready";
       } else if (product.stok <= limit) {
         stockStatus = `🟡 *Stok Terbatas* (Tersisa: ${product.stok} pcs)`;
       } else {
@@ -332,7 +340,7 @@ export function createCustomerHandler(ctx = {}) {
       await sendInteractiveButtons(sock, responseJid, {
         text: detailMsg,
         title: `🛍️ ${product.nama}`,
-        footer: 'Gunakan tombol di bawah untuk pesan langsung atau kembali ke katalog',
+        footer: 'Ketik .beli <kode> untuk memesan, atau .list untuk kembali',
         buttons: detailButtons
       });
       return true;
@@ -387,7 +395,7 @@ export function createCustomerHandler(ctx = {}) {
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 💡 *Langkah Selanjutnya:*
-Ketik *bayar* atau klik tombol *Bayar QRIS Langsung* di bawah untuk langsung memperoleh kode QRIS tagihan Anda!`;
+Ketik *bayar* untuk langsung memperoleh kode QRIS tagihan Anda!`;
 
             await sendInteractiveButtons(sock, responseJid, {
               text: confirmMsg,
@@ -960,7 +968,7 @@ Ketik *bayar* atau klik tombol *Bayar QRIS Langsung* di bawah untuk langsung mem
       await sendInteractiveButtons(sock, responseJid, {
         text: salesMenu,
         title: '📋 MENU TOKO (MODE JUALAN)',
-        footer: 'Klik tombol atau daftar kategori di bawah ini',
+        footer: 'Ketik perintahnya langsung, atau .menu <nomor> untuk kategori',
         buttons: menuQuickButtons,
         sections: menuSections
       });
@@ -1035,7 +1043,7 @@ Ketik *bayar* atau klik tombol *Bayar QRIS Langsung* di bawah untuk langsung mem
     await sendInteractiveButtons(sock, responseJid, {
       text: fullMenu,
       title: '📋 MENU UTAMA AKBAR STORE',
-      footer: 'Klik tombol cepat atau pilih kategori dari daftar menu',
+      footer: 'Ketik .menu <nomor> untuk membuka kategori',
       buttons: menuQuickButtons,
       sections: menuSections
     });
@@ -1202,25 +1210,21 @@ _Balas nomornya untuk lihat varian & harga._\n\n`;
         price: item.harga
       });
 
-      const confirmMsg = `✅ *PESANAN TERDETEKSI & DITAMBAHKAN!*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🛍️ *Paket:* ${item.nama}
-🔑 *Kode SKU:* \`${item.kode}\`
-💰 *Harga:* *Rp${item.harga.toLocaleString('id-ID')}*
-📦 *Status Stok:* Ready Stock (Siap Kirim)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      const confirmMsg = `✅ *Masuk keranjang*
+🛍️ ${item.nama}
+💰 *Rp${item.harga.toLocaleString('id-ID')}* · kode \`${item.kode}\`
 
-💡 *Langkah Selanjutnya:*
-Ketik *bayar* atau klik tombol *Bayar QRIS Langsung* di bawah untuk langsung memperoleh kode QRIS tagihan Anda!`;
+💡 Ketik *bayar* untuk dapat QRIS tagihannya.`;
 
       await sendInteractiveButtons(sock, responseJid, {
         text: confirmMsg,
-        title: `✅ ${item.nama.toUpperCase()}`,
-        footer: 'Pilih Bayar QRIS Langsung untuk transaksi instan',
+        // `title` dilepas: `confirmMsg` sudah membuka dengan kepalanya sendiri,
+        // dan mengisi keduanya menumpuk dua kepala di satu pesan pendek.
+        footer: 'Ketik bayar untuk langsung ke pembayaran',
         buttons: [
-          { type: 'reply', text: '💳 Bayar QRIS Langsung', id: '.checkout' },
-          { type: 'reply', text: '🛒 Lihat Keranjang', id: '.keranjang' },
-          { type: 'reply', text: '📦 Katalog Produk', id: '.list' }
+          { type: 'reply', text: 'Bayar', id: '.checkout' },
+          { type: 'reply', text: 'Keranjang', id: '.keranjang' },
+          { type: 'reply', text: 'Katalog', id: '.list' }
         ]
       });
       return true;
@@ -1274,22 +1278,19 @@ _Silakan klik link di atas untuk bergabung, kemudian ulangi perintah \`${text}\`
     }
 
     if (!isInstantCheckout) {
-      const successMsg = `✅ *Berhasil ditambahkan ke keranjang!*
-    
-*${res.productName}*
-Jumlah: ${res.qty} pcs
-Subtotal: *Rp${res.subtotal.toLocaleString('id-ID')}*
+      const successMsg = `✅ *Masuk keranjang*
+🛍️ ${res.productName} × ${res.qty}
+💰 Subtotal *Rp${res.subtotal.toLocaleString('id-ID')}*
 
-Ketik *keranjang* atau *cart* untuk melihat detail belanjaan Anda, atau ketik *checkout* untuk langsung melakukan pembayaran.`;
+💡 Ketik *checkout* untuk bayar sekarang.`;
 
       await sendInteractiveButtons(sock, responseJid, {
         text: successMsg,
-        title: '✅ BERHASIL DITAMBAHKAN',
-        footer: 'Pilih langkah selanjutnya di bawah ini',
+        footer: 'Ketik checkout untuk langsung ke pembayaran',
         buttons: [
-          { type: 'reply', text: '⚡ Beli Langsung (QRIS)', id: '.checkout' },
-          { type: 'reply', text: '🛒 Lihat Keranjang', id: '.keranjang' },
-          { type: 'reply', text: '🛍️ Katalog Produk', id: '.produk' }
+          { type: 'reply', text: 'Checkout', id: '.checkout' },
+          { type: 'reply', text: 'Keranjang', id: '.keranjang' },
+          { type: 'reply', text: 'Katalog', id: '.produk' }
         ]
       });
       await sendRedirectNotice();
@@ -1687,7 +1688,7 @@ _Anda dapat membayar menggunakan QRIS, GoPay, ShopeePay, OVO, Virtual Account Ba
       await sendInteractiveButtons(sock, responseJid, {
         text: invoiceMsg,
         title: '🧾 TAGIHAN PEMBAYARAN INSTAN',
-        footer: 'Klik tombol di bawah ini untuk langsung membayar',
+        footer: 'Buka link pembayaran di atas untuk menyelesaikan transaksi',
         buttons: [
           { type: 'url', text: '💳 Bayar Sekarang', url: midtransRes.redirect_url },
           { type: 'reply', text: '🛒 Lihat Keranjang', id: '.keranjang' },
@@ -1866,7 +1867,7 @@ ${itemsText}
       warrantyMsg += `⚠️ Masa garansi untuk pesanan ini telah selesai. Jika Anda membutuhkan perpanjangan akun baru, ketik \`.list\` untuk memesan kembali.`;
     } else {
       warrantyMsg += `💡 *Klaim Kendala Akun:*
-Jika Anda mengalami masalah (akun logout, batas layar, kredensial salah), silakan hubungi tim Admin kami dengan mengklik tombol di bawah atau ketik langsung keluhan Anda di chat ini.`;
+Jika Anda mengalami masalah (akun logout, batas layar, kredensial salah), silakan ketik langsung keluhan Anda di chat ini.`;
     }
 
     await sendInteractiveButtons(sock, responseJid, {
