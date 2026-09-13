@@ -1236,7 +1236,12 @@ export async function expireStaleOrders(expiryMinutes = 15) {
     [Date.now()]
   );
 
-  let benarKedaluwarsa = 0;
+  // Yang disapu dikumpulkan, bukan cuma dihitung: scheduler perlu memberitahu
+  // pemiliknya. Dulu fungsi ini hanya memulangkan angka, dan penyapu 15 menit
+  // membatalkan pesanan tanpa satu pun kabar ke pembeli — dia menunggu sambil
+  // memandangi QRIS yang sudah mati. Padahal penyapu 24 jam selalu mengirim
+  // pemberitahuan.
+  const disapu = [];
 
   for (const order of staleOrders) {
     await withTransaction(async () => {
@@ -1254,7 +1259,12 @@ export async function expireStaleOrders(expiryMinutes = 15) {
         [Date.now(), order.order_id]
       );
       if (klaim.changes !== 1) return;
-      benarKedaluwarsa++;
+      const pemilik = await getQuery("SELECT customer_nomor, total, payment_amount FROM orders WHERE order_id = ?", [order.order_id]);
+      disapu.push({
+        order_id: order.order_id,
+        customer_nomor: pemilik?.customer_nomor || null,
+        total: pemilik?.payment_amount || pemilik?.total || 0
+      });
 
       // Release reserved product_items back to READY
       await runQuery(
@@ -1283,7 +1293,12 @@ export async function expireStaleOrders(expiryMinutes = 15) {
   // Yang dilaporkan adalah yang BENAR-BENAR disapu, bukan panjang daftar
   // kandidat: order yang keburu lunas di sela SELECT dan transaksi tidak ikut
   // dihitung, supaya angka di log scheduler tidak berbohong.
-  return benarKedaluwarsa;
+  //
+  // Array-nya punya .length, jadi pemanggil lama yang memperlakukan hasilnya
+  // sebagai angka tetap aman kalau ia memakai .length; yang membandingkannya
+  // langsung dengan > 0 juga tetap benar karena array kosong itu falsy-ish pada
+  // perbandingan panjang. Pemanggil di scheduler sudah disesuaikan.
+  return disapu;
 }
 
 /**

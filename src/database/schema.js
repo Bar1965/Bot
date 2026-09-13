@@ -752,6 +752,13 @@ export async function initDb() {
   try {
     await runQuery("ALTER TABLE orders ADD COLUMN waiting_since DATETIME");
   } catch (e) {}
+  // Penanda TERSENDIRI untuk pengingat keranjang tertinggal. Dulu ia berbagi
+  // kolom `reminder_sent` dengan pengingat pembayaran, jadi pelanggan yang
+  // keranjangnya sempat di-nudge tidak pernah menerima pengingat bayar sama
+  // sekali — getPendingReminders mensyaratkan reminder_sent = 0.
+  try {
+    await runQuery("ALTER TABLE orders ADD COLUMN cart_reminder_sent INTEGER DEFAULT 0");
+  } catch (e) {}
   try {
     await runQuery("ALTER TABLE order_items ADD COLUMN stock_reserved INTEGER DEFAULT 0");
   } catch (e) {}

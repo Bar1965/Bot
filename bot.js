@@ -553,6 +553,7 @@ export async function triggerRestockBroadcast(productCode) {
     (async () => {
       let success = 0;
       let failed = 0;
+      const terkirimJid = [];
       const delayMs = parseInt(botSettings.broadcastDelay) || 3000;
 
       // Kirim DM HANYA ke peminta notifikasi perorang (notify [KODE])
@@ -564,12 +565,13 @@ export async function triggerRestockBroadcast(productCode) {
             `• Harga: *Rp${product.harga.toLocaleString('id-ID')}*\n` +
             (product.deskripsi ? `• Deskripsi: ${product.deskripsi}\n\n` : `\n`) +
             `Silakan ketik:\n` +
-            `*beli ${product.kode} 1*\n` +
+            `\`.beli ${product.kode} 1\`\n` +
             `di chat ini untuk memesan sekarang sebelum kehabisan! Terima kasih. 🙏`;
 
           if (sock && botState.whatsappConnected) {
             await sock.sendMessage(jid, { text: msg });
             success++;
+            terkirimJid.push(jid);
           } else {
             failed++;
           }
@@ -582,8 +584,13 @@ export async function triggerRestockBroadcast(productCode) {
         await new Promise(r => setTimeout(r, delayMs + jitter));
       }
 
-      // Bersihkan antrean berlangganan untuk produk ini
-      await db.getAndClearSubscribers(productCode);
+      // Bersihkan HANYA langganan yang notifikasinya benar-benar terkirim. Dulu
+      // seluruh antrean dikosongkan tanpa syarat, jadi kalau WhatsApp sedang
+      // putus semua peminta notifikasi kehilangan haknya tanpa pernah dikabari.
+      await db.hapusLanggananTerkirim(productCode, terkirimJid);
+      if (failed > 0) {
+        console.warn(`[RESTOCK_QUEUE] ${failed} langganan ${productCode} dipertahankan karena gagal terkirim.`);
+      }
       await db.updateBroadcastHistory(historyId, success, failed);
       await db.addLog("BROADCAST", `🏁 Siaran restok perorang ${productCode} selesai: ${success} terkirim, ${failed} gagal.`);
 
@@ -594,7 +601,7 @@ export async function triggerRestockBroadcast(productCode) {
           `• Stok Tersedia: *${product.stok} pcs*\n` +
           `• Harga: *Rp${product.harga.toLocaleString('id-ID')}*\n` +
           (product.deskripsi ? `• Deskripsi: ${product.deskripsi}\n\n` : `\n`) +
-          `Silakan chat Bot & ketik *beli ${product.kode} 1* untuk memesan sekarang! 🛒`;
+          "Silakan chat Bot & ketik `.beli " + product.kode + " 1` untuk memesan sekarang! 🛒";
 
         const targetGroupId = botSettings.buyerGroupId || botSettings.transactionGroupId;
         if (targetGroupId) {
@@ -701,7 +708,15 @@ export async function logToSystem(type, text) {
 export async function checkAndNotifySubscribers(kode, newStock) {
   try {
     if (newStock > 0) {
-      const subscribers = await db.getAndClearSubscribers(kode);
+      // Baca SAJA — jangan hapus. Versi lama memanggil getAndClearSubscribers di
+      // sini, sehingga antreannya lenyap sebelum satu pun pesan dicoba dikirim;
+      // dan pengiriman di bawah dibungkus `if (sock && botState.whatsappConnected)`,
+      // jadi saat WhatsApp sedang putus semuanya hilang tanpa notifikasi apa pun.
+      if (!sock || !botState.whatsappConnected) {
+        console.warn(`[NOTIF_STOK] WhatsApp offline — antrean langganan ${kode} DIPERTAHANKAN untuk dicoba lagi nanti.`);
+        return;
+      }
+      const subscribers = (await db.getSubscribers(kode)).map(r => r.customer_nomor);
       if (subscribers.length > 0) {
         const product = await db.getProductByKode(kode);
         const msg = `🎉 *STOK READY KEMBALI!*
@@ -710,22 +725,29 @@ Halo, produk *${product.nama}* (\`${kode.toUpperCase()}\`) yang Anda tunggu-tung
 
 Stok ready saat ini: *${newStock}* pcs.
 Segera lakukan pemesanan dengan mengetik:
-👉 *beli ${kode.toUpperCase()} 1*
+👉 \`.beli ${kode.toUpperCase()} 1\`
 
 Jangan sampai kehabisan lagi ya!`;
 
-        // Kirim ke semua pelanggan yang berlangganan
+        // Kirim ke semua pelanggan yang berlangganan, lalu hapus HANYA yang berhasil.
+        const terkirim = [];
         for (const num of subscribers) {
-          if (sock && botState.whatsappConnected) {
-            try {
-              await sock.sendMessage(num, { text: msg });
-              await logToSystem('SYSTEM', `Mengirimkan pemberitahuan stok ready ke ${num} untuk produk ${kode.toUpperCase()}`);
-              // Tambahkan jeda 1 detik untuk menghindari pemblokiran WA
-              await new Promise(resolve => setTimeout(resolve, 1000));
-            } catch (err) {
-              console.error(`Gagal kirim notif stok ke ${num}:`, err.message);
-            }
+          if (!sock || !botState.whatsappConnected) break;
+          try {
+            await sock.sendMessage(num, { text: msg });
+            terkirim.push(num);
+            await logToSystem('SYSTEM', `Mengirimkan pemberitahuan stok ready ke ${num} untuk produk ${kode.toUpperCase()}`);
+            // Tambahkan jeda 1 detik untuk menghindari pemblokiran WA
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          } catch (err) {
+            console.error(`Gagal kirim notif stok ke ${num}:`, err.message);
           }
+        }
+
+        await db.hapusLanggananTerkirim(kode, terkirim);
+        const gagal = subscribers.length - terkirim.length;
+        if (gagal > 0) {
+          console.warn(`[NOTIF_STOK] ${gagal} langganan ${kode} tetap tersimpan karena notifikasinya gagal terkirim.`);
         }
       }
     }

@@ -26,6 +26,36 @@ export async function getSubscribers(productKode) {
   return rows;
 }
 
+/**
+ * Hapus HANYA baris langganan yang notifikasinya benar-benar terkirim.
+ *
+ * MASALAH YANG DIPERBAIKI: dua pemanggil sama-sama memakai
+ * getAndClearSubscribers, yang menghapus seluruh antrean tanpa syarat.
+ *
+ *   checkAndNotifySubscribers menghapusnya DULU lalu baru mencoba mengirim — dan
+ *   pengirimannya dibungkus `if (sock && botState.whatsappConnected)`. Saat
+ *   WhatsApp sedang putus (hal yang rutin terjadi di bot ini), tidak satu pun
+ *   pesan keluar tetapi daftarnya sudah musnah. Semua orang yang meminta
+ *   dikabari saat restok kehilangan haknya selamanya, tanpa satu pun jejak.
+ *
+ *   triggerRestockBroadcast mengirim lebih dulu, tapi tetap mengosongkan antrean
+ *   walau seluruh pengirimannya gagal.
+ *
+ * Yang gagal sekarang TETAP berlangganan, jadi restok berikutnya mencoba lagi.
+ */
+export async function hapusLanggananTerkirim(productKode, daftarJid) {
+  const code = String(productKode || '').toUpperCase();
+  const jids = Array.from(new Set((daftarJid || []).filter(Boolean)));
+  if (!code || jids.length === 0) return 0;
+
+  const tanya = jids.map(() => '?').join(', ');
+  const res = await runQuery(
+    `DELETE FROM subscriptions WHERE produk_kode = ? AND customer_nomor IN (${tanya})`,
+    [code, ...jids]
+  );
+  return res.changes || 0;
+}
+
 export async function getAndClearSubscribers(productKode) {
   const code = productKode.toUpperCase();
   // Ambil semua subscriber
@@ -1108,7 +1138,7 @@ export async function getPendingReminders() {
     JOIN customers c ON o.customer_nomor = c.nomor 
     WHERE o.status = 'WAITING_PAYMENT' 
       AND o.reminder_sent = 0 
-      AND o.created_at <= datetime('now', '-30 minutes')
+      AND COALESCE(o.waiting_since, o.created_at) <= datetime('now', '-30 minutes')
   `);
 }
 
@@ -1389,14 +1419,23 @@ export async function getAbandonedCarts(hoursThreshold = 2) {
      JOIN products p ON oi.produk_kode = p.kode
      WHERE o.status = 'CART' 
      AND o.created_at <= datetime('now', '-' || ? || ' hours')
-     AND o.reminder_sent = 0
+     AND COALESCE(o.cart_reminder_sent, 0) = 0
      GROUP BY o.order_id`,
     [hoursThreshold]
   );
 }
 
+/**
+ * Penanda pengingat KERANJANG. Kolomnya sengaja berbeda dari `reminder_sent`,
+ * yang dipakai pengingat PEMBAYARAN.
+ *
+ * Keduanya dulu menulis kolom yang sama, sehingga pelanggan yang keranjangnya
+ * sempat diingatkan otomatis kehilangan hak atas pengingat pembayaran: setelah
+ * dia checkout, getPendingReminders yang mensyaratkan `reminder_sent = 0`
+ * melewatinya, dan satu-satunya kabar berikutnya adalah pembatalan otomatis.
+ */
 export async function markCartReminderSent(orderId) {
-  await runQuery("UPDATE orders SET reminder_sent = 1 WHERE order_id = ?", [orderId]);
+  await runQuery("UPDATE orders SET cart_reminder_sent = 1 WHERE order_id = ?", [orderId]);
 }
 
 

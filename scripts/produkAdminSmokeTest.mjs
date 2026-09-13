@@ -706,6 +706,44 @@ const yatim = await db.resetFulfillmentJob(ORD_YATIM);
 cek('pesanan tanpa job dibuatkan job baru', yatim.success === true && yatim.alasan === 'JOB_BARU', JSON.stringify(yatim));
 cek('order asing ditolak', (await db.resetFulfillmentJob('ORD-TIDAK-ADA')).success === false);
 
+bagian('36. Langganan restok hanya dihapus kalau notifikasinya terkirim');
+const KODE_LANGGAN = 'UJILANGGAN';
+await db.addProduct(KODE_LANGGAN, 'Produk Uji Langganan', 15000, 0, 'uji', '', 'MANUAL', '', '', null, null, '30 Hari');
+const PEMINTA = ['628900000001@lid', '628900000002@lid', '628900000003@lid'];
+for (const j of PEMINTA) await db.runQuery("INSERT INTO subscriptions (produk_kode, customer_nomor) VALUES (?, ?)", [KODE_LANGGAN, j]);
+cek('tiga peminta terdaftar', (await db.getSubscribers(KODE_LANGGAN)).length === 3);
+
+// Hanya dua yang berhasil dikirimi.
+const dihapus = await db.hapusLanggananTerkirim(KODE_LANGGAN, [PEMINTA[0], PEMINTA[1]]);
+cek('dua baris terhapus', dihapus === 2, dihapus);
+const sisa = await db.getSubscribers(KODE_LANGGAN);
+cek('yang gagal TETAP berlangganan', sisa.length === 1 && sisa[0].customer_nomor === PEMINTA[2], JSON.stringify(sisa));
+cek('daftar kosong tidak menghapus apa pun', (await db.hapusLanggananTerkirim(KODE_LANGGAN, [])) === 0);
+cek('sesudahnya masih tersisa satu', (await db.getSubscribers(KODE_LANGGAN)).length === 1);
+
+bagian('37. Pengingat keranjang dan pengingat bayar tidak lagi berebut satu kolom');
+const kolomOrders = await db.allQuery("PRAGMA table_info(orders)");
+cek('kolom cart_reminder_sent ada', kolomOrders.some(k => k.name === 'cart_reminder_sent'));
+
+const PEMBELI_R = '628900000009';
+await db.getOrCreateCustomer(PEMBELI_R, 'Uji Reminder');
+const KODE_PENGINGAT = 'UJIREMIND';
+await db.addProduct(KODE_PENGINGAT, 'Produk Uji Reminder', 25000, 9, 'uji', '', 'MANUAL', '', '', null, null, '30 Hari');
+await db.addToCart(PEMBELI_R, KODE_PENGINGAT, 1);
+const cartR = await db.getQuery("SELECT order_id FROM orders WHERE customer_nomor = ? AND status = 'CART'", [PEMBELI_R]);
+
+// Keranjangnya di-nudge lebih dulu — ini yang dulu mematikan pengingat bayarnya.
+await db.markCartReminderSent(cartR.order_id);
+const setelahNudge = await db.getQuery("SELECT reminder_sent, cart_reminder_sent FROM orders WHERE order_id = ?", [cartR.order_id]);
+cek('nudge keranjang menandai kolomnya sendiri', setelahNudge.cart_reminder_sent === 1, setelahNudge.cart_reminder_sent);
+cek('penanda pengingat bayar TIDAK ikut menyala', (setelahNudge.reminder_sent || 0) === 0, setelahNudge.reminder_sent);
+
+await db.checkoutCart(PEMBELI_R);
+await db.runQuery("UPDATE orders SET waiting_since = datetime('now','-31 minutes') WHERE order_id = ?", [cartR.order_id]);
+const pengingat = await db.getPendingReminders();
+cek('pesanan tetap berhak atas pengingat pembayaran',
+  pengingat.some(o => o.order_id === cartR.order_id), pengingat.map(o => o.order_id).join(','));
+
 console.log(`\n${'='.repeat(50)}`);
 console.log(`HASIL: ${lulus} lulus, ${gagal} gagal`);
 console.log('='.repeat(50));

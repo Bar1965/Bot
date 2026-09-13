@@ -12,6 +12,19 @@ let cachedTimezone = "Asia/Jakarta";
 let lastAlertedPrayer = "";
 const backupRetentionDays = Math.max(1, Number.parseInt(process.env.BACKUP_RETENTION_DAYS || '14', 10) || 14);
 
+// Penanda "sudah jalan hari ini" harus bertahan melewati restart. Sebelumnya
+// keduanya cuma variabel memori yang reset jadi '' setiap bot dinyalakan ulang:
+// bot yang restart di dalam jendela jadwalnya menjalankan tugas itu DUA KALI,
+// dan bot yang mati sepanjang jendelanya melewatkannya tanpa susulan.
+const KUNCI_BUNGA_BANK = 'lastBankInterestDate';
+const KUNCI_LAPORAN = 'lastDailySalesReportDate';
+const KUNCI_BACKUP = 'lastDatabaseBackupDate';
+
+/** Tanggal hari ini menurut WIB (UTC+7), format YYYY-MM-DD. */
+function tanggalWIB(now = Date.now()) {
+  return new Date(now + 7 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
 function removeExpiredBackups(backupsDir) {
   const cutoff = Date.now() - backupRetentionDays * 24 * 60 * 60 * 1000;
   const backupPattern = /^shop_backup_\d{8}_\d{6}\.db$/;
@@ -32,9 +45,20 @@ function removeExpiredBackups(backupsDir) {
   // Urutkan dari yang paling baru ke paling lama
   validBackups.sort((a, b) => b.mtimeMs - a.mtimeMs);
 
-  const MAX_BACKUPS = 15; // Simpan maksimal 15 file backup terbaru
+  // Batas jumlah file ini HANYA pengaman disk, bukan kebijakan retensi.
+  //
+  // Dulu nilainya 15 dan di-OR dengan batas hari, jadi yang benar-benar berlaku
+  // selalu yang paling ketat: 15 file. Digabung dengan backup yang dibuat SETIAP
+  // bot dinyalakan (lihat KUNCI_BACKUP di bawah), sembilan kali restart dalam
+  // sehari memangkas retensi 14 hari yang dijanjikan menjadi sekitar 1,7 hari —
+  // kerusakan data yang baru ketahuan lusa sudah tidak punya cadangan bersih.
+  //
+  // Sekarang backup benar-benar sekali sehari, jadi 14 hari retensi = 14 file.
+  // Angka 60 memberi kelonggaran besar untuk backup manual `.backup` tanpa
+  // pernah lagi menjadi batas yang sebenarnya.
+  const MAX_BACKUPS = 60;
   validBackups.forEach((b, index) => {
-    // Hapus jika sudah melewati batas retensi hari ATAU berada di luar 15 file terbaru
+    // Hapus jika sudah melewati batas retensi hari ATAU melampaui pengaman disk
     if (b.mtimeMs < cutoff || index >= MAX_BACKUPS) {
       try {
         fs.unlinkSync(b.filePath);
@@ -98,14 +122,36 @@ async function processOrderAutomation(sock) {
   try {
     // 0. CASAKU AUTOMATED PAYMENT RECONCILIATION & EXPIRY
     try {
-      const expiredCount = await db.expireStaleOrders(15);
-      if (expiredCount > 0) {
-        console.log(`[SCHEDULER] Casaku: ${expiredCount} order PENDING kedaluwarsa (15 menit) & stok dikembalikan.`);
-      }
+      // ⚠️ PENTING: Reconcile WAJIB sebelum expireStaleOrders agar order yang dibayar
+      // mendekati menit ke-15 tidak terbatalkan secara salah sebelum status Casaku terverifikasi.
       const { reconcileStaleOrders } = await import('./src/payment/paymentService.js');
-      const recoveredCount = await reconcileStaleOrders();
+      const recoveredCount = await reconcileStaleOrders(45);
       if (recoveredCount > 0) {
         console.log(`[SCHEDULER] Casaku: ${recoveredCount} order PENDING berhasil dipulihkan via reconciliation.`);
+      }
+
+      const disapu = await db.expireStaleOrders(15);
+      if (disapu.length > 0) {
+        console.log(`[SCHEDULER] Casaku: ${disapu.length} order PENDING kedaluwarsa (15 menit) & stok dikembalikan.`);
+
+        // Pembelinya HARUS diberi tahu. Penyapu 24 jam selalu mengirim
+        // pemberitahuan pembatalan; penyapu 15 menit ini dulu diam saja, jadi
+        // pelanggan menunggu sambil memandangi QRIS yang sudah mati dan tidak
+        // pernah tahu kenapa produknya tidak kunjung datang.
+        for (const ord of disapu) {
+          if (!ord.customer_nomor) continue;
+          try {
+            await sock.sendMessage(ord.customer_nomor, {
+              text: `⌛ *KODE QRIS SUDAH KEDALUWARSA*\n\n` +
+                    `Pesanan *${ord.order_id}* dibatalkan otomatis karena pembayaran belum masuk dalam batas waktu.\n\n` +
+                    `💡 *Tidak ada uang yang terpotong.* Stok sudah kami kembalikan.\n\n` +
+                    `⚠️ Jangan men-scan QRIS lama dari pesan sebelumnya — kodenya sudah tidak berlaku.\n\n` +
+                    `Ketik \`.checkout\` untuk memesan ulang dengan QRIS baru. 🙏`
+            });
+          } catch (e) {
+            console.error(`[SCHEDULER] Gagal mengabari ${ord.order_id} soal kedaluwarsa:`, e.message);
+          }
+        }
       }
     } catch (casakuErr) {
       console.error('[SCHEDULER] Casaku automation error:', casakuErr.message);
@@ -122,7 +168,7 @@ Kami ingin mengingatkan bahwa pesanan Anda dengan Order ID *${order.order_id}* m
 
 Harap segera transfer ke QRIS / petunjuk rekening kami agar pesanan dapat langsung kami kerjakan.
 
-Ketik *batal* atau *cancel* jika Anda ingin membatalkan pesanan ini. Terima kasih!`;
+Ketik `.batal` jika Anda ingin membatalkan pesanan ini. Terima kasih!`;
 
         await sock.sendMessage(order.customer_nomor, { text: reminderMsg });
         await db.setReminderSent(order.order_id);
@@ -145,7 +191,7 @@ Ketik *batal* atau *cancel* jika Anda ingin membatalkan pesanan ini. Terima kasi
 
 Mohon maaf, pesanan Anda dengan Order ID *${order.order_id}* telah *DIBATALKAN* secara otomatis oleh sistem karena kami tidak menerima konfirmasi pembayaran dalam waktu 24 jam.
 
-Stok produk telah dikembalikan ke inventori. Silakan ketik *menu* jika Anda ingin melakukan pemesanan ulang. Terima kasih.`;
+Stok produk telah dikembalikan ke inventori. Silakan ketik `.menu` jika Anda ingin melakukan pemesanan ulang. Terima kasih.`;
 
         await sock.sendMessage(order.customer_nomor, { text: expiredMsg });
         await db.addLog('ORDER', `Order ID ${order.order_id} dibatalkan otomatis oleh scheduler karena kedaluwarsa 24 jam.`);
@@ -160,7 +206,7 @@ Stok produk telah dikembalikan ke inventori. Silakan ketik *menu* jika Anda ingi
       const abandonedCarts = await db.getAbandonedCarts(2);
       for (const cart of abandonedCarts) {
         try {
-          const cartMsg = `🛒 Halo Kak *${cart.customer_nama}*!\n\nKeranjang belanja Anda masih menunggu:\n${cart.items_summary}\n\n💰 Total: *Rp${cart.total.toLocaleString('id-ID')}*\n\nKetik *checkout* untuk melanjutkan pembayaran, atau *batal* jika ingin membatalkan. 🙏`;
+          const cartMsg = `🛒 Halo Kak *${cart.customer_nama}*!\n\nKeranjang belanja Anda masih menunggu:\n${cart.items_summary}\n\n💰 Total: *Rp${cart.total.toLocaleString('id-ID')}*\n\nKetik `.checkout` untuk melanjutkan pembayaran, atau `.batal` jika ingin membatalkan. 🙏`;
           await sock.sendMessage(cart.customer_nomor, { text: cartMsg });
           await db.markCartReminderSent(cart.order_id);
           console.log(`[SCHEDULER] Abandoned cart reminder terkirim untuk ${cart.order_id}`);
@@ -331,6 +377,11 @@ async function processAutoQuiz(sock) {
 
     const { triggerAutoQuiz } = await import('./funHandler.js');
     for (const group of groups) {
+      // Grup yang mematikan game lewat `.mode game off` tidak boleh tetap
+      // dikirimi kuis otomatis — itu persis keramaian yang ingin diredam.
+      const gSettings = await db.getGroupSettings(group.jid);
+      if ((gSettings?.features_config || {}).game === false) continue;
+
       await triggerAutoQuiz(sock, group.jid);
       console.log(`[SCHEDULER] Auto-Quiz terkirim ke grup: ${group.jid}`);
     }
@@ -592,59 +643,125 @@ export function startScheduler(sock) {
   // Sapu sisa file kerja di tmp/ 65 detik setelah online
   setTimeout(() => cleanupTmpDir(), 65000);
 
-  // Set interval pengecekan order setiap 5 menit
+  // Fast reconciliation Casaku: cek status order pending setiap 45 detik agar pembayaran terkonfirmasi instan
+  setInterval(async () => {
+    try {
+      if (schedulerSock && botState.whatsappConnected) {
+        const { reconcileStaleOrders } = await import('./src/payment/paymentService.js');
+        await reconcileStaleOrders(45);
+      }
+    } catch (e) {
+      // Diamkan agar tidak spam log saat idle
+    }
+  }, 45 * 1000);
+
+  // Set interval pengecekan order berkala (reminder & expired) setiap 5 menit
   setInterval(() => {
-    processOrderAutomation(schedulerSock);
+    try {
+      processOrderAutomation(schedulerSock);
+    } catch (e) {
+      console.error('[SCHEDULER] Order automation error:', e.message);
+    }
   }, 5 * 60 * 1000);
 
   // Set interval pengecekan Free Game Alert setiap 6 jam
   setInterval(() => {
-    checkFreeGamesAlerts(schedulerSock);
+    try {
+      checkFreeGamesAlerts(schedulerSock);
+    } catch (e) {
+      console.error('[SCHEDULER] Free games check error:', e.message);
+    }
   }, 6 * 60 * 60 * 1000);
 
   // Set interval pembersihan otomatis media chat + folder kerja setiap 8 jam
   setInterval(() => {
-    cleanupChatMedia();
-    cleanupTmpDir();
+    try {
+      cleanupChatMedia();
+      cleanupTmpDir();
+      // Catatan kuota unduhan harian hanya berguna untuk hari berjalan; sisanya
+      // cuma menumpuk satu baris per pemain per hari selamanya.
+      db.bersihkanPemakaianMediaLama(7)
+        .then(n => { if (n > 0) console.log(`[CLEANUP] ${n} catatan kuota unduhan lama dihapus.`); })
+        .catch(() => {});
+    } catch (e) {
+      console.error('[SCHEDULER] Cleanup error:', e.message);
+    }
   }, 8 * 60 * 60 * 1000);
 
-  // Set interval pengecekan backup database setiap 1 jam
-  setInterval(() => {
-    const now = Date.now();
-    // Jika sudah lewat 24 jam sejak backup terakhir
-    if (now - lastBackupTime >= 24 * 60 * 60 * 1000) {
-      backupDatabase();
-      lastBackupTime = now;
+  // Set interval pengecekan backup database setiap 1 jam.
+  //
+  // `lastBackupTime` cuma variabel memori yang kembali 0 setiap proses dimulai,
+  // jadi syarat "sudah lewat 24 jam" tidak pernah berlaku melintasi restart —
+  // dan startScheduler() memang memanggil backupDatabase() di baris terakhirnya.
+  // Hasilnya: satu backup baru per restart. Penanda tanggal WIB di tabel settings
+  // membuat backup benar-benar sekali sehari, seberapa sering pun bot dinyalakan.
+  setInterval(async () => {
+    try {
+      await jalankanBackupHarian();
+    } catch (e) {
+      console.error('[BACKUP] Gagal menjalankan pengecekan backup harian:', e.message);
     }
   }, 60 * 60 * 1000);
 
   // Set interval pengecekan laporan harian (kirim 1x sehari pada jam 21:00 WIB)
   let lastDailyReportDate = '';
-  setInterval(() => {
-    const wibNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
-    const today = wibNow.toISOString().slice(0, 10);
-    const wibHours = wibNow.getUTCHours();
-    const wibMinutes = wibNow.getUTCMinutes();
-    if (wibHours === 21 && wibMinutes < 5 && lastDailyReportDate !== today) {
+  setInterval(async () => {
+    try {
+      const wibNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
+      const today = tanggalWIB();
+      if (lastDailyReportDate === today) return;
+
+      const wibHours = wibNow.getUTCHours();
+      const wibMinutes = wibNow.getUTCMinutes();
+      if (!(wibHours === 21 && wibMinutes < 5)) return;
+
+      // Penanda dibaca dari settings supaya restart di dalam jendela 21:00-21:05
+      // tidak mengirim laporan yang sama dua kali. Tidak ada susulan di sini:
+      // laporan penjualan yang datang jam 3 pagi lebih mengganggu daripada
+      // laporan yang terlewat.
+      const settings = await db.getSettings();
+      if (settings?.[KUNCI_LAPORAN] === today) { lastDailyReportDate = today; return; }
+
       lastDailyReportDate = today;
-      sendDailySalesReport(schedulerSock);
+      await db.updateSettings({ [KUNCI_LAPORAN]: today });
+      await sendDailySalesReport(schedulerSock);
+    } catch (e) {
+      console.error('[LAPORAN HARIAN] Gagal:', e.message);
     }
   }, 60 * 1000);
 
-  // Set interval pembagian bunga bank harian (2% tiap jam 00:05 WIB)
+  // Set interval pembagian bunga bank harian (jam 00:05 WIB, + susulan)
   let lastBankInterestDate = '';
   setInterval(async () => {
     try {
       const wibNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
-      const today = wibNow.toISOString().slice(0, 10);
+      const today = tanggalWIB();
+      if (lastBankInterestDate === today) return;
+
+      const settings = await db.getSettings();
+      const terakhir = settings?.[KUNCI_BUNGA_BANK] || '';
+      if (terakhir === today) { lastBankInterestDate = today; return; }
+
       const wibHours = wibNow.getUTCHours();
       const wibMinutes = wibNow.getUTCMinutes();
-      if (wibHours === 0 && wibMinutes < 10 && lastBankInterestDate !== today) {
-        lastBankInterestDate = today;
-        const totalAccounts = await db.applyDailyBankInterest(0.02);
-        if (totalAccounts > 0) {
-          console.log(`[BANK INTEREST] Berhasil membagikan bunga harian 2% ke ${totalAccounts} akun nasabah bank.`);
-        }
+      const jadwalnya = wibHours === 0 && wibMinutes < 10;
+      // Susulan: kalau bot mati sepanjang jendela 00:00-00:10, bunga dibayar
+      // begitu bot hidup lagi di hari yang sama. Berapa hari pun yang terlewat,
+      // bayarannya tetap SATU kali — penanda dicatat per tanggal, bukan
+      // diakumulasi. Instalasi baru (penanda kosong) tidak ikut menembak
+      // susulan; ia menunggu jadwal normalnya.
+      const tertinggal = Boolean(terakhir) && terakhir < today;
+      if (!jadwalnya && !tertinggal) return;
+
+      // Penanda ditulis SEBELUM pembayaran: kalau pembayarannya gagal di
+      // tengah jalan, lebih baik satu hari terlewat daripada bunga dibayar dua
+      // kali oleh percobaan menit berikutnya.
+      lastBankInterestDate = today;
+      await db.updateSettings({ [KUNCI_BUNGA_BANK]: today });
+
+      const totalAccounts = await db.applyDailyBankInterest();
+      if (totalAccounts > 0) {
+        console.log(`[BANK INTEREST] Bunga harian dibagikan ke ${totalAccounts} akun${tertinggal ? ' (susulan, jadwal 00:05 WIB terlewat)' : ''}.`);
       }
     } catch (e) {
       console.error('[BANK INTEREST] Gagal membagikan bunga harian:', e.message);
@@ -653,17 +770,52 @@ export function startScheduler(sock) {
 
   // Set interval kuis otomatis grup setiap 1 jam
   setInterval(() => {
-    processAutoQuiz(schedulerSock);
+    try {
+      processAutoQuiz(schedulerSock);
+    } catch (e) {
+      console.error('[SCHEDULER] Auto quiz error:', e.message);
+    }
   }, 1 * 60 * 60 * 1000);
 
   // Set interval pengecekan waktu sholat otomatis setiap 1 menit (60 detik)
   setInterval(() => {
-    processAutoSholat(schedulerSock);
+    try {
+      processAutoSholat(schedulerSock);
+    } catch (e) {
+      console.error('[SCHEDULER] Auto sholat error:', e.message);
+    }
   }, 60 * 1000);
 
-  // Jalankan backup database pertama kali saat scheduler mulai
-  backupDatabase();
-  lastBackupTime = Date.now();
+  // Backup pertama saat scheduler mulai — tapi lewat penjaga tanggal, supaya
+  // menyalakan ulang bot sepuluh kali dalam sehari tidak menghasilkan sepuluh
+  // file cadangan yang saling mendesak keluar file-file lama.
+  jalankanBackupHarian().catch(e => console.error('[BACKUP] Gagal backup awal:', e.message));
+}
+
+/**
+ * Backup maksimal SEKALI per hari WIB, bertahan melewati restart.
+ * Penanda ditulis SETELAH backup berhasil: kalau penyalinan gagal, percobaan
+ * jam berikutnya harus mencoba lagi, bukan menganggap hari ini sudah aman.
+ */
+async function jalankanBackupHarian() {
+  const hariIni = tanggalWIB();
+  let settings = {};
+  try {
+    settings = await db.getSettings();
+  } catch (_) {}
+
+  if (settings?.[KUNCI_BACKUP] === hariIni) return null;
+
+  const hasil = await backupDatabase();
+  if (hasil) {
+    lastBackupTime = Date.now();
+    try {
+      await db.updateSettings({ [KUNCI_BACKUP]: hariIni });
+    } catch (e) {
+      console.error('[BACKUP] Backup berhasil tapi penanda tanggal gagal disimpan:', e.message);
+    }
+  }
+  return hasil;
 }
 
 export { sendDailySalesReport };
