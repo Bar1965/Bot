@@ -1,6 +1,7 @@
 import { Server } from 'socket.io';
 import jwt from 'jsonwebtoken';
 import { config } from './config.js';
+import * as db from './database.js';
 
 let io = null;
 
@@ -18,7 +19,7 @@ export function initWebSocket(httpServer) {
   });
 
   // Middleware Autentikasi JWT
-  io.use((socket, next) => {
+  io.use(async (socket, next) => {
     // Ambil token dari handshake auth, headers, atau cookie sesi dashboard.
     const cookieHeader = socket.handshake.headers?.cookie || '';
     const sessionCookie = cookieHeader
@@ -38,14 +39,77 @@ export function initWebSocket(httpServer) {
       return next(new Error("Authentication error: Token missing"));
     }
 
+    let decoded;
     try {
-      const decoded = jwt.verify(token, config.jwtSecret);
-      socket.user = decoded;
-      next();
+      decoded = jwt.verify(token, config.jwtSecret);
     } catch (err) {
       return next(new Error("Authentication error: Invalid token"));
     }
+
+    // Socket ini menyiarkan SELURUH percakapan pelanggan ke dashboard secara
+    // langsung. Kalau hanya tanda tangan JWT yang diperiksa, token yang sudah
+    // dicabut (logout, ganti password, akun dihapus) masih bisa membuka koneksi
+    // ini dan ikut menyimak — pintu belakang dari pemeriksaan di authMiddleware.
+    try {
+      const username = String(decoded?.username || '').toLowerCase();
+      const validAfter = await db.getTokenEpoch(username);
+      if (validAfter && Number(decoded.iatMs || 0) < validAfter) {
+        return next(new Error("Authentication error: Session revoked"));
+      }
+      const akun = await db.getUserByUsername(username);
+      if (akun) decoded.role = akun.role;
+      else if (username !== String(config.adminUser || '').toLowerCase()) {
+        return next(new Error("Authentication error: Account removed"));
+      }
+    } catch (err) {
+      console.error('[WS] Gagal memeriksa status token:', err.message);
+      return next(new Error("Authentication error: Session check failed"));
+    }
+
+    socket.user = decoded;
+    next();
   });
+
+  // Pencabutan token diperiksa ULANG secara berkala, bukan cuma saat jabat tangan.
+  //
+  // Pemeriksaan di middleware di atas hanya berjalan sekali, saat koneksi dibuka.
+  // Socket yang sudah terlanjur terbuka terus menyiarkan SELURUH percakapan
+  // pelanggan — 231 nomor WhatsApp beserta isi chatnya — bahkan setelah akunnya
+  // dihapus, passwordnya diganti, atau sesinya di-logout. Selama tab dashboard
+  // itu tidak ditutup, pencabutan aksesnya tidak berarti apa-apa.
+  const PERIKSA_ULANG_MS = 60_000;
+  const pemeriksaSesi = setInterval(async () => {
+    let soketAktif;
+    try {
+      soketAktif = await io.in('admin').fetchSockets();
+    } catch (err) {
+      return;
+    }
+    for (const s of soketAktif) {
+      const username = String(s.user?.username || '').toLowerCase();
+      if (!username) continue;
+      try {
+        const validAfter = await db.getTokenEpoch(username);
+        if (validAfter && Number(s.user?.iatMs || 0) < validAfter) {
+          console.warn(`[WS] Sesi '${username}' dicabut — koneksi diputus.`);
+          s.emit('session_revoked', { reason: 'Sesi Anda dicabut. Silakan login ulang.' });
+          s.disconnect(true);
+          continue;
+        }
+        const akun = await db.getUserByUsername(username);
+        if (!akun && username !== String(config.adminUser || '').toLowerCase()) {
+          console.warn(`[WS] Akun '${username}' sudah tidak ada — koneksi diputus.`);
+          s.emit('session_revoked', { reason: 'Akun Anda sudah tidak ada.' });
+          s.disconnect(true);
+        }
+      } catch (err) {
+        // Gagal memeriksa BUKAN alasan memutus koneksi yang mungkin sah; dicoba
+        // lagi pada putaran berikutnya.
+        console.error('[WS] Gagal memeriksa ulang sesi:', err.message);
+      }
+    }
+  }, PERIKSA_ULANG_MS);
+  if (typeof pemeriksaSesi.unref === 'function') pemeriksaSesi.unref();
 
   io.on('connection', (socket) => {
     console.log(`[WS] Admin '${socket.user.username}' terhubung (${socket.id})`);

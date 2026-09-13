@@ -1089,7 +1089,7 @@ export async function listPremiumUsers() {
             COALESCE(c.nama, 'Member') AS nama
      FROM premium_users p
      LEFT JOIN customers c ON c.nomor = p.jid
-     WHERE p.expires_at > datetime('now')
+     WHERE datetime(p.expires_at) > datetime('now')
      ORDER BY p.tier DESC, p.expires_at ASC`
   );
 }
@@ -1103,7 +1103,7 @@ export async function logPremiumBenefit(jid, benefitType, value) {
 
 export async function cleanExpiredPremium() {
   const result = await runQuery(
-    "DELETE FROM premium_users WHERE expires_at <= datetime('now')"
+    "DELETE FROM premium_users WHERE datetime(expires_at) <= datetime('now')"
   );
   return result.changes;
 }

@@ -4,6 +4,7 @@ import path from 'path';
 import crypto from 'crypto';
 import multer from 'multer';
 import { config } from '../../config.js';
+import * as db from '../../database.js';
 
 export const authCookieOptions = {
   httpOnly: true,
@@ -17,23 +18,37 @@ const loginAttempts = new Map();
 
 // Periodic cleanup of expired login attempts to prevent memory leaks
 setInterval(() => {
-  const now = Date.now();
-  const windowMs = 15 * 60 * 1000;
-  for (const [ip, attempts] of loginAttempts.entries()) {
-    const valid = attempts.filter(ts => now - ts < windowMs);
-    if (valid.length === 0) {
-      loginAttempts.delete(ip);
-    } else {
-      loginAttempts.set(ip, valid);
+  try {
+    const now = Date.now();
+    const windowMs = 15 * 60 * 1000;
+    for (const [ip, attempts] of loginAttempts.entries()) {
+      const valid = attempts.filter(ts => now - ts < windowMs);
+      if (valid.length === 0) {
+        loginAttempts.delete(ip);
+      } else {
+        loginAttempts.set(ip, valid);
+      }
     }
-  }
-}, 30 * 60 * 1000);
+  } catch (e) {}
+}, 5 * 60 * 1000);
 
 export function getCookieValue(req, name) {
   const cookies = req.headers.cookie?.split(';') || [];
   const prefix = `${name}=`;
   const entry = cookies.find(cookie => cookie.trim().startsWith(prefix));
-  return entry ? decodeURIComponent(entry.trim().slice(prefix.length)) : null;
+  if (!entry) return null;
+
+  // decodeURIComponent MELEMPAR URIError pada urutan persen yang cacat, misalnya
+  // `Cookie: auth_token=%E0%A4%A`. Lemparan itu dulu terjadi di luar try/catch
+  // mana pun — authenticateJWT memanggil fungsi ini SEBELUM blok try-nya — jadi
+  // Express membalas 500 berikut jejak tumpukan lengkap kepada klien yang bahkan
+  // belum login. Cookie yang tidak bisa diurai bukan galat server; itu sekadar
+  // cookie yang tidak sah.
+  try {
+    return decodeURIComponent(entry.trim().slice(prefix.length));
+  } catch (_) {
+    return null;
+  }
 }
 
 export function isLoginAllowed(ip) {
@@ -174,21 +189,72 @@ export const uploadQris = multer({
   fileFilter: qrisUploadFilter
 });
 
-export function authenticateJWT(req, res, next) {
+/**
+ * Verifikasi token dashboard.
+ *
+ * Dulu fungsi ini hanya memeriksa tanda tangan JWT. Karena token berumur 24 jam
+ * dan tidak ada catatan apa pun di server, tiga hal ini praktis tidak berefek:
+ *   • "Logout"      -> cuma menghapus cookie di browser; tokennya tetap sah.
+ *   • Ganti password -> tidak menyentuh token yang sudah beredar.
+ *   • Hapus akun     -> akunnya hilang, tokennya tetap dipercaya sampai kedaluwarsa.
+ *   • Ubah peran     -> peran dibaca dari isi token, bukan dari database.
+ *
+ * Sekarang setiap permintaan melewati dua pemeriksaan tambahan:
+ *   1. `auth_token_epochs` — batas bawah umur token per akun (dinaikkan saat
+ *      logout / ganti password / hapus akun).
+ *   2. Peran dibaca ULANG dari tabel `users`, jadi penurunan peran langsung
+ *      berlaku dan akun yang sudah dihapus langsung ditolak.
+ *
+ * Sengaja gagal-tertutup (fail closed): kalau database tidak bisa dibaca, akses
+ * ditolak. Dashboard ini memegang 194 nomor WhatsApp pelanggan dan bisa mengirim
+ * pesan atas nama toko — menebak "mungkin aman" bukan pilihan yang benar di sini.
+ */
+export async function authenticateJWT(req, res, next) {
   const authHeader = req.headers.authorization;
   const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
   const token = bearerToken || getCookieValue(req, 'auth_token');
-  if (token) {
-    jwt.verify(token, config.jwtSecret, (err, user) => {
-      if (err) {
-        return res.status(403).json({ success: false, message: "Token kadaluarsa atau tidak valid." });
-      }
-      req.user = user;
-      next();
-    });
-  } else {
-    res.status(401).json({ success: false, message: "Akses ditolak. Token tidak ditemukan." });
+  if (!token) {
+    return res.status(401).json({ success: false, message: "Akses ditolak. Token tidak ditemukan." });
   }
+
+  let payload;
+  try {
+    payload = jwt.verify(token, config.jwtSecret);
+  } catch (err) {
+    return res.status(403).json({ success: false, message: "Token kadaluarsa atau tidak valid." });
+  }
+
+  const username = String(payload?.username || '').toLowerCase();
+  if (!username) {
+    return res.status(403).json({ success: false, message: "Token tidak memuat identitas akun." });
+  }
+
+  try {
+    // 1. Token yang diterbitkan sebelum pencabutan terakhir tidak berlaku lagi.
+    //    Dibandingkan lewat klaim `iatMs` (milidetik) buatan sendiri, bukan `iat`
+    //    bawaan yang cuma berpresisi detik — dengan `iat`, token yang lahir pada
+    //    detik yang sama dengan pencabutan lolos dari saringan ini.
+    const validAfter = await db.getTokenEpoch(username);
+    if (validAfter && Number(payload.iatMs || 0) < validAfter) {
+      return res.status(403).json({ success: false, message: "Sesi sudah dicabut. Silakan login ulang." });
+    }
+
+    // 2. Peran selalu diambil dari database, bukan dari isi token.
+    const akun = await db.getUserByUsername(username);
+    if (akun) {
+      payload.role = akun.role;
+    } else if (username !== String(config.adminUser || '').toLowerCase()) {
+      // Akun tabel `users` yang sudah dihapus. Akun bawaan .env tidak ada di tabel
+      // itu, jadi hanya dia yang boleh lolos tanpa baris database.
+      return res.status(403).json({ success: false, message: "Akun ini sudah tidak ada. Silakan login ulang." });
+    }
+  } catch (err) {
+    console.error('[AUTH] Gagal memeriksa status token:', err.message);
+    return res.status(503).json({ success: false, message: "Verifikasi sesi gagal. Coba lagi." });
+  }
+
+  req.user = payload;
+  next();
 }
 
 export function authorizeRoles(...roles) {

@@ -744,6 +744,43 @@ const pengingat = await db.getPendingReminders();
 cek('pesanan tetap berhak atas pengingat pembayaran',
   pengingat.some(o => o.order_id === cartR.order_id), pengingat.map(o => o.order_id).join(','));
 
+bagian('38. Premium kedaluwarsa dibaca sama oleh SEMUA fungsi');
+const PREM = '628900000777@lid';
+await db.getOrCreateCustomer(PREM, 'Uji Premium');
+// Masa aktif berakhir SATU JAM LALU, tapi masih di tanggal kalender yang sama.
+// Inilah bentuk yang dulu lolos: expires_at disimpan ISO ('...T...Z'), dan
+// dibandingkan mentah sebagai teks, 'T' (0x54) selalu > ' ' (0x20) pada indeks
+// ke-10, jadi untuk tanggal yang sama perbandingannya SELALU benar.
+const habisSejamLalu = new Date(Date.parse(new Date().toISOString()) - 3600_000).toISOString();
+await db.runQuery("INSERT OR REPLACE INTO premium_users (jid, tier, expires_at, activated_by) VALUES (?, 'Gold', ?, 'UJI')", [PREM, habisSejamLalu]);
+
+const profilPrem = await db.getPremiumUser(PREM);
+cek('getPremiumUser: sudah TIDAK aktif', !profilPrem, JSON.stringify(profilPrem));
+
+const daftarPrem = await db.listPremiumUsers();
+cek('listPremiumUsers: tidak lagi mendaftarkannya sebagai aktif',
+  !daftarPrem.some(u => u.jid === PREM), JSON.stringify(daftarPrem.map(u => u.jid)));
+
+await db.cleanExpiredPremium();
+const sesudahSapu = await db.getQuery("SELECT jid FROM premium_users WHERE jid = ?", [PREM]);
+cek('cleanExpiredPremium benar-benar menyapunya', !sesudahSapu, JSON.stringify(sesudahSapu));
+
+// Yang MASIH aktif jangan ikut tersapu.
+const masihSejam = new Date(Date.parse(new Date().toISOString()) + 3600_000).toISOString();
+await db.runQuery("INSERT OR REPLACE INTO premium_users (jid, tier, expires_at, activated_by) VALUES (?, 'Gold', ?, 'UJI')", [PREM, masihSejam]);
+await db.cleanExpiredPremium();
+cek('premium yang masih hidup tidak ikut disapu', Boolean(await db.getPremiumUser(PREM)));
+
+bagian('39. Cookie cacat tidak menjatuhkan server');
+const { getCookieValue } = await import(REPO + 'src/routes/authMiddleware.js');
+const reqPalsu = (nilai) => ({ headers: { cookie: `auth_token=${nilai}` } });
+// decodeURIComponent melempar URIError pada urutan persen yang cacat.
+cek('persen cacat -> null, bukan lemparan', getCookieValue(reqPalsu('%E0%A4%A'), 'auth_token') === null);
+cek('persen tunggal -> null', getCookieValue(reqPalsu('%'), 'auth_token') === null);
+cek('cookie normal tetap terbaca', getCookieValue(reqPalsu('abc123'), 'auth_token') === 'abc123');
+cek('nilai ter-encode tetap ter-decode', getCookieValue(reqPalsu('a%20b'), 'auth_token') === 'a b');
+cek('tanpa cookie -> null', getCookieValue({ headers: {} }, 'auth_token') === null);
+
 console.log(`\n${'='.repeat(50)}`);
 console.log(`HASIL: ${lulus} lulus, ${gagal} gagal`);
 console.log('='.repeat(50));
