@@ -389,6 +389,25 @@ constructed JID.
 are ever visible together: Baileys group metadata, where `participant.id` is the `@lid` and
 `participant.jid` is the phone. It fills in gradually, so mention/reply remains the reliable path.
 
+**Why almost every row is `@lid` in the first place.** In `bot.js` the group branch resolves the
+sender to a phone JID with `if (pMatch.id && pMatch.id.endsWith('@s.whatsapp.net'))`. In a
+LID-based group that condition is never true — the comment three lines below says so itself:
+`pMatch.id` holds the `@lid` and the phone sits in `pMatch.jid`. Owner and admin matching does read
+`pMatch.jid`; `senderNormalized` does not. So every ordinary customer keeps their `@lid` for the
+whole message, and that is what lands in `customers`, `orders`, and `conversations`.
+
+**Do not "fix" that by pointing `senderNormalized` at `pMatch.jid`.** Measured Sep 2026: 231 of 236
+`customers` rows are `@lid`, `lid_phone_map` covers 99 pairs, and only **93 of those 231 can be
+translated today**. Switching the identity would turn the other 138 into brand-new customers —
+losing their order history, loyalty points and premium tier — with no error anywhere. It is a data
+migration, not a code change, and it needs the owner's decision. The map does fill in on its own
+from group metadata, so coverage rises over time.
+
+Sending *to* an `@lid` works: `messages` shows 13 outbound admin replies addressed that way. So the
+group→DM redirect (`responseJid = senderNumber` for private commands) does reach the customer, and
+their replies in that thread stay `@lid`, which keeps the cart consistent. The mismatch bites when
+the same person opens a DM from their contact list instead, arriving as `628…@s.whatsapp.net`.
+
 **Never compare two customer identities with `===` / `!==`.** Use **`db.samaOrangnya(a, b)`**, which
 tries exact match → both-are-phones via `isPhoneMatch` → `@lid` translated through `lid_phone_map`,
 and returns `false` rather than guessing when a `@lid` has never been mapped. The same human is
