@@ -487,8 +487,14 @@ checkout → db.checkoutCart (CART→WAITING_PAYMENT, reserve stock)
   the separate `orders.fulfillment_status`. Reports filtered on `status='COMPLETED'` include
   undelivered orders.
 - Delivery is implemented **twice** — the worker for Casaku, and inline in `server.js` for
-  Midtrans, plus a third hand path when an admin types `.paid`. Message wording and warranty text
-  must be changed in all of them.
+  Midtrans, plus a third hand path when an admin types `.paid`. Message wording still has to be
+  changed in each. **Warranty text no longer does:** it lives in `src/utils/pesanGaransi.js`
+  (`barisGaransiAktif`, `barisKlaimGaransi`, `penutupGaransi`) and both live paths call it.
+  That split existed for real — the worker told buyers their warranty date and how to claim it
+  with `.garansi`, while `.paid` closed with "silakan hubungi admin" and named neither. Every
+  buyer served by hand, which until Casaku is subscribed is *every buyer*, was sent back to the
+  owner for something the bot already self-serves. `orders.warranty_until` was being written on
+  both paths the whole time — only the message was missing.
 - **`.pay` / `.qris` now reuses a live QRIS instead of minting a second one.** It used to call
   `createPayment` unconditionally, and `createCasakuTransaction` both INSERTs a fresh
   `payment_transactions` row *and* overwrites `orders.casaku_transaction_id` / `payment_amount` /

@@ -7,6 +7,7 @@
  * Call stopFulfillmentWorker() on disconnect.
  */
 import * as db from '../../database.js';
+import { barisGaransiAktif, barisKlaimGaransi } from '../utils/pesanGaransi.js';
 
 // Retry delays in milliseconds: 10s, 30s, 2m, 5m, 15m
 const RETRY_DELAYS = [10_000, 30_000, 120_000, 300_000, 900_000];
@@ -32,6 +33,23 @@ export function stopFulfillmentWorker() {
   console.log('[FULFILLMENT] Worker stopped.');
 }
 
+/**
+ * Kirim peringatan ke DM Owner. Sebelumnya kegagalan pengiriman hanya muncul
+ * sebagai console.error — kalau terminal tidak sedang dilihat, order yang gagal
+ * kirim hilang begitu saja padahal customer sudah membayar.
+ */
+async function notifikasiOwner(pesan) {
+  try {
+    if (!sockRef) return;
+    const settings = await db.getSettings();
+    const ownerJid = String(settings?.ownerNumber || '').trim();
+    if (!ownerJid.includes('@')) return;
+    await sockRef.sendMessage(ownerJid, { text: pesan });
+  } catch (err) {
+    console.error('[FULFILLMENT] Gagal mengirim notifikasi owner:', err.message);
+  }
+}
+
 function scheduleNextPoll(delay = POLL_INTERVAL) {
   if (!workerRunning) return;
   workerTimer = setTimeout(async () => {
@@ -49,6 +67,12 @@ async function processJobs() {
   if (jobs.length === 0) return;
 
   for (const job of jobs) {
+    // Job PROCESSING hanya bisa muncul di sini kalau proses mati di tengah
+    // pengiriman. Notifikasinya dikirim setelah semua guard di bawah, bukan di
+    // sini, supaya job yang belum waktunya retry tidak memberi kabar berulang
+    // setiap poll.
+    const dipulihkanDariGantung = job.status === 'PROCESSING';
+
     if (job.attempts > 0) {
       const delayIndex = Math.min(job.attempts - 1, RETRY_DELAYS.length - 1);
       const updatedAtMs = typeof job.updated_at === 'string'
@@ -61,7 +85,17 @@ async function processJobs() {
     if (job.attempts >= MAX_ATTEMPTS) {
       await db.updateFulfillmentJob(job.job_id, 'MANUAL_REVIEW', 'Max retry attempts reached');
       console.warn(`[FULFILLMENT] Job ${job.job_id} → MANUAL_REVIEW after ${job.attempts} attempts.`);
+      await notifikasiOwner(
+        `🚨 *PENGIRIMAN GAGAL TOTAL*\n\nOrder *${job.order_id}* menyerah setelah ${job.attempts} percobaan dan butuh penanganan manual.\n\n📱 Customer: ${job.customer_number}\n💡 Kirim manual lalu tandai lunas dengan .paid`
+      );
       continue;
+    }
+
+    if (dipulihkanDariGantung) {
+      console.warn(`[FULFILLMENT] Job ${job.job_id} tersangkut di PROCESSING — kemungkinan bot restart saat mengirim. Diambil ulang.`);
+      await notifikasiOwner(
+        `🔄 *PENGIRIMAN DIPULIHKAN*\n\nOrder *${job.order_id}* tersangkut di tengah pengiriman (bot restart) dan sekarang dikirim ulang otomatis.\n\n📱 Customer: ${job.customer_number}`
+      );
     }
 
     await processJob(job);
@@ -105,6 +139,10 @@ async function processJob(job) {
     // Claim digital product items from inventory
     const deliveryResult = await db.claimAndDeliverItems(job.order_id);
 
+    if (deliveryResult && deliveryResult.outOfStock) {
+      const details = deliveryResult.outOfStockDetails;
+      throw new Error(`STOK KOSONG: Produk ${details?.nama || details?.kode} butuh ${details?.needed} akun, tetapi hanya tersedia ${details?.found}. Mohon segera restok dengan: .addstock ${details?.kode}`);
+    }
 
     if (!deliveryResult || (!deliveryResult.itemsText && !deliveryResult.manualItems)) {
       throw new Error('No items to deliver or claimAndDeliverItems returned empty');
@@ -121,10 +159,7 @@ async function processJob(job) {
     deliveryMsg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
     deliveryMsg += `📦 *Order ID:* \`${job.order_id}\`\n`;
     deliveryMsg += `💰 *Total Dibayar:* *Rp${(orderDetails?.payment_amount || orderDetails?.total || 0).toLocaleString('id-ID')}*\n`;
-    if (deliveryResult.warrantyUntil) {
-      const wDate = new Date(deliveryResult.warrantyUntil).toLocaleDateString('id-ID', { dateStyle: 'full' });
-      deliveryMsg += `🛡️ *Garansi Aktif Hingga:* ${wDate}\n`;
-    }
+    deliveryMsg += barisGaransiAktif(deliveryResult.warrantyUntil);
     deliveryMsg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
     deliveryMsg += `🎁 *RINCIAN KREDENSIAL & AKUN:*\n\n`;
 
@@ -134,10 +169,12 @@ async function processJob(job) {
       deliveryMsg += `👨‍💼 _Pesanan Anda sedang diproses oleh Tim Admin Toko. Kredensial akan segera dikirimkan ke chat ini._\n\n`;
     }
 
-    const appUrl = process.env.APP_URL || `http://localhost:${process.env.PORT || 3000}`;
+    const appUrl = process.env.APP_URL;
     deliveryMsg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
-    deliveryMsg += `🌐 *Invoice Online:* ${appUrl}/pay/${job.order_id}\n`;
-    deliveryMsg += `🛡️ *Klaim Kendala / Garansi:* Ketik \`.garansi ${job.order_id}\`\n`;
+    if (appUrl) {
+      deliveryMsg += `🌐 *Invoice Online:* ${appUrl}/pay/${job.order_id}\n`;
+    }
+    deliveryMsg += barisKlaimGaransi(job.order_id);
     deliveryMsg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
     deliveryMsg += `_Terima kasih telah mempercayakan kebutuhan digital Anda kepada Akbar Store! 🙏_`;
 
@@ -165,6 +202,9 @@ async function processJob(job) {
     console.error(`[FULFILLMENT] Job ${job.job_id} FAILED (attempt ${nextAttempt}): ${err.message}`);
     if (status === 'MANUAL_REVIEW') {
       console.error(`[FULFILLMENT] ⚠️ Job ${job.job_id} needs MANUAL REVIEW — check order ${job.order_id}`);
+      await notifikasiOwner(
+        `🚨 *PENGIRIMAN BUTUH PENANGANAN MANUAL*\n\nOrder *${job.order_id}* gagal dikirim otomatis.\n\n📱 Customer: ${job.customer_number}\n❌ Penyebab: ${err.message}`
+      );
     }
   }
 }

@@ -352,6 +352,36 @@ cek('nominal ikut berubah -> pembayar QR lama tidak dikenali', ord2.payment_amou
 await db.runQuery("DELETE FROM payment_transactions WHERE order_id = ?", [ORD]);
 await db.runQuery("DELETE FROM orders WHERE order_id = ?", [ORD]);
 
+bagian('19. Teks garansi sama di semua jalur pengiriman');
+const { barisGaransiAktif, barisKlaimGaransi, penutupGaransi } =
+  await import(REPO + 'src/utils/pesanGaransi.js');
+
+const besok = Date.now() + 30 * 24 * 60 * 60 * 1000;
+cek('tanpa garansi -> string kosong', barisGaransiAktif(null) === '');
+cek('tanggal ngawur -> string kosong', barisGaransiAktif('bukan tanggal') === '');
+cek('ada garansi -> menyebut tanggalnya', barisGaransiAktif(besok).includes('Garansi Aktif Hingga'));
+cek('tanpa orderId -> string kosong', barisKlaimGaransi('') === '');
+cek('ajakan klaim menyebut perintah + order id', barisKlaimGaransi('ORD-X').includes('.garansi ORD-X'));
+cek('penutup menggabungkan keduanya',
+  penutupGaransi('ORD-X', besok).includes('Garansi Aktif Hingga') &&
+  penutupGaransi('ORD-X', besok).includes('.garansi ORD-X'));
+
+// Klaim yang sesungguhnya: pengiriman menulis warranty_until, jadi `.garansi`
+// punya sesuatu untuk dibaca — di jalur otomatis MAUPUN jalur `.paid`.
+const KODE_G = 'GAR01';
+await db.addProduct(KODE_G, 'Produk Garansi', 10000, 0, '', '', 'AUTO', '', '', null, null, '30 Hari');
+await db.addProductItemsBatch(KODE_G, ['gar1@mail.com|p1']);
+await db.runQuery("INSERT OR IGNORE INTO customers (nomor, nama) VALUES (?, ?)", [PEMBELI, 'Pembeli Uji']);
+await db.addToCart(PEMBELI, KODE_G, 1);
+const coG = await db.checkoutCart(PEMBELI);
+const idG = coG.order?.order_id;
+const kirim = await db.claimAndDeliverItems(idG);
+cek('pengiriman berhasil', kirim?.success === true);
+cek('warrantyUntil dikembalikan ke pemanggil', Number(kirim?.warrantyUntil) > Date.now());
+const ordG = await db.getQuery("SELECT warranty_until FROM orders WHERE order_id = ?", [idG]);
+cek('warranty_until tersimpan di order -> .garansi bisa membacanya',
+  Number(ordG?.warranty_until) > Date.now(), `nilai=${ordG?.warranty_until}`);
+
 console.log(`\n${'='.repeat(50)}`);
 console.log(`HASIL: ${lulus} lulus, ${gagal} gagal`);
 console.log('='.repeat(50));

@@ -13,6 +13,7 @@ import { backupDatabase } from '../../scheduler.js';
 import { adalahJidBot } from '../utils/botIdentity.js';
 import { perisaiTarget } from '../utils/perisaiTarget.js';
 import { mulaiWizardProduk, simpanGambarProduk } from './storeWizard.js';
+import { penutupGaransi } from '../utils/pesanGaransi.js';
 
 export function createGroupAdminHandler(ctx) {
     const { sock, userPushNamesMap, messageCache, formatPhoneNumber, react, sendInteractiveButtons } = ctx;
@@ -1706,7 +1707,16 @@ Pembayaran Anda telah *DITERIMA* dan diverifikasi oleh admin kami. Terima kasih!
             credMsg += `\n`;
           }
 
-          credMsg += `━━━━━━━━━━━━━━━━━━\n⚠️ _Harap simpan data ini dengan baik. Jika ada masalah, silakan hubungi admin._\n━━━━━━━━━━━━━━━━━━`;
+          // Dulu penutupnya cuma "Jika ada masalah, silakan hubungi admin" —
+          // padahal claimAndDeliverItems sudah menulis orders.warranty_until dan
+          // `.garansi` sudah ada. Akibatnya setiap klaim dari pembeli jalur
+          // `.paid` kembali jadi pekerjaan tangan, sementara pembeli jalur
+          // otomatis diberi tahu cara mengurusnya sendiri. Teksnya sekarang
+          // diambil dari sumber yang sama dengan fulfillmentWorker.
+          credMsg += `━━━━━━━━━━━━━━━━━━\n`;
+          credMsg += `⚠️ _Harap simpan data ini dengan baik._\n`;
+          credMsg += penutupGaransi(orderId, claimRes?.warrantyUntil);
+          credMsg += `━━━━━━━━━━━━━━━━━━`;
           await sock.sendMessage(res.customerNomor, { text: credMsg });
 
           // Cek apakah semua terkirim sempurna
