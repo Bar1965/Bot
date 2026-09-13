@@ -592,9 +592,19 @@ export async function getCartDetails(customerNomor) {
     WHERE oi.order_id = ?
   `, [cart.order_id]);
 
+  // Subtotal dan potongan ikut dikembalikan supaya layar keranjang bisa
+  // MENJELASKAN totalnya. Dulu hanya `total` yang dikirim, jadi jumlah baris
+  // item tidak pernah sama dengan angka "Total Belanja" begitu ada kupon atau
+  // diskon premium — tanpa satu pun keterangan kenapa.
+  const subtotal = items.reduce((a, i) => a + (i.subtotal || 0), 0);
+
   return {
     order_id: cart.order_id,
     items,
+    subtotal,
+    diskonKupon: cart.discount_amount || 0,
+    kodeKupon: cart.coupon_code || null,
+    diskonPremium: cart.premium_discount || 0,
     total: cart.total
   };
 }

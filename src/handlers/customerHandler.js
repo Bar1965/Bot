@@ -1061,8 +1061,20 @@ Order ID: *${cart.order_id}*
    ${item.qty} x Rp${item.harga.toLocaleString('id-ID')} = *Rp${item.subtotal.toLocaleString('id-ID')}*\n\n`;
     });
 
-    msg += `━━━━━━━━━━━━━━━━━━
-*Total Belanja:* *Rp${cart.total.toLocaleString('id-ID')}*
+    msg += `━━━━━━━━━━━━━━━━━━\n`;
+    // Potongan HARUS terlihat. Tanpa baris-baris ini, jumlah item di atas tidak
+    // pernah cocok dengan "Total Belanja" begitu ada kupon atau diskon premium,
+    // dan pelanggan tidak punya cara tahu kenapa.
+    if (cart.diskonKupon > 0 || cart.diskonPremium > 0) {
+      msg += `Subtotal: Rp${cart.subtotal.toLocaleString('id-ID')}\n`;
+      if (cart.diskonKupon > 0) {
+        msg += `Kupon ${cart.kodeKupon || ''}: -Rp${cart.diskonKupon.toLocaleString('id-ID')}\n`;
+      }
+      if (cart.diskonPremium > 0) {
+        msg += `Diskon premium: -Rp${cart.diskonPremium.toLocaleString('id-ID')}\n`;
+      }
+    }
+    msg += `*Total Belanja:* *Rp${cart.total.toLocaleString('id-ID')}*
 ━━━━━━━━━━━━━━━━━━
 Ketik `.checkout` untuk melanjutkan ke pembayaran, atau `.batal` untuk mengosongkan keranjang.`;
 
