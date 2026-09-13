@@ -240,7 +240,25 @@ export function extractMessageText(m) {
 }
 
 /**
- * Helper terpusat untuk mengirim pesan interaktif dengan tombol (Native Flow / Quick Reply / List)
+ * Helper terpusat untuk pesan berpilihan (tombol balasan, tombol URL, daftar).
+ *
+ * ⚠️ NAMANYA MENJANJIKAN LEBIH DARI YANG DILAKUKANNYA. Fungsi ini **tidak
+ * mengirim tombol yang bisa ditekan**. Tidak ada `nativeFlowMessage`,
+ * `buttonsMessage`, maupun `listMessage` di seluruh berkas ini — yang dikirim
+ * selalu satu pesan teks biasa, dan `buttons`/`sections` diterjemahkan menjadi
+ * baris teks berisi perintah yang harus diketik pelanggan.
+ *
+ * Itu pilihan sadar: teks terbaca di semua versi WhatsApp, sementara render
+ * tombol native diatur sepihak oleh WhatsApp per akun dan bisa membuat pesan
+ * tampil kosong. Tapi konsekuensinya harus diingat saat menulis pemanggil:
+ *
+ *   • Jangan menulis footer seperti "klik tombol/dropdown di bawah" — tidak ada
+ *     yang bisa diklik, dan pelanggan mencari-cari sesuatu yang tidak dikirim.
+ *   • Setiap entri `buttons`/`sections` menambah panjang pesan. Pilih yang
+ *     benar-benar berguna; ini bukan hiasan gratis.
+ *   • `extractInteractiveReply` di berkas ini SUDAH bisa membaca balasan tombol
+ *     dan dropdown, jadi sisi penerimanya siap kalau suatu saat tombol asli
+ *     dinyalakan. Yang belum ada hanya sisi pengirimnya.
  */
 export async function sendInteractiveButtons(...args) {
   let targetSock = sock;
@@ -270,33 +288,55 @@ export async function sendInteractiveButtons(...args) {
   const jid = targetJid;
 
   try {
+    // Selama tombol asli belum dikirim (lihat catatan di atas fungsi ini), semua
+    // `buttons` dan `sections` berakhir sebagai teks. Bentuk lamanya memakan satu
+    // baris penuh per tombol — "▶️ *Label* (Ketik `.perintah`)" — dan menulis
+    // ulang seluruh isi `sections`. Pada pesan `.list` dengan 7 brand, tempelan
+    // itu saja 781 karakter: 43% dari pesan, untuk sesuatu yang tidak bisa
+    // ditekan. Bentuk di bawah memampatkannya tanpa menghilangkan satu pun
+    // perintah yang bisa diketik pelanggan.
+    const rapikan = (s) => String(s || '').replace(/[*_`]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+
     let fullText = '';
-    if (title) fullText += `*${title}*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    // Banyak pemanggil sudah menulis judulnya sendiri di baris pertama `text`.
+    // Menambahkannya lagi menghasilkan dua kepala dan dua garis pemisah.
+    if (title && !rapikan(text).includes(rapikan(title))) {
+      fullText += `*${title}*\n━━━━━━━━━━━━━━━━━━━━\n\n`;
+    }
     fullText += text || '';
 
     if (buttons && buttons.length > 0) {
-      fullText += `\n\n📌 *PILIHAN / KONTROL:*`;
-      buttons.forEach(b => {
-        if (b.type === 'url') {
-          fullText += `\n🔗 *${b.text}:* ${b.url}`;
-        } else if (b.type === 'copy') {
-          fullText += `\n📋 *${b.text}:* \`${b.copy_code || b.id || b.text}\``;
-        } else {
-          fullText += `\n▶️ *${b.text}* (Ketik \`${b.id || b.text}\`)`;
-        }
-      });
+      // Tombol URL dan salin membawa muatan (alamat, kode) jadi tetap satu baris
+      // sendiri. Tombol balasan biasa hanya membawa nama perintah, dan nama itu
+      // sudah menjelaskan dirinya sendiri di bot ini — `.checkout`, `.keranjang`.
+      const balasan = buttons.filter(b => b.type !== 'url' && b.type !== 'copy');
+      const khusus = buttons.filter(b => b.type === 'url' || b.type === 'copy');
+
+      for (const b of khusus) {
+        if (b.type === 'url') fullText += `\n\n🔗 *${b.text}:*\n${b.url}`;
+        else fullText += `\n\n📋 *${b.text}:* \`${b.copy_code || b.id || b.text}\``;
+      }
+      if (balasan.length > 0) {
+        fullText += `\n\n⚡ *Lanjut:* ` + balasan.map(b => `\`${b.id || b.text}\``).join(' · ');
+      }
     }
 
     if (sections && sections.length > 0) {
-      fullText += `\n\n📋 *MENU PILIHAN:*`;
-      sections.forEach(s => {
-        if (s.title) fullText += `\n*${s.title}*`;
-        if (s.rows && s.rows.length > 0) {
-          s.rows.forEach(r => {
-            fullText += `\n• *${r.title}* ${r.description ? `— ${r.description}` : ''} (Ketik \`${r.id || r.title}\`)`;
-          });
-        }
-      });
+      // `sections` ditujukan untuk dropdown. Karena dropdown-nya belum dikirim,
+      // isinya jadi teks — dan hampir selalu mengulang daftar yang sudah ditulis
+      // pemanggil di `text`. Jadi tiap baris diperiksa dulu: yang sudah ada di
+      // teks tidak ditulis dua kali. Tidak ada pilihan yang hilang, hanya yang
+      // kembar yang dibuang.
+      const sudahAda = rapikan(fullText);
+      for (const s of sections) {
+        const baru = (s.rows || [])
+          .map(r => r.title)
+          // Judul yang sangat pendek ("Ya", "Batal") gampang kebetulan cocok
+          // dengan potongan teks lain, jadi tidak pernah dibuang oleh dugaan.
+          .filter(t => t && (rapikan(t).length < 5 || !sudahAda.includes(rapikan(t))));
+        if (baru.length === 0) continue;
+        fullText += `\n\n📋 *${s.title || 'Pilihan'}:*\n${baru.join(' · ')}`;
+      }
     }
 
     if (footer) fullText += `\n\n_${footer}_`;

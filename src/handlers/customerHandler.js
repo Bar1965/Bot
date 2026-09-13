@@ -1119,10 +1119,11 @@ Ketik *bayar* atau klik tombol *Bayar QRIS Langsung* di bawah untuk langsung mem
       }))
     });
 
-    let msg = `━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📦 *KATALOG PRODUK & LAYANAN*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-_Pilih nomor layanan atau gunakan menu dropdown di bawah:_\n\n`;
+    // Tidak lagi menjanjikan "menu dropdown di bawah": tidak ada dropdown yang
+    // dikirim (lihat catatan di atas sendInteractiveButtons), jadi pelanggan
+    // mencari sesuatu yang tidak pernah ada.
+    let msg = `📦 *KATALOG PRODUK*
+_Balas nomornya untuk lihat varian & harga._\n\n`;
 
     const productRows = [];
 
@@ -1156,11 +1157,11 @@ _Pilih nomor layanan atau gunakan menu dropdown di bawah:_\n\n`;
       });
     });
 
-    msg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💡 *CARA SUPER CEPAT:*
-Balas angka: *1* s/d *${catalog.length}* untuk membuka paket!
-Contoh: Cukup ketik *1* untuk membuka Netflix.
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+    // Contohnya dulu selalu berbunyi "ketik 1 untuk membuka Netflix" padahal
+    // urutan katalog ditentukan data, bukan ditulis tangan — di toko ini Netflix
+    // ada di nomor 7. Sekarang contohnya diambil dari brand nomor 1 yang asli.
+    const contohBrand = catalog[0]?.brand || 'produk';
+    msg += `💡 _Balas *1*–*${catalog.length}*. Contoh: ketik *1* untuk ${contohBrand}._`;
 
     const sections = productRows.length > 0 ? [
       {
@@ -1171,13 +1172,17 @@ Contoh: Cukup ketik *1* untuk membuka Netflix.
 
     await sendInteractiveButtons(sock, responseJid, {
       text: msg,
-      title: '📦 KATALOG PRODUK & LAYANAN',
-      footer: 'Balas nomor pilihan Anda atau klik menu dropdown di bawah',
+      // `title` sengaja tidak diisi: `msg` sudah membuka dengan judulnya sendiri,
+      // dan mengisi keduanya menghasilkan dua kepala bertumpuk.
+      footer: 'Balas nomornya, atau ketik nama produk yang dicari',
       buttons: [
-        { type: 'reply', text: '🛒 Keranjang Saya', id: '.keranjang' },
-        { type: 'reply', text: '💳 Checkout Pembayaran', id: '.checkout' },
-        { type: 'reply', text: '📋 Menu Utama', id: '.menu' }
+        { type: 'reply', text: 'Keranjang', id: '.keranjang' },
+        { type: 'reply', text: 'Checkout', id: '.checkout' },
+        { type: 'reply', text: 'Menu', id: '.menu' }
       ],
+      // `sections` tetap dikirim sebagai data: isinya akan jadi dropdown asli
+      // begitu tombol native dinyalakan. Untuk sekarang sendInteractiveButtons
+      // membuang baris yang sudah tertulis di `msg`, jadi tidak menggandakan.
       sections
     });
     return true;
