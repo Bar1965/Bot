@@ -181,8 +181,21 @@ original is stashed as `sock.rawSendMessage`. Every send goes through one global
 - `sock.rawSendMessage` bypasses the connection guard, retries and anti-ban delay — only
   `processOutgoingQueue` should use it.
 
-**Interactive buttons** (`sendInteractiveButtons`, `bot.js:221`) always send a plain text message
-first, then best-effort a `nativeFlowMessage`. A button's `id` is a literal command string
+**Interactive buttons** (`sendInteractiveButtons`) send **one plain text message and nothing else**.
+Grep confirms it: `nativeFlowMessage`, `buttonsMessage`, `listMessage` and `templateMessage` appear
+**zero times** in `bot.js`. Nothing this bot sends is tappable — `buttons` and `sections` are
+rendered into text naming the command to type. Do not write a footer saying "klik tombol/dropdown
+di bawah"; there is nothing to click, and customers hunt for it. The receiving half is ready
+whenever someone wants to switch the sender on: `extractInteractiveReply` already parses button,
+list and nativeFlow replies, and the installed Baileys (6.7.23) carries all four protos.
+
+Because it is all text, `buttons`/`sections` are not free decoration — they lengthen every message.
+The live 7-brand catalogue message was 1 821 characters, 781 of them (43%) the fake buttons, with
+the product list printed twice and "Ketik" appearing ten times. The helper now collapses reply
+buttons onto one line, drops section rows whose title already appears in the text, and skips the
+title block when the caller already opened with it: 885 characters for the same catalogue.
+
+A button's `id` is a literal command string
 (`id: '.checkout'`); tapping it re-enters the same pipeline as if the user typed it. Making a
 button work requires nothing beyond pointing its `id` at an existing command. The plain-text send
 carries `mentions` when the caller passes them (`send()` in `src/games/helpers.js` forwards the
