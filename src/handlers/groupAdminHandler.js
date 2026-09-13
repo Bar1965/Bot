@@ -1669,11 +1669,36 @@ function extractOrderIdFromMessage(args, m) {
       }
 
       await sock.sendMessage(jid, { text: `✅ Order ID *${orderId}* berhasil diubah ke status *PAID*. Memproses pengiriman otomatis...` });
-      
+
+      // Pembeli jalur `.paid` dulu tidak menerima Akbar Poin sama sekali, dan
+      // pengajaknya tidak pernah menerima hadiah referral, karena keduanya hanya
+      // diberikan di markTransactionPaid (jalur QRIS). Padahal pembeli transfer
+      // manual justru yang paling lama menunggu.
+      //
+      // sertakanLoyalty: false karena updateOrderStatus di atas SUDAH menambah
+      // Poin Loyalty lewat transisi BELUM BAYAR -> SUDAH BAYAR. Tanpa penanda
+      // ini, jalur `.paid` akan menghitungnya dua kali.
+      let poinBelanja = 0;
+      try {
+        const det = await db.getOrderDetails(orderId);
+        poinBelanja = await db.awardPurchasePoints(
+          res.customerNomor,
+          det?.payment_amount || det?.total || 0,
+          orderId,
+          { sertakanLoyalty: false }
+        );
+      } catch (poinErr) {
+        console.error('[PAID] Gagal memberi poin belanja:', poinErr.message);
+      }
+
       // Notifikasi awal ke customer
-      const notifCustomer = `🔔 *INFO PESANAN (Order: ${orderId})*
-      
-Pembayaran Anda telah *DITERIMA* dan diverifikasi oleh admin kami. Terima kasih!`;
+      let notifCustomer = `🔔 *INFO PESANAN (Order: ${orderId})*
+
+`;
+      notifCustomer += `Pembayaran Anda telah *DITERIMA* dan diverifikasi oleh admin kami. Terima kasih!`;
+      if (poinBelanja > 0) notifCustomer += `
+
+🪙 *Bonus Poin:* +${poinBelanja} Akbar Poin`;
       await sock.sendMessage(res.customerNomor, { text: notifCustomer });
       await logToSystem('PAYMENT', `💸 Order ID *${orderId}* dikonfirmasi PAID oleh admin (wa.me/${senderNumber.split('@')[0]})`);
 

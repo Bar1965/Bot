@@ -68,3 +68,20 @@ export function tanggalPanjangWib(nilai, fallback = '-') {
   if (!d) return fallback;
   return d.toLocaleDateString('id-ID', { timeZone: ZONA, dateStyle: 'full' });
 }
+
+/**
+ * Jam:menit WIB, mis. "17.40". Dipakai baris "Berlaku hingga ... WIB" pada
+ * tagihan QRIS.
+ *
+ * Sebelumnya ketiga tempat itu memanggil `new Date(x).toLocaleTimeString('id-ID', ...)`
+ * langsung. Dua cacatnya: nilai `expiredAt` dari Casaku berbentuk string API
+ * yang tidak dijamin ber-zona (kalau tanpa zona, salah baca 7 jam persis seperti
+ * kolom SQLite), dan hasilnya dirender memakai zona mesin walau labelnya sudah
+ * terlanjur tertulis "WIB" — jadi begitu bot pindah ke VPS, tulisan WIB-nya
+ * bohong. keWaktu menangani kedua bentuk, dan zona dipaku ke Asia/Jakarta.
+ */
+export function jamWib(nilai, fallback = '-') {
+  const d = keWaktu(nilai);
+  if (!d) return fallback;
+  return d.toLocaleTimeString('id-ID', { timeZone: ZONA, hour: '2-digit', minute: '2-digit' });
+}

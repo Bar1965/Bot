@@ -1,7 +1,7 @@
 import { runQuery, getQuery, allQuery, withTransaction, normalizePhoneDigits } from './connection.js';
 import { config } from '../../config.js';
 
-import { addLog, getOrCreateCustomer, getCustomerMembershipProfile, getSettings } from './userDb.js';
+import { addLog, getOrCreateCustomer, getCustomerMembershipProfile, getSettings, addLoyaltyPoints } from './userDb.js';
 
 
 // --- FUNGSI GAME, XP, DAN REWARD HARIAN ---
@@ -1028,23 +1028,10 @@ export async function markTransactionPaid(casakuTransactionId, receivedAmount) {
         await runQuery("UPDATE orders SET coupon_redeemed = 1 WHERE order_id = ?", [tx.order_id]);
       }
 
-      // Award 10 Poin per Rp10.000 spent for real product purchases
-      const pointsAwarded = Math.floor(receivedAmount / 10000) * 10;
-      if (pointsAwarded > 0) {
-        await runQuery(
-          `INSERT INTO game_profiles (customer_jid, points, xp) VALUES (?, ?, ?)
-           ON CONFLICT(customer_jid) DO UPDATE SET points = points + ?, xp = xp + ?`,
-          [tx.customer_nomor, pointsAwarded, pointsAwarded, pointsAwarded, pointsAwarded]
-        );
-        await runQuery(
-          `INSERT INTO point_logs (customer_nomor, type, points, description) VALUES (?, 'EARN_PURCHASE', ?, ?)`,
-          [tx.customer_nomor, pointsAwarded, `Poin dari belanja QRIS Order #${tx.order_id}`]
-        );
-      }
-      // Unlock referral reward (50 Poin) if this is customer's first purchase >= Rp10.000
-      try {
-        await verifyAndRewardReferral(tx.customer_nomor, receivedAmount);
-      } catch (refErr) {}
+      // Poin belanja + pembukaan referral memakai awardPurchasePoints, sama
+      // seperti jalur saldo deposit dan `.paid`. Sebelumnya blok ini menyalin
+      // SQL-nya sendiri dengan `points = points + ?` tanpa COALESCE.
+      await awardPurchasePoints(tx.customer_nomor, receivedAmount, tx.order_id);
     }
 
     return { success: true, reason: 'PAID', orderId: tx.order_id, customerNumber: tx.customer_nomor, isDeposit: tx.order_id.startsWith('DEP-') };
@@ -1184,17 +1171,19 @@ export async function expireStaleOrders(expiryMinutes = 15) {
 }
 
 /**
- * Get stale PENDING orders for reconciliation check (older than thresholdMinutes).
+ * Get stale PENDING orders for reconciliation check (older than thresholdSeconds or thresholdMinutes).
+ * If threshold <= 10, treated as minutes. If > 10, treated as seconds.
  */
-export async function getStalePendingOrders(thresholdMinutes = 3) {
-  const safeMinutes = Math.max(1, Math.floor(Number(thresholdMinutes) || 3));
+export async function getStalePendingOrders(threshold = 45) {
+  const num = Math.floor(Number(threshold) || 45);
+  const totalSeconds = num <= 10 ? Math.max(15, num * 60) : Math.max(15, num);
   return allQuery(
     `SELECT o.order_id, o.casaku_transaction_id, o.customer_nomor, o.payment_amount, o.created_at
      FROM orders o
      WHERE o.payment_status = 'PENDING' AND o.status = 'WAITING_PAYMENT'
      AND o.casaku_transaction_id IS NOT NULL
-     AND o.created_at <= datetime('now', '-' || ? || ' minutes')`,
-    [safeMinutes]
+     AND o.created_at <= datetime('now', '-' || ? || ' seconds')`,
+    [totalSeconds]
   );
 }
 
@@ -1505,25 +1494,82 @@ export async function deductCustomerPoints(customerNomor, pointsToDeduct, descri
 }
 
 /**
- * Award Akbar Poin for real purchase (10 Poin / Rp10.000 spent via QRIS).
+ * Imbalan satu pesanan yang BENAR-BENAR lunas: 10 Poin per Rp10.000, sekaligus
+ * membuka hadiah referral pengajaknya.
+ *
+ * Ini sekarang satu-satunya tempat imbalan pembelian dihitung, karena dulu
+ * ketiga jalur bayar memperlakukannya berbeda-beda tanpa alasan:
+ *
+ *   - QRIS Casaku  -> punya SALINAN SQL-nya sendiri di markTransactionPaid,
+ *                     memakai `points = points + ?` (bukan COALESCE), jadi baris
+ *                     profil dengan points NULL berubah jadi NULL lagi — poin
+ *                     pelanggan hilang seluruhnya, bukan cuma tidak bertambah.
+ *   - Saldo deposit-> memanggil fungsi ini, tapi tidak pernah membuka referral.
+ *   - `.paid` admin -> tidak mendapat Akbar Poin sama sekali, referral tidak
+ *                     terbuka.
+ *
+ * Ada DUA sistem poin di toko ini dan keduanya sama-sama timpang:
+ *
+ *   Akbar Poin (game_profiles.points) hanya diberikan jalur QRIS dan saldo.
+ *   Poin Loyalty (tabel loyalty: points, total_spent, tier Bronze/Silver/Gold)
+ *   hanya diberikan di dalam updateOrderStatus saat status pindah BELUM BAYAR ->
+ *   SUDAH BAYAR — dan jalur QRIS tidak pernah memanggil updateOrderStatus,
+ *   melainkan meng-UPDATE kolomnya langsung demi penjaga atomik
+ *   `WHERE payment_status = 'PENDING'`.
+ *
+ * Akibatnya justru muncul BEGITU otomatisasi pembayaran mulai bekerja: setiap
+ * pembelian QRIS tidak menambah Poin Loyalty, tidak menambah total_spent, dan
+ * tidak pernah menaikkan tier. Angka "Poin Loyalty" di layar profil pelanggan
+ * berhenti di 0 selamanya, padahal dia belanja terus.
+ *
+ * @param {string} customerNomor
+ * @param {number} orderTotal   Nominal yang benar-benar dibayar.
+ * @param {string|null} orderId Untuk jejak di point_logs.
+ * @param {{sertakanLoyalty?: boolean}} opts
+ *        sertakanLoyalty=false dipakai pemanggil yang tadi sudah lewat
+ *        updateOrderStatus (mis. `.paid`), supaya Poin Loyalty tidak dobel.
+ * @returns {Promise<number>} Poin belanja yang diberikan (0 kalau di bawah Rp10.000).
  */
-export async function awardPurchasePoints(customerNomor, orderTotal) {
-  const pointsEarned = Math.floor(orderTotal / 10000) * 10;
-  if (pointsEarned <= 0) return 0;
+export async function awardPurchasePoints(customerNomor, orderTotal, orderId = null, opts = {}) {
+  const { sertakanLoyalty = true } = opts;
+  const nominal = Number(orderTotal) || 0;
+  const pointsEarned = Math.floor(nominal / 10000) * 10;
 
-  await withTransaction(async () => {
-    await runQuery(
-      `INSERT INTO game_profiles (customer_jid, points, xp) VALUES (?, ?, ?)
-       ON CONFLICT(customer_jid) DO UPDATE SET points = COALESCE(points, 0) + ?, xp = COALESCE(xp, 0) + ?`,
-      [customerNomor, pointsEarned, pointsEarned, pointsEarned, pointsEarned]
-    );
-    await runQuery(
-      `INSERT INTO point_logs (customer_nomor, type, points, description) VALUES (?, 'EARN_PURCHASE', ?, ?)`,
-      [customerNomor, pointsEarned, `Poin dari belanja Rp${orderTotal.toLocaleString('id-ID')}`]
-    );
+  return withTransaction(async () => {
+    if (pointsEarned > 0) {
+      await runQuery(
+        `INSERT INTO game_profiles (customer_jid, points, xp) VALUES (?, ?, ?)
+         ON CONFLICT(customer_jid) DO UPDATE SET points = COALESCE(points, 0) + ?, xp = COALESCE(xp, 0) + ?`,
+        [customerNomor, pointsEarned, pointsEarned, pointsEarned, pointsEarned]
+      );
+      await runQuery(
+        `INSERT INTO point_logs (customer_nomor, type, points, description) VALUES (?, 'EARN_PURCHASE', ?, ?)`,
+        [customerNomor, pointsEarned, orderId
+          ? `Poin dari belanja Order #${orderId}`
+          : `Poin dari belanja Rp${nominal.toLocaleString('id-ID')}`]
+      );
+    }
+
+    // Referral sengaja tetap dicoba walau poin belanjanya 0, supaya ambang poin
+    // dan ambang referral bisa berubah sendiri-sendiri tanpa diam-diam mematikan
+    // yang satunya. Kegagalannya tidak boleh menggagalkan pembayaran yang sudah
+    // lunas, jadi ditelan dan dicatat.
+    try {
+      await verifyAndRewardReferral(customerNomor, nominal);
+    } catch (refErr) {
+      console.error('[POIN] Gagal membuka hadiah referral:', refErr.message);
+    }
+
+    if (sertakanLoyalty && nominal > 0) {
+      try {
+        await addLoyaltyPoints(customerNomor, nominal);
+      } catch (loyErr) {
+        console.error('[POIN] Gagal menambah Poin Loyalty:', loyErr.message);
+      }
+    }
+
+    return pointsEarned;
   });
-
-  return pointsEarned;
 }
 
 /**

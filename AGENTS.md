@@ -604,6 +604,63 @@ fire. It stays reachable even with Casaku configured, because a customer who pay
 means still has to be settled by hand. Any regression here means those orders are never fulfilled.
 Treat this call site as load-bearing.
 
+### 10d. Three settlement paths, and every reward must be granted by exactly one function
+
+An order can become paid three ways, and each one used to hand out a different subset of rewards:
+
+| path | settles via | Akbar Poin | referral unlock | Poin Loyalty |
+| --- | --- | --- | --- | --- |
+| Casaku QRIS | `markTransactionPaid` (raw `UPDATE`) | yes, own copy of the SQL | yes | **no** |
+| deposit balance | raw `UPDATE` in `customerHandler` | yes | **no** | **no** |
+| `.paid` / dashboard | `updateOrderStatus` | **no** | **no** | yes |
+
+Two separate point systems are involved and they are not interchangeable. **Akbar Poin** lives in
+`game_profiles.points` and is the games/economy currency (§12b). **Poin Loyalty** lives in the
+`loyalty` table alongside `total_spent` and a Bronze/Silver/Gold `tier`, and is granted *only* inside
+`updateOrderStatus` on the unpaid→paid transition. The QRIS path deliberately never calls
+`updateOrderStatus` — it needs the atomic `WHERE payment_status = 'PENDING'` guard — so it never
+touched loyalty at all.
+
+The failure mode arrives precisely when the automation starts working: every QRIS sale left
+`loyalty.points`, `total_spent` and `tier` untouched, so the "Poin Loyalty" line on the customer
+profile screen stays at 0 forever while the customer keeps buying. Symmetrically, `.paid` buyers —
+the ones who waited longest, because a human had to verify their transfer — received zero Akbar
+Poin, and their referrer's 50-point reward never unlocked, because `verifyAndRewardReferral` was
+only ever called from the QRIS branch.
+
+`awardPurchasePoints(customerNomor, nominal, orderId, { sertakanLoyalty })` in `gamesDb.js` is now
+the single place all three are granted. Call it from any new settlement path. Pass
+`sertakanLoyalty: false` **only** when the caller already went through `updateOrderStatus`, which
+grants loyalty itself — otherwise loyalty double-counts. `markTransactionPaid` no longer carries its
+own copy of the points SQL; the copy used `points = points + ?` without `COALESCE`, so a profile row
+with `points` NULL came back NULL, wiping the customer's balance rather than merely failing to add
+to it.
+
+Deposit top-ups (`DEP-` order ids) must keep bypassing all of this — buying store credit is not a
+purchase. That branch returns before the reward call in both `markTransactionPaid` and the
+fulfilment worker.
+
+### 10e. Casaku saying "paid" while we fail to settle is the one state that must never be silent
+
+`markTransactionPaid` can return `success: false` after the provider has already confirmed the
+money. Both callers — `reconcileStaleOrders` (every 45 s) and `reconcileSingleOrder` (`.status`,
+`.cekbayar`, receipt upload) — used to check only `result.success` and otherwise do nothing at all.
+The buyer's money was in, the product was not sent, and the reconciler re-attempted the same order
+forever without producing a single signal anywhere.
+
+`TRANSACTION_NOT_FOUND` is the realistic trigger: `orders.casaku_transaction_id` is set but the
+matching `payment_transactions` row was never written, so the lookup by `provider_transaction_id`
+fails permanently. `laporGagalSettle` in `paymentService.js` now DMs the owner and writes a
+`PAYMENT` log, deduplicated per order id in memory so a stuck order alarms once rather than every
+45 s. `ALREADY_PAID` is excluded — two overlapping reconciliations are normal.
+
+Background modules have no socket of their own. `src/utils/notifOwner.js` holds the shared one, and
+`startFulfillmentWorker` — already called with the live socket on every `connection.update` open —
+wires it with `pasangSocketNotif(sock, () => db.getSettings())`. `notifOwner.js` imports nothing
+outside `src/utils/`; the settings reader is injected rather than imported, to stay clear of §16.
+`notifikasiOwner` returns `false` instead of throwing when no socket is attached yet, because every
+caller sits on the money path and a failed notification must never fail a payment.
+
 ### 10b. Premium shop discount is applied in `checkoutCart`, and the percentages live in two files
 
 `PREMIUM_TIERS[*].benefits.shopDiscountPct` (5 / 10 / 15) was advertised in nine places and used in
@@ -1005,6 +1062,12 @@ string, and zoned ISO), then `tanggalJamWib` / `tanggalWib` / `tanggalPanjangWib
 pinned to `Asia/Jakarta` rather than the machine's zone so a move to a UTC VPS changes nothing.
 Fixed at `.status`, `.riwayat`, the review screen, `.listmod`, the `.garansi` fallback window, and
 the `receipts/YYYY/MM` folder for payment proofs. Section 21 of `produkAdminSmokeTest.mjs` pins it.
+
+`jamWib()` is the same treatment for the three QRIS invoices' "Berlaku hingga … WIB" line. Those
+render `casakuPayment.expiredAt`, which is an epoch when the provider omits it but an API string
+when it does not — and an unzoned API string lands in exactly the SQLite trap above. They also
+rendered in the host's zone while the label already read "WIB", so the label would start lying the
+day the bot moves off the owner's laptop. Section 22 pins it.
 
 Database backups use the same pattern: `KUNCI_BACKUP` in `scheduler.js`. `lastBackupTime` was an
 in-memory variable that reset to 0 on every start while `startScheduler()` also ran a backup on its

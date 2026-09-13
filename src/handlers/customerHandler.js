@@ -4,7 +4,7 @@ import { jidNormalizedUser, downloadMediaMessage, downloadContentFromMessage } f
 import { createMidtransTransaction, botState } from '../../server.js';
 import { buildCommandMenu, resolveCategoryId } from '../../commandRegistry.js';
 import { getSystemChangelog } from '../utils/changelog.js';
-import { keWaktu, tanggalJamWib, tanggalWib, tanggalPanjangWib } from '../utils/waktu.js';
+import { keWaktu, tanggalJamWib, tanggalWib, tanggalPanjangWib, jamWib } from '../utils/waktu.js';
 import * as mediaHandler from '../../mediaHandler.js';
 import * as ent from '../../entertainmentHandler.js';
 import { sendInteractiveButtons } from '../../bot.js';
@@ -1404,8 +1404,7 @@ Ketik *checkout* untuk melanjutkan ke pembayaran, atau *batal* untuk mengosongka
           });
         } catch (qrErr) {}
 
-        const expiredAt = new Date(casakuPayment.expiredAt);
-        const expiredStr = expiredAt.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+        const expiredStr = jamWib(casakuPayment.expiredAt);
         const itemsText = (lastOrder.items || []).map(item => `- ${item.produk_nama} (x${item.qty})`).join('\n');
 
         const casakuInvoice = `━━━━━━━━━━━━━━━━━━━━
@@ -1516,8 +1515,10 @@ _Silakan klik link di atas untuk bergabung, kemudian ulangi perintah \`checkout\
         );
         await db.createFulfillmentJob(order.order_id, senderNumber);
 
-        // Award purchase points
-        const pts = await db.awardPurchasePoints(senderNumber, order.total);
+        // Poin belanja + referral + Poin Loyalty. Jalur ini meng-UPDATE kolom
+        // order langsung (bukan lewat updateOrderStatus), jadi Poin Loyalty-nya
+        // memang harus diberikan dari sini.
+        const pts = await db.awardPurchasePoints(senderNumber, order.total, order.order_id);
 
         let successMsg = `✅ *PEMBAYARAN SALDO DEPOSIT BERHASIL!* ✅\n\n`;
         successMsg += `📦 *Order ID:* ${order.order_id}\n`;
@@ -1613,8 +1614,7 @@ _Silakan klik link di atas untuk bergabung, kemudian ulangi perintah \`checkout\
         console.error('[BOT] QR render error:', qrErr.message);
       }
 
-      const expiredAt = new Date(casakuPayment.expiredAt);
-      const expiredStr = expiredAt.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+      const expiredStr = jamWib(casakuPayment.expiredAt);
 
       const casakuInvoice = `━━━━━━━━━━━━━━━━━━━━
 🧾 *TAGIHAN PEMBAYARAN OTOMATIS*
@@ -2201,8 +2201,7 @@ _Ketik \`.deposit [NOMINAL]\` untuk melakukan Top Up Saldo._`;
         console.error('[BOT] QR render error:', qrErr.message);
       }
 
-      const expiredAt = new Date(casakuPayment.expiredAt);
-      const expiredStr = expiredAt.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+      const expiredStr = jamWib(casakuPayment.expiredAt);
 
       const depInvoice = `━━━━━━━━━━━━━━━━━━━━
 💳 *TOP UP SALDO DEPOSIT OTOMATIS*

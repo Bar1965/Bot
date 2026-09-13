@@ -431,6 +431,65 @@ cek('teks ngawur -> null', keWaktu('bukan tanggal') === null);
 cek('tampilan null memakai cadangan', tanggalJamWib(null) === '-');
 cek('tanggal panjang WIB terbentuk', tanggalPanjangWib(UTC_STR).includes('2026'));
 
+bagian('22. Jam kedaluwarsa QRIS dipaku ke WIB');
+const { jamWib } = await import(REPO + 'src/utils/waktu.js');
+
+// expiredAt dari Casaku bisa datang sebagai epoch milidetik ATAU string API.
+// Kalau stringnya tanpa penanda zona, bentuknya sama persis dengan keluaran
+// SQLite dan ikut meleset 7 jam — padahal labelnya di tagihan tertulis "WIB".
+const EPOCH_UJI = Date.UTC(2026, 8, 13, 10, 40, 0);
+cek('epoch milidetik -> jam WIB', jamWib(EPOCH_UJI) === '17.40', jamWib(EPOCH_UJI));
+cek('string tanpa zona dibaca UTC, bukan lokal', jamWib('2026-09-13 10:40:00') === '17.40', jamWib('2026-09-13 10:40:00'));
+cek('string ISO ber-zona tidak digeser dua kali', jamWib('2026-09-13T10:40:00.000Z') === '17.40', jamWib('2026-09-13T10:40:00.000Z'));
+cek('nilai kosong memakai cadangan', jamWib(null) === '-');
+
+bagian('23. Imbalan pembelian sama rata di semua jalur bayar');
+const PEMBELANJA = '628777000111';
+await db.getOrCreateCustomer(PEMBELANJA, 'Pembeli Uji');
+
+// Rp50.000 -> 50 Akbar Poin (10 per Rp10.000) dan 5 Poin Loyalty (1 per Rp10.000).
+const poinSatu = await db.awardPurchasePoints(PEMBELANJA, 50000, 'ORD-UJI-1');
+cek('Akbar Poin dihitung 10 per Rp10.000', poinSatu === 50, poinSatu);
+
+const profilSatu = await db.getGameProfile(PEMBELANJA);
+cek('Akbar Poin masuk ke game_profiles', profilSatu.points === 50, profilSatu.points);
+
+const loyalSatu = await db.getLoyalty(PEMBELANJA);
+cek('Poin Loyalty ikut bertambah', loyalSatu.points === 5, loyalSatu.points);
+cek('total_spent ikut tercatat', loyalSatu.total_spent === 50000, loyalSatu.total_spent);
+
+// Jalur `.paid` sudah lewat updateOrderStatus, yang menambah Poin Loyalty
+// sendiri. Tanpa penanda ini jalur itu menghitung Loyalty dua kali.
+const poinDua = await db.awardPurchasePoints(PEMBELANJA, 50000, 'ORD-UJI-2', { sertakanLoyalty: false });
+cek('Akbar Poin tetap diberikan tanpa loyalty', poinDua === 50, poinDua);
+
+const profilDua = await db.getGameProfile(PEMBELANJA);
+cek('Akbar Poin bertambah jadi 100', profilDua.points === 100, profilDua.points);
+
+const loyalDua = await db.getLoyalty(PEMBELANJA);
+cek('Poin Loyalty TIDAK dobel', loyalDua.points === 5, loyalDua.points);
+cek('total_spent tidak dobel', loyalDua.total_spent === 50000, loyalDua.total_spent);
+
+// Di bawah ambang: tidak ada poin, dan tidak boleh melempar.
+const poinTiga = await db.awardPurchasePoints(PEMBELANJA, 9999, 'ORD-UJI-3');
+cek('belanja di bawah Rp10.000 tidak berpoin', poinTiga === 0, poinTiga);
+
+// points NULL dulu bisa terjadi lewat SQL lama `points = points + ?` di
+// markTransactionPaid: hasilnya NULL lagi, jadi poin pelanggan HILANG, bukan
+// sekadar tidak bertambah. COALESCE harus menyembuhkannya.
+const PEMILIK_NULL = '628777000222';
+await db.getOrCreateCustomer(PEMILIK_NULL, 'Profil Nullan');
+await db.runQuery("INSERT OR REPLACE INTO game_profiles (customer_jid, points, xp) VALUES (?, NULL, NULL)", [PEMILIK_NULL]);
+await db.awardPurchasePoints(PEMILIK_NULL, 30000, 'ORD-UJI-4');
+const profilNull = await db.getGameProfile(PEMILIK_NULL);
+cek('profil dengan points NULL tidak jadi NULL lagi', profilNull.points === 30, profilNull.points);
+
+// Nominal aneh tidak boleh menulis NaN ke database.
+const poinEmpat = await db.awardPurchasePoints(PEMBELANJA, 'bukan angka', 'ORD-UJI-5');
+cek('nominal bukan angka -> 0 poin', poinEmpat === 0, poinEmpat);
+const profilEmpat = await db.getGameProfile(PEMBELANJA);
+cek('poin tidak jadi NaN', profilEmpat.points === 100, profilEmpat.points);
+
 console.log(`\n${'='.repeat(50)}`);
 console.log(`HASIL: ${lulus} lulus, ${gagal} gagal`);
 console.log('='.repeat(50));

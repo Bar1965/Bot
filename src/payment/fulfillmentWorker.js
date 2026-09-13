@@ -8,6 +8,7 @@
  */
 import * as db from '../../database.js';
 import { barisGaransiAktif, barisKlaimGaransi } from '../utils/pesanGaransi.js';
+import { pasangSocketNotif, notifikasiOwner } from '../utils/notifOwner.js';
 
 // Retry delays in milliseconds: 10s, 30s, 2m, 5m, 15m
 const RETRY_DELAYS = [10_000, 30_000, 120_000, 300_000, 900_000];
@@ -20,6 +21,9 @@ let sockRef = null;
 
 export function startFulfillmentWorker(sock) {
   sockRef = sock;
+  // Satu-satunya tempat socket diserahkan ke modul latar belakang yang lain.
+  // paymentService berjalan dari scheduler dan tidak memegang socket sendiri.
+  pasangSocketNotif(sock, () => db.getSettings());
   if (workerRunning) return;
   workerRunning = true;
   console.log('[FULFILLMENT] Worker started.');
@@ -38,18 +42,6 @@ export function stopFulfillmentWorker() {
  * sebagai console.error — kalau terminal tidak sedang dilihat, order yang gagal
  * kirim hilang begitu saja padahal customer sudah membayar.
  */
-async function notifikasiOwner(pesan) {
-  try {
-    if (!sockRef) return;
-    const settings = await db.getSettings();
-    const ownerJid = String(settings?.ownerNumber || '').trim();
-    if (!ownerJid.includes('@')) return;
-    await sockRef.sendMessage(ownerJid, { text: pesan });
-  } catch (err) {
-    console.error('[FULFILLMENT] Gagal mengirim notifikasi owner:', err.message);
-  }
-}
-
 function scheduleNextPoll(delay = POLL_INTERVAL) {
   if (!workerRunning) return;
   workerTimer = setTimeout(async () => {
