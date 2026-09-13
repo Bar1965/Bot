@@ -12,6 +12,13 @@
  * Aturan menulis deskripsi: maksimal sekitar 45 karakter. WhatsApp memakai font
  * proporsional dan layar HP sempit — deskripsi panjang akan wrap dan membuat
  * daftar terlihat berantakan.
+ *
+ * Aturan penanda 🆕: HANYA untuk fitur rilis terbaru, dan **dicopot saat versi
+ * naik**. Penanda ini pernah menumpuk sampai 32 dari 202 entri — sisa dari
+ * banyak versi yang tidak pernah dibersihkan — sehingga menandai seperenam menu
+ * sebagai "baru" dan berhenti berarti apa-apa. Daftar "apa yang berubah" yang
+ * sesungguhnya hidup di `src/utils/changelog.js` dan tampil lewat `.update`;
+ * penanda di sini cuma penunjuk sekilas, bukan catatan rilis kedua.
  */
 
 const categories = {
@@ -35,7 +42,7 @@ const categories = {
         title: '🛒 BELI & LAPAK',
         items: [
           ['.beli <kode> <qty>', 'Masukkan produk ke keranjang'],
-          ['.buynow <kode> [qty]', 'Beli langsung & QRIS otomatis 🆕'],
+          ['.buynow <kode> [qty]', 'Beli langsung & QRIS otomatis'],
           ['.lapak', 'Lihat lapak komunitas penjual'],
           ['.lapak add <nama> <harga> <stok> <isi>', 'Buka lapak sendiri (Premium)']
         ]
@@ -61,7 +68,7 @@ const categories = {
       {
         title: '💰 SALDO & DOMPET',
         items: [
-          ['.dompet / .wallet / .aset', 'Semua aset: IDR, poin, TCG terpadu 🆕'],
+          ['.dompet / .wallet / .aset', 'Semua aset: IDR, poin, TCG terpadu'],
           ['.saldo', 'Cek sisa saldo deposit rupiah'],
           ['.deposit <nominal>', 'Top up saldo via QRIS otomatis']
         ]
@@ -70,7 +77,7 @@ const categories = {
         title: '📦 PESANAN SAYA',
         items: [
           ['.status', 'Status pesanan terakhir'],
-          ['.cekbayar / .sudahbayar', 'Verifikasi instan status bank QRIS 🆕'],
+          ['.cekbayar / .sudahbayar', 'Verifikasi instan status bank QRIS'],
           ['.riwayat', '5 transaksi terakhir'],
           ['.garansi [orderId]', 'Cek & klaim garansi akun'],
           ['.batal', 'Batalkan pesanan belum dibayar']
@@ -142,16 +149,16 @@ const categories = {
       {
         title: '🎰 KASINO & POKER',
         items: [
-          ['.poker / .texaspoker [taruhan]', 'Texas Hold\'em Poker 2-8 pemain 🆕'],
-          ['.bom [taruhan]', 'Cut The Wire potong kabel bom 2-6p 🆕'],
-          ['.battleship @lawan [taruhan]', 'Perang armada kapal laut 1v1 🆕'],
-          ['.buckshot @lawan [taruhan]', 'Shotgun roulette taktis 1v1 + item 🆕'],
-          ['.uno [taruhan]', 'UNO 2-6 pemain, kartu via DM + bot AI 🆕'],
-          ['.liarsdice [taruhan]', 'Dadu bajak laut perudo 2-6 pemain 🆕'],
-          ['.mancing [spot]', 'Mancing ikan langka & harta karun 🆕'],
-          ['.topmancing', 'Papan rekor ikan terberat pemancing 🆕'],
-          ['.capsa / .capsasusun [taruhan]', 'Capsa Susun 13 kartu adu tingkat 🆕'],
-          ['.fastpoker / .poker3 [taruhan]', 'Fast 3-Card Poker kilat 🆕'],
+          ['.poker / .texaspoker [taruhan]', 'Texas Hold\'em Poker 2-8 pemain'],
+          ['.bom [taruhan]', 'Cut The Wire potong kabel bom 2-6p'],
+          ['.battleship @lawan [taruhan]', 'Perang armada kapal laut 1v1'],
+          ['.buckshot @lawan [taruhan]', 'Shotgun roulette taktis 1v1 + item'],
+          ['.uno [taruhan]', 'UNO 2-6 pemain, kartu via DM + bot AI'],
+          ['.liarsdice [taruhan]', 'Dadu bajak laut perudo 2-6 pemain'],
+          ['.mancing [spot]', 'Mancing ikan langka & harta karun'],
+          ['.topmancing', 'Papan rekor ikan terberat pemancing'],
+          ['.capsa / .capsasusun [taruhan]', 'Capsa Susun 13 kartu adu tingkat'],
+          ['.fastpoker / .poker3 [taruhan]', 'Fast 3-Card Poker kilat'],
           ['.bj / .blackjack [taruhan]', 'Kartu 21 lawan Dealer (10-5.000)'],
           ['.mines <taruhan> [1-24 bom]', 'Ranjau poin 5x5 cari multiplier'],
           ['.slot / .spin [taruhan]', 'Mesin slot & Lucky Spin Wheel'],
@@ -177,8 +184,8 @@ const categories = {
           ['.tcg lepas <1-3>', 'Kosongkan slot dek'],
           ['.tcg tukar <slot> <slot>', 'Tukar posisi dua kartu di dek'],
           ['.tcg autodek / .tcg bestdek', 'Pasang 3 kartu terkuat otomatis'],
-          ['.tcg autodek <elemen>', 'Dek yang unggul melawan elemen itu 🆕'],
-          ['.tcg autodek abadi', 'Dek yang lolos syarat lantai Abadi 🆕']
+          ['.tcg autodek <elemen>', 'Dek yang unggul melawan elemen itu'],
+          ['.tcg autodek abadi', 'Dek yang lolos syarat lantai Abadi']
         ]
       },
       {
@@ -191,10 +198,10 @@ const categories = {
           ['.tcg gerbang [elemen]', 'Gerbang elemen harian: serpihan + Picis'],
           ['.tcg abadi', 'Menara Abadi tanpa ujung (post-lantai 30)'],
           ['.tcg rank / .tcg rank top', 'Peringkat & papan 10 besar musim ini'],
-          ['.tcg gauntlet', '3 lawan pekanan, kartu tak boleh diulang 🆕'],
-          ['.tcg gauntlet dek / lawan', 'Susun dek bebas kunci & bertarung 🆕'],
-          ['.tcg bos', 'Bos Arena grup: HP bersama, hadiah dibagi 🆕'],
-          ['.tcg bos serang', 'Pukul bos, 3x sehari (bawa counter!) 🆕']
+          ['.tcg gauntlet', '3 lawan pekanan, kartu tak boleh diulang'],
+          ['.tcg gauntlet dek / lawan', 'Susun dek bebas kunci & bertarung'],
+          ['.tcg bos', 'Bos Arena grup: HP bersama, hadiah dibagi'],
+          ['.tcg bos serang', 'Pukul bos, 3x sehari (bawa counter!)']
         ]
       },
       {
@@ -204,10 +211,10 @@ const categories = {
           ['.tcg refine <id>', 'Sisipkan duplikat: naikkan R kartu'],
           ['.tcg naik <id>', 'Naik level: serpihan + Picis (maks Lv.5)'],
           ['.tcg serpih <id> [n]', 'Pecah duplikat kartu jadi serpihan'],
-          ['.tcg serpihsemua [rarity]', 'Pecah SEMUA duplikat sekaligus 🆕'],
+          ['.tcg serpihsemua [rarity]', 'Pecah SEMUA duplikat sekaligus'],
           ['.tcg lebur <rarity>', 'Lebur serpihan ke tingkat lebih tinggi'],
           ['.tcg jual <id> [n]', 'Jual kartu duplikat dapat Keping'],
-          ['.tcg jualsemua [rarity]', 'Jual SEMUA duplikat sekaligus 🆕'],
+          ['.tcg jualsemua [rarity]', 'Jual SEMUA duplikat sekaligus'],
           ['.tcg serpihan', 'Cek stok serpihan per rarity'],
           ['.tcg keping', 'Dompet: Keping + Picis']
         ]
@@ -242,11 +249,11 @@ const categories = {
           ['.steal / .maling @member', 'Curi poin member lain'],
           ['.jailbreak / .kabur', 'Teka-teki kabur dari penjara'],
           ['.tebus @napi', 'Bayar jaminan bebaskan teman'],
-          ['.mancing [danau/laut/palung]', 'Mancing ikan langka & peti karun 🆕'],
-          ['.ikan / .tangkapan', 'Isi ember & rekor tangkapanmu 🆕'],
-          ['.jualikan', 'Jual seluruh ikan ke Pasar Ikan 🆕'],
-          ['.bukapeti', 'Buka peti karun, jackpot poin 🆕'],
-          ['.tokopancing', 'Panduan spot & sisa jatah harian 🆕']
+          ['.mancing [danau/laut/palung]', 'Mancing ikan langka & peti karun'],
+          ['.ikan / .tangkapan', 'Isi ember & rekor tangkapanmu'],
+          ['.jualikan', 'Jual seluruh ikan ke Pasar Ikan'],
+          ['.bukapeti', 'Buka peti karun, jackpot poin'],
+          ['.tokopancing', 'Panduan spot & sisa jatah harian']
         ]
       }
     ]
@@ -255,12 +262,14 @@ const categories = {
   media: {
     id: 'media',
     number: '4',
-    title: '📥 MEDIA & CREATIVE TOOLS',
-    tagline: 'Downloader, stiker, AI drawing, remini & audio',
+    title: '📥 MEDIA & ALAT KREATIF',
+    tagline: 'Unduh, stiker, gambar AI, remini & audio',
+    // Alias tetap menyimpan kata Inggris: itu yang DIKETIK pengguna, bukan yang
+    // dibaca. Yang wajib berbahasa Indonesia adalah teks yang tampil (§15).
     aliases: ['4', 'media', 'downloader', 'tools', 'download', 'alat'],
     groups: [
       {
-        title: '📥 DOWNLOADER',
+        title: '📥 UNDUH MEDIA',
         items: [
           ['.tt / .ig / .fb / .yt / .pin <link>', 'Unduh video, reels, slide & MP3'],
           ['.song / .play <judul>', 'Unduh lagu MP3 dari YouTube']
@@ -303,7 +312,7 @@ const categories = {
         title: '💰 POIN & LEVEL',
         items: [
           ['.poin / .profile', 'Level, XP, ranking & saldo poin'],
-          ['.dompet / .wallet / .aset', 'Semua aset: IDR, poin, TCG terpadu 🆕'],
+          ['.dompet / .wallet / .aset', 'Semua aset: IDR, poin, TCG terpadu'],
           ['.daily', 'Klaim poin & XP gratis harian'],
           ['.lb / .rank', 'Papan peringkat — 13 kategori'],
           ['.lb lvl / raid / lelang / tcg', 'Peringkat per kategori + posisimu'],
@@ -361,8 +370,8 @@ const categories = {
   pdf: {
     id: 'pdf',
     number: '7',
-    title: '📄 PDF & OCR TOOLS',
-    tagline: 'Merge, split, gambar ke PDF & ekstrak teks (Premium)',
+    title: '📄 ALAT PDF & OCR',
+    tagline: 'Gabung, pisah, gambar ke PDF & baca teks (Premium)',
     aliases: ['7', 'pdf', 'dokumen', 'ocr'],
     groups: [
       {
