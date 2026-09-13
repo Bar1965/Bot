@@ -127,7 +127,6 @@ export function createCustomerHandler(ctx = {}) {
   };
 
   return async function handleCustomerMessage(jid, senderNumber, messageObj, text, isFromGroup = false, actor = {}) {
-    try { fs.appendFileSync('./tmp/trace.log', new Date().toISOString() + '  A-customerHandler-masuk  ' + JSON.stringify({ teks: text, adaGambar: !!messageObj?.message?.imageMessage }) + '\n'); } catch (_) {}
     const textLower = (text || '').toLowerCase();
     const cleanText = (text || '').replace(/^[./#]/, '').trim();
     const cleanTextLower = textLower.replace(/^[./#]/, '').trim();
@@ -2159,9 +2158,21 @@ _Ketik \`.deposit [NOMINAL]\` untuk melakukan Top Up Saldo._`;
   // 20. DEPOSIT TOPUP SALDO (.deposit [NOMINAL])
   const depositMatch = text.match(/^[\.\/]?deposit\s+(\d+)$/i);
   if (depositMatch) {
-    const amount = parseInt(depositMatch[1]);
+    const amount = parseInt(depositMatch[1], 10);
     if (amount < 5000) {
       await sock.sendMessage(responseJid, { text: "⚠️ *Nominal Minimal Deposit:* Rp5.000" });
+      return;
+    }
+    // Dulu hanya ada batas bawah. Pola `(\d+)` menerima angka sepanjang apa pun,
+    // jadi `.deposit 99999999999999999999` lolos: parseInt memulangkan 1e20 —
+    // bukan bilangan bulat aman lagi — lalu nilai itu ditulis ke tabel orders
+    // dan dikirim ke Casaku sebagai nominal QRIS. Batas atasnya disamakan dengan
+    // yang sudah dipakai addProduct untuk harga produk, supaya satu toko tidak
+    // punya dua aturan tentang berapa rupiah yang masuk akal.
+    if (!Number.isSafeInteger(amount) || amount > 1_000_000_000) {
+      await sock.sendMessage(responseJid, {
+        text: "⚠️ *Nominal deposit terlalu besar.*\n\nMaksimal *Rp1.000.000.000* sekali top up. Kalau memang butuh lebih, hubungi admin."
+      });
       return;
     }
     try {
@@ -2336,10 +2347,8 @@ Halo *${customerName}*, berikut adalah daftar voucher / akun digital dari pesana
   }
 
   // 18. MENERIMA FOTO BUKTI TRANSFER (DISIMPAN SECARA BERTIKAT YYYY/MM)
-  try { fs.appendFileSync('./tmp/trace.log', new Date().toISOString() + '  B-sampai-bagian-18  ' + JSON.stringify({ adaGambar: !!messageObj.message.imageMessage }) + '\n'); } catch (_) {}
   if (messageObj.message.imageMessage) {
     const lastOrder = await db.getCustomerLastOrder(senderNumber);
-    try { fs.appendFileSync('./tmp/trace.log', new Date().toISOString() + '  C-lastOrder  ' + JSON.stringify({ order: lastOrder?.order_id || null, status: lastOrder?.status || null }) + '\n'); } catch (_) {}
     if (lastOrder && lastOrder.status === 'WAITING_PAYMENT') {
       // ⚡ Jika pesanan dibuat menggunakan Casaku QRIS Dinamis, cek real-time terlebih dahulu!
       if (lastOrder.casaku_transaction_id) {

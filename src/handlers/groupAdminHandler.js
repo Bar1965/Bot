@@ -2029,12 +2029,24 @@ user2@gmail.com|pass456
 
     if (cleanCmd === 'price') {
       const code = args[1]?.toUpperCase();
-      const price = parseInt(args[2]);
 
-      if (!code || isNaN(price)) {
-        await sock.sendMessage(jid, { text: "⚠️ Format salah. Gunakan: `.price [KODE] [HARGA_BARU]`\nContoh: `.price NET01 50000`" });
+      if (!code || !args[2]) {
+        await sock.sendMessage(jid, { text: "⚠️ Format salah. Gunakan: `.price [KODE] [HARGA_BARU]`\nContoh: `.price NET01 50000` — boleh juga `50rb` atau `50.000`" });
         return true;
       }
+
+      // Dulu `parseInt` saja, lalu langsung diteruskan ke updateProductPrice —
+      // yang MELEMPAR error untuk harga negatif atau di atas 1 miliar. Tidak ada
+      // try/catch di sini, jadi lemparannya berakhir di penangkap teratas bot.js
+      // dan admin tidak menerima balasan apa pun: perintahnya seperti diabaikan.
+      // Sekarang lewat validator yang sama dengan wizard dan `.editproduk`, jadi
+      // `50rb` dan `50.000` juga diterima di sini.
+      const cekHarga = db.validasiFieldProduk('harga', args.slice(2).join(' '));
+      if (!cekHarga.ok) {
+        await sock.sendMessage(jid, { text: `❌ ${cekHarga.message}` });
+        return true;
+      }
+      const price = cekHarga.nilai;
 
       const p = await db.getProductByKode(code);
       if (!p) {
