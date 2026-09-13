@@ -321,6 +321,37 @@ cek('pembatalan mengembalikan kredensial jadi READY', (await db.getAvailableItem
 const ordSesudah = await db.getQuery("SELECT status FROM orders WHERE order_id = ?", [orderId]);
 cek('order berstatus CANCELLED', ordSesudah.status === 'CANCELLED');
 
+bagian('18. Mencetak QRIS dua kali menelantarkan yang pertama');
+// Alasan `.pay` di customerHandler sekarang memakai ulang QRIS yang masih hidup
+// alih-alih selalu mencetak baru. Bagian ini mengunci PERILAKUNYA, supaya kalau
+// createCasakuTransaction suatu saat jadi idempoten, catatan di sana ikut diperbarui.
+const ORD = 'ORD-UJI-QRIS';
+await db.runQuery("DELETE FROM payment_transactions WHERE order_id = ?", [ORD]);
+await db.runQuery("INSERT OR REPLACE INTO orders (order_id, customer_nomor, total, status) VALUES (?, ?, ?, 'WAITING_PAYMENT')", [ORD, PEMBELI, 1000]);
+
+await db.createCasakuTransaction(ORD, 'TRX-PERTAMA', 1127, 15, 'QRSTRING-PERTAMA');
+const ord1 = await db.getQuery("SELECT casaku_transaction_id, payment_amount, qr_string, expired_at FROM orders WHERE order_id = ?", [ORD]);
+cek('QRIS pertama tercatat di order', ord1.casaku_transaction_id === 'TRX-PERTAMA');
+cek('nominal berkode unik tersimpan', ord1.payment_amount === 1127);
+cek('qr_string tersimpan untuk dipakai ulang', ord1.qr_string === 'QRSTRING-PERTAMA');
+cek('expired_at di masa depan', Number(ord1.expired_at) > Date.now());
+
+// Inilah syarat yang dibaca `.pay` sebelum memutuskan mencetak ulang atau tidak.
+const masihHidup = !!(ord1.casaku_transaction_id && ord1.qr_string && ord1.expired_at && Number(ord1.expired_at) > Date.now());
+cek('syarat "QRIS masih hidup" terpenuhi -> .pay wajib pakai ulang', masihHidup === true);
+
+await db.createCasakuTransaction(ORD, 'TRX-KEDUA', 1456, 15, 'QRSTRING-KEDUA');
+const baris = await db.allQuery("SELECT provider_transaction_id, status FROM payment_transactions WHERE order_id = ? ORDER BY created_at", [ORD]);
+const ord2 = await db.getQuery("SELECT casaku_transaction_id, payment_amount FROM orders WHERE order_id = ?", [ORD]);
+cek('dua baris payment_transactions terbentuk', baris.length === 2, `jumlah=${baris.length}`);
+cek('yang pertama tetap PENDING (telantar)', baris[0]?.provider_transaction_id === 'TRX-PERTAMA' && baris[0]?.status === 'PENDING');
+cek('order hanya menunjuk yang kedua', ord2.casaku_transaction_id === 'TRX-KEDUA');
+cek('nominal ikut berubah -> pembayar QR lama tidak dikenali', ord2.payment_amount === 1456,
+  'rekonsiliasi mencari Rp1.456 sementara pembeli membayar Rp1.127');
+
+await db.runQuery("DELETE FROM payment_transactions WHERE order_id = ?", [ORD]);
+await db.runQuery("DELETE FROM orders WHERE order_id = ?", [ORD]);
+
 console.log(`\n${'='.repeat(50)}`);
 console.log(`HASIL: ${lulus} lulus, ${gagal} gagal`);
 console.log('='.repeat(50));

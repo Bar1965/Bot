@@ -489,8 +489,20 @@ checkout → db.checkoutCart (CART→WAITING_PAYMENT, reserve stock)
 - Delivery is implemented **twice** — the worker for Casaku, and inline in `server.js` for
   Midtrans, plus a third hand path when an admin types `.paid`. Message wording and warranty text
   must be changed in all of them.
-- `.pay` / `.qris` on an already-WAITING_PAYMENT order calls `createPayment` again, inserting a
-  second `payment_transactions` row and orphaning the first.
+- **`.pay` / `.qris` now reuses a live QRIS instead of minting a second one.** It used to call
+  `createPayment` unconditionally, and `createCasakuTransaction` both INSERTs a fresh
+  `payment_transactions` row *and* overwrites `orders.casaku_transaction_id` / `payment_amount` /
+  `qr_string`. Since every QRIS carries its own unique code (Rp1.127 vs Rp1.456), a buyer who had
+  already scanned the first QR paid an amount reconciliation was no longer looking for: money gone,
+  order never settled. In a webhook deployment the orphan is still found by
+  `provider_transaction_id`; in a polling-only deployment (§10, no public URL) it is invisible.
+  Typing `.pay` twice is the most natural thing a waiting buyer does. The handler now re-renders
+  the stored `qr_string` while `expired_at` is still in the future, and only mints a new
+  transaction once it has lapsed. Section 18 of `produkAdminSmokeTest.mjs` pins the hazard.
+- **`.pay` on a `CART` is refused.** It used to mint a QRIS straight from the cart, skipping
+  `checkoutCart` entirely — no stock reserved, no premium discount, no coupon — while
+  `createCasakuTransaction` still flipped the order to `WAITING_PAYMENT`. The buyer could pay for
+  stock that was never set aside for them. It now tells the customer to `checkout` first.
 - **A failed `createPayment` must cancel the order explicitly.** Casaku's dashboard has a
   *"Wajibkan Aplikasi Aktif"* toggle: with it on, Casaku **refuses to mint a transaction** while no
   listener device is online. That is the correct setting — it converts the catastrophic failure

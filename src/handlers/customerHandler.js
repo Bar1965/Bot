@@ -1347,11 +1347,45 @@ Ketik *checkout* untuk melanjutkan ke pembayaran, atau *batal* untuk mengosongka
   if (['pay', 'qris', 'pembayaran'].includes(cleanCmd)) {
     const lastOrder = await db.getLastOrderByCustomer(senderNumber);
 
-    if (lastOrder && (lastOrder.status === 'WAITING_PAYMENT' || lastOrder.status === 'CART')) {
-      // Jika ada pesanan aktif, generate/tampilkan Dynamic QRIS otomatis
+    // `.pay` pada keranjang yang BELUM di-checkout dulu langsung mencetak QRIS.
+    // Itu melompati checkoutCart sepenuhnya: stok tidak pernah dipesan, diskon
+    // premium dan kupon tidak pernah dihitung — padahal createCasakuTransaction
+    // tetap menaikkan status order jadi WAITING_PAYMENT. Pembeli jadi membayar
+    // barang yang stoknya tidak pernah disisihkan untuk dia.
+    if (lastOrder && lastOrder.status === 'CART') {
+      await sock.sendMessage(responseJid, {
+        text: `🛒 *Keranjangmu belum di-checkout.*\n\nKetik \`checkout\` dulu — stok dikunci untukmu dan diskon dihitung di situ. QRIS tagihannya langsung muncul sesudahnya.`
+      });
+      await sendRedirectNotice();
+      return;
+    }
+
+    if (lastOrder && lastOrder.status === 'WAITING_PAYMENT') {
       try {
-        const { createPayment } = await import('../payment/paymentService.js');
-        const casakuPayment = await createPayment(lastOrder.order_id, lastOrder.total);
+        // Order ini mungkin SUDAH punya QRIS yang hidup. Dulu baris ini selalu
+        // mencetak yang baru, dan itu menyisipkan baris payment_transactions
+        // kedua sambil menelantarkan yang pertama. Karena setiap QRIS punya kode
+        // uniknya sendiri (Rp1.127 vs Rp1.456), pembeli yang terlanjur men-scan
+        // QR lama membayar nominal yang tidak lagi dicari rekonsiliasi: uangnya
+        // keluar, ordernya tidak pernah lunas. Mengetik `.pay` dua kali adalah
+        // hal paling wajar yang dilakukan pembeli yang menunggu.
+        const masihHidup = lastOrder.casaku_transaction_id
+          && lastOrder.qr_string
+          && lastOrder.expired_at
+          && Number(lastOrder.expired_at) > Date.now();
+
+        let casakuPayment;
+        if (masihHidup) {
+          casakuPayment = {
+            qrString: lastOrder.qr_string,
+            totalAmount: lastOrder.payment_amount || lastOrder.total,
+            uniqueCode: Math.max(0, (lastOrder.payment_amount || 0) - (lastOrder.total || 0)),
+            expiredAt: Number(lastOrder.expired_at)
+          };
+        } else {
+          const { createPayment } = await import('../payment/paymentService.js');
+          casakuPayment = await createPayment(lastOrder.order_id, lastOrder.total);
+        }
 
         let qrImageBuffer = null;
         try {
