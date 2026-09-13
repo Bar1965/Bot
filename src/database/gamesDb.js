@@ -1114,6 +1114,41 @@ export async function createFulfillmentJob(orderId, customerNumber) {
 }
 
 /**
+ * Antre ulang pengiriman satu pesanan yang macet.
+ *
+ * CELAH YANG DITUTUP: setelah 6 percobaan gagal, job jatuh ke MANUAL_REVIEW dan
+ * getPendingFulfillmentJobs tidak pernah mengambilnya lagi. Owner menerima DM
+ * "butuh penanganan manual" — lalu tidak punya satu pun cara memerintahkan
+ * pengiriman ulang:
+ *
+ *   `.paid` menolak, karena pesanannya memang sudah PAID/COMPLETED.
+ *   `.done` hanya menandai selesai; ia tidak mengirim kredensial apa pun.
+ *
+ * Jadi satu-satunya jalan keluar adalah menyunting database dengan tangan.
+ * Mengulang aman: claimAndDeliverItems mencari item USED milik pesanan ini lebih
+ * dulu sebelum menyentuh stok baru, jadi tidak ada lisensi kedua yang terbakar.
+ */
+export async function resetFulfillmentJob(orderId) {
+  const job = await getQuery("SELECT * FROM fulfillment_jobs WHERE order_id = ?", [orderId]);
+  const now = Date.now();
+
+  if (!job) {
+    const order = await getQuery("SELECT customer_nomor FROM orders WHERE order_id = ?", [orderId]);
+    if (!order) return { success: false, alasan: 'ORDER_TIDAK_ADA' };
+    await createFulfillmentJob(orderId, order.customer_nomor);
+    await runQuery("UPDATE orders SET fulfillment_status = 'PENDING' WHERE order_id = ?", [orderId]);
+    return { success: true, alasan: 'JOB_BARU' };
+  }
+
+  await runQuery(
+    "UPDATE fulfillment_jobs SET status = 'PENDING', attempts = 0, last_error = NULL, updated_at = ? WHERE job_id = ?",
+    [now, job.job_id]
+  );
+  await runQuery("UPDATE orders SET fulfillment_status = 'PENDING' WHERE order_id = ?", [orderId]);
+  return { success: true, alasan: 'DIANTRE_ULANG', statusLama: job.status, percobaanLama: job.attempts };
+}
+
+/**
  * Job pengiriman yang perlu dikerjakan worker: PENDING, FAILED, dan PROCESSING
  * yang tersangkut.
  *

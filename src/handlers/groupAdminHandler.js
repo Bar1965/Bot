@@ -44,7 +44,7 @@ export function createGroupAdminHandler(ctx) {
     // `batal` SENGAJA tidak ditambahkan: itu perintah pelanggan untuk
     // membatalkan pesanannya sendiri, dan memasukkannya ke sini akan membajak
     // `.batal` milik owner saat ia berbelanja sebagai pelanggan biasa.
-    'paid', 'acc', 'terima', 'konfirmasi', 'done', 'selesai', 'cancel', 'flashsale', 'stats', 'broadcast', 'addcoupon', 
+    'paid', 'acc', 'terima', 'konfirmasi', 'done', 'selesai', 'cancel', 'kirimulang', 'ulangkirim', 'retry', 'flashsale', 'stats', 'broadcast', 'addcoupon', 
     'delcoupon', 'listcoupon', 'addfaq', 'delfaq', 'listfaq', 'laporan', 
     'restock', 'stock', 'price', 'out', 'ready', 'addproduct', 'takeover', 
     'release', 'setname', 'setowner', 'eval', 'exec', 'backup', 'resetleaderboard',
@@ -1696,6 +1696,47 @@ function extractOrderIdFromMessage(args, m) {
 
   return null;
 }
+
+    // Satu-satunya jalan keluar dari MANUAL_REVIEW.
+    //
+    // Worker menyerah setelah 6 percobaan dan menandai job MANUAL_REVIEW; sejak
+    // itu getPendingFulfillmentJobs tidak pernah mengambilnya lagi. Owner dapat
+    // DM "butuh penanganan manual" tapi tidak punya perintah apa pun untuk
+    // menyuruh bot mencoba lagi: `.paid` menolak pesanan yang sudah lunas, dan
+    // `.done` hanya menandai selesai tanpa mengirim kredensial.
+    if (['kirimulang', 'ulangkirim', 'retry'].includes(cleanCmd)) {
+      const orderId = extractOrderIdFromMessage(args, m);
+      if (!orderId) {
+        await sock.sendMessage(jid, { text: "⚠️ Gunakan: `.kirimulang <ORDER_ID>`\n\n_Atau balas (reply) pesan notifikasi pesanannya._" });
+        return true;
+      }
+
+      const det = await db.getOrderDetails(orderId);
+      if (!det) {
+        await sock.sendMessage(jid, { text: `❌ Order *${orderId}* tidak ditemukan.` });
+        return true;
+      }
+      if (det.payment_status !== 'PAID' && !['PAID', 'COMPLETED'].includes(det.status)) {
+        await sock.sendMessage(jid, { text: `⚠️ Order *${orderId}* belum lunas (status: *${det.status}*). Kirim ulang hanya untuk pesanan yang sudah dibayar.\n\n_Untuk mengonfirmasi pembayaran, pakai_ \`.paid ${orderId}\`` });
+        return true;
+      }
+
+      const hasil = await db.resetFulfillmentJob(orderId);
+      if (!hasil.success) {
+        await sock.sendMessage(jid, { text: `❌ Gagal mengantre ulang *${orderId}*: ${hasil.alasan}` });
+        return true;
+      }
+
+      const keterangan = hasil.alasan === 'JOB_BARU'
+        ? 'Pesanan ini belum punya job pengiriman sama sekali — job baru dibuat.'
+        : `Job sebelumnya berstatus *${hasil.statusLama}* setelah ${hasil.percobaanLama} percobaan.`;
+
+      await sock.sendMessage(jid, {
+        text: `🔁 *PENGIRIMAN DIANTRE ULANG*\n\n🧾 Order: *${orderId}*\n👤 ${det.customer_nama || '-'}\n\n${keterangan}\n\n_Worker akan mencobanya lagi dalam beberapa detik. Mengulang aman: kredensial yang sudah terkirim untuk pesanan ini dipakai lagi, bukan diambil dari stok baru._`
+      });
+      await logToSystem('ORDER', `🔁 Pengiriman order *${orderId}* diantre ulang oleh admin (wa.me/${senderNumber.split('@')[0]})`);
+      return true;
+    }
 
     if (['paid', 'acc', 'terima', 'konfirmasi'].includes(cleanCmd)) {
       const orderId = extractOrderIdFromMessage(args, m);

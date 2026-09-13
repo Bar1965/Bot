@@ -195,7 +195,9 @@ async function processJob(job) {
     if (status === 'MANUAL_REVIEW') {
       console.error(`[FULFILLMENT] ⚠️ Job ${job.job_id} needs MANUAL REVIEW — check order ${job.order_id}`);
       await notifikasiOwner(
-        `🚨 *PENGIRIMAN BUTUH PENANGANAN MANUAL*\n\nOrder *${job.order_id}* gagal dikirim otomatis.\n\n📱 Customer: ${job.customer_number}\n❌ Penyebab: ${err.message}`
+        // Sebutkan jalan keluarnya. Tanpa baris terakhir ini, owner tahu ada yang
+        // rusak tapi tidak tahu bot punya cara mencoba lagi.
+        `🚨 *PENGIRIMAN BUTUH PENANGANAN MANUAL*\n\nOrder *${job.order_id}* gagal dikirim otomatis setelah ${MAX_ATTEMPTS} percobaan.\n\n📱 Customer: ${job.customer_number}\n❌ Penyebab: ${err.message}\n\n🔁 *Setelah sebabnya diperbaiki* (mis. stok diisi ulang dengan \`.addstock\`), suruh bot mencoba lagi:\n\`.kirimulang ${job.order_id}\``
       );
     }
   }

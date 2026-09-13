@@ -1505,11 +1505,15 @@ ${itemsText}
     // QRIS yang dibatalkan ke Casaku dan order yang dibatalkan di database bisa
     // berlainan, meninggalkan QRIS hidup untuk order yang sudah CANCELLED.
     const activeOrder = await db.getOrderUntukDibatalkan(senderNumber);
+    let qrisMungkinHidup = false;
     if (activeOrder && activeOrder.casaku_transaction_id) {
       try {
         const { cancelPayment } = await import('../payment/paymentService.js');
-        await cancelPayment(activeOrder.order_id, activeOrder.casaku_transaction_id);
-      } catch (err) {}
+        const hasilBatal = await cancelPayment(activeOrder.order_id, activeOrder.casaku_transaction_id);
+        qrisMungkinHidup = hasilBatal && hasilBatal.ok === false;
+      } catch (err) {
+        qrisMungkinHidup = true;
+      }
     }
 
     const res = await db.cancelActiveOrder(senderNumber);
@@ -1519,7 +1523,14 @@ ${itemsText}
       return;
     }
 
-    await sock.sendMessage(responseJid, { text: `✅ *Pesanan Anda (${res.orderId}) berhasil dibatalkan.*\nKeranjang/tagihan telah dikosongkan dan stok dikembalikan.` });
+    let pesanBatal = `✅ *Pesanan Anda (${res.orderId}) berhasil dibatalkan.*\nKeranjang/tagihan telah dikosongkan dan stok dikembalikan.`;
+    // Kalau pembatalan ke Casaku gagal, QRIS lamanya mungkin MASIH bisa dibayar
+    // dan uang itu tidak akan terdeteksi jalur mana pun. Pembeli harus tahu,
+    // bukan cuma diberi tanda centang hijau.
+    if (qrisMungkinHidup) {
+      pesanBatal += `\n\n⚠️ *PENTING:* Kode QRIS lama Anda mungkin masih aktif. *Jangan* men-scan QR dari pesan sebelumnya — pembayarannya tidak akan terhubung ke pesanan ini. Silakan checkout ulang untuk mendapat QRIS baru.`;
+    }
+    await sock.sendMessage(responseJid, { text: pesanBatal });
     await logToSystem('ORDER', `❌ Order ID *${res.orderId}* dibatalkan oleh customer.`);
     await sendRedirectNotice();
     return;

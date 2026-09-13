@@ -674,6 +674,38 @@ const kedaluwarsa2 = await db.getExpiredOrders();
 cek('tagihan lewat 24 jam tetap disapu',
   kedaluwarsa2.some(o => o.order_id === coPaid.order.order_id), kedaluwarsa2.map(o => o.order_id).join(','));
 
+bagian('35. Pengiriman yang macet punya jalan pulang');
+const ORD_MACET = 'ORD-MACET-UJI';
+const PEMBELI_MACET = '628999000555';
+await db.getOrCreateCustomer(PEMBELI_MACET, 'Uji Macet');
+await db.runQuery("INSERT OR REPLACE INTO orders (order_id, customer_nomor, total, status, payment_status) VALUES (?, ?, 60000, 'COMPLETED', 'PAID')", [ORD_MACET, PEMBELI_MACET]);
+await db.createFulfillmentJob(ORD_MACET, PEMBELI_MACET);
+// Persis keadaan yang ditinggalkan worker setelah menyerah.
+await db.runQuery("UPDATE fulfillment_jobs SET status = 'MANUAL_REVIEW', attempts = 6, last_error = 'STOK KOSONG' WHERE order_id = ?", [ORD_MACET]);
+
+const antreanSebelum = await db.getPendingFulfillmentJobs();
+cek('job MANUAL_REVIEW memang tidak pernah diambil worker',
+  !antreanSebelum.some(j => j.order_id === ORD_MACET));
+
+const ulang = await db.resetFulfillmentJob(ORD_MACET);
+cek('antre ulang berhasil', ulang.success === true && ulang.alasan === 'DIANTRE_ULANG', JSON.stringify(ulang));
+cek('status lama dilaporkan apa adanya', ulang.statusLama === 'MANUAL_REVIEW', ulang.statusLama);
+
+const jobUlang = await db.getQuery("SELECT status, attempts, last_error FROM fulfillment_jobs WHERE order_id = ?", [ORD_MACET]);
+cek('job kembali PENDING', jobUlang.status === 'PENDING', jobUlang.status);
+cek('hitungan percobaan direset', jobUlang.attempts === 0, jobUlang.attempts);
+cek('galat lama dibersihkan', jobUlang.last_error === null, String(jobUlang.last_error));
+
+const antreanSesudah = await db.getPendingFulfillmentJobs();
+cek('worker sekarang mengambilnya lagi', antreanSesudah.some(j => j.order_id === ORD_MACET));
+
+// Pesanan lunas yang job-nya hilang sama sekali (kasus yatim) juga harus tertolong.
+const ORD_YATIM = 'ORD-YATIM-UJI';
+await db.runQuery("INSERT OR REPLACE INTO orders (order_id, customer_nomor, total, status, payment_status) VALUES (?, ?, 20000, 'COMPLETED', 'PAID')", [ORD_YATIM, PEMBELI_MACET]);
+const yatim = await db.resetFulfillmentJob(ORD_YATIM);
+cek('pesanan tanpa job dibuatkan job baru', yatim.success === true && yatim.alasan === 'JOB_BARU', JSON.stringify(yatim));
+cek('order asing ditolak', (await db.resetFulfillmentJob('ORD-TIDAK-ADA')).success === false);
+
 console.log(`\n${'='.repeat(50)}`);
 console.log(`HASIL: ${lulus} lulus, ${gagal} gagal`);
 console.log('='.repeat(50));

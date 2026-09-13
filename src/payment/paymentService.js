@@ -59,12 +59,19 @@ export async function laporGagalSettle(order, result) {
 export async function createPayment(orderId, subtotal) {
   const qrisData = await casaku.createCasakuQris({ orderId, subtotal });
 
-  // Persist transaction to DB
+  // Masa berlaku yang DICATAT harus sama dengan yang DIMINTA ke Casaku.
+  //
+  // Dulu angka 15 dipaku di sini sementara Casaku diberi tahu
+  // CASAKU_QR_EXPIRY_MINUTES. Kalau owner menyetel 30, Casaku menjaga QR-nya
+  // hidup 30 menit, tapi `expired_at` di database tertulis 15 — dan penyapu
+  // kedaluwarsa membatalkan pesanannya di menit ke-15 sementara QRIS-nya masih
+  // bisa dibayar setengah jam penuh. Uang masuk ke pesanan yang sudah CANCELLED.
+  const menitBerlaku = casaku.getCasakuConfig().expiryMinutes;
   await db.createCasakuTransaction(
     orderId,
     qrisData.transactionId,
     qrisData.totalAmount,
-    15,
+    menitBerlaku,
     qrisData.qrString
   );
 
@@ -82,10 +89,33 @@ export async function createPayment(orderId, subtotal) {
  * Cancel an order's payment (call Casaku cancel endpoint and release stock in DB).
  */
 export async function cancelPayment(orderId, casakuTransactionId) {
-  if (casakuTransactionId) {
-    await casaku.cancelCasakuTransaction(casakuTransactionId);
+  if (!casakuTransactionId) return { ok: true, adaQris: false };
+
+  // Hasilnya DIPERIKSA. cancelCasakuTransaction menelan galatnya sendiri dan
+  // memulangkan { success: false }, dan dulu nilai itu dibuang begitu saja —
+  // sehingga `.batal` membatalkan pesanan di database sambil MEMBIARKAN QRIS-nya
+  // hidup di Casaku. QR itu masih ada di riwayat chat pembeli, masih bisa
+  // di-scan, dan rekonsiliasi hanya melihat pesanan berstatus WAITING_PAYMENT —
+  // jadi kalau dia terlanjur membayar, tidak ada satu pun jalur yang melihatnya.
+  const hasil = await casaku.cancelCasakuTransaction(casakuTransactionId);
+  if (!hasil.success) {
+    const sebab = hasil.error || JSON.stringify(hasil.data);
+    console.error(`[PAYMENT] Gagal membatalkan QRIS ${casakuTransactionId} untuk ${orderId}: ${sebab}`);
+    try {
+      await db.addLog('PAYMENT', `⚠️ QRIS order ${orderId} GAGAL dibatalkan di Casaku — QR lama mungkin masih bisa dibayar.`);
+    } catch (_) {}
+    await notifikasiOwner(
+      `⚠️ *QRIS LAMA MUNGKIN MASIH HIDUP*\n\n` +
+      `Pesanan *${orderId}* sudah dibatalkan di bot, tetapi permintaan pembatalan ke Casaku gagal.\n\n` +
+      `Sebab: ${sebab}\n\n` +
+      `Kalau pembeli terlanjur men-scan QR lamanya, uang itu TIDAK akan terdeteksi otomatis. ` +
+      `Cek dashboard Casaku untuk transaksi *${casakuTransactionId}*.`
+    );
+    return { ok: false, adaQris: true, sebab };
   }
-  // DB cancel & stock release handled by cancelActiveOrder in database.js
+
+  return { ok: true, adaQris: true };
+  // Pembatalan di database dan pelepasan stok ditangani cancelActiveOrder.
 }
 
 /**

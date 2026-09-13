@@ -7,6 +7,10 @@ import { config } from '../../config.js';
 
 const CASAKU_BASE = 'https://api.casaku.id';
 
+// Bot ini melayani pelanggan yang sedang menunggu balasan di WhatsApp; lebih baik
+// gagal cepat dengan pesan jelas daripada menggantung tanpa suara.
+const BATAS_WAKTU_MS = 20_000;
+
 function getCasakuConfig() {
   return {
     licenseKey: process.env.CASAKU_LICENSE_KEY || config.casaku?.licenseKey || '',
@@ -34,18 +38,33 @@ function casakuRequest(method, path, body = null) {
         ...(payload ? { 'Content-Length': Buffer.byteLength(payload) } : {}),
       },
     };
+    let selesai = false;
+    const sekali = (fn) => (arg) => { if (selesai) return; selesai = true; fn(arg); };
+    const beres = sekali(resolve);
+    const gagal = sekali(reject);
+
     const req = https.request(options, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
         try {
-          resolve({ status: res.statusCode, data: JSON.parse(data) });
+          beres({ status: res.statusCode, data: JSON.parse(data) });
         } catch {
-          resolve({ status: res.statusCode, data });
+          beres({ status: res.statusCode, data });
         }
       });
     });
-    req.on('error', reject);
+
+    // BATAS WAKTU. Tanpa ini, koneksi yang tersambung lalu menggantung membuat
+    // Promise ini TIDAK PERNAH selesai: `await createPayment(...)` di dalam
+    // checkout menggantung selamanya, blok try/catch-nya tidak pernah jalan, dan
+    // pelanggan tidak menerima apa pun — bukan QRIS, bukan pesan gagal. Node
+    // tidak memasang batas waktu apa pun sendiri untuk https.request.
+    req.setTimeout(BATAS_WAKTU_MS, () => {
+      req.destroy(new Error(`Casaku tidak menjawab dalam ${BATAS_WAKTU_MS / 1000} detik`));
+    });
+
+    req.on('error', gagal);
     if (payload) req.write(payload);
     req.end();
   });
