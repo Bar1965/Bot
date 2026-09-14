@@ -271,8 +271,9 @@ const categories = {
       {
         title: '📥 UNDUH MEDIA',
         items: [
-          ['.tt / .ig / .fb / .yt / .pin <link>', 'Unduh video, reels, slide & MP3'],
-          ['.song / .play <judul>', 'Unduh lagu MP3 dari YouTube']
+          ['.tt / .ig / .fb / .yt / .pin <link>', 'Unduh video, reels & slide'],
+          ['.ytmp3 <link>', 'Ambil audionya saja dari link YouTube'],
+          ['.song / .play <judul>', 'Cari & kirim lagu dari YouTube']
         ]
       },
       {

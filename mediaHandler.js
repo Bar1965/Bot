@@ -672,11 +672,29 @@ async function downloadWithYtdlp(url, isAudio = false) {
     }
   } catch (e) {}
 
+  // `--audio-format best` berarti JANGAN konversi — simpan wadah aslinya.
+  //
+  // Sebelumnya di sini berdiri `--audio-format mp3 --audio-quality 2`, yang
+  // mentranskode lossy ke lossy: AAC milik YouTube dibongkar lalu dikodekan ulang
+  // jadi MP3. Itu tidak pernah menguntungkan, dan rusaknya ke dua arah — diukur
+  // langsung dari dua unduhan nyata:
+  //
+  //   Klip sederhana 19 detik : AAC 127 kb/s -> MP3 VBR jatuh ke  68 kb/s
+  //   Lagu 2 menit 10 detik   : AAC 127 kb/s -> MP3 VBR naik ke  172 kb/s,
+  //                             berkasnya 35% LEBIH BESAR (2,0 MB -> 2,7 MB)
+  //
+  // Pada konten sederhana VBR menjatuhkan bitrate-nya sampai separuh; pada musik
+  // ia justru membengkak, dan bit tambahannya dipakai menyimpan artefak kompresi
+  // AAC, bukan musiknya. Dua-duanya lebih buruk dari sumbernya.
+  //
+  // `-x` tetap dipasang: selektor format punya `b` sebagai jaring pengaman
+  // terakhir, yang bisa mengembalikan format gabungan (ada trek videonya). Kalau
+  // itu terjadi, `-x` mengekstrak audionya — dan karena formatnya 'best',
+  // ekstraksi itu tidak ikut mengodekan ulang kalau tidak perlu.
   const formatArgs = isAudio ? [
     '-f', FORMAT_AUDIO_WA,
     '-x',
-    '--audio-format', 'mp3',
-    '--audio-quality', '2'
+    '--audio-format', 'best'
   ] : [
     '-f', FORMAT_VIDEO_WA,
     '--merge-output-format', 'mp4',
@@ -711,7 +729,9 @@ async function downloadWithYtdlp(url, isAudio = false) {
   let hasil = null;
   try {
     const urutanExt = isAudio
-      ? ['.mp3', '.m4a', '.opus', '.ogg', '.webm', '.aac']
+      // .m4a didahulukan: sejak konversi MP3 dibuang, itulah wadah yang paling
+      // sering keluar. .mp3 tetap dicari untuk berkas sisa dari versi lama.
+      ? ['.m4a', '.mp3', '.opus', '.ogg', '.webm', '.aac']
       : ['.mp4', '.mkv', '.mov', '.webm'];
 
     const kandidat = fs.readdirSync(tmpDir)
@@ -2125,9 +2145,10 @@ export async function downloadSongBySearch(query) {
     // (format gabungan 360p) sehingga MP3-nya diekstrak dari audio 128k video.
     '-f', FORMAT_AUDIO_WA,
     '--max-filesize', '30M',
+    // Lihat catatan di downloadWithYtdlp: 'best' = simpan wadah asli, jangan
+    // kodekan ulang. Jalur inilah yang dipakai `.song <judul>` dan `.play`.
     '--extract-audio',
-    '--audio-format', 'mp3',
-    '--audio-quality', '2',
+    '--audio-format', 'best',
     '-o', outputTemplate,
     `ytsearch1:${query}`
   ];
@@ -2136,14 +2157,36 @@ export async function downloadSongBySearch(query) {
   await runPythonProc(fileArgs, 180000);
   try {
     const files = fs.readdirSync(tmpDir);
-    const matchedFile = files.find(f => f.startsWith(uniquePrefix) && f.endsWith('.mp3'));
+    // Ekstensi tidak lagi dipatok '.mp3'. Sejak konversi dibuang, berkasnya
+    // keluar sebagai .m4a (atau .opus/.webm kalau jatuh ke format cadangan), dan
+    // pencarian yang mengunci '.mp3' tidak akan menemukan apa pun — lagunya
+    // terunduh utuh lalu dilaporkan gagal.
+    const EKSTENSI_AUDIO = ['.m4a', '.mp3', '.opus', '.ogg', '.webm', '.aac', '.flac', '.wav'];
+    const matchedFile = files.find(f =>
+      f.startsWith(uniquePrefix) && EKSTENSI_AUDIO.some(e => f.toLowerCase().endsWith(e))
+    );
     if (matchedFile) {
       const filePath = path.join(tmpDir, matchedFile);
       const buffer = fs.readFileSync(filePath);
-      const title = matchedFile.substring(uniquePrefix.length, matchedFile.length - 4);
+      const ekstensi = path.extname(matchedFile);
+      const title = matchedFile.substring(uniquePrefix.length, matchedFile.length - ekstensi.length);
+      // Jenisnya dibaca dari ISI berkas, bukan dari namanya: mimetype yang salah
+      // (menandai data AAC sebagai audio/mpeg) membuat iOS menolak memutarnya.
+      const jenis = deteksiJenisMedia(buffer);
       bersihkanSisaUnduhan(tmpDir, uniquePrefix);
       if (buffer.length > 5000) {
-        return { success: true, buffer, title, mimetype: 'audio/mpeg', ext: 'mp3' };
+        // m4a dan mp4 punya byte penanda yang SAMA ('ftyp'), jadi deteksi wadah
+        // memulangkan 'mp4' untuk berkas yang sebenarnya audio saja. Unduhan ini
+        // memang audio-only, jadi labelnya dibetulkan di sini — menandai data AAC
+        // sebagai video/mp4 (atau audio/mpeg) membuat iOS menolak memutarnya.
+        const audioMp4 = !jenis || jenis.wadah === 'mp4' || jenis.wadah === 'm4a';
+        return {
+          success: true,
+          buffer,
+          title,
+          mimetype: audioMp4 ? 'audio/mp4' : jenis.mimetype,
+          ext: audioMp4 ? 'm4a' : jenis.ext
+        };
       }
     }
     bersihkanSisaUnduhan(tmpDir, uniquePrefix);

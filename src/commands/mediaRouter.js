@@ -1230,13 +1230,23 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
             ? { success: true, buffer: siap.buffer, title: (res.title || 'YouTube Audio').replace(/[/\\?%*:|"<>]/g, ''), mimetype: siap.mimetype, ext: siap.ext }
             : { success: false, message: res.success ? mediaHandler.pesanGagalMedia(siap, 'Audio YouTube') : (res.message || 'Gagal mengunduh audio YouTube.') };
         } else {
-          songRes = await mediaHandler.downloadSongBySearch(query);
+          // Hasil pencarian dilewatkan gerbang yang SAMA dengan jalur berlink di
+          // atas. Dulu cabang ini mengirim buffer mentah langsung: batas 48 MB
+          // tidak diperiksa, dan mimetype-nya dipakai apa adanya — padahal wadah
+          // m4a terbaca sebagai 'mp4', jadi lagunya dikirim berlabel video.
+          const hasilCari = await mediaHandler.downloadSongBySearch(query);
+          const siapCari = hasilCari.success
+            ? await mediaHandler.siapkanMediaWA({ buffer: hasilCari.buffer, type: 'audio' })
+            : null;
+          songRes = siapCari?.ok
+            ? { success: true, buffer: siapCari.buffer, title: hasilCari.title, mimetype: siapCari.mimetype, ext: siapCari.ext }
+            : { success: false, message: hasilCari.success ? mediaHandler.pesanGagalMedia(siapCari, 'Lagu') : hasilCari.message };
         }
         if (songRes.success && songRes.buffer) {
           await sock.sendMessage(jid, {
             audio: songRes.buffer,
-            mimetype: songRes.mimetype || 'audio/mpeg',
-            fileName: `${songRes.title}.${songRes.ext || 'mp3'}`
+            mimetype: songRes.mimetype || 'audio/mp4',
+            fileName: `${songRes.title}.${songRes.ext || 'm4a'}`
           });
           await react('✅');
         } else {
