@@ -24,6 +24,8 @@ import { activeWireGames, handleCutTheWire } from './cutTheWire.js';
 import { activeBattleships, pendingBattleships, handleBattleshipCommand } from './battleship.js';
 import { activeBuckshots, pendingBuckshots, handleBuckshotCommand } from './buckshotRoulette.js';
 import { activeUno, handleUnoCommand } from './uno/index.js';
+import { activeLiarsDice, handleLiarsDiceCommand } from './liarsDice.js';
+import { handleFishingCommand } from './fishingExplorer.js';
 import { getSystemChangelog } from '../utils/changelog.js';
 import { buildCommandMenu } from '../../commandRegistry.js';
 import { jidNormalizedUser } from '@whiskeysockets/baileys';
@@ -64,6 +66,7 @@ const FUN_CMD_TETAP_AKTIF = [
   'batalbom', 'cancelbom', 'batalkapal', 'tolakkapal',
   'batalbuckshot', 'tolakbuckshot', 'nyerahbuckshot',
   'bataluno', 'nyerahuno',
+  'batalliar', 'cancelliar', 'nyerahliar',
   'update', 'changelog', 'patchnotes', 'whatsnew', 'pembaruan',
   'rekomendasi', 'recommend', 'saranproduk',
   'freegames', 'freegame', 'gamegratis', 'freegamestag'
@@ -215,6 +218,11 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     'battleship', 'kapal', 'perangkapal', 'terimakapal', 'gaskapal', 'tolakkapal', 'batalkapal', 'rudal', 'bomkapal',
     'buckshot', 'shotgun', 'gasbuckshot', 'tolakbuckshot', 'batalbuckshot', 'nyerahbuckshot', 'pakai', 'use', 'rokok', 'kaca', 'gergaji', 'bir', 'borgol',
     'uno', 'joinuno', 'gasuno', 'bataluno', 'nyerahuno', 'u', 'ambil',
+    'liarsdice', 'dadu2', 'perudo', 'joinliar', 'gasliar', 'batalliar', 'cancelliar', 'nyerahliar', 'dudo', 'liar', 'bohong', 'cekdadu', 'daduku',
+    // `keranjang` SENGAJA tidak ada di sini: itu milik keranjang belanja
+    // pelanggan (`customerHandler`), dan funHandler jalan lebih dulu di rantai
+    // router — mengklaimnya membuat tombol "🛒 Lihat Keranjang" membalas ember
+    'mancing', 'fish', 'fishing', 'joran', 'strike', 'ikan', 'tangkapan', 'ember', 'fishbasket', 'jualikan', 'sellfish', 'pasarikan', 'bukapeti', 'chest', 'openbox', 'peti', 'tokopancing', 'tokoumpan', 'alatpancing', 'infomancing', 'topmancing', 'rankmancing', 'leaderboardmancing', 'lbmancing',
     'heist', 'rampokbank', 'joinheist', 'startheist',
     'balapkuda', 'pasangkuda', 'betkuda', 'pasang', 'bet', 'kuda', 'race', 'startbalap', 'startrace', 'cancelbalap',
     'bank', 'brankas', 'depo', 'setor', 'deposito', 'tarik', 'withdraw',
@@ -758,6 +766,12 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
     if (activeUno.has(jid)) {
       return await handleUnoCommand(sock, jid, senderNumber, messageObj, args, command, isFromGroup);
     }
+    // Liar's Dice juga: papan mejanya menyuruh pemain mengetik `.kartu` untuk
+    // menerima ulang dadu rahasianya lewat DM. Tanpa baris ini perintah itu
+    // ditelan cabang poker di atas dan `checkSecretDice` tidak pernah terpanggil.
+    if (activeLiarsDice.has(jid)) {
+      return await handleLiarsDiceCommand(sock, jid, senderNumber, messageObj, args, command, isFromGroup);
+    }
   }
 
   // Cut The Wire (Jinakkan Bom Waktu)
@@ -791,6 +805,32 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
   if (['uno', 'joinuno', 'gasuno', 'bataluno', 'nyerahuno'].includes(command)
       || (['u', 'ambil'].includes(command) && activeUno.has(jid))) {
     return await handleUnoCommand(sock, jid, senderNumber, messageObj, args, command, isFromGroup);
+  }
+
+  // Liar's Dice / Perudo (Dadu Bajak Laut)
+  //
+  // Alias milik game sendiri selalu hidup. Alias yang dipinjam dari kosakata
+  // umum digerbangi sesi, mengikuti pola Buckshot & UNO di atas:
+  // - `liar` / `bohong` kata sehari-hari; tanpa gerbang, mengetiknya di DM
+  //   dibalas "hanya dapat dimainkan di grup" padahal tidak ada meja di mana pun.
+  // - `tebak` milik game Tebak Angka (lihat cabang `command === 'tebak'` jauh di
+  //   bawah). Hanya diserobot kalau si pengirim memang pemain yang masih hidup
+  //   di meja dadu yang sedang berjalan.
+  // - `bid` SENGAJA tidak diklaim di sini: itu perintah Lelang Kotak Misteri
+  //   yang bisa jalan berbarengan di grup yang sama.
+  const sesiDadu = activeLiarsDice.get(jid);
+  const LIAR_CMD = ['liarsdice', 'dadu2', 'perudo', 'joinliar', 'gasliar', 'batalliar', 'cancelliar', 'nyerahliar', 'dudo'];
+  const LIAR_CMD_SESI = ['liar', 'bohong', 'cekdadu', 'daduku'];
+  const giliranDadu = sesiDadu?.status === 'PLAYING' && sesiDadu.alivePlayers?.includes(senderNumber);
+  if (LIAR_CMD.includes(command)
+      || (LIAR_CMD_SESI.includes(command) && sesiDadu)
+      || (command === 'tebak' && giliranDadu)) {
+    return await handleLiarsDiceCommand(sock, jid, senderNumber, messageObj, args, command, isFromGroup);
+  }
+
+  // Fishing & Relic Explorer (Mancing & Harta Karun)
+  if (['mancing', 'fish', 'fishing', 'joran', 'strike', 'ikan', 'tangkapan', 'ember', 'fishbasket', 'jualikan', 'sellfish', 'pasarikan', 'bukapeti', 'chest', 'openbox', 'peti', 'tokopancing', 'tokoumpan', 'alatpancing', 'infomancing', 'topmancing', 'rankmancing', 'leaderboardmancing', 'lbmancing'].includes(command)) {
+    return await handleFishingCommand(sock, jid, senderNumber, messageObj, args, command, isFromGroup);
   }
 
   // Rampok Bank Akbar (Group Heist)
@@ -1492,14 +1532,25 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
       data.game.isJailed ? '• 🚨 *STATUS: SEDANG DALAM PENJARA*' : '',
       '',
       '━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
-      '_Ketik `.depo <nominal>` untuk top-up IDR atau `.daily` untuk reward harian._'
+      // `.depo` BUKAN top-up rupiah — itu menyetor poin game ke bank game
+      // (bankEconomy.js). Pelanggan yang menurut pada instruksi ini menabung
+      // poinnya lalu bingung kenapa saldo rupiahnya tidak bertambah.
+      '_Ketik `.deposit <nominal>` untuk top-up saldo rupiah atau `.daily` untuk reward harian._'
     ].filter(line => line !== '').join('\n');
 
     await send(sock, jid, messageObj, card, { mentions: [target] });
     return true;
   }
 
-  if (['poin', 'point', 'profile', 'level', 'me', 'cekpoin'].includes(command)) {
+  // `me` dan `profile` SENGAJA dilepas dari sini. Ini toko, bukan server game:
+  // orang yang mengetik `.me` hampir pasti ingin tahu saldonya, bukan XP-nya —
+  // dan layar ini tidak menampilkan rupiah sama sekali. Keduanya sekarang
+  // ditangani customerHandler, yang berada di ujung rantai router sehingga
+  // otomatis menerimanya begitu blok ini berhenti mengklaim.
+  //
+  // `points` ditambahkan karena selama ini ia lolos gerbang di baris 237 tapi
+  // tidak pernah ada di daftar ini — jadi `.points` dijawab dengan diam.
+  if (['poin', 'point', 'points', 'level', 'cekpoin'].includes(command)) {
     const contextInfo = messageObj?.message?.extendedTextMessage?.contextInfo;
     const mentions = contextInfo?.mentionedJid || [];
     let targetJid = mentions[0] || contextInfo?.participant;

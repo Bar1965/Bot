@@ -68,8 +68,10 @@ const categories = {
       {
         title: '💰 SALDO & DOMPET',
         items: [
+          ['.me', 'Kartu singkat: saldo, tier & pesanan aktif'],
           ['.dompet / .wallet / .aset', 'Semua aset: IDR, poin, TCG terpadu'],
           ['.saldo', 'Cek sisa saldo deposit rupiah'],
+          ['.deposit <nominal>', 'Isi saldo — bisa `50rb` atau `50.000`'],
           ['.deposit <nominal>', 'Top up saldo via QRIS otomatis']
         ]
       },
@@ -312,7 +314,7 @@ const categories = {
       {
         title: '💰 POIN & LEVEL',
         items: [
-          ['.poin / .profile', 'Level, XP, ranking & saldo poin'],
+          ['.poin / .level', 'Level, XP, ranking & Akbar Poin'],
           ['.dompet / .wallet / .aset', 'Semua aset: IDR, poin, TCG terpadu'],
           ['.daily', 'Klaim poin & XP gratis harian'],
           ['.lb / .rank', 'Papan peringkat — 13 kategori'],
@@ -428,7 +430,7 @@ const categories = {
         items: [
           ['.daftar <nama>', 'Registrasi member baru'],
           ['.gantinama <nama baru>', 'Ganti nama profil'],
-          ['.profil', 'Detail lengkap profil member']
+          ['.profil / .profile', 'Detail lengkap profil member']
         ]
       },
       {

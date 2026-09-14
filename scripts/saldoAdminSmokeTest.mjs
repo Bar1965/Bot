@@ -273,6 +273,85 @@ await jalankan(`.ceksaldo ${PEMBELI}`);
 cek('.ceksaldo menampilkan saldo', teksTerakhir().includes('SALDO PELANGGAN'));
 cek('.ceksaldo menampilkan riwayat', teksTerakhir().includes('perubahan terakhir'));
 
+// ============================================================
+bagian('11. Kartu .me menampilkan saldo di baris teratas');
+
+const { createCustomerHandler } = await import(REPO + 'src/handlers/customerHandler.js');
+// sendInteractiveButtons WAJIB diisi: bawaannya no-op, jadi pesan apa pun yang
+// lewat jalur itu (mis. notifikasi wajib registrasi) akan hilang tanpa jejak dan
+// uji ini akan mengira handler-nya bisu.
+const handleCustomerMessage = createCustomerHandler({
+  sock,
+  sendInteractiveButtons: async (s, tujuan, opsi) => {
+    terkirim.push({ tujuan, teks: opsi?.text || '' });
+  }
+});
+
+const PEMAKAI = '628444000004@lid';
+await db.getOrCreateCustomer(PEMAKAI, 'Budi Uji');
+// profile_completed = 1 artinya sudah `.daftar` — tanpa ini gerbang registrasi
+// menjawab lebih dulu dan kartu .me tidak pernah tercetak.
+await db.runQuery("UPDATE customers SET profile_completed = 1 WHERE nomor = ?", [PEMAKAI]);
+await db.addCustomerBalance(PEMAKAI, 120000, 'DEPOSIT_MANUAL', 'uji kartu me');
+
+terkirim.length = 0;
+await handleCustomerMessage(PEMAKAI, PEMAKAI, { message: { conversation: '.me' }, pushName: 'Budi Uji' },
+  '.me', false, { isAdmin: false, isOwner: false, isStoreAdmin: false });
+const kartu = teksTerakhir();
+
+cek('.me dijawab (tidak jatuh ke game)', kartu.length > 0 && !kartu.includes('AKSES DITOLAK'), kartu.slice(0, 70));
+cek('saldo tampil dalam rupiah', kartu.includes('Rp120.000'), kartu.slice(0, 120));
+cek('saldo ada di 4 baris pertama', kartu.split('\n').slice(0, 4).join('\n').includes('Rp120.000'), kartu.split('\n').slice(0, 4).join(' | '));
+cek('nama pelanggan tampil', kartu.includes('Budi Uji'));
+cek('tidak menampilkan XP seperti layar game', !kartu.includes('XP'), kartu.slice(0, 120));
+cek('cukup pendek untuk satu layar HP (<= 14 baris)', kartu.split('\n').length <= 14, kartu.split('\n').length);
+cek('menunjuk ke .dompet untuk rincian', kartu.includes('.dompet'));
+
+// Pelanggan bersaldo nol harus diberi tahu cara mengisinya.
+const KOSONG = '628444000005@lid';
+await db.getOrCreateCustomer(KOSONG, 'Saldo Kosong');
+await db.runQuery("UPDATE customers SET profile_completed = 1 WHERE nomor = ?", [KOSONG]);
+terkirim.length = 0;
+await handleCustomerMessage(KOSONG, KOSONG, { message: { conversation: '.me' }, pushName: 'Saldo Kosong' },
+  '.me', false, { isAdmin: false, isOwner: false, isStoreAdmin: false });
+const kartuKosong = teksTerakhir();
+cek('saldo nol tetap ditampilkan', kartuKosong.includes('Rp0'), kartuKosong.slice(0, 90));
+cek('saldo nol diarahkan ke .deposit', kartuKosong.includes('.deposit'), kartuKosong.slice(-90));
+
+// Pesanan yang menggantung ikut muncul — itu yang dicari orang saat buka profil.
+await db.addProduct('UJIME', 'Produk Uji Me', 25000, 5, 'uji', '', 'MANUAL', '', '', null, null, '30 Hari');
+await db.addToCart(PEMAKAI, 'UJIME', 1);
+terkirim.length = 0;
+await handleCustomerMessage(PEMAKAI, PEMAKAI, { message: { conversation: '.me' }, pushName: 'Budi Uji' },
+  '.me', false, { isAdmin: false, isOwner: false, isStoreAdmin: false });
+cek('pesanan aktif ikut ditampilkan', teksTerakhir().includes('keranjang'), teksTerakhir().slice(0, 200));
+
+// `.profile` sekarang layar toko yang sama dengan `.profil`, bukan layar game.
+terkirim.length = 0;
+await handleCustomerMessage(PEMAKAI, PEMAKAI, { message: { conversation: '.profile' }, pushName: 'Budi Uji' },
+  '.profile', false, { isAdmin: false, isOwner: false, isStoreAdmin: false });
+cek('.profile membuka profil TOKO', teksTerakhir().includes('KEUANGAN & KEANGGOTAAN'), teksTerakhir().slice(0, 90));
+
+// ============================================================
+bagian('12. Saldo tidak bocor ke grup');
+
+const GRUP = '120363000000000000@g.us';
+terkirim.length = 0;
+await handleCustomerMessage(GRUP, PEMAKAI, { message: { conversation: '.me' }, pushName: 'Budi Uji' },
+  '.me', true, { isAdmin: false, isOwner: false, isStoreAdmin: false });
+
+const keGrup = terkirim.filter(t => t.tujuan === GRUP);
+const keDm = terkirim.filter(t => t.tujuan === PEMAKAI);
+cek('kartu saldo dikirim ke DM, bukan ke grup', keDm.some(t => t.teks.includes('Rp120.000')), JSON.stringify(keDm.map(t => t.teks.slice(0, 30))));
+cek('nominal saldo TIDAK muncul di grup', !keGrup.some(t => t.teks.includes('Rp120.000')), JSON.stringify(keGrup.map(t => t.teks.slice(0, 40))));
+cek('grup hanya diberi tahu cek DM', keGrup.some(t => t.teks.includes('Chat Pribadi')), JSON.stringify(keGrup.map(t => t.teks.slice(0, 40))));
+
+terkirim.length = 0;
+await handleCustomerMessage(GRUP, PEMAKAI, { message: { conversation: '.saldo' }, pushName: 'Budi Uji' },
+  '.saldo', true, { isAdmin: false, isOwner: false, isStoreAdmin: false });
+const saldoKeGrup = terkirim.filter(t => t.tujuan === GRUP);
+cek('.saldo juga tidak bocor ke grup', !saldoKeGrup.some(t => t.teks.includes('Rp120.000')), JSON.stringify(saldoKeGrup.map(t => t.teks.slice(0, 40))));
+
 console.log(`\n${'='.repeat(50)}`);
 console.log(`HASIL: ${lulus} lulus, ${gagal} gagal`);
 console.log('='.repeat(50));

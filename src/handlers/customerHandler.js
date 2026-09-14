@@ -214,9 +214,16 @@ export function createCustomerHandler(ctx = {}) {
     }
 
     const memberProfile = await db.getCustomerMembershipProfile(senderNumber);
+    // Perintah yang balasannya dikirim ke DM walau diketik di grup.
+    //
+    // Layar bersaldo WAJIB ada di sini. `.saldo` selama ini tidak terdaftar,
+    // jadi mengetiknya di grup mencetak sisa saldo orang itu ke semua anggota —
+    // begitu juga profil, yang memuat saldo, total belanja dan kode referralnya.
+    // Itu informasi keuangan pribadi, bukan bahan obrolan grup.
     const isPrivateCommand =
       ['beli', 'buy', 'buynow'].includes(cleanCmd) ||
-      ['cart', 'keranjang', 'checkout', 'bayar', 'cancel', 'batal', 'status', 'cekbayar', 'sudahbayar', 'riwayat', 'history'].includes(cleanCmd);
+      ['cart', 'keranjang', 'checkout', 'bayar', 'cancel', 'batal', 'status', 'cekbayar', 'sudahbayar', 'riwayat', 'history'].includes(cleanCmd) ||
+      ['me', 'aku', 'saya', 'saldo', 'profil', 'profile', 'akun', 'member', 'statusakun', 'deposit'].includes(cleanCmd);
     const responseJid = (isFromGroup && isPrivateCommand) ? senderNumber : jid;
 
     if (memberProfile?.account_status === 'BANNED' && !actor.isAdmin && !actor.isOwner) {
@@ -556,7 +563,11 @@ Ketik `.bayar` untuk langsung memperoleh kode QRIS tagihan Anda!`;
       return digits ? `${digits}@s.whatsapp.net` : null;
     };
 
-  if (['profil', 'akun', 'member', 'statusakun'].includes(cleanCmd)) {
+  // `profile` digabung ke sini. Dulu `.profil` dan `.profile` adalah DUA layar
+  // berbeda di dua berkas berbeda — beda satu huruf, beda isi — jadi pelanggan
+  // yang mengetik `.profile` mengira melihat profil tokonya padahal mendapat
+  // profil game.
+  if (['profil', 'profile', 'akun', 'member', 'statusakun'].includes(cleanCmd)) {
     const targetJid = extractTargetMember() || senderNumber;
     const isSelf = targetJid === senderNumber;
     const profile = await db.getCustomerMembershipProfile(targetJid);
@@ -684,6 +695,63 @@ Ketik `.bayar` untuk langsung memperoleh kode QRIS tagihan Anda!`;
       });
     }
   };
+
+  // ==========================================
+  // KARTU SINGKAT PELANGGAN (.me)
+  // ==========================================
+  // Layar yang paling sering diketik orang, jadi tugasnya satu: menjawab
+  // "berapa uangku" dalam satu layar HP tanpa perlu di-scroll.
+  //
+  // Sebelumnya `.me` adalah alias `.poin` di src/games/index.js dan TIDAK
+  // menampilkan rupiah sama sekali — pelanggan yang ingin mengecek depositnya
+  // justru disuguhi level dan XP. Rinciannya tetap ada di `.dompet` (semua aset)
+  // dan `.profil` (riwayat lengkap); yang ini sengaja dibuat pendek.
+  if (['me', 'aku', 'saya'].includes(cleanCmd)) {
+    const profil = await db.getCustomerMembershipProfile(senderNumber);
+    const saldo = profil?.balance || 0;
+
+    let tierPremium = null;
+    try {
+      tierPremium = await db.getPremiumTier(senderNumber);
+    } catch (_) {}
+
+    let kartu = `👤 *${customerName || messageObj?.pushName || 'Pelanggan'}*\n`;
+    kartu += `━━━━━━━━━━━━━━━━━━\n`;
+    kartu += `💳 *Saldo: Rp${saldo.toLocaleString('id-ID')}*\n`;
+
+    const badgeTier = `🏅 Member ${profil?.tier || 'BRONZE'}`;
+    kartu += tierPremium && tierPremium !== 'Free'
+      ? `${badgeTier} · 👑 Premium ${tierPremium}\n`
+      : `${badgeTier}\n`;
+
+    // Pesanan yang masih menggantung ditampilkan di sini karena inilah yang
+    // sebenarnya dicari orang saat membuka profilnya: "pesananku sampai mana".
+    const pesanan = await db.getCustomerLastOrder(senderNumber);
+    if (pesanan && ['CART', 'WAITING_PAYMENT', 'WAITING_CONFIRMATION', 'PAID'].includes(pesanan.status)) {
+      const labelStatus = {
+        CART: '🛒 Masih di keranjang',
+        WAITING_PAYMENT: '⏳ Menunggu pembayaran',
+        WAITING_CONFIRMATION: '🔍 Menunggu verifikasi admin',
+        PAID: '📦 Sedang disiapkan'
+      }[pesanan.status];
+      kartu += `\n${labelStatus}\n`;
+      kartu += `   \`${pesanan.order_id}\` — Rp${(pesanan.total || 0).toLocaleString('id-ID')}\n`;
+    }
+
+    kartu += `\n🪙 Akbar Poin: *${profil?.game_points || 0}*  ·  🎖️ Loyalty: *${profil?.loyalty_points || 0}*\n`;
+    if (profil?.referral_code) {
+      kartu += `🎁 Kode referral: \`${profil.referral_code}\`\n`;
+    }
+    kartu += `━━━━━━━━━━━━━━━━━━\n`;
+    kartu += saldo > 0
+      ? `_Saldo bisa langsung dipakai belanja — checkout tanpa scan QRIS._\n`
+      : `_Isi saldo dengan_ \`.deposit 50rb\` _supaya checkout tidak perlu scan QRIS._\n`;
+    kartu += `_Rincian lengkap:_ \`.dompet\`  ·  _Riwayat:_ \`.riwayat\``;
+
+    await sock.sendMessage(responseJid, { text: kartu });
+    await sendRedirectNotice();
+    return;
+  }
 
 
 
