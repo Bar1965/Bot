@@ -818,6 +818,60 @@ the gate returned first and all four were dead — including `.acc`, which `.pai
 tells admins to use. `batal` is deliberately **not** in that list: it is the customer's
 cancel-my-order command, and adding it would hijack the owner's own `.batal` when they shop.
 
+### 10i. Deposit balance — the only path that can create money from nothing
+
+Every other money movement in this bot relays value that already exists: checkout
+deducts a balance the customer holds, `.paid` settles an invoice whose amount was
+already recorded, `markTransactionPaid` acts on a provider's confirmation.
+`.isisaldo` is different in kind — the bot simply trusts that the owner received
+cash in the real world. Treat it accordingly.
+
+The balance layer itself was already sound and should not be reworked:
+`deductCustomerBalance` guards with `WHERE balance >= ?` inside a transaction, so
+a balance can never go negative and cannot be double-spent; `financial_logs`
+records every movement. `settleOrderWithBalance` (§10f) is the checkout path and
+is already Priority 1 — a customer with enough balance never sees a QR at all.
+
+What `src/handlers/saldoAdmin.js` adds is the *owner* side, with four guards the
+owner chose explicitly:
+
+**Owner only, checked independently.** `groupAdminHandler`'s own `isOwner` relaxes
+itself with `.includes()` on JID fragments — acceptable for opening a menu, not
+for minting money. `benarBenarOwner()` compares through `samaOrangnya` against
+`ownerJid`/`ownerNumber` and refuses to guess. Store admins (including the second
+number in `adminNumbers`) are refused; they keep `.paid`, which only confirms an
+existing invoice.
+
+**Always confirm, via a one-time code — not "YA".** A typed "YA" can fire from
+muscle memory on a stale prompt and never forces anyone to read the resolved name.
+The confirmation message prints the customer's name, the current balance, the
+amount and the resulting balance, with a random 5-character code the owner must
+copy back. Codes are single-use (deleted before execution), expire in two minutes,
+and a new request replaces any pending one. Pending state is in memory on purpose:
+if the bot restarts, the request is gone rather than executable by a command
+nobody remembers issuing.
+
+**Identity resolved, never assembled, and the customer must already exist.**
+`extractTargetJid` is deliberately NOT used here — it builds `<digits>@s.whatsapp.net`,
+a shape 231 of 236 customers do not have, and `resolveTargetJid` accepts any string
+containing `@` as valid without checking that the account exists. Combined, that
+would credit a ghost row while the bot answered "berhasil" — and
+`addCustomerBalance` calls `getOrCreateCustomer`, so it would happily create that
+row. `saldoAdmin` requires a matching `customers` row before it will proceed, and
+accepts only typed input or a JID that came from WhatsApp itself (a reply's
+`participant` or a `mentionedJid`).
+
+**Withdrawals are logged honestly and the customer is told.** `tarikSaldoOwner`
+exists rather than reusing `deductCustomerBalance` because that function stamps
+every deduction as type `PURCHASE`, and a correction is not a purchase — mixing
+them makes the financial log report sales that never happened. Corrections are
+type `ADJUSTMENT`, carry `OWNER:<jid>` as the source, require a reason, and that
+reason is forwarded to the customer. The same `balance >= ?` guard applies, so an
+over-withdrawal fails rather than leaving a debt.
+
+`scripts/saldoAdminSmokeTest.mjs` (63 assertions) checks each guard by reading the
+balance *after* every refusal, not by trusting the reply text.
+
 ## 11. Dashboard (`server.js`, ~70 `/api` routes)
 
 - Routes are `app.VERB(path, authenticateJWT, authorizeRoles(...), handler)`. Roles are exactly

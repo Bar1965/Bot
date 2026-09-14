@@ -1957,9 +1957,19 @@ _Ketik \`.deposit [NOMINAL]\` untuk melakukan Top Up Saldo._`;
   }
 
   // 20. DEPOSIT TOPUP SALDO (.deposit [NOMINAL])
-  const depositMatch = text.match(/^[\.\/]?deposit\s+(\d+)$/i);
+  // Polanya dulu `(\d+)`, jadi `.deposit 50rb` dan `.deposit 50.000` DITOLAK —
+  // padahal `.price`, wizard `.tokobaru`, dan `.isisaldo` sama-sama menerima
+  // bentuk itu. Satu toko tidak boleh punya dua aturan tentang cara menulis
+  // rupiah. Sekarang teks nominalnya diambil utuh lalu diurai parser yang sama.
+  const depositMatch = text.match(/^[\.\/#]?deposit\s+(.+)$/i);
   if (depositMatch) {
-    const amount = parseInt(depositMatch[1], 10);
+    const amount = db.parseHargaIndonesia(depositMatch[1]);
+    if (amount === null) {
+      await sock.sendMessage(responseJid, {
+        text: "⚠️ *Nominal tidak terbaca.*\n\nBoleh ditulis `50000`, `50.000`, atau `50rb`.\n\n_Contoh:_ `.deposit 50rb`"
+      });
+      return;
+    }
     if (amount < 5000) {
       await sock.sendMessage(responseJid, { text: "⚠️ *Nominal Minimal Deposit:* Rp5.000" });
       return;

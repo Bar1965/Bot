@@ -452,7 +452,11 @@ const categories = {
           ['.setdelivery <kode> <auto/manual>', 'Ubah mode kirim produk'],
           ['.stock <kode> <qty>', 'Ubah stok — produk MANUAL saja'],
           ['.paid <orderId>', 'Konfirmasi manual order lunas'],
-          ['.kirimulang <orderId>', 'Antre ulang pengiriman yang gagal']
+          ['.kirimulang <orderId>', 'Antre ulang pengiriman yang gagal'],
+          ['.isisaldo <nomor> <nominal>', 'Tambah saldo deposit pelanggan (Owner)'],
+          ['.tariksaldo <nomor> <nominal> <alasan>', 'Koreksi saldo pelanggan (Owner)'],
+          ['.ceksaldo <nomor>', 'Lihat saldo & riwayatnya (Owner)'],
+          ['.totalsaldo', 'Total saldo pelanggan yang dipegang toko (Owner)']
         ]
       },
       {

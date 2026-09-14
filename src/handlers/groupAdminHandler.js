@@ -13,6 +13,7 @@ import { backupDatabase } from '../../scheduler.js';
 import { adalahJidBot } from '../utils/botIdentity.js';
 import { perisaiTarget } from '../utils/perisaiTarget.js';
 import { mulaiWizardProduk, simpanGambarProduk } from './storeWizard.js';
+import { handleSaldoOwner } from './saldoAdmin.js';
 import { penutupGaransi } from '../utils/pesanGaransi.js';
 import { tanggalWib, jamWib } from '../utils/waktu.js';
 
@@ -49,7 +50,11 @@ export function createGroupAdminHandler(ctx) {
     'restock', 'stock', 'price', 'out', 'ready', 'addproduct', 'takeover', 
     'release', 'setname', 'setowner', 'eval', 'exec', 'backup', 'resetleaderboard',
     'addstock', 'tambahstok', 'cekstok', 'liststock', 'delstock', 'setdelivery', 'listproduk', 'katalogadmin',
-    'addproduk', 'editproduk', 'ubahproduk', 'delproduk', 'hapusproduk', 'setgambar', 'tokobaru', 'produkbaru'
+    'addproduk', 'editproduk', 'ubahproduk', 'delproduk', 'hapusproduk', 'setgambar', 'tokobaru', 'produkbaru',
+    // Saldo deposit — gerbang sesungguhnya ada di saldoAdmin.js dan HANYA owner
+    // yang lolos. Didaftarkan di sini supaya perintahnya sampai ke handler;
+    // kalau bukan owner, saldoAdmin yang menolaknya.
+    'isisaldo', 'tambahsaldo', 'tariksaldo', 'ceksaldo', 'totalsaldo', 'saldook'
   ];
 
   const groupModerationCommands = [
@@ -191,6 +196,40 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
   }
 
   // 🔒 Guard Grup Admin ACC khusus untuk perintah transaksi toko
+  // Saldo ditangani paling awal di antara perintah toko: modulnya punya
+  // pemeriksaan owner sendiri yang lebih ketat daripada `isOwner` di berkas ini
+  // (yang melonggarkan diri dengan .includes() pada potongan JID — cukup untuk
+  // membuka menu, tidak cukup untuk mencetak uang).
+  if (['isisaldo', 'tambahsaldo', 'tariksaldo', 'ceksaldo', 'totalsaldo', 'saldook'].includes(cleanCmd)) {
+    // extractTargetJid SENGAJA tidak dipakai di sini. Helper itu merakit
+    // `<digit>@s.whatsapp.net` dari nomor yang diketik — bentuk yang tidak
+    // dimiliki 231 dari 236 pelanggan toko ini, dan yang lolos begitu saja dari
+    // resolveTargetJid karena string apa pun bermuatan '@' dianggap JID sah.
+    // Digabung, itu berarti saldo bisa masuk ke akun hantu sambil bot membalas
+    // "berhasil".
+    //
+    // Yang dipakai hanya JID yang datang LANGSUNG dari WhatsApp — participant
+    // pesan yang dibalas, atau mention. Dua-duanya otoritatif, bukan tebakan.
+    const konteksSaldo = m.message?.extendedTextMessage?.contextInfo;
+    const jidOtoritatif = konteksSaldo?.participant
+      || (Array.isArray(konteksSaldo?.mentionedJid) ? konteksSaldo.mentionedJid[0] : null);
+
+    // Aturannya satu kalimat: kalau owner mengetik nomornya, itu yang dipakai;
+    // kalau tidak, barulah JID dari balasan/mention. Tidak ada tebak-menebak.
+    const adaTargetDiketik = Boolean(args[1]);
+    const argsSaldo = adaTargetDiketik
+      ? args
+      : (jidOtoritatif ? [args[0], jidOtoritatif, ...args.slice(1)] : args);
+
+    return await handleSaldoOwner({
+      sock,
+      jid,
+      senderNumber: senderNormalized,
+      args: argsSaldo,
+      cleanCmd
+    });
+  }
+
   if (adminStoreCommands.includes(cleanCmd)) {
     // Perintah toko & uang (.paid, .price, .stock, .addproduct, .addcoupon, dll) wajib identitas
     // Admin Toko atau Owner. Status admin grup WhatsApp SAJA tidak cukup — kalau tidak, siapa pun

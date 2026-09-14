@@ -1594,6 +1594,80 @@ export async function addCustomerBalance(customerNomor, amount, source = 'DEPOSI
 }
 
 /**
+ * Koreksi saldo oleh owner: tarik kembali sejumlah rupiah dari saldo pelanggan.
+ *
+ * Sengaja TIDAK memakai deductCustomerBalance, walau penjaga atomiknya sama.
+ * Fungsi itu mencatat setiap pengurangan sebagai type 'PURCHASE', dan sebuah
+ * koreksi BUKAN pembelian. Kalau dicampur, jejak keuangan toko berbohong: laporan
+ * akan menampilkan pembelian yang tidak pernah terjadi, dan koreksi yang tidak
+ * pernah terlihat. Untuk fitur yang menyentuh uang pelanggan, catatan yang jujur
+ * lebih penting daripada menghemat satu fungsi.
+ *
+ * Penjaga `balance >= ?` tetap dipakai, jadi saldo tidak akan pernah jadi minus:
+ * menarik lebih besar dari yang ada akan GAGAL, bukan menyisakan utang.
+ *
+ * @param {string} customerNomor
+ * @param {number} amount   Rupiah yang ditarik.
+ * @param {string} alasan   Wajib — ikut tersimpan dan ikut dikirim ke pelanggan.
+ * @param {string} olehJid  Siapa yang melakukannya, untuk jejak audit.
+ */
+export async function tarikSaldoOwner(customerNomor, amount, alasan, olehJid) {
+  const safeAmount = Math.floor(Number(amount));
+  if (!Number.isSafeInteger(safeAmount) || safeAmount <= 0) {
+    return { success: false, reason: 'INVALID_AMOUNT', message: 'Nominal tidak valid.' };
+  }
+
+  return withTransaction(async () => {
+    const result = await runQuery(
+      `UPDATE customers SET balance = balance - ? WHERE nomor = ? AND balance >= ?`,
+      [safeAmount, customerNomor, safeAmount]
+    );
+
+    if (result.changes === 0) {
+      const cust = await getQuery("SELECT balance FROM customers WHERE nomor = ?", [customerNomor]);
+      return {
+        success: false,
+        reason: 'SALDO_KURANG',
+        currentBalance: cust?.balance || 0,
+        message: `Saldo pelanggan cuma Rp${(cust?.balance || 0).toLocaleString('id-ID')}, tidak cukup untuk ditarik Rp${safeAmount.toLocaleString('id-ID')}.`
+      };
+    }
+
+    await runQuery(
+      `INSERT INTO financial_logs (customer_nomor, type, amount, source, description) VALUES (?, 'ADJUSTMENT', ?, ?, ?)`,
+      [customerNomor, safeAmount, `OWNER:${olehJid || 'tidak diketahui'}`, `Koreksi saldo oleh owner: ${alasan}`]
+    );
+
+    const updated = await getQuery("SELECT balance FROM customers WHERE nomor = ?", [customerNomor]);
+    return { success: true, newBalance: updated.balance };
+  });
+}
+
+/**
+ * Riwayat perubahan saldo satu pelanggan, terbaru dulu.
+ */
+export async function riwayatSaldo(customerNomor, batas = 10) {
+  return allQuery(
+    `SELECT type, amount, source, description, created_at
+     FROM financial_logs WHERE customer_nomor = ?
+     ORDER BY id DESC LIMIT ?`,
+    [customerNomor, Math.max(1, Math.min(50, Number(batas) || 10))]
+  );
+}
+
+/**
+ * Total saldo yang sedang DIPEGANG toko — ini utang, bukan pendapatan: uang
+ * pelanggan yang belum dibelanjakan. Owner perlu bisa melihatnya sewaktu-waktu.
+ */
+export async function totalSaldoPelanggan() {
+  const total = await getQuery("SELECT COALESCE(SUM(balance), 0) AS total, COUNT(*) AS n FROM customers WHERE balance > 0");
+  const teratas = await allQuery(
+    "SELECT nomor, nama, balance FROM customers WHERE balance > 0 ORDER BY balance DESC LIMIT 10"
+  );
+  return { total: total?.total || 0, jumlahPemilik: total?.n || 0, teratas: teratas || [] };
+}
+
+/**
  * Atomically deduct customer Akbar Poin.
  */
 export async function deductCustomerPoints(customerNomor, pointsToDeduct, description = 'TUKAR_POIN') {
