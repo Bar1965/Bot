@@ -240,6 +240,20 @@ filled in `safeSendMessage` right after a successful send, and read by `ambilPes
 Two instances sharing `./session` is the fastest way to *cause* the decryption failures in the first
 place — see §2 and the note about verifying only one `node index.js` runs.
 
+**When a peer is stuck on every message, not just some, the session is dead and `getMessage` cannot
+save it.** Re-encrypting with a broken session produces equally unreadable ciphertext; the log shows
+the same message id requested over and over. The remedy that worked on 2026-09-16:
+
+1. Copy the whole `session/` folder to `backups/` first.
+2. Stop the bot.
+3. Delete only that peer's files — `session-<jid>.*.json`, both the `@lid` number and the phone
+   number, since they are the same human. Eight files in that case.
+4. Restart. The next message negotiates a fresh session from prekeys.
+
+`creds.json` and `pre-key-*.json` must be left alone: `creds.json` is the device link, and deleting
+it means scanning a QR code again. Deleting per-peer `session-*.json` cannot unlink the bot.
+`sender-key-*` files are group keys and are unrelated to a one-to-one chat.
+
 ## 6. Adding a command — full checklist
 
 1. **Pick the owning handler** by consulting the chain order in §5. Whatever runs earlier wins.
