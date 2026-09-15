@@ -49,7 +49,7 @@ export function createGroupAdminHandler(ctx) {
     'delcoupon', 'listcoupon', 'addfaq', 'delfaq', 'listfaq', 'laporan', 
     'restock', 'stock', 'price', 'out', 'ready', 'addproduct', 'takeover', 
     'release', 'setname', 'setowner', 'eval', 'exec', 'backup', 'resetleaderboard',
-    'addstock', 'tambahstok', 'cekstok', 'liststock', 'delstock', 'setdelivery', 'listproduk', 'katalogadmin',
+    'addstock', 'tambahstok', 'cekstok', 'liststock', 'delstock', 'setdelivery', 'listproduk', 'katalogadmin', 'stokyatim',
     'addproduk', 'editproduk', 'ubahproduk', 'delproduk', 'hapusproduk', 'setgambar', 'tokobaru', 'produkbaru',
     // Saldo deposit — gerbang sesungguhnya ada di saldoAdmin.js dan HANYA owner
     // yang lolos. Didaftarkan di sini supaya perintahnya sampai ke handler;
@@ -2190,6 +2190,57 @@ user2@gmail.com|pass456
       msg += `• \`.cekstok <KODE>\` : Cek rincian akun\n`;
       msg += `• \`.price <KODE> <HARGA>\` : Ganti harga\n`;
       msg += `• \`.setdelivery <KODE> <AUTO/MANUAL>\` : Ganti mode kirim`;
+
+      await sock.sendMessage(jid, { text: msg });
+      return true;
+    }
+
+    // ── KREDENSIAL YATIM ──────────────────────────────────────────────────
+    //
+    // Akun yang sudah dibeli owner tapi produknya keburu dihapus. Tidak tampil
+    // di layar mana pun dan tidak bisa dijual, jadi tanpa perintah ini uangnya
+    // hilang tanpa jejak. Sekaligus jadi peringatan: kalau kodenya dibuat lagi,
+    // kredensial lama itu langsung dianggap stok siap jual.
+    if (cleanCmd === 'stokyatim') {
+      const sub = (args[1] || '').toLowerCase();
+
+      if (sub === 'hapus' || sub === 'buang') {
+        const kode = (args[2] || '').toUpperCase();
+        if (!kode) {
+          await sock.sendMessage(jid, { text: '⚠️ Format: `.stokyatim hapus <KODE>`\n\nKetik `.stokyatim` dulu untuk melihat daftarnya.' });
+          return true;
+        }
+        const hasil = await db.hapusStokYatim(kode);
+        if (!hasil.success) {
+          await sock.sendMessage(jid, { text: `❌ ${hasil.message}` });
+          return true;
+        }
+        await sock.sendMessage(jid, {
+          text: `🗑️ *${hasil.dihapus} kredensial yatim* kode \`${hasil.kode}\` dihapus permanen.`
+        });
+        return true;
+      }
+
+      const yatim = await db.getStokYatim();
+      if (!yatim || yatim.length === 0) {
+        await sock.sendMessage(jid, { text: '✅ Tidak ada kredensial yatim. Semua stok punya produknya.' });
+        return true;
+      }
+
+      const total = yatim.reduce((a, b) => a + (b.jumlah || 0), 0);
+      let msg = `👻 *KREDENSIAL YATIM — ${total} akun tanpa produk*\n`;
+      msg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+      msg += `_Akun ini sudah dibeli, tapi produknya sudah dihapus. Tidak muncul di katalog dan tidak bisa dijual._\n\n`;
+
+      for (const y of yatim) {
+        msg += `• \`${y.kode}\` — *${y.jumlah} akun* (ready ${y.ready}, reserved ${y.reserved})\n`;
+      }
+
+      msg += `\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+      msg += `⚠️ Kalau kode yang sama dibuat lagi, akun lama ini *langsung dianggap stok siap jual* — padahal bisa saja sudah mati.\n\n`;
+      msg += `Pilihannya:\n`;
+      msg += `• \`.addproduk <KODE> ...\` : hidupkan lagi produknya (cek dulu akunnya masih hidup)\n`;
+      msg += `• \`.stokyatim hapus <KODE>\` : buang akunnya permanen`;
 
       await sock.sendMessage(jid, { text: msg });
       return true;

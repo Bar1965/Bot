@@ -168,7 +168,7 @@ Kami ingin mengingatkan bahwa pesanan Anda dengan Order ID *${order.order_id}* m
 
 Harap segera transfer ke QRIS / petunjuk rekening kami agar pesanan dapat langsung kami kerjakan.
 
-Ketik `.batal` jika Anda ingin membatalkan pesanan ini. Terima kasih!`;
+Ketik \`.batal\` jika Anda ingin membatalkan pesanan ini. Terima kasih!`;
 
         await sock.sendMessage(order.customer_nomor, { text: reminderMsg });
         await db.setReminderSent(order.order_id);
@@ -191,7 +191,7 @@ Ketik `.batal` jika Anda ingin membatalkan pesanan ini. Terima kasih!`;
 
 Mohon maaf, pesanan Anda dengan Order ID *${order.order_id}* telah *DIBATALKAN* secara otomatis oleh sistem karena kami tidak menerima konfirmasi pembayaran dalam waktu 24 jam.
 
-Stok produk telah dikembalikan ke inventori. Silakan ketik `.menu` jika Anda ingin melakukan pemesanan ulang. Terima kasih.`;
+Stok produk telah dikembalikan ke inventori. Silakan ketik \`.menu\` jika Anda ingin melakukan pemesanan ulang. Terima kasih.`;
 
         await sock.sendMessage(order.customer_nomor, { text: expiredMsg });
         await db.addLog('ORDER', `Order ID ${order.order_id} dibatalkan otomatis oleh scheduler karena kedaluwarsa 24 jam.`);
@@ -206,7 +206,7 @@ Stok produk telah dikembalikan ke inventori. Silakan ketik `.menu` jika Anda ing
       const abandonedCarts = await db.getAbandonedCarts(2);
       for (const cart of abandonedCarts) {
         try {
-          const cartMsg = `🛒 Halo Kak *${cart.customer_nama}*!\n\nKeranjang belanja Anda masih menunggu:\n${cart.items_summary}\n\n💰 Total: *Rp${cart.total.toLocaleString('id-ID')}*\n\nKetik `.checkout` untuk melanjutkan pembayaran, atau `.batal` jika ingin membatalkan. 🙏`;
+          const cartMsg = `🛒 Halo Kak *${cart.customer_nama}*!\n\nKeranjang belanja Anda masih menunggu:\n${cart.items_summary}\n\n💰 Total: *Rp${cart.total.toLocaleString('id-ID')}*\n\nKetik \`.checkout\` untuk melanjutkan pembayaran, atau \`.batal\` jika ingin membatalkan. 🙏`;
           await sock.sendMessage(cart.customer_nomor, { text: cartMsg });
           await db.markCartReminderSent(cart.order_id);
           console.log(`[SCHEDULER] Abandoned cart reminder terkirim untuk ${cart.order_id}`);

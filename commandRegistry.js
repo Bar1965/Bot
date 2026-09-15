@@ -32,8 +32,8 @@ const categories = {
       {
         title: '🔎 LIHAT & CARI',
         items: [
-          ['.list / .produk', 'Katalog produk & status stok'],
-          ['.p / .detail <kode>', 'Detail & spesifikasi produk'],
+          ['.list / .produk', 'Katalog bernomor — balas angkanya untuk buka'],
+          ['.p / .detail <kode>', 'Deskripsi & semua pilihan paketnya'],
           ['.cari <kata kunci>', 'Cari produk per nama/kategori'],
           ['.bundle', 'Paket hemat bundling diskon']
         ]

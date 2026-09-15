@@ -9,6 +9,9 @@
     "test:tcg": "node scripts/tcgSmokeTest.mjs",
     "test:identity": "node scripts/botIdentityTest.mjs",
     "test:produk": "node scripts/produkAdminSmokeTest.mjs",
+    "test:katalog": "node scripts/katalogSmokeTest.mjs",
+    "test:saldo": "node scripts/saldoAdminSmokeTest.mjs",
+    "test:jebakan": "node scripts/runtimeTrapTest.mjs",
     "balance:tcg": "node scripts/tcgBalance.mjs",
     "kalibrasi:abadi": "node scripts/tcgAbadiKalibrasi.mjs"
   },

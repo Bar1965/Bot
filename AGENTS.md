@@ -32,10 +32,15 @@ start-bot.bat      # Windows: node index.js + pause
 
 Dashboard: `http://localhost:3000` (`PORT` env, default 3000). Login page `/login.html`.
 
-**There is no test runner, linter, formatter, watcher, or build.** `package.json` has only
-`start`. The validation loop is:
+**There is no test runner, linter, formatter, watcher, or build.** `package.json` carries `start`
+plus a handful of standalone smoke tests (`npm run test:tcg`, `test:identity`, `test:produk`,
+`test:katalog`, `test:saldo`, `test:jebakan`). The validation loop is:
 
 1. `node --check <file>` on every file you modified (`DEVELOPMENT_RULES.md` calls this `node -c`).
+   **`node --check` only checks syntax.** Two very common mistakes here pass it and then throw at
+   runtime, which in this bot means the customer gets no reply at all. `npm run test:jebakan`
+   (`scripts/runtimeTrapTest.mjs`) catches both across the whole repo — run it after any edit that
+   touches message text or adds a helper. See §15a.
 2. Kill the old process **completely** — `taskkill /F /IM node.exe` on Windows. Nothing handles
    SIGINT and `index.js` never exits on error, so a half-dead process keeps holding port 3000 and
    the next boot fails with `EADDRINUSE`.
@@ -781,6 +786,51 @@ dashboard is optional rather than required.
   including the whole wizard conversation through a fake `sock` — against a throwaway database in
   `os.tmpdir()`. 85 assertions, no WhatsApp session needed. It `chdir`s to the sandbox **before**
   importing the database layer; keep that order or it will write to the owner's live `shop.db`.
+
+### 10j. The numbered catalogue — `src/handlers/katalogView.js`
+
+The customer-facing shop is exactly two screens, and every number on them is bound to a **product
+code**, never to a search term.
+
+```
+.list        → KATALOG screen: one line per brand, numbered
+reply "1"    → PRODUK screen : description + every package of that brand, numbered
+reply "1"    → into the cart
+reply "0"    → back to the catalogue
+```
+
+- `katalogView.js` is **pure**: it takes rows and returns text. No `db`, no `sock`, no cart. That is
+  why `npm run test:katalog` can drive the whole flow with 100 assertions and no WhatsApp session.
+- **Nav sessions store exact SKU codes** (`{ type: 'KATALOG', entri: [{ brand, kodes }] }` and
+  `{ type: 'PRODUK', kodes }`). They used to store the *brand name*, and pressing a number
+  re-searched it with `LIKE '%brand%'` — so the number the customer pressed was not bound to the
+  product they had just been shown, and a brand whose name is a substring of another ("OFFICE"
+  also matches "LIBREOFFICE") could open, and sell, the wrong thing.
+- On a dial, the code is taken from **the stored index**, then re-read with `getProductByKode`. If
+  the owner deletes a product while the screen is open, the customer is told it is gone; the
+  numbering never slides onto the neighbour. `getProductsByKodes(kodes)` returns rows **in the
+  order asked for**, and drops codes that no longer exist — compare lengths, do not assume indexes.
+- `getProductsByBrand` matches `brand_category` **exactly**, not with `LIKE`. It exists so that
+  typing one SKU still shows all of that brand's packages.
+- One stock badge (`badgeStok`) feeds every screen. Before, the catalogue, the detail view and the
+  search results each had their own rule, so the same product could read "Ready" on one screen and
+  "Sisa 2" on the next.
+- Everything the customer sees comes from `STOK_ASLI` (READY `product_items` for AUTO products),
+  which is the number `addToCart` enforces. `getAllProductsSummary` (the owner's `.listproduk`)
+  uses it too, so admin and customer screens cannot disagree.
+- `judulPaket` drops `variant_type` when it is itself a duration, because this shop has a product
+  typed "1 Tahun" with duration "12 Bulan" and the naive join reads like a typo.
+
+### 10k. Orphaned credentials — `.stokyatim`
+
+`product_items` rows whose `produk_kode` has no `products` row. They are accounts the owner paid
+for: invisible on every screen, unsellable, and — this is the dangerous part — **instantly treated
+as sellable stock if the same code is ever created again**, because `addProduct` derives an AUTO
+product's `stok` from the credential count. As of 2026-09-15 the live database holds 7 of them
+(`GEMINI` ×3, `NET01` ×3, `ASEP01` ×1) left behind by the old delete path.
+
+`.stokyatim` lists them; `.stokyatim hapus <KODE>` destroys them, and refuses if the product exists
+(use `.delstock` for live products). `USED` rows are never included — those are warranty records.
 
 ### 10h. Admin store commands — what each one must not destroy
 
@@ -2279,6 +2329,37 @@ keys come from the **DB settings table**. Check which one a value uses before "f
 - The exact string `Order ID: *<id>*` in notification templates is a **machine-readable contract** —
   `extractOrderIdFromMessage` regex-scrapes it so admins can reply-to-confirm. Reformatting an
   order notification breaks `.paid` / `.done` / `.cancel`.
+
+### 15a. Two mistakes that pass `node --check` and then silence the bot
+
+Both have already shipped to production here. Both are guarded by
+`npm run test:jebakan` (`scripts/runtimeTrapTest.mjs`), which walks every tracked `.js`/`.mjs`/`.cjs`
+via acorn. Run it before you commit message text or a new helper.
+
+**1. A backtick inside a template literal that was never escaped.**
+
+```js
+const pesan = `Masuk keranjang. Ketik `.checkout` untuk bayar.`;   // ← looks fine
+```
+
+JavaScript reads that as a template, then `.checkout` on the resulting string (`undefined`), then a
+**tagged template** call on `undefined` → `TypeError`. `node --check` is happy: tagged templates are
+valid syntax. On 2026-09-15 there were **13 of these at once**, including the `.beli` confirmation,
+the `.keranjang` total, the package-selection confirmation, and three scheduler reminders — so the
+main buying path was dead and nobody could tell, because `bot.js`'s top-level catch only
+`console.error`s and the customer simply never gets a reply. Write `\`` inside template literals.
+
+**2. A `const` helper called before its own line has executed.**
+
+```js
+if (x) return await kirimNotice();        // line 400  → ReferenceError
+const kirimNotice = async () => { … };    // line 640
+```
+
+`const` has a temporal dead zone; hoisting does not save you. `customerHandler.js` is 2,400 lines
+with dozens of `const` helpers declared throughout the body, so "define it near where it is used"
+silently creates this. The guard follows call chains too: a helper declared early that *calls* a
+helper declared late is the same bug. **Declare shared helpers above every block that reaches them.**
 
 ## 16. Import cycles — the constraint behind several oddities
 

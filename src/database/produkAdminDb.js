@@ -344,3 +344,66 @@ export async function deleteProductWithItems(kode) {
     return { success: true, impact };
   });
 }
+
+/**
+ * Kredensial yatim: baris `product_items` yang kode produknya sudah tidak ada
+ * di tabel `products`.
+ *
+ * Ini akun yang sungguh-sungguh sudah dibeli owner dengan uang, tapi tidak
+ * terlihat di layar mana pun — tidak di `.list`, tidak di `.listproduk`, tidak
+ * di dashboard — dan tidak bisa dijual. Penyebabnya produk dihapus lewat jalur
+ * lama yang hanya menghapus baris `products` dan meninggalkan kredensialnya.
+ *
+ * Yang lebih berbahaya: kalau suatu hari kode yang sama dibuat lagi, semua
+ * kredensial lama itu langsung dianggap stok siap jual tanpa ada yang bertanya
+ * apakah akunnya masih hidup. Karena itu daftarnya perlu bisa dilihat, bukan
+ * cuma dibiarkan mengendap.
+ *
+ * Item berstatus USED sengaja tidak ikut: itu catatan pengiriman lama yang
+ * dipakai klaim garansi, bukan stok.
+ */
+export async function getStokYatim() {
+  return await allQuery(`
+    SELECT pi.produk_kode AS kode,
+           COUNT(*) AS jumlah,
+           SUM(CASE WHEN pi.status = 'READY' THEN 1 ELSE 0 END) AS ready,
+           SUM(CASE WHEN pi.status = 'RESERVED' THEN 1 ELSE 0 END) AS reserved,
+           MIN(pi.id) AS id_pertama
+    FROM product_items pi
+    WHERE pi.status IN ('READY', 'RESERVED')
+      AND NOT EXISTS (SELECT 1 FROM products p WHERE UPPER(p.kode) = UPPER(pi.produk_kode))
+    GROUP BY pi.produk_kode
+    ORDER BY jumlah DESC, pi.produk_kode ASC
+  `);
+}
+
+/**
+ * Membuang kredensial yatim untuk satu kode. Hanya berjalan kalau produknya
+ * memang sudah tidak ada — supaya perintah ini tidak pernah bisa dipakai
+ * menghapus stok produk yang masih dijual.
+ */
+export async function hapusStokYatim(kode) {
+  const code = String(kode || '').trim().toUpperCase();
+  if (!code) return { success: false, message: 'Kode produk kosong.' };
+
+  const produk = await getQuery("SELECT kode FROM products WHERE UPPER(kode) = ?", [code]);
+  if (produk) {
+    return {
+      success: false,
+      alasan: 'MASIH_ADA',
+      message: `Produk *${code}* masih terdaftar, jadi stoknya bukan yatim. Pakai \`.delstock\` untuk menghapus kredensial satuan.`
+    };
+  }
+
+  const hitung = await getQuery(
+    "SELECT COUNT(*) AS n FROM product_items WHERE UPPER(produk_kode) = ? AND status IN ('READY','RESERVED')",
+    [code]
+  );
+  if (!hitung || hitung.n === 0) {
+    return { success: false, alasan: 'TIDAK_ADA', message: `Tidak ada kredensial yatim untuk kode *${code}*.` };
+  }
+
+  await runQuery("DELETE FROM product_items WHERE UPPER(produk_kode) = ? AND status IN ('READY','RESERVED')", [code]);
+  await addLog("SYSTEM", `${hitung.n} kredensial yatim kode ${code} dihapus owner via WhatsApp.`);
+  return { success: true, kode: code, dihapus: hitung.n };
+}

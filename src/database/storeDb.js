@@ -176,6 +176,58 @@ export async function getProductByKode(kode) {
   return await getQuery(`SELECT p.*, ${STOK_ASLI} FROM products p WHERE UPPER(p.kode) = ?`, [kode.toUpperCase()]);
 }
 
+/**
+ * Mengambil beberapa produk sekaligus DENGAN KODE PERSIS, dan mengembalikannya
+ * dalam urutan yang diminta.
+ *
+ * Ini tulang punggung katalog bernomor. Layar katalog menyimpan kode apa saja
+ * yang barusan tampil; saat pelanggan membalas angka, kodenya diambil ulang
+ * lewat sini — bukan dicari ulang dengan LIKE '%merek%' seperti dulu, yang bisa
+ * mengembalikan kumpulan produk yang berbeda dari yang tadi ditampilkan.
+ *
+ * Urutan hasil sengaja mengikuti urutan `kodes`, bukan urutan database, supaya
+ * nomor yang dilihat pelanggan dan nomor yang dibaca bot tidak pernah berbeda.
+ * Kode yang produknya sudah dihapus akan hilang dari hasil — pemanggil wajib
+ * membandingkan panjangnya, bukan menganggap indeksnya tetap.
+ */
+export async function getProductsByKodes(kodes) {
+  const bersih = [];
+  for (const k of Array.isArray(kodes) ? kodes : []) {
+    const kode = String(k || '').trim().toUpperCase();
+    if (kode && !bersih.includes(kode)) bersih.push(kode);
+    if (bersih.length >= 100) break;
+  }
+  if (bersih.length === 0) return [];
+
+  const tanda = bersih.map(() => '?').join(',');
+  const rows = await allQuery(
+    `SELECT p.*, ${STOK_ASLI} FROM products p WHERE UPPER(p.kode) IN (${tanda})`,
+    bersih
+  );
+
+  const peta = new Map((rows || []).map(r => [String(r.kode || '').toUpperCase(), r]));
+  return bersih.map(k => peta.get(k)).filter(Boolean);
+}
+
+/**
+ * Semua produk satu merek, dicocokkan PERSIS (bukan LIKE).
+ *
+ * Dipakai saat pelanggan mengetik satu kode SKU: layar produknya tetap harus
+ * memperlihatkan seluruh jenis/paket merek itu, bukan satu paket saja. LIKE
+ * sengaja tidak dipakai supaya merek bernama mirip tidak saling menyeret —
+ * mencari 'OFFICE' dengan LIKE juga memulangkan 'LIBREOFFICE'.
+ */
+export async function getProductsByBrand(brand) {
+  const b = String(brand || '').trim().toUpperCase();
+  if (!b) return [];
+  return await allQuery(
+    `SELECT p.*, ${STOK_ASLI} FROM products p
+     WHERE UPPER(TRIM(COALESCE(p.brand_category, ''))) = ?
+     ORDER BY p.harga ASC, p.kode ASC`,
+    [b]
+  );
+}
+
 export async function addProduct(
   kode, nama, harga, stok, deskripsi, gambar = "", delivery_type = "MANUAL", 
   oldKode = "", petunjuk = "", brand_category = null, variant_type = null, duration = null
@@ -382,12 +434,17 @@ export async function setProductDeliveryType(kode, type) {
 
 /**
  * Mengambil ringkasan semua produk di toko untuk katalog admin via PM.
+ *
+ * Memakai STOK_ASLI, bukan kolom products.stok. Untuk produk AUTO kolom itu
+ * hanya salinan yang diperbarui saat restok, jadi `.listproduk` milik owner
+ * bisa menampilkan angka yang berbeda dari `.list` milik pelanggan — dan owner
+ * mengambil keputusan restok dari angka yang salah.
  */
 export async function getAllProductsSummary() {
   return await allQuery(`
-    SELECT kode, nama, harga, stok, delivery_type, brand_category, duration 
-    FROM products 
-    ORDER BY brand_category ASC, kode ASC
+    SELECT p.kode, p.nama, p.harga, ${STOK_ASLI}, p.delivery_type, p.brand_category, p.duration
+    FROM products p
+    ORDER BY p.brand_category ASC, p.kode ASC
   `);
 }
 
