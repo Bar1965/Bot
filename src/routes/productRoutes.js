@@ -158,8 +158,21 @@ router.post('/products/:kode/items', authenticateJWT, authorizeRoles('Owner', 'A
     if (items.length > 1000 || items.some(item => typeof item !== 'string' || item.trim().length === 0 || item.length > 5000)) {
       return res.status(400).json({ success: false, message: "Maksimal 1.000 kredensial, masing-masing 1-5.000 karakter." });
     }
-    const updatedStock = await db.addProductItems(kode, items);
-    res.json({ success: true, message: `Berhasil menambahkan ${items.length} kredensial stok.`, stock: updatedStock });
+    // Yang dilaporkan adalah yang BENAR-BENAR masuk. Kalimat lama memakai
+    // items.length — jumlah yang dikirim dari textarea — sehingga kredensial
+    // yang ditolak karena kembar tetap ikut terhitung di layar. Owner menutup
+    // dialognya dengan yakin stoknya naik 50, padahal naik 40.
+    const hasil = await db.addProductItems(kode, items);
+    const dilewati = hasil.dilewati?.length || 0;
+    let pesan = `Berhasil menambahkan ${hasil.addedCount} kredensial stok.`;
+    if (dilewati > 0) {
+      const sudahDikirim = hasil.dilewati.filter(d => d.alasan === 'SUDAH_DIKIRIM').length;
+      pesan += ` ${dilewati} dilewati karena kembar`;
+      pesan += sudahDikirim > 0
+        ? ` (${sudahDikirim} di antaranya sudah pernah dikirim ke pembeli).`
+        : '.';
+    }
+    res.json({ success: true, message: pesan, stock: hasil.readyCount, added: hasil.addedCount, skipped: dilewati });
   } catch (err) {
     res.status(500).json({ success: false, message: pesanErrorAman(err, 'PRODUCT') });
   }

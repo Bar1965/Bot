@@ -1107,6 +1107,40 @@ over-withdrawal fails rather than leaving a debt.
 `scripts/saldoAdminSmokeTest.mjs` (63 assertions) checks each guard by reading the
 balance *after* every refusal, not by trusting the reply text.
 
+### 10o. Bulk stock entry — one line is one credential, and every line must survive
+
+Two doors write credentials, and both now filter duplicates through
+`saringKredensialBaru`:
+
+| Door | Function | Cap |
+|---|---|---|
+| `.addstock KODE` in DM | `addProductItemsBatch` | none beyond 5 000 chars per item |
+| Dashboard → product → import textarea | `addProductItems` | 1 000 items per request |
+
+**Parsing lives in `src/handlers/stokInput.js`, not in the handler.** It is pure
+text, so it is testable without a WhatsApp session. `uraiBarisAddstock(text)`
+returns `{ kode, items }`. Newline is the only separator — spaces inside a line
+never split, because passwords contain spaces.
+
+The bug that forced the extraction: the handler used to branch, taking
+`lines.slice(1)` when there was more than one line and the first line's payload
+*only* when there was exactly one. So the most natural way to paste redeem links —
+first link dragged onto the command line, the rest below — **silently dropped the
+first one**, and the summary still said "berhasil". Nothing on screen carried the
+submitted count to compare against, so it was undetectable by reading the reply.
+
+`addProductItems` returns `{ readyCount, addedCount, dilewati }`, not a bare
+number. The dashboard route used to report `items.length` — what was *submitted* —
+as the number added, so pasting 50 links with 10 duplicates announced 50 while
+stock rose by 40. Report what the filter actually let through, on both doors.
+
+Fingerprinting is §10k's `sidikKredensial`: a `?code=`/`&rc=`/`&voucher=` param
+wins, then a leading email, then the whole text. So the same redeem link pasted
+twice with different tracking params is correctly one voucher, and two links that
+differ only in their code are correctly two.
+
+Covered by `scripts/produkAdminSmokeTest.mjs` §40.
+
 ## 11. Dashboard (`server.js`, ~70 `/api` routes)
 
 - Routes are `app.VERB(path, authenticateJWT, authorizeRoles(...), handler)`. Roles are exactly

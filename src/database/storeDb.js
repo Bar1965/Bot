@@ -415,7 +415,14 @@ export async function addProductItems(kode, itemsArray) {
   const readyCount = await getAvailableItemsCount(code);
   await runQuery("UPDATE products SET stok = ? WHERE kode = ?", [readyCount, code]);
   await addLog("SYSTEM", `Impor kredensial ${code}: ${baru.length} masuk, ${dilewati.length} dilewati karena kembar. Stok ready: ${readyCount} pcs.`);
-  return readyCount;
+
+  // Yang dipulangkan harus cukup untuk MENGABARKAN hasilnya, bukan cuma angka
+  // stok akhir. Dulu fungsi ini hanya memulangkan readyCount, jadi jalur
+  // dashboard tidak punya cara tahu berapa yang benar-benar masuk — dan
+  // melaporkan jumlah yang DIKIRIM sebagai jumlah yang ditambahkan. Menempel 50
+  // tautan yang 10 di antaranya kembar tetap berbunyi "Berhasil menambahkan 50
+  // kredensial", sementara stoknya cuma naik 40.
+  return { readyCount, addedCount: baru.length, dilewati };
 }
 
 /**

@@ -781,6 +781,65 @@ cek('cookie normal tetap terbaca', getCookieValue(reqPalsu('abc123'), 'auth_toke
 cek('nilai ter-encode tetap ter-decode', getCookieValue(reqPalsu('a%20b'), 'auth_token') === 'a b');
 cek('tanpa cookie -> null', getCookieValue({ headers: {} }, 'auth_token') === null);
 
+bagian('40. Menempel banyak tautan penukaran sekaligus');
+
+const { uraiBarisAddstock } = await import(REPO + 'src/handlers/stokInput.js');
+
+const L1 = 'https://music.apple.com/redeem?ctx=Music&code=AAAA1111';
+const L2 = 'https://music.apple.com/redeem?ctx=Music&code=BBBB2222';
+const L3 = 'https://music.apple.com/redeem?ctx=Music&code=CCCC3333';
+
+const kosong = uraiBarisAddstock('.addstock APPLE');
+cek('kode terbaca walau tanpa kredensial', kosong.kode === 'APPLE', kosong.kode);
+cek('tanpa kredensial -> daftar kosong', kosong.items.length === 0, JSON.stringify(kosong.items));
+
+const satuBaris = uraiBarisAddstock(`.addstock apple ${L1}`);
+cek('kode selalu jadi huruf besar', satuBaris.kode === 'APPLE', satuBaris.kode);
+cek('satu tautan di baris perintah terbaca', satuBaris.items.length === 1 && satuBaris.items[0] === L1,
+  JSON.stringify(satuBaris.items));
+
+const multiBaris = uraiBarisAddstock(`.addstock APPLE\n${L1}\n${L2}`);
+cek('tautan di baris-baris bawah terbaca semua', multiBaris.items.length === 2,
+  JSON.stringify(multiBaris.items));
+
+// INI regresinya. Bentuk campuran — tautan pertama ikut terbawa ke baris
+// perintah, sisanya turun sendiri — dulu MEMBUANG tautan pertama tanpa pesan
+// apa pun, dan ringkasannya tetap berbunyi "berhasil".
+const campuran = uraiBarisAddstock(`.addstock APPLE ${L1}\n${L2}\n${L3}`);
+cek('campuran: SEMUA tautan terbaca, tidak ada yang hilang',
+  campuran.items.length === 3, `${campuran.items.length}: ${JSON.stringify(campuran.items)}`);
+cek('campuran: tautan di baris perintah ikut masuk',
+  campuran.items[0] === L1, campuran.items[0]);
+
+const adaKosong = uraiBarisAddstock(`.addstock APPLE\n${L1}\n\n   \n${L2}\n`);
+cek('baris kosong tidak jadi kredensial hantu', adaKosong.items.length === 2,
+  JSON.stringify(adaKosong.items));
+
+// Spasi di DALAM satu baris bukan pemisah: sandi boleh mengandung spasi.
+const berspasi = uraiBarisAddstock('.addstock APPLE akun@mail.com | sandi ada spasi');
+cek('spasi dalam satu baris tidak memecah kredensial',
+  berspasi.items.length === 1 && berspasi.items[0] === 'akun@mail.com | sandi ada spasi',
+  JSON.stringify(berspasi.items));
+
+cek('teks kosong tidak melempar', uraiBarisAddstock('').items.length === 0);
+cek('teks null tidak melempar', uraiBarisAddstock(null).kode === '');
+
+// ── Jalur dashboard harus MELAPORKAN yang benar-benar masuk ────────────────
+await db.addProduct('UJI-REDEEM', 'Uji Tautan Penukaran', 25000, 0, '', '', 'AUTO', '', '', 'Uji', null, '1 Bulan');
+
+const impor1 = await db.addProductItems('UJI-REDEEM', [L1, L2, L3]);
+cek('dashboard: addedCount = jumlah yang benar-benar masuk', impor1.addedCount === 3, String(impor1.addedCount));
+cek('dashboard: readyCount ikut dipulangkan', impor1.readyCount === 3, String(impor1.readyCount));
+cek('dashboard: tidak ada yang dilewati', impor1.dilewati.length === 0, JSON.stringify(impor1.dilewati));
+
+// Tautan yang sama dengan parameter pelacak berbeda tetap voucher yang sama.
+const L1Pelacak = `${L1}&utm_source=wa`;
+const impor2 = await db.addProductItems('UJI-REDEEM', [L1Pelacak, 'https://music.apple.com/redeem?ctx=Music&code=DDDD4444']);
+cek('dashboard: kembar dilaporkan, bukan disembunyikan', impor2.addedCount === 1 && impor2.dilewati.length === 1,
+  `masuk ${impor2.addedCount}, dilewati ${impor2.dilewati.length}`);
+cek('dashboard: parameter pelacak tidak membuat voucher lama jadi "baru"',
+  impor2.dilewati[0]?.alasan === 'SUDAH_ADA', impor2.dilewati[0]?.alasan);
+
 console.log(`\n${'='.repeat(50)}`);
 console.log(`HASIL: ${lulus} lulus, ${gagal} gagal`);
 console.log('='.repeat(50));

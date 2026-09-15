@@ -14,6 +14,7 @@ import { adalahJidBot } from '../utils/botIdentity.js';
 import { perisaiTarget } from '../utils/perisaiTarget.js';
 import { mulaiWizardProduk, simpanGambarProduk } from './storeWizard.js';
 import { handleSaldoOwner } from './saldoAdmin.js';
+import { uraiBarisAddstock } from './stokInput.js';
 import { penutupGaransi } from '../utils/pesanGaransi.js';
 import { tanggalWib, jamWib } from '../utils/waktu.js';
 
@@ -1992,28 +1993,33 @@ Mohon maaf, pesanan Anda dengan Order ID *${orderId}* telah *DIBATALKAN* oleh ad
 
     if (['addstock', 'tambahstok'].includes(cleanCmd)) {
       // Dukung input multi-baris (copy-paste banyak akun) dan 1-baris
-      const lines = (text || '').split('\n').map(l => l.trim()).filter(Boolean);
-      const firstTokens = lines[0].split(/\s+/);
-      const code = (firstTokens[1] || '').toUpperCase();
+      const { kode: code, items: rawItems } = uraiBarisAddstock(text);
 
       if (!code) {
-        const helpMsg = `📦 *PANDUAN TAMBAH STOK AKUN DIGITAL (DM / PM)*
+        const helpMsg = `📦 *PANDUAN TAMBAH STOK (DM / PM)*
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-*Format 1: Multi-baris (Banyak akun sekaligus)*
-\`.addstock [KODE_PRODUK]\`
-akun1@gmail.com|pass1
-akun2@gmail.com|pass2
-akun3@gmail.com|pass3
+*Aturannya cuma satu: 1 baris = 1 stok.*
+Tempel berapa pun sekaligus, tinggal tekan enter tiap ganti stok.
 
-*Format 2: Satu akun*
-\`.addstock [KODE_PRODUK] akun@gmail.com|pass1\`
+*Tautan penukaran:*
+\`.addstock APPLE\`
+https://music.apple.com/redeem?code=AAAA1111
+https://music.apple.com/redeem?code=BBBB2222
+https://music.apple.com/redeem?code=CCCC3333
 
-_Contoh:_
+*Akun & sandi:*
 \`.addstock NET01\`
 user1@gmail.com|pass123
 user2@gmail.com|pass456
 
-💡 _Ketik \`.listproduk\` untuk melihat daftar kode produk toko._`;
+*Satu stok saja:*
+\`.addstock NET01 user@gmail.com|pass123\`
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔁 Yang kembar *otomatis ditolak* dan dilaporkan — jadi aman kalau ragu mana yang sudah pernah dimasukkan. Tautan sama dengan embel-embel \`&utm_source=…\` tetap terbaca sebagai voucher yang sama.
+⚠️ Jangan pakai penomoran (\`1.\`, \`2.\`) — angkanya ikut terkirim ke pembeli.
+
+💡 \`.listproduk\` = daftar kode · \`.cekstok <KODE>\` = isi stok`;
         await sock.sendMessage(jid, { text: helpMsg });
         return true;
       }
@@ -2022,14 +2028,6 @@ user2@gmail.com|pass456
       if (!p) {
         await sock.sendMessage(jid, { text: `❌ Produk dengan kode *${code}* tidak ditemukan. Ketik \`.listproduk\` untuk cek daftar produk.` });
         return true;
-      }
-
-      let rawItems = [];
-      if (lines.length > 1) {
-        rawItems = lines.slice(1);
-      } else if (firstTokens.length > 2) {
-        const itemContent = firstTokens.slice(2).join(' ');
-        if (itemContent.trim()) rawItems = [itemContent.trim()];
       }
 
       if (rawItems.length === 0) {
