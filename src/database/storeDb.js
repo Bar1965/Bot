@@ -1,6 +1,6 @@
 import { runQuery, getQuery, allQuery, withTransaction, formatPhoneNumber, normalizePhoneDigits, isPhoneMatch } from './connection.js';
 
-import { addLog, generateOrderId, addLoyaltyPoints } from './userDb.js';
+import { addLog, generateOrderId, addLoyaltyPoints, samaOrangnya } from './userDb.js';
 import { addCustomerBalance, deductCustomerBalance, tebusKupon, createFulfillmentJob, awardPurchasePoints } from './gamesDb.js';
 import { masaGaransiMs } from '../utils/pesanGaransi.js';
 
@@ -1443,12 +1443,119 @@ export async function applyCouponToOrder(orderId, couponCode, discountAmount) {
 
 
 // --- FUNGSI REVIEW & RATING ---
-export async function addReview(orderId, customerNomor, rating, comment) {
+/**
+ * Menyimpan ulasan pembeli.
+ *
+ * `produk_kode` ikut disimpan, tidak cuma disandarkan pada JOIN ke order_items.
+ * Kolom itu sudah lama ada di tabel tapi tidak pernah diisi, sehingga setiap
+ * ulasan kehilangan produknya begitu pesanannya dibersihkan — dan pembersihan
+ * pesanan adalah hal yang wajar dilakukan pemilik toko.
+ *
+ * Rating dijepit 1-5 di sini juga, bukan cuma di regex pemanggil: ini satu-
+ * satunya pintu masuk tabel reviews, termasuk dari dashboard nanti.
+ */
+export async function addReview(orderId, customerNomor, rating, comment, produkKode = null) {
+  const nilai = Math.max(1, Math.min(5, Math.round(Number(rating) || 0)));
+
+  let kode = produkKode ? String(produkKode).toUpperCase() : null;
+  if (!kode) {
+    const baris = await getQuery(
+      "SELECT produk_kode FROM order_items WHERE order_id = ? ORDER BY id ASC LIMIT 1",
+      [orderId]
+    );
+    kode = baris?.produk_kode || null;
+  }
+
   await runQuery(
-    "INSERT OR REPLACE INTO reviews (order_id, customer_nomor, rating, comment) VALUES (?, ?, ?, ?)",
-    [orderId, customerNomor, rating, comment || '']
+    "INSERT OR REPLACE INTO reviews (order_id, customer_nomor, rating, comment, produk_kode) VALUES (?, ?, ?, ?, ?)",
+    [orderId, customerNomor, nilai, String(comment || '').slice(0, 500), kode]
   );
-  await addLog("REVIEW", `Review diterima untuk Order ${orderId}: ${rating} bintang`);
+  await addLog("REVIEW", `Review diterima untuk Order ${orderId}: ${nilai} bintang${kode ? ` (${kode})` : ''}`);
+  return { orderId, rating: nilai, produkKode: kode };
+}
+
+/**
+ * Ulasan terbaru untuk layar `.testi`, lengkap dengan nama produk dan nama
+ * pembelinya. Keduanya LEFT JOIN: ulasan tetap tampil walau produknya sudah
+ * dihapus atau pembelinya belum pernah `.daftar`.
+ */
+export async function getTestimoniTerbaru(batas = 10) {
+  const n = Math.max(1, Math.min(50, Math.trunc(Number(batas) || 10)));
+  return await allQuery(
+    `SELECT r.order_id, r.customer_nomor, r.rating, r.comment, r.created_at,
+            p.nama AS nama_produk, c.nama AS nama_pembeli
+     FROM reviews r
+     LEFT JOIN products p ON UPPER(p.kode) = UPPER(r.produk_kode)
+     LEFT JOIN customers c ON c.nomor = r.customer_nomor
+     ORDER BY r.created_at DESC, r.id DESC
+     LIMIT ?`,
+    [n]
+  );
+}
+
+/**
+ * Pesanan pembeli ini yang barangnya sudah sampai tapi belum diulas.
+ *
+ * Dipakai supaya balasan "5" dari pembeli bisa dipahami TANPA sesi di memori:
+ * kalau bot restart di antara pengiriman dan balasan pembeli, sesi memori
+ * hilang dan ulasannya jatuh ke lantai. Database tidak lupa.
+ *
+ * Dibatasi 7 hari supaya angka "3" yang diketik pembeli sebulan kemudian tidak
+ * tiba-tiba jadi rating untuk pesanan yang sudah lama dilupakan.
+ */
+export async function getPesananMenungguUlasan(customerNomor) {
+  const semua = await allQuery(
+    `SELECT o.order_id, o.customer_nomor, o.created_at,
+            (SELECT oi.produk_kode FROM order_items oi WHERE oi.order_id = o.order_id ORDER BY oi.id ASC LIMIT 1) AS produk_kode,
+            (SELECT p.nama FROM order_items oi JOIN products p ON p.kode = oi.produk_kode
+              WHERE oi.order_id = o.order_id ORDER BY oi.id ASC LIMIT 1) AS nama_produk
+     FROM orders o
+     WHERE o.status = 'COMPLETED'
+       AND o.order_id NOT LIKE 'DEP-%'
+       AND COALESCE(o.fulfillment_status, '') = 'DELIVERED'
+       AND NOT EXISTS (SELECT 1 FROM reviews r WHERE r.order_id = o.order_id)
+       AND datetime(o.created_at) >= datetime('now', '-7 days')
+     ORDER BY o.created_at DESC
+     LIMIT 20`
+  );
+
+  // Pencocokan pemiliknya dilakukan di JS lewat samaOrangnya, bukan lewat `=`
+  // di SQL: pembeli yang memesan dari grup tersimpan sebagai @lid, lalu
+  // membalas dari DM sebagai @s.whatsapp.net. Perbandingan huruf-per-huruf
+  // tidak akan pernah cocok.
+  for (const o of semua || []) {
+    if (await samaOrangnya(o.customer_nomor, customerNomor)) return o;
+  }
+  return null;
+}
+
+/** Jumlah ulasan dan rata-rata rating seluruh toko. */
+export async function getRingkasanTestimoni() {
+  const row = await getQuery("SELECT COUNT(*) AS jumlah, AVG(rating) AS rata FROM reviews");
+  return { jumlah: row?.jumlah || 0, rataRata: row?.rata ? Number(row.rata) : 0 };
+}
+
+/**
+ * Rata-rata rating per kode produk, untuk beberapa kode sekaligus.
+ * Dipakai halaman produk supaya tidak menembak database satu per satu.
+ */
+export async function getRatingProduk(kodes) {
+  const bersih = [];
+  for (const k of Array.isArray(kodes) ? kodes : []) {
+    const kode = String(k || '').trim().toUpperCase();
+    if (kode && !bersih.includes(kode)) bersih.push(kode);
+    if (bersih.length >= 100) break;
+  }
+  if (bersih.length === 0) return new Map();
+
+  const tanda = bersih.map(() => '?').join(',');
+  const rows = await allQuery(
+    `SELECT UPPER(produk_kode) AS kode, COUNT(*) AS jumlah, AVG(rating) AS rata
+     FROM reviews WHERE UPPER(produk_kode) IN (${tanda})
+     GROUP BY UPPER(produk_kode)`,
+    bersih
+  );
+  return new Map((rows || []).map(r => [r.kode, { jumlah: r.jumlah, rataRata: Number(r.rata) || 0 }]));
 }
 
 export async function getReviewByOrder(orderId) {

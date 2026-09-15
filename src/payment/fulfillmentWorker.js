@@ -9,6 +9,61 @@
 import * as db from '../../database.js';
 import { barisGaransiAktif, barisKlaimGaransi } from '../utils/pesanGaransi.js';
 import { pasangSocketNotif, notifikasiOwner } from '../utils/notifOwner.js';
+import { susunBuktiTransaksi, susunPermintaanUlasan } from '../handlers/testimoni.js';
+import { jamWib } from '../utils/waktu.js';
+
+/**
+ * Sesudah barang sampai: pajang bukti transaksi di grup pembeli, lalu tanyakan
+ * ulasannya ke pembeli lewat japri.
+ *
+ * Dipanggil TANPA await dari jalur pengiriman. Kegagalan di sini tidak boleh
+ * menjatuhkan job yang sudah DELIVERED — mengulang job berarti mengirim
+ * kredensial kedua kalinya untuk satu pembayaran.
+ *
+ * Yang diposting ke grup hanya fakta penjualan dengan nomor disamarkan. Bot
+ * tidak pernah mengarang bintang atau komentar atas nama pembeli; testimoni
+ * hanya ada kalau orangnya sendiri membalas pesan di bawah ini.
+ */
+async function umumkanDanMintaUlasan(job, orderDetails, customerJid, deliveryResult) {
+  const itemPertama = orderDetails?.items?.[0] || null;
+  const namaProduk = itemPertama?.produk_nama || null;
+  const jumlah = Number(itemPertama?.qty) || 1;
+  const otomatis = String(itemPertama?.delivery_type || '').toUpperCase() === 'AUTO';
+
+  // 1. Bukti transaksi ke grup pembeli.
+  try {
+    const settings = await db.getSettings();
+    const grupPembeli = settings?.buyerGroupId;
+    if (sockRef && grupPembeli) {
+      await sockRef.sendMessage(grupPembeli, {
+        text: susunBuktiTransaksi({
+          namaProduk,
+          jid: orderDetails?.customer_nomor || job.customer_number,
+          otomatis,
+          jam: jamWib(new Date()),
+          jumlah
+        })
+      });
+    }
+  } catch (e) {
+    console.error(`[FULFILLMENT] Bukti transaksi tidak terkirim: ${e.message}`);
+  }
+
+  // 2. Permintaan ulasan ke pembeli. Hanya untuk produk yang benar-benar sudah
+  //    di tangan — pesanan MANUAL yang masih menunggu admin belum layak ditanya
+  //    "gimana pesananmu?".
+  try {
+    if (!sockRef || !deliveryResult?.itemsText) return;
+    await sockRef.sendMessage(customerJid, {
+      text: susunPermintaanUlasan({
+        namaProduk,
+        namaPembeli: orderDetails?.customer_nama || null
+      })
+    });
+  } catch (e) {
+    console.error(`[FULFILLMENT] Permintaan ulasan tidak terkirim: ${e.message}`);
+  }
+}
 
 // Retry delays in milliseconds: 10s, 30s, 2m, 5m, 15m
 const RETRY_DELAYS = [10_000, 30_000, 120_000, 300_000, 900_000];
@@ -182,6 +237,13 @@ async function processJob(job) {
       [job.order_id]
     );
     console.log(`[FULFILLMENT] Job ${job.job_id} → DELIVERED ✅`);
+
+    // Bukti transaksi + permintaan ulasan. SENGAJA di luar jalur uang: kedua
+    // pesan ini tidak boleh membuat pengiriman yang sudah berhasil dianggap
+    // gagal lalu diulang. Barangnya sudah di tangan pembeli — kalau posting ke
+    // grup gagal, yang hilang cuma postingan.
+    umumkanDanMintaUlasan(job, orderDetails, customerJid, deliveryResult)
+      .catch(e => console.error(`[FULFILLMENT] Bukti/ulasan gagal (tidak fatal): ${e.message}`));
 
   } catch (err) {
     const nextAttempt = job.attempts + 1;

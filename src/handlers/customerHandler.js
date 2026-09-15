@@ -5,6 +5,7 @@ import { createMidtransTransaction, botState } from '../../server.js';
 import { buildCommandMenu, resolveCategoryId, kategoriDisembunyikanModeJualan } from '../../commandRegistry.js';
 import { getSystemChangelog } from '../utils/changelog.js';
 import { susunKatalog, susunHalamanProduk, kelompokkanPencarian, pesanNomorSalah, rupiah } from './katalogView.js';
+import { uraiBalasanUlasan, susunTerimaKasihUlasan, susunDaftarTestimoni, barisRating } from './testimoni.js';
 import { keWaktu, tanggalJamWib, tanggalWib, tanggalPanjangWib, jamWib, akhirHariWib } from '../utils/waktu.js';
 import * as mediaHandler from '../../mediaHandler.js';
 import * as ent from '../../entertainmentHandler.js';
@@ -191,6 +192,26 @@ export function createCustomerHandler(ctx = {}) {
     //
     // Pemeriksaan database hanya dijalankan untuk pesan bergambar tanpa perintah,
     // jadi tidak menambah beban pada percakapan biasa.
+    // Balasan bintang untuk permintaan ulasan sesudah barang sampai: "5" atau
+    // "5 cepet banget". Tiga pembatas sengaja dipasang ketat:
+    //
+    //   • hanya di JAPRI — angka telanjang di grup itu percakapan biasa, bukan
+    //     rating, dan permintaan ulasannya memang dikirim ke japri;
+    //   • hanya kalau TIDAK ada sesi navigasi katalog — saat pelanggan sedang
+    //     membuka katalog, "1" berarti produk nomor satu;
+    //   • hanya kalau memang ada pesanan terkirim yang belum diulas.
+    //
+    // Pemeriksaan database baru dijalankan sesudah dua syarat pertama lolos,
+    // jadi obrolan biasa tidak menambah beban query.
+    let pesananUntukDiulas = null;
+    const bentukUlasan = !isPrefix && !isFromGroup && !hasNavSession
+      && /^[1-5](?:[.,\s]+\S[\s\S]*)?$/.test(cleanText);
+    if (bentukUlasan) {
+      try {
+        pesananUntukDiulas = await db.getPesananMenungguUlasan(senderNumber);
+      } catch (_) {}
+    }
+
     let fotoBuktiBayar = false;
     if (!isPrefix && messageObj?.message?.imageMessage) {
       try {
@@ -200,7 +221,7 @@ export function createCustomerHandler(ctx = {}) {
     }
 
     // STRICT PREFIX RULE: Hanya perbolehkan pesan ber-prefix atau angka dial saat sesi navigasi aktif
-    if (!isPrefix && !((isNumericDial || isBackDial) && hasNavSession) && !fotoBuktiBayar) {
+    if (!isPrefix && !((isNumericDial || isBackDial) && hasNavSession) && !fotoBuktiBayar && !pesananUntukDiulas) {
       return false;
     }
 
@@ -208,6 +229,9 @@ export function createCustomerHandler(ctx = {}) {
     const exemptCustomerCmds = [
       'daftar', 'register', 'registrasi', 'owner', 'kontakowner', 'menu', 'help', 'bantuan',
       'list', 'produk', 'katalog', 'listproduk', 'p', 'detail', 'info', 'lihat',
+      // Testimoni boleh dibaca sebelum daftar: ini justru yang meyakinkan orang
+      // untuk mendaftar, jadi mengunci layarnya di balik registrasi terbalik.
+      'testi', 'testimoni', 'ulasan', 'rating',
       'update', 'changelog', 'patchnotes', 'whatsnew', 'pembaruan'
     ];
 
@@ -259,6 +283,50 @@ export function createCustomerHandler(ctx = {}) {
     if (memberProfile?.account_status === 'BANNED' && !actor.isAdmin && !actor.isOwner) {
       await sock.sendMessage(jid, { text: '⛔ Akun kamu sedang diblokir dari layanan bot. Hubungi Owner jika merasa ini kesalahan.' });
       return true;
+    }
+
+    // ====================================================================
+    // ⭐ BALASAN BINTANG — ULASAN SESUDAH BARANG SAMPAI
+    // ====================================================================
+    //
+    // Ditangani SEBELUM blok katalog. Syaratnya sudah disaring di gerbang atas
+    // (japri, tanpa sesi katalog, ada pesanan terkirim yang belum diulas), jadi
+    // di sini tinggal menyimpannya.
+    if (pesananUntukDiulas) {
+      const urai = uraiBalasanUlasan(cleanText);
+      if (urai) {
+        try {
+          await db.addReview(
+            pesananUntukDiulas.order_id,
+            senderNumber,
+            urai.rating,
+            urai.komentar,
+            pesananUntukDiulas.produk_kode
+          );
+          await sock.sendMessage(responseJid, {
+            text: susunTerimaKasihUlasan({ rating: urai.rating, komentar: urai.komentar })
+          });
+
+          // Rating rendah dikabarkan ke owner saat itu juga. Menunggu owner
+          // membuka `.testi` sendiri berarti keluhan baru terbaca berhari-hari
+          // kemudian, saat pembelinya sudah pergi.
+          if (urai.rating <= 2) {
+            try {
+              const ownerJid = botSettings?.ownerJid || botSettings?.ownerNumber;
+              if (ownerJid) {
+                await sock.sendMessage(ownerJid, {
+                  text: `⚠️ *ULASAN RENDAH*\n\n${'⭐'.repeat(urai.rating)} (${urai.rating}/5)\n📦 ${pesananUntukDiulas.nama_produk || pesananUntukDiulas.produk_kode || '-'}\n🧾 \`${pesananUntukDiulas.order_id}\`\n👤 ${senderNumber}\n${urai.komentar ? `\n_"${urai.komentar}"_` : ''}`
+                });
+              }
+            } catch (_) {}
+          }
+        } catch (e) {
+          await sock.sendMessage(responseJid, {
+            text: '⚠️ Ulasannya gagal disimpan. Coba lagi sebentar lagi ya.'
+          });
+        }
+        return true;
+      }
     }
 
     // ====================================================================
@@ -325,10 +393,25 @@ export function createCustomerHandler(ctx = {}) {
       const merek = String(opts.brand || varian[0]?.brand_category || varian[0]?.nama || '').trim();
       const ikon = opts.icon || emojiMerek(merek);
 
+      // Rating merek ini, digabung dari seluruh paketnya. Gagalnya tidak boleh
+      // membuat halaman produk ikut mati — tanpa bintang orang masih bisa belanja.
+      let barisBintang = '';
+      try {
+        const peta = await db.getRatingProduk(varian.map(v => v.kode));
+        let jumlah = 0;
+        let bobot = 0;
+        for (const nilai of peta.values()) {
+          jumlah += nilai.jumlah;
+          bobot += nilai.rataRata * nilai.jumlah;
+        }
+        if (jumlah > 0) barisBintang = barisRating(bobot / jumlah, jumlah);
+      } catch (_) {}
+
       const layar = susunHalamanProduk(varian, {
         batasTipis: batasStokTipis,
         brand: merek,
-        icon: ikon
+        icon: ikon,
+        barisRating: barisBintang
       });
 
       if (layar.kosong) {
@@ -899,6 +982,29 @@ export function createCustomerHandler(ctx = {}) {
     ['list', 'produk', 'katalog', 'list produk', 'list all', 'list barang'].includes(cleanTextLower)
   ) {
     return await tampilkanKatalog();
+  }
+
+  // ====================================================================
+  // 2C. TESTIMONI (.testi / .ulasan / .review tanpa argumen)
+  // ====================================================================
+  //
+  // Sengaja BUKAN perintah japri: ini bukti sosial, gunanya justru dibaca
+  // ramai-ramai di grup. Yang tampil hanya ulasan yang betul-betul ditulis
+  // pembeli — tidak ada satu baris pun yang dikarang bot.
+  if (['testi', 'testimoni', 'ulasan', 'rating'].includes(cleanCmd)) {
+    const [daftar, ringkas] = await Promise.all([
+      db.getTestimoniTerbaru(10),
+      db.getRingkasanTestimoni()
+    ]);
+
+    await sendInteractiveButtons(sock, responseJid, {
+      text: susunDaftarTestimoni(daftar, { total: ringkas.jumlah, rataRata: ringkas.rataRata }),
+      buttons: [
+        { type: 'reply', text: 'Katalog', id: '.list' },
+        { type: 'reply', text: 'Keranjang', id: '.keranjang' }
+      ]
+    });
+    return true;
   }
 
   // 2C. SMART NATURAL LANGUAGE ORDERING (Deteksi Pembelian Bahasa Santai)

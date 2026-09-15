@@ -1,0 +1,167 @@
+/**
+ * TESTIMONI & BUKTI TRANSAKSI — PENYUSUN TEKS MURNI
+ *
+ * Berkas ini hanya menyusun teks dan mengurai balasan. Ia TIDAK menyentuh
+ * database, socket WhatsApp, atau pesanan — semua data sudah disiapkan oleh
+ * pemanggilnya. Karena itu seluruh isinya bisa diuji tanpa sesi WhatsApp;
+ * lihat scripts/testimoniSmokeTest.mjs.
+ *
+ * ── Dua hal yang sengaja DIPISAH ────────────────────────────────────────────
+ *
+ * 1. BUKTI TRANSAKSI — catatan penjualan otomatis. Isinya fakta: produk apa
+ *    terjual, jam berapa, ke nomor yang disamarkan. Bot yang menulisnya, dan
+ *    bot tidak berpura-pura jadi pembeli.
+ *
+ * 2. TESTIMONI — kalimat pembeli sendiri, beserta bintangnya. HANYA muncul
+ *    kalau orangnya betul-betul membalas.
+ *
+ * Menggabungkan keduanya — misalnya bot otomatis menulis "⭐⭐⭐⭐⭐ mantap!"
+ * atas nama setiap pembeli — akan membuat seluruh testimoni di toko ini tidak
+ * bernilai, termasuk yang asli. Jadi tidak ada satu pun fungsi di sini yang
+ * mengarang rating atau komentar.
+ */
+
+const MAKS_KOMENTAR = 300;
+const MAKS_TESTIMONI_TAMPIL = 10;
+
+/** ⭐⭐⭐⭐⭐ — selalu 5 lambang, yang kosong pakai bintang redup. */
+export function bintang(rating) {
+  const n = Math.max(0, Math.min(5, Math.round(Number(rating) || 0)));
+  return '⭐'.repeat(n) + '☆'.repeat(5 - n);
+}
+
+/**
+ * Menyamarkan nomor untuk dipajang di grup: 628••••4821.
+ *
+ * Bukti transaksi dibaca semua anggota grup, jadi nomor lengkap pembeli tidak
+ * boleh ikut tercetak. Yang ditampilkan cukup untuk pemiliknya mengenali
+ * transaksinya sendiri, tidak cukup untuk orang lain menghubunginya.
+ *
+ * Identitas @lid tidak memuat nomor HP sama sekali, jadi angkanya tidak bisa
+ * dipakai — untuk itu yang ditampilkan hanya label netral.
+ */
+export function samarkanNomor(jid) {
+  const teks = String(jid || '').trim();
+  if (!teks) return 'Pelanggan';
+  if (teks.includes('@lid')) return 'Pelanggan terverifikasi';
+
+  const angka = teks.split('@')[0].replace(/\D/g, '');
+  if (angka.length < 7) return 'Pelanggan';
+  return `${angka.slice(0, 3)}••••${angka.slice(-4)}`;
+}
+
+/**
+ * Mengurai balasan permintaan ulasan: "5", "5 mantap cepet", "4. lumayan".
+ * Mengembalikan null kalau bukan balasan ulasan yang sah.
+ */
+export function uraiBalasanUlasan(teks) {
+  const bersih = String(teks || '').trim();
+  const cocok = bersih.match(/^([1-5])(?:[.,\s]+([\s\S]+))?$/);
+  if (!cocok) return null;
+
+  const rating = Number(cocok[1]);
+  const komentar = String(cocok[2] || '').trim().slice(0, MAKS_KOMENTAR);
+  return { rating, komentar };
+}
+
+/**
+ * Pesan yang dikirim ke pembeli setelah barangnya sampai.
+ *
+ * Sengaja TIDAK meminta pembeli mengetik Order ID. Perintah lama
+ * `.review ORD-20260726-4489 5 bagus` mengharuskan itu, dan hasilnya nol ulasan
+ * selama tiga bulan toko ini berjalan. Sekarang cukup balas satu angka.
+ */
+export function susunPermintaanUlasan({ namaProduk, namaPembeli } = {}) {
+  const sapaan = namaPembeli ? `Kak *${namaPembeli}*` : 'Kak';
+  const produk = namaProduk ? `*${namaProduk}*` : 'pesanan kamu';
+
+  let t = `🙏 Gimana ${produk}, ${sapaan}?\n\n`;
+  t += `Balas *1* sampai *5* untuk kasih bintang:\n`;
+  t += `_1 = kecewa · 5 = puas banget_\n\n`;
+  t += `Boleh sekalian tulis komentarnya, contoh:\n`;
+  t += `*5 cepet banget, akunnya langsung jalan*\n\n`;
+  t += `_Ulasan kamu tampil di_ \`.testi\` _dan membantu pembeli lain._`;
+  return t;
+}
+
+/** Balasan setelah ulasan tersimpan. */
+export function susunTerimaKasihUlasan({ rating, komentar } = {}) {
+  let t = `🎉 *Makasih ulasannya!*\n\n${bintang(rating)}  (${rating}/5)\n`;
+  if (komentar) t += `_"${komentar}"_\n`;
+  t += `\nUlasan kamu sekarang tampil di \`.testi\`.`;
+  if (Number(rating) <= 2) {
+    // Rating rendah tidak boleh cuma dicatat lalu didiamkan. Pembeli yang
+    // kecewa dan merasa tidak didengar akan bercerita di tempat lain.
+    t += `\n\n😔 Maaf pengalamannya kurang. Ketik \`.garansi\` kalau ada masalah dengan akunnya — owner akan cek langsung.`;
+  }
+  return t;
+}
+
+/**
+ * Bukti transaksi untuk dipajang di grup pembeli.
+ * Isinya fakta penjualan, bukan pendapat siapa pun.
+ */
+export function susunBuktiTransaksi({ namaProduk, jid, otomatis = true, jam, jumlah = 1 } = {}) {
+  let t = `🧾 *TRANSAKSI BERHASIL*\n`;
+  t += `━━━━━━━━━━━━━━━\n`;
+  t += `📦 ${namaProduk || 'Produk digital'}${Number(jumlah) > 1 ? ` ×${jumlah}` : ''}\n`;
+  t += `👤 ${samarkanNomor(jid)}\n`;
+  if (jam) t += `⏰ ${jam} WIB\n`;
+  t += otomatis
+    ? `⚡ Dikirim otomatis, tanpa nunggu admin\n`
+    : `👨‍💼 Dikirim manual oleh admin\n`;
+  t += `━━━━━━━━━━━━━━━\n`;
+  t += `_Ketik_ \`.list\` _untuk lihat katalog._`;
+  return t;
+}
+
+/**
+ * Layar `.testi`. `ulasan` adalah baris dari getTestimoniTerbaru().
+ *
+ * Kalau belum ada satu pun ulasan, layar ini TIDAK boleh mengarang atau
+ * menampilkan contoh — ia mengatakan apa adanya.
+ */
+export function susunDaftarTestimoni(ulasan, opts = {}) {
+  const daftar = (Array.isArray(ulasan) ? ulasan : []).slice(0, MAKS_TESTIMONI_TAMPIL);
+
+  if (daftar.length === 0) {
+    let t = `💬 *TESTIMONI PELANGGAN*\n\n`;
+    t += `Belum ada ulasan.\n\n`;
+    t += `_Setiap pembeli akan ditanya sendiri oleh bot setelah barangnya sampai, jadi yang tampil di sini selalu tulisan pembeli beneran._`;
+    return t;
+  }
+
+  const total = Number(opts.total) || daftar.length;
+  const rata = Number(opts.rataRata);
+
+  let t = `💬 *TESTIMONI PELANGGAN*\n`;
+  if (Number.isFinite(rata) && rata > 0) {
+    t += `${bintang(rata)}  *${rata.toFixed(1)}/5* dari ${total} ulasan\n`;
+  } else {
+    t += `_${total} ulasan_\n`;
+  }
+  t += `━━━━━━━━━━━━━━━\n`;
+
+  for (const u of daftar) {
+    const nama = String(u.nama_pembeli || '').trim() || samarkanNomor(u.customer_nomor);
+    t += `\n${bintang(u.rating)}  *${nama}*\n`;
+    if (u.nama_produk) t += `📦 _${u.nama_produk}_\n`;
+    const komentar = String(u.comment || '').trim();
+    if (komentar) t += `"${komentar.slice(0, MAKS_KOMENTAR)}"\n`;
+  }
+
+  if (total > daftar.length) t += `\n_…dan ${total - daftar.length} ulasan lain._`;
+  return t;
+}
+
+/**
+ * Satu baris rating untuk ditempel di halaman produk.
+ * Mengembalikan string kosong kalau produknya belum punya ulasan — lebih baik
+ * tidak menampilkan apa pun daripada menampilkan "0.0/5" pada barang baru.
+ */
+export function barisRating(rataRata, jumlah) {
+  const n = Number(jumlah) || 0;
+  const r = Number(rataRata);
+  if (n <= 0 || !Number.isFinite(r) || r <= 0) return '';
+  return `${bintang(r)} ${r.toFixed(1)}/5 · ${n} ulasan`;
+}

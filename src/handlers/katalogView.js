@@ -246,6 +246,9 @@ export function susunHalamanProduk(varian, opts = {}) {
   const petunjuk = potong(sumberPetunjuk.petunjuk, MAKS_PETUNJUK);
 
   let teks = `${icon} *${brand.toUpperCase()}*\n`;
+  // Baris rating ditempel di bawah nama, tempat orang memutuskan. Kosong kalau
+  // produknya belum punya ulasan — barang baru tidak boleh tampil "0.0/5".
+  if (opts.barisRating) teks += `${opts.barisRating}\n`;
   teks += '━━━━━━━━━━━━━━━\n';
   if (deskripsi) teks += `${deskripsi}\n\n`;
 

@@ -35,6 +35,7 @@ const categories = {
           ['.list / .produk', 'Katalog bernomor — balas angkanya untuk buka'],
           ['.p / .detail <kode>', 'Deskripsi & semua pilihan paketnya'],
           ['.cari <kata kunci>', 'Cari produk per nama/kategori'],
+          ['.testi / .ulasan', 'Testimoni asli dari pembeli'],
           ['.bundle', 'Paket hemat bundling diskon']
         ]
       },
@@ -71,8 +72,7 @@ const categories = {
           ['.me', 'Kartu singkat: saldo, tier & pesanan aktif'],
           ['.dompet / .wallet / .aset', 'Semua aset: IDR, poin, TCG terpadu'],
           ['.saldo', 'Cek sisa saldo deposit rupiah'],
-          ['.deposit <nominal>', 'Isi saldo — bisa `50rb` atau `50.000`'],
-          ['.deposit <nominal>', 'Top up saldo via QRIS otomatis']
+          ['.deposit <nominal>', 'Top up saldo via QRIS — bisa `50rb`']
         ]
       },
       {

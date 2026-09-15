@@ -868,6 +868,43 @@ A credential already marked `USED` is rejected with its own reason (`SUDAH_DIKIR
 would resell an account that is already in a buyer's hands. `.addstock` prints what it skipped and
 why; silently dropping lines would leave the owner believing stock went up when it did not.
 
+### 10m. Testimonials and sales proof — two things, deliberately not one
+
+`src/handlers/testimoni.js` is pure text building, like `katalogView.js`. Two outputs, and the
+separation is the point:
+
+- **Bukti transaksi** — an automatic sales log posted to `buyerGroupId` after each delivery. Product,
+  masked number (`628••••5678`), time, whether delivery was automatic. The bot wrote it and does not
+  pretend otherwise. `susunBuktiTransaksi` contains no star and no quoted opinion, and
+  `testimoniSmokeTest` asserts both.
+- **Testimoni** — the buyer's own stars and words, and **only** if they actually reply. Nothing in
+  this codebase may generate a rating or a comment on a customer's behalf. A shop whose testimonials
+  are written by its own bot has no testimonials, including the genuine ones.
+
+The `reviews` table and six DB functions already existed; five were dead and `.review` demanded that
+the buyer type an Order ID (`.review ORD-20260726-4489 5 bagus`). Three months, zero reviews. Now the
+worker asks right after delivery and the buyer replies `5` or `5 cepet banget`.
+
+**The pending review is found in the database, not an in-memory session.** `getPesananMenungguUlasan`
+looks for the buyer's most recent DELIVERED order, within 7 days, with no review yet — so a restart
+between delivery and reply does not drop the rating on the floor. Ownership is matched with
+`samaOrangnya`, because an order placed from a group is stored as `@lid` while the reply arrives from
+DM as `@s.whatsapp.net`.
+
+Three guards stop a bare number from becoming an accidental rating, all asserted by the test:
+
+1. **DM only** — a bare number in a group is conversation, and the request is sent to DM anyway.
+2. **No catalogue nav session** — while `.list` is open, `1` means product number one.
+3. **An actual un-reviewed delivered order must exist.**
+
+`addReview` now writes `produk_kode` instead of relying on a JOIN through `order_items`. The column
+had existed unused, and without it every review loses its product the moment the owner clears old
+orders — which owners do.
+
+Posting the sales proof and asking for the review happen **outside** the money path, fired without
+`await` from the worker after the job is already `DELIVERED`. A failure there must never mark a
+delivered job as failed: retrying it would send a second set of credentials for one payment.
+
 ### 10h. Admin store commands — what each one must not destroy
 
 `.addproduk` calls `addProduct`, which is `INSERT OR REPLACE`: **every column the caller does not
