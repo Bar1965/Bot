@@ -308,23 +308,113 @@ export async function updateProductPrice(kode, harga) {
 
 // --- FUNGSI KREDENSIAL VOUCHER / AKUN DIGITAL (AUTO-DELIVERY) ---
 
+/**
+ * Sidik jari sebuah kredensial: bagian yang menentukan ini akun/voucher YANG MANA.
+ *
+ * Dipakai untuk menolak kredensial kembar. Perbandingan apa adanya tidak cukup:
+ * satu tautan penukaran yang sama bisa ditempel dua kali dengan parameter
+ * pelacak yang berbeda, dan tetap voucher yang sama persis.
+ *
+ * Bentuk kredensial yang betul-betul dipakai toko ini ada dua:
+ *
+ *   https://music.apple.com/redeem?ctx=Music&code=HRKLN4JLRLNF   -> kode voucher
+ *   vb3463@365offices.com | G!a63gqK                             -> email + sandi
+ *
+ * Maka: kalau ada parameter kode voucher, itulah identitasnya; kalau diawali
+ * alamat email, email itu identitasnya; selain itu seluruh teksnya.
+ *
+ * Yang sengaja TIDAK dilakukan: memotong di tanda `|` atau `:` pertama begitu
+ * saja. Kredensial toko ini kebanyakan berupa URL, dan memotong di `:` pertama
+ * membuat SEMUANYA bersidik jari "https" — setiap voucher akan dikira kembar.
+ */
+export function sidikKredensial(isi) {
+  const teks = String(isi || '').trim();
+  if (!teks) return '';
+  const rendah = teks.toLowerCase();
+
+  const kodeVoucher = rendah.match(/[?&](?:code|rc|coupon|voucher|kode|token)=([^&\s]+)/);
+  if (kodeVoucher) return `kode:${kodeVoucher[1]}`;
+
+  const email = rendah.match(/^([^\s|:,;]+@[^\s|:,;]+\.[a-z]{2,})/);
+  if (email) return `akun:${email[1]}`;
+
+  return `teks:${rendah.replace(/\s+/g, ' ')}`;
+}
+
+/**
+ * Menyaring kredensial yang hendak dimasukkan, membuang yang kembar.
+ *
+ * Kembar itu berbahaya justru karena tidak kelihatan: dua baris identik berarti
+ * dua pembeli menerima akun yang sama, dan yang kedua menemukan akunnya sudah
+ * dipakai orang lain. Toko ini pernah punya tiga baris identik sekaligus, dan
+ * tidak ada satu pun layar yang memberitahukannya.
+ *
+ * Yang dibandingkan bukan cuma isi batch ini, tapi juga seluruh kredensial yang
+ * sudah ada untuk kode itu — termasuk yang berstatus USED, karena menambahkan
+ * ulang akun yang SUDAH DIKIRIM ke pembeli berarti menjual akun milik orang.
+ */
+export async function saringKredensialBaru(kode, itemsArray) {
+  const code = String(kode || '').trim().toUpperCase();
+  const baru = [];
+  const dilewati = [];
+
+  const sudahAda = await allQuery(
+    "SELECT data_content, status FROM product_items WHERE produk_kode = ?",
+    [code]
+  );
+
+  const peta = new Map();
+  for (const row of sudahAda || []) {
+    const sidik = sidikKredensial(row.data_content);
+    if (sidik && !peta.has(sidik)) peta.set(sidik, row.status);
+  }
+
+  for (const mentah of Array.isArray(itemsArray) ? itemsArray : []) {
+    const isi = String(mentah ?? '').trim();
+    if (!isi || isi.length > 5000) continue;
+
+    const sidik = sidikKredensial(isi);
+    const status = peta.get(sidik);
+
+    if (status === undefined) {
+      peta.set(sidik, 'BARU');
+      baru.push(isi);
+      continue;
+    }
+
+    dilewati.push({
+      isi,
+      alasan: status === 'BARU' ? 'KEMBAR_DI_DAFTAR'
+        : status === 'USED' ? 'SUDAH_DIKIRIM'
+        : 'SUDAH_ADA',
+      status: status === 'BARU' ? null : status
+    });
+  }
+
+  return { baru, dilewati };
+}
+
 export async function addProductItems(kode, itemsArray) {
   const code = kode.toUpperCase();
   if (!Array.isArray(itemsArray) || itemsArray.length === 0 || itemsArray.length > 1000 || itemsArray.some(item => typeof item !== 'string' || item.trim().length === 0 || item.length > 5000)) {
     throw new Error('Daftar kredensial tidak valid.');
   }
-  for (const item of itemsArray) {
-    if (item.trim()) {
-      await runQuery(
-        "INSERT INTO product_items (produk_kode, data_content, status) VALUES (?, ?, 'READY')",
-        [code, item.trim()]
-      );
-    }
+
+  // Jalur dashboard memakai penyaring yang sama dengan jalur WhatsApp, supaya
+  // kredensial kembar tidak bisa masuk lewat pintu yang satunya.
+  const { baru, dilewati } = await saringKredensialBaru(code, itemsArray);
+
+  for (const item of baru) {
+    await runQuery(
+      "INSERT INTO product_items (produk_kode, data_content, status) VALUES (?, ?, 'READY')",
+      [code, item]
+    );
   }
+
   // Update stok otomatis pada produk utama
   const readyCount = await getAvailableItemsCount(code);
   await runQuery("UPDATE products SET stok = ? WHERE kode = ?", [readyCount, code]);
-  await addLog("SYSTEM", `Berhasil mengimpor ${itemsArray.length} kredensial digital untuk produk ${code}. Stok terupdate: ${readyCount} pcs.`);
+  await addLog("SYSTEM", `Impor kredensial ${code}: ${baru.length} masuk, ${dilewati.length} dilewati karena kembar. Stok ready: ${readyCount} pcs.`);
   return readyCount;
 }
 
@@ -351,7 +441,23 @@ export async function addProductItemsBatch(kode, itemsArray) {
   }
 
   return withTransaction(async () => {
-    for (const item of validItems) {
+    // Penyaringan dilakukan DI DALAM transaksi, supaya dua `.addstock` yang
+    // datang hampir bersamaan tidak sama-sama lolos pemeriksaan kembar.
+    const { baru, dilewati } = await saringKredensialBaru(code, validItems);
+
+    if (baru.length === 0) {
+      return {
+        success: false,
+        alasan: 'SEMUA_KEMBAR',
+        code,
+        productName: product.nama,
+        dilewati,
+        readyCount: await getAvailableItemsCount(code),
+        message: `Semua ${dilewati.length} kredensial itu sudah ada di stok *${code}*. Tidak ada yang ditambahkan.`
+      };
+    }
+
+    for (const item of baru) {
       await runQuery(
         "INSERT INTO product_items (produk_kode, data_content, status) VALUES (?, ?, 'READY')",
         [code, item]
@@ -366,13 +472,14 @@ export async function addProductItemsBatch(kode, itemsArray) {
 
     const readyCount = await getAvailableItemsCount(code);
     await runQuery("UPDATE products SET stok = ? WHERE kode = ?", [readyCount, code]);
-    await addLog("SYSTEM", `📦 Stok produk ${code} ditambah ${validItems.length} pcs via WhatsApp PM. Total ready: ${readyCount} pcs.`);
+    await addLog("SYSTEM", `📦 Stok produk ${code} ditambah ${baru.length} pcs via WhatsApp PM (${dilewati.length} kembar dilewati). Total ready: ${readyCount} pcs.`);
 
     return {
       success: true,
       code,
       productName: product.nama,
-      addedCount: validItems.length,
+      addedCount: baru.length,
+      dilewati,
       readyCount,
       switchedToAuto
     };
@@ -397,16 +504,74 @@ export async function getProductStockDetails(kode) {
     [code]
   );
 
+  // Kolom mentah products.stok, BUKAN hasil STOK_ASLI. Dua-duanya dibutuhkan:
+  // yang satu untuk tahu apa yang sebenarnya bisa dijual, yang satu untuk tahu
+  // apakah angka yang tersimpan sudah melenceng dan perlu disinkronkan.
+  const kolom = await getQuery("SELECT stok FROM products WHERE UPPER(kode) = ?", [code]);
+  const kolomStok = Number(kolom?.stok ?? 0);
+
+  // Kredensial kembar yang MASIH bisa terjual. Yang sudah USED tidak dihitung
+  // di sini — itu riwayat pengiriman, bukan stok.
+  const semuaHidup = await allQuery(
+    "SELECT id, data_content, status FROM product_items WHERE produk_kode = ? AND status IN ('READY','RESERVED') ORDER BY id ASC",
+    [code]
+  );
+  const petaSidik = new Map();
+  for (const row of semuaHidup || []) {
+    const sidik = sidikKredensial(row.data_content);
+    if (!sidik) continue;
+    if (!petaSidik.has(sidik)) petaSidik.set(sidik, []);
+    petaSidik.get(sidik).push(row);
+  }
+  const kembar = Array.from(petaSidik.values())
+    .filter(g => g.length > 1)
+    .map(g => ({ jumlah: g.length, contoh: g[0].data_content, ids: g.map(r => r.id) }));
+
+  const ready = readyRow?.count || 0;
+
   return {
     code,
     product,
-    ready: readyRow?.count || 0,
+    ready,
     reserved: reservedRow?.count || 0,
     used: usedRow?.count || 0,
     manualStok: product.stok,
+    kolomStok,
+    // Untuk produk AUTO kolomnya hanya salinan; kalau tidak sama dengan READY,
+    // ada layar yang sedang menampilkan angka yang salah.
+    melenceng: String(product.delivery_type || '').toUpperCase() === 'AUTO' && kolomStok !== ready,
+    kembar,
     deliveryType: product.delivery_type || 'MANUAL',
     sampleReadyItems: readyItems || []
   };
+}
+
+/**
+ * Menyinkronkan kolom products.stok dengan jumlah kredensial READY untuk SEMUA
+ * produk AUTO, lalu melaporkan mana saja yang tadinya melenceng.
+ *
+ * Perlu ada karena kolom itu hanya diperbarui pada saat restok dan saat
+ * pengiriman. Setiap jalur lain yang menyentuh product_items — checkout yang
+ * me-RESERVED, pembatalan, penghapusan kredensial satuan — membuatnya tertinggal
+ * sampai kejadian berikutnya, dan tidak ada apa pun yang membetulkannya sendiri.
+ */
+export async function sinkronkanStokAuto() {
+  const produk = await allQuery(
+    "SELECT kode, nama, stok FROM products WHERE UPPER(COALESCE(delivery_type,'MANUAL')) = 'AUTO'"
+  );
+
+  const diperbaiki = [];
+  for (const p of produk || []) {
+    const ready = await getAvailableItemsCount(p.kode);
+    if (Number(p.stok) === ready) continue;
+    await runQuery("UPDATE products SET stok = ? WHERE kode = ?", [ready, p.kode]);
+    diperbaiki.push({ kode: p.kode, nama: p.nama, sebelum: Number(p.stok), sesudah: ready });
+  }
+
+  if (diperbaiki.length > 0) {
+    await addLog("SYSTEM", `Sinkronisasi stok AUTO: ${diperbaiki.length} produk dibetulkan (${diperbaiki.map(d => `${d.kode} ${d.sebelum}->${d.sesudah}`).join(', ')}).`);
+  }
+  return { diperiksa: (produk || []).length, diperbaiki };
 }
 
 /**
@@ -1423,11 +1588,24 @@ export async function getDailySalesReport(dateStr) {
      WHERE o.status = 'COMPLETED' AND DATE(o.created_at, '+7 hours') = ?
      GROUP BY oi.produk_kode ORDER BY total_qty DESC LIMIT 5`, [dateStr]
   );
+  // Peringatan restok HARUS memakai stok asli. Untuk produk AUTO, kolom
+  // products.stok cuma salinan yang diperbarui saat restok dan saat pengiriman
+  // — selama sebuah pesanan masih menunggu bayar, kredensialnya sudah RESERVED
+  // tapi kolomnya belum turun. Laporan harian karena itu bisa bilang "sisa 1"
+  // padahal tidak ada yang bisa dijual, dan "Stok Habis" tidak pernah menyebut
+  // produknya. Owner dengan stok 1-2 pcs jadi tidak pernah diberi aba-aba restok.
   const lowStockProducts = await allQuery(
-    "SELECT kode, nama, stok FROM products WHERE stok <= 3 AND stok > 0 ORDER BY stok ASC"
+    `SELECT p.kode, p.nama, ${STOK_ASLI} FROM products p
+     WHERE (CASE WHEN p.delivery_type = 'AUTO'
+                 THEN (SELECT COUNT(*) FROM product_items pi WHERE pi.produk_kode = p.kode AND pi.status = 'READY')
+                 ELSE p.stok END) BETWEEN 1 AND 3
+     ORDER BY stok ASC`
   );
   const outOfStockProducts = await allQuery(
-    "SELECT kode, nama FROM products WHERE stok = 0"
+    `SELECT p.kode, p.nama, ${STOK_ASLI} FROM products p
+     WHERE (CASE WHEN p.delivery_type = 'AUTO'
+                 THEN (SELECT COUNT(*) FROM product_items pi WHERE pi.produk_kode = p.kode AND pi.status = 'READY')
+                 ELSE p.stok END) = 0`
   );
   return { ...orders[0], topProducts, lowStockProducts, outOfStockProducts };
 }

@@ -415,6 +415,125 @@ cek('kode yang tidak ada dijawab, bukan melempar',
   (await db.hapusStokYatim('KODE-NGAWUR')).success === false);
 
 // ============================================================
+bagian('17. sidikKredensial — bentuk kredensial yang betul dipakai toko ini');
+
+// Empat baris pertama disalin dari bentuk asli di shop.db milik owner.
+const adobe = 'https://redeem.adobe.com/express-premium?asm=cs&pid=airtel&rc=YD5K-GOUQ';
+const apple1 = 'https://music.apple.com/redeem?ctx=Music&code=HRKLN4JLRLNF';
+const apple2 = 'https://music.apple.com/redeem?ctx=Music&code=K4HR4YETM9J9';
+const office1 = 'vb3463@365offices.com | G!a63gqK';
+const office2 = 'vb4104@365offices.com | WAR#B1g1';
+
+const sidik = db.sidikKredensial;
+cek('dua voucher Apple berbeda tidak dianggap sama', sidik(apple1) !== sidik(apple2), `${sidik(apple1)} vs ${sidik(apple2)}`);
+cek('voucher Adobe punya sidik sendiri', sidik(adobe) !== sidik(apple1));
+cek('dua akun Office berbeda tidak dianggap sama', sidik(office1) !== sidik(office2));
+cek('tautan tidak runtuh jadi "https"', !sidik(apple1).includes('https'), sidik(apple1));
+cek('akun email dikenali dari emailnya', sidik(office1) === 'akun:vb3463@365offices.com', sidik(office1));
+cek('voucher dikenali dari kodenya', sidik(apple1) === 'kode:hrkln4jlrlnf', sidik(apple1));
+
+// Voucher sama dengan parameter pelacak berbeda TETAP voucher yang sama.
+cek('parameter pelacak berbeda tetap dianggap voucher yang sama',
+  sidik('https://music.apple.com/redeem?code=HRKLN4JLRLNF&utm=wa') === sidik(apple1));
+cek('beda huruf besar-kecil tetap dianggap sama', sidik(office1.toUpperCase()) === sidik(office1));
+cek('spasi berlebih tidak membuat kembar lolos', sidik('  ' + office1 + '  ') === sidik(office1));
+cek('teks kosong tidak bersidik', sidik('') === '');
+
+// ============================================================
+bagian('18. AMANKAN STOK — kredensial kembar ditolak, bukan dijual dua kali');
+
+await db.addProduct('UJI-DUP', 'Produk Kembar', 20000, 0, '', '', 'MANUAL', '', '', 'Dup Brand', null, '1 Bulan');
+
+const isi1 = await db.addProductItemsBatch('UJI-DUP', [apple1, apple2]);
+cek('dua kredensial berbeda masuk semua', isi1.addedCount === 2, String(isi1.addedCount));
+cek('tidak ada yang dilewati', (isi1.dilewati || []).length === 0);
+
+// Owner menempel ulang salah satunya (kejadian paling sering saat copy-paste).
+const isi2 = await db.addProductItemsBatch('UJI-DUP', [apple1, office1]);
+cek('yang baru tetap masuk', isi2.addedCount === 1, String(isi2.addedCount));
+cek('yang kembar dilewati', (isi2.dilewati || []).length === 1);
+cek('alasannya disebut', isi2.dilewati[0]?.alasan === 'SUDAH_ADA', isi2.dilewati[0]?.alasan);
+cek('stok tidak menggelembung', (await db.getAvailableItemsCount('UJI-DUP')) === 3,
+  String(await db.getAvailableItemsCount('UJI-DUP')));
+
+// Kembar di dalam satu pesan yang sama.
+const isi3 = await db.addProductItemsBatch('UJI-DUP', [office2, office2, office2]);
+cek('baris kembar dalam satu pesan cuma dihitung sekali', isi3.addedCount === 1, String(isi3.addedCount));
+cek('dua sisanya dilaporkan', (isi3.dilewati || []).length === 2);
+cek('ditandai kembar-di-daftar', isi3.dilewati[0]?.alasan === 'KEMBAR_DI_DAFTAR', isi3.dilewati[0]?.alasan);
+
+// Kredensial yang SUDAH DIKIRIM ke pembeli tidak boleh dijual lagi.
+await db.runQuery("UPDATE product_items SET status = 'USED' WHERE produk_kode = 'UJI-DUP' AND data_content = ?", [apple2]);
+const sebelumUsed = await db.getAvailableItemsCount('UJI-DUP');
+const isi4 = await db.addProductItemsBatch('UJI-DUP', [apple2]);
+cek('akun yang sudah dikirim ditolak', isi4.success === false, String(isi4.alasan));
+cek('alasannya: sudah dikirim ke pembeli', isi4.dilewati?.[0]?.alasan === 'SUDAH_DIKIRIM', isi4.dilewati?.[0]?.alasan);
+cek('stok tidak bertambah sedikit pun', (await db.getAvailableItemsCount('UJI-DUP')) === sebelumUsed,
+  `${await db.getAvailableItemsCount('UJI-DUP')} vs ${sebelumUsed}`);
+
+// Jalur dashboard memakai penyaring yang sama.
+const sebelumDash = await db.getAvailableItemsCount('UJI-DUP');
+await db.addProductItems('UJI-DUP', [apple1]);
+cek('jalur dashboard juga menolak kembar',
+  (await db.getAvailableItemsCount('UJI-DUP')) === sebelumDash,
+  String(await db.getAvailableItemsCount('UJI-DUP')));
+
+// ============================================================
+bagian('19. AMANKAN STOK — kembar lama terlihat, angka melenceng bisa dibetulkan');
+
+// Tiru data lama: dua baris identik yang sudah terlanjur ada di database.
+await db.addProduct('UJI-LAMA', 'Kembar Lama', 20000, 0, '', '', 'MANUAL', '', '', 'Lama Brand', null, '1 Bulan');
+await db.runQuery("INSERT INTO product_items (produk_kode, data_content, status) VALUES ('UJI-LAMA', ?, 'READY')", [office1]);
+await db.runQuery("INSERT INTO product_items (produk_kode, data_content, status) VALUES ('UJI-LAMA', ?, 'READY')", [office1]);
+await db.runQuery("UPDATE products SET delivery_type = 'AUTO', stok = 2 WHERE kode = 'UJI-LAMA'");
+
+const rincian = await db.getProductStockDetails('UJI-LAMA');
+cek('kembar lama terdeteksi', rincian.kembar.length === 1, String(rincian.kembar.length));
+cek('jumlah barisnya benar', rincian.kembar[0]?.jumlah === 2, String(rincian.kembar[0]?.jumlah));
+cek('id-nya diberikan supaya bisa dihapus', rincian.kembar[0]?.ids.length === 2);
+
+// Angka tersimpan melenceng dari kredensial yang benar-benar ada.
+await db.runQuery("UPDATE products SET stok = 99 WHERE kode = 'UJI-LAMA'");
+const melenceng = await db.getProductStockDetails('UJI-LAMA');
+cek('melencengnya ketahuan', melenceng.melenceng === true);
+cek('kolom mentahnya dilaporkan apa adanya', melenceng.kolomStok === 99, String(melenceng.kolomStok));
+cek('yang benar-benar siap jual tetap dilaporkan benar', melenceng.ready === 2, String(melenceng.ready));
+
+const sinkron = await db.sinkronkanStokAuto();
+cek('sinkronisasi membetulkan', sinkron.diperbaiki.some(d => d.kode === 'UJI-LAMA'), JSON.stringify(sinkron.diperbaiki));
+const sesudahSinkron = await db.getProductStockDetails('UJI-LAMA');
+cek('sesudah disinkronkan tidak melenceng lagi', sesudahSinkron.melenceng === false);
+cek('angkanya jadi jumlah kredensial sungguhan', sesudahSinkron.kolomStok === 2, String(sesudahSinkron.kolomStok));
+
+const sinkronLagi = await db.sinkronkanStokAuto();
+cek('menjalankan dua kali tidak mengubah apa-apa', sinkronLagi.diperbaiki.length === 0, String(sinkronLagi.diperbaiki.length));
+
+// ============================================================
+bagian('20. AMANKAN STOK — laporan harian memakai stok asli');
+
+// Produk AUTO dengan kolom berbohong 5, padahal tidak ada kredensial sama sekali.
+await db.addProduct('UJI-LAPOR', 'Produk Laporan', 20000, 0, '', '', 'MANUAL', '', '', 'Lapor Brand', null, '1 Bulan');
+await db.runQuery("UPDATE products SET delivery_type = 'AUTO', stok = 5 WHERE kode = 'UJI-LAPOR'");
+
+const hariIni = new Date(Date.now() + 7 * 3600 * 1000).toISOString().split('T')[0];
+const laporan = await db.getDailySalesReport(hariIni);
+
+cek('produk tanpa kredensial masuk daftar STOK HABIS',
+  laporan.outOfStockProducts.some(p => p.kode === 'UJI-LAPOR'),
+  laporan.outOfStockProducts.map(p => p.kode).join(','));
+cek('tidak salah masuk daftar stok menipis',
+  !laporan.lowStockProducts.some(p => p.kode === 'UJI-LAPOR'),
+  laporan.lowStockProducts.map(p => p.kode).join(','));
+
+// Produk yang memang tinggal sedikit harus muncul sebagai peringatan restok.
+cek('produk bersisa 2 muncul sebagai stok menipis',
+  laporan.lowStockProducts.some(p => p.kode === 'UJI-LAMA'),
+  laporan.lowStockProducts.map(p => `${p.kode}:${p.stok}`).join(','));
+cek('angka yang dilaporkan adalah stok asli',
+  laporan.lowStockProducts.find(p => p.kode === 'UJI-LAMA')?.stok === 2,
+  String(laporan.lowStockProducts.find(p => p.kode === 'UJI-LAMA')?.stok));
+
+// ============================================================
 console.log('\n════════════════════════════════════════');
 console.log(`Pemeriksaan : ${lulus + gagal}`);
 console.log(`Lulus       : ${lulus}`);

@@ -50,6 +50,7 @@ export function createGroupAdminHandler(ctx) {
     'restock', 'stock', 'price', 'out', 'ready', 'addproduct', 'takeover', 
     'release', 'setname', 'setowner', 'eval', 'exec', 'backup', 'resetleaderboard',
     'addstock', 'tambahstok', 'cekstok', 'liststock', 'delstock', 'setdelivery', 'listproduk', 'katalogadmin', 'stokyatim',
+    'sinkronstok', 'syncstok', 'perbaikistok',
     'addproduk', 'editproduk', 'ubahproduk', 'delproduk', 'hapusproduk', 'setgambar', 'tokobaru', 'produkbaru',
     // Saldo deposit — gerbang sesungguhnya ada di saldoAdmin.js dan HANYA owner
     // yang lolos. Didaftarkan di sini supaya perintahnya sampai ke handler;
@@ -2039,7 +2040,41 @@ user2@gmail.com|pass456
       }
 
       const res = await db.addProductItemsBatch(code, rawItems);
+
+      // Ringkasan kredensial yang ditolak karena kembar. Wajib ditampilkan:
+      // kalau diam-diam dilewati, owner mengira stoknya bertambah padahal tidak,
+      // dan kalau diam-diam dimasukkan, dua pembeli menerima akun yang sama.
+      const ringkasDilewati = (daftar) => {
+        if (!daftar || daftar.length === 0) return '';
+        const sudahKirim = daftar.filter(d => d.alasan === 'SUDAH_DIKIRIM');
+        const dalamDaftar = daftar.filter(d => d.alasan === 'KEMBAR_DI_DAFTAR');
+        const sudahAda = daftar.filter(d => d.alasan === 'SUDAH_ADA');
+
+        let t = `\n⚠️ *${daftar.length} kredensial dilewati karena kembar:*\n`;
+        if (sudahKirim.length > 0) {
+          t += `• *${sudahKirim.length}* sudah pernah *DIKIRIM ke pembeli* — menambahkannya lagi berarti menjual akun milik orang\n`;
+        }
+        if (sudahAda.length > 0) t += `• *${sudahAda.length}* sudah ada di stok ini\n`;
+        if (dalamDaftar.length > 0) t += `• *${dalamDaftar.length}* ditulis dua kali dalam pesan tadi\n`;
+        for (const d of daftar.slice(0, 5)) {
+          t += `   \`${String(d.isi).slice(0, 42)}${String(d.isi).length > 42 ? '…' : ''}\`\n`;
+        }
+        if (daftar.length > 5) t += `   _…dan ${daftar.length - 5} lagi_\n`;
+        return t;
+      };
+
       if (!res.success) {
+        if (res.alasan === 'SEMUA_KEMBAR') {
+          let tolakMsg = `🚫 *TIDAK ADA YANG DITAMBAHKAN*\n`;
+          tolakMsg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+          tolakMsg += `📦 *Produk:* ${res.productName} (\`${code}\`)\n`;
+          tolakMsg += `📊 *Stok Ready tetap:* *${res.readyCount} pcs*\n`;
+          tolakMsg += ringkasDilewati(res.dilewati);
+          tolakMsg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+          tolakMsg += `💡 _Ketik \`.cekstok ${code}\` untuk melihat isi stok sekarang._`;
+          await sock.sendMessage(jid, { text: tolakMsg });
+          return true;
+        }
         await sock.sendMessage(jid, { text: `❌ Gagal menambah stok: ${res.message}` });
         return true;
       }
@@ -2052,6 +2087,7 @@ user2@gmail.com|pass456
       if (res.switchedToAuto) {
         successMsg += `🔄 _Mode pengiriman otomatis diaktifkan ke *AUTO*._\n`;
       }
+      successMsg += ringkasDilewati(res.dilewati);
       successMsg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
       successMsg += `💡 _Ketik \`.cekstok ${code}\` untuk melihat rincian stok._`;
 
@@ -2083,7 +2119,27 @@ user2@gmail.com|pass456
       msg += `🟢 *Stok Siap Jual (READY):* *${details.ready} pcs*\n`;
       msg += `🟡 *Sedang di Checkout (RESERVED):* ${details.reserved} pcs\n`;
       msg += `⚪ *Sudah Terjual (USED):* ${details.used} pcs\n`;
-      msg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+      msg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+
+      // Dua alarm stok. Keduanya tidak terlihat di layar mana pun sebelum ini.
+      if (details.kembar.length > 0) {
+        const totalKembar = details.kembar.reduce((n, k) => n + k.jumlah, 0);
+        msg += `\n🚨 *KREDENSIAL KEMBAR — ${totalKembar} baris, ${details.kembar.length} akun*\n`;
+        msg += `_Akun yang sama tercatat lebih dari sekali. Kalau terjual semua, pembeli kedua menerima akun yang sudah dipakai orang lain._\n`;
+        for (const k of details.kembar.slice(0, 5)) {
+          msg += `• ${k.jumlah}× \`${String(k.contoh).slice(0, 38)}${String(k.contoh).length > 38 ? '…' : ''}\`\n`;
+          msg += `  _sisakan satu, hapus:_ \`.delstock ${k.ids.slice(1).join('\` \`.delstock ')}\`\n`;
+        }
+        msg += `\n`;
+      }
+
+      if (details.melenceng) {
+        msg += `\n⚠️ *ANGKA TERSIMPAN MELENCENG*\n`;
+        msg += `Kolom stok tertulis *${details.kolomStok}*, yang benar-benar siap jual *${details.ready}*.\n`;
+        msg += `_Betulkan dengan_ \`.sinkronstok\`\n\n`;
+      }
+
+      msg += `\n`;
 
       if (details.sampleReadyItems.length > 0) {
         msg += `🔑 *Akun Ready Siap Kirim (Hingga 10 teratas):*\n`;
@@ -2097,6 +2153,35 @@ user2@gmail.com|pass456
 
       msg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
       await sock.sendMessage(jid, { text: msg });
+      return true;
+    }
+
+    // ── SINKRONKAN KOLOM STOK DENGAN KREDENSIAL YANG BENAR-BENAR ADA ──────
+    //
+    // products.stok untuk produk AUTO cuma salinan, dan cuma diperbarui saat
+    // restok dan saat pengiriman. Jalur lain yang menyentuh kredensial membuat
+    // salinan itu tertinggal, dan tidak ada apa pun yang membetulkannya sendiri.
+    if (['sinkronstok', 'syncstok', 'perbaikistok'].includes(cleanCmd)) {
+      const hasil = await db.sinkronkanStokAuto();
+
+      if (hasil.diperbaiki.length === 0) {
+        await sock.sendMessage(jid, {
+          text: `✅ *Stok sudah sinkron.*\n\n${hasil.diperiksa} produk AUTO diperiksa, angkanya sudah benar semua.`
+        });
+        return true;
+      }
+
+      let msg = `🔧 *STOK DIBETULKAN*\n`;
+      msg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+      msg += `${hasil.diperiksa} produk AUTO diperiksa, *${hasil.diperbaiki.length}* melenceng:\n\n`;
+      for (const d of hasil.diperbaiki) {
+        msg += `• \`${d.kode}\` — ${d.nama}\n  ${d.sebelum} → *${d.sesudah} pcs*\n`;
+      }
+      msg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+      msg += `_Angka yang sekarang dipakai adalah jumlah kredensial READY yang sungguh ada._`;
+
+      await sock.sendMessage(jid, { text: msg });
+      await logToSystem('SYSTEM', `Owner menyinkronkan stok AUTO: ${hasil.diperbaiki.length} produk dibetulkan.`);
       return true;
     }
 

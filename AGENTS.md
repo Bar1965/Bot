@@ -832,6 +832,42 @@ product's `stok` from the credential count. As of 2026-09-15 the live database h
 `.stokyatim` lists them; `.stokyatim hapus <KODE>` destroys them, and refuses if the product exists
 (use `.delstock` for live products). `USED` rows are never included — those are warranty records.
 
+### 10l. Stock integrity — one number, and it has to be true
+
+`products.stok` is **only authoritative for MANUAL products**. For AUTO products it is a cached copy
+of `COUNT(product_items WHERE status='READY')`, refreshed on restock and on delivery and at no other
+time — so a checkout that moves a credential to `RESERVED` leaves it stale until the order settles.
+Everything customer-facing already computes the real number via `STOK_ASLI`. Three things did not,
+and each one failed in the owner's favour-less direction:
+
+- **The daily sales report** read the raw column, so "Stok Menipis: sisa 1" could mean zero
+  sellable, and a sold-out AUTO product never appeared under "Stok Habis". A shop running on 1–2
+  units per product therefore never got a restock warning. It now uses real stock.
+- **`.cekstok`** now reports drift explicitly (`kolomStok` vs `ready`) and **`.sinkronstok`**
+  recomputes the column for every AUTO product and prints what it changed. That is the only repair
+  path; nothing self-heals.
+- **Duplicate credentials had no guard at all.** Both insert paths (`addProductItems` for the
+  dashboard, `addProductItemsBatch` for `.addstock`) inserted every line blindly, so pasting the
+  same account twice meant two buyers receiving the same account — the second one finds it already
+  in use. The live database has proof: NET01 holds three byte-identical rows.
+
+`saringKredensialBaru` now guards both paths, inside the transaction. It compares
+`sidikKredensial(isi)`, not raw text:
+
+| Credential shape (both real, from this shop) | Fingerprint |
+|---|---|
+| `https://music.apple.com/redeem?ctx=Music&code=HRKLN4JLRLNF` | `kode:hrkln4jlrlnf` |
+| `vb3463@365offices.com \| G!a63gqK` | `akun:vb3463@365offices.com` |
+
+**Do not "simplify" this to splitting on the first `|` or `:`.** Most credentials here are URLs, and
+that split fingerprints every single one as `https` — every voucher would be rejected as a
+duplicate. Verified against all 12 live credentials: 10 distinct fingerprints, the only collision
+being NET01's three genuinely identical rows.
+
+A credential already marked `USED` is rejected with its own reason (`SUDAH_DIKIRIM`) — re-adding it
+would resell an account that is already in a buyer's hands. `.addstock` prints what it skipped and
+why; silently dropping lines would leave the owner believing stock went up when it did not.
+
 ### 10h. Admin store commands — what each one must not destroy
 
 `.addproduk` calls `addProduct`, which is `INSERT OR REPLACE`: **every column the caller does not
