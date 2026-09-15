@@ -783,6 +783,63 @@ let isQueueProcessing = false;
 const messageCache = new Map();
 const MAX_CACHE_SIZE = 1000;
 
+// --- SIMPANAN PESAN KELUAR UNTUK PERMINTAAN KIRIM ULANG ---
+//
+// Inilah yang memperbaiki "Menunggu pesan ini" yang tidak pernah hilang.
+//
+// Di WhatsApp multi-device, perangkat penerima kadang gagal mendekripsi sebuah
+// pesan — sesi Signal-nya tidak sinkron, pesannya datang tidak berurutan, atau
+// perangkatnya sedang mati saat sesi diperbarui. Itu normal dan terjadi pada
+// semua bot. Yang TIDAK normal adalah kalau kegagalan itu tidak pernah pulih.
+//
+// Cara pemulihannya: perangkat penerima mengirim "retry receipt", dan pengirim
+// wajib MENGIRIM ULANG pesan aslinya dengan sesi baru. Baileys melakukan itu di
+// sendMessagesAgain(), dan untuk menyusun ulang isinya ia memanggil getMessage().
+// Isi Baileys sendiri:
+//
+//     const msgs = await Promise.all(ids.map(id => getMessage({ ...key, id })));
+//     for (const [i, msg] of msgs.entries()) { if (msg) { ...kirim ulang... } }
+//
+// Bawaannya `getMessage: async () => undefined`. Tanpa kita mengisinya, `msg`
+// SELALU undefined, blok `if (msg)` tidak pernah jalan, dan tidak ada apa pun
+// yang dikirim ulang — penerima tertinggal pada "Menunggu pesan ini" selamanya.
+// Baileys bahkan menulis todo-nya sendiri di baris itu: simpan pesan terakhir
+// yang dikirim, seperti whatsmeow.
+//
+// Yang disimpan adalah `result.message`, yaitu isi proto hasil kirim — bukan
+// `content` yang kita berikan (`{ text: ... }`), karena Baileys butuh bentuk
+// proto untuk mengenkripsi ulang.
+const pesanKeluarCache = new Map();
+const MAKS_PESAN_KELUAR = 500;
+let getMessageMeleset = 0;
+
+function simpanPesanKeluar(result) {
+  const id = result?.key?.id;
+  if (!id || !result?.message) return;
+  // Map menjaga urutan penyisipan, jadi kunci pertama adalah yang tertua.
+  if (pesanKeluarCache.has(id)) pesanKeluarCache.delete(id);
+  pesanKeluarCache.set(id, result.message);
+  while (pesanKeluarCache.size > MAKS_PESAN_KELUAR) {
+    pesanKeluarCache.delete(pesanKeluarCache.keys().next().value);
+  }
+}
+
+/** Dipanggil Baileys saat penerima minta sebuah pesan dikirim ulang. */
+async function ambilPesanUntukKirimUlang(key) {
+  const id = key?.id;
+  if (id && pesanKeluarCache.has(id)) {
+    console.log(`[MSG_RETRY] Mengirim ulang pesan ${id} ke ${key?.remoteJid || '?'}`);
+    return pesanKeluarCache.get(id);
+  }
+  getMessageMeleset++;
+  console.warn(`[MSG_RETRY] Pesan ${id || '?'} diminta ulang tapi sudah tidak ada di simpanan (meleset: ${getMessageMeleset}).`);
+  return undefined;
+}
+
+export function statistikKirimUlang() {
+  return { tersimpan: pesanKeluarCache.size, batas: MAKS_PESAN_KELUAR, meleset: getMessageMeleset };
+}
+
 
 // Fungsi terpusat aman untuk mengirim pesan WA (Connection Guard & Retries & Queueing)
 export async function safeSendMessage(jid, content, options = {}) {
@@ -848,6 +905,11 @@ export async function processOutgoingQueue() {
       const sendFn = sock.rawSendMessage ? sock.rawSendMessage : sock.sendMessage.bind(sock);
       const result = await sendFn(item.jid, item.content, item.options);
       console.log(`${logPrefix} SUCCESS (MessageID: ${result?.key?.id || 'N/A'})`);
+
+      // Disimpan SEBELUM apa pun yang bisa melempar. Kalau langkah berikutnya
+      // gagal, pesannya sudah telanjur sampai ke WhatsApp dan tetap bisa
+      // diminta ulang oleh penerima.
+      simpanPesanKeluar(result);
       
       // Hentikan status mengetik di background
       if (!isReaction && isHumanDelayActive && botState.whatsappConnected && sock) {
@@ -941,7 +1003,11 @@ export async function startBot(onSocketReady) {
     // grupnya. groupMetaCache di atas (TTL 5 menit) sudah menyimpan data yang
     // sama persis, jadi dipakai ulang di sini. Kalau cache kosong hasilnya null
     // dan Baileys tetap jatuh ke query bawaannya seperti semula.
-    cachedGroupMetadata: async (groupJid) => await getCachedGroupMetadata(sock, groupJid)
+    cachedGroupMetadata: async (groupJid) => await getCachedGroupMetadata(sock, groupJid),
+    // Menjawab permintaan kirim ulang dari perangkat penerima. Tanpa ini,
+    // pesan yang gagal didekripsi berhenti selamanya di "Menunggu pesan ini"
+    // — lihat catatan panjang di atas pesanKeluarCache.
+    getMessage: ambilPesanUntukKirimUlang
   });
 
   // Dukungan Pairing Code jika dikonfigurasi via ENV

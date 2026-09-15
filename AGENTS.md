@@ -207,6 +207,39 @@ carries `mentions` when the caller passes them (`send()` in `src/games/helpers.j
 array) — before that it silently dropped them, so any button message naming players by `@number`
 tagged nobody.
 
+### 5a. `getMessage` is not optional — without it "Menunggu pesan ini" never heals
+
+In WhatsApp multi-device a recipient device occasionally fails to decrypt a message: the Signal
+session drifted, the message arrived out of order, the device was off while the session was reset.
+That happens to every bot and is not itself a bug.
+
+Recovery is the recipient sending a **retry receipt**, after which the sender must re-encrypt and
+resend the original. Baileys does that in `sendMessagesAgain` (`Socket/messages-recv.js`) and gets
+the content by calling `getMessage(key)`:
+
+```js
+const msgs = await Promise.all(ids.map(id => getMessage({ ...key, id })));
+for (const [i, msg] of msgs.entries()) { if (msg) { /* resend */ } }
+```
+
+The default is `getMessage: async () => undefined`, so `if (msg)` never runs and **nothing is ever
+resent**. The recipient is stuck on "Menunggu pesan ini" forever while the bot's own log cheerfully
+reports `SEND SUCCESS` — the server accepted it; the peer just could not read it. Baileys leaves a
+todo on that very line telling the app to keep the last sent messages, like whatsmeow.
+
+`bot.js` keeps `pesanKeluarCache`: a 500-entry insertion-ordered `Map` of `key.id → result.message`,
+filled in `safeSendMessage` right after a successful send, and read by `ambilPesanUntukKirimUlang`.
+
+- Store `result.message`, **not** the `content` you passed in. Baileys needs the proto form
+  (`{ conversation: … }`), not the input form (`{ text: … }`).
+- A cache miss is logged with `[MSG_RETRY]`. Frequent misses mean the cache is too small for the
+  send volume, not that the peer is broken.
+- The fix only covers messages still in the cache. A message that was already stuck before the bot
+  restarted stays stuck; resend it by re-running whatever produced it.
+
+Two instances sharing `./session` is the fastest way to *cause* the decryption failures in the first
+place — see §2 and the note about verifying only one `node index.js` runs.
+
 ## 6. Adding a command — full checklist
 
 1. **Pick the owning handler** by consulting the chain order in §5. Whatever runs earlier wins.
