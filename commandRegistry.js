@@ -35,7 +35,8 @@ const categories = {
           ['.list / .produk', 'Katalog bernomor — balas angkanya untuk buka'],
           ['.p / .detail <kode>', 'Deskripsi & semua pilihan paketnya'],
           ['.cari <kata kunci>', 'Cari produk per nama/kategori'],
-          ['.testi / .ulasan', 'Testimoni asli dari pembeli'],
+          ['.testi / .bukti', 'Bukti pengiriman & ulasan pembeli'],
+          ['.carapake <kode>', 'Cara pakai & info garansi produk'],
           ['.bundle', 'Paket hemat bundling diskon']
         ]
       },
@@ -44,6 +45,8 @@ const categories = {
         items: [
           ['.beli <kode> <qty>', 'Masukkan produk ke keranjang'],
           ['.buynow <kode> [qty]', 'Beli langsung & QRIS otomatis'],
+          ['.notif <kode>', 'Dikabari saat produk kosong restok'],
+          ['.simpan <kode> / .favorit', 'Simpan produk incaran ke wishlist'],
           ['.lapak', 'Lihat lapak komunitas penjual'],
           ['.lapak add <nama> <harga> <stok> <isi>', 'Buka lapak sendiri (Premium)']
         ]
@@ -82,7 +85,8 @@ const categories = {
           ['.cekbayar / .sudahbayar', 'Verifikasi instan status bank QRIS'],
           ['.riwayat', '5 transaksi terakhir'],
           ['.garansi [orderId]', 'Cek & klaim garansi akun'],
-          ['.batal', 'Batalkan pesanan belum dibayar']
+          ['.batal', 'Batalkan pesanan belum dibayar'],
+          ['.ref / .referral', 'Kode referral & bonus ajak teman']
         ]
       }
     ]
@@ -451,6 +455,8 @@ const categories = {
           ['.addstock <kode> [akun]', 'Tambah stok digital (multi-baris)'],
           ['.cekstok <kode>', 'Cek rincian akun ready & terjual'],
           ['.delstock <id>', 'Hapus item akun rusak per ID'],
+          ['.stokyatim', 'Akun yang produknya sudah dihapus 🆕'],
+          ['.sinkronstok', 'Betulkan angka stok yang melenceng 🆕'],
           ['.setdelivery <kode> <auto/manual>', 'Ubah mode kirim produk'],
           ['.stock <kode> <qty>', 'Ubah stok — produk MANUAL saja'],
           ['.paid <orderId>', 'Konfirmasi manual order lunas'],
@@ -459,6 +465,18 @@ const categories = {
           ['.tariksaldo <nomor> <nominal> <alasan>', 'Koreksi saldo pelanggan (Owner)'],
           ['.ceksaldo <nomor>', 'Lihat saldo & riwayatnya (Owner)'],
           ['.totalsaldo', 'Total saldo pelanggan yang dipegang toko (Owner)']
+        ]
+      },
+      {
+        title: '📣 PROMO, LAPORAN & CHAT (Owner / Admin)',
+        items: [
+          ['.flashsale <kode> <harga> [jam]', 'Harga kilat berbatas waktu'],
+          ['.addcoupon <kode>|<tipe>|<nilai>|...', 'Buat kupon diskon belanja'],
+          ['.listcoupon / .delcoupon <kode>', 'Lihat & hapus kupon'],
+          ['.laporan', 'Omzet & produk terlaris hari ini'],
+          ['.stats', 'Statistik toko keseluruhan (Owner)'],
+          ['.broadcast <pesan>', 'Siarkan pesan ke semua pelanggan'],
+          ['.takeover <nomor> / .release', 'Ambil alih & lepas chat pelanggan']
         ]
       },
       {
