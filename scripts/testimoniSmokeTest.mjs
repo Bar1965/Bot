@@ -119,7 +119,7 @@ cek('TIDAK mengarang komentar pembeli', !/"/.test(bukti), bukti);
 const buktiManual = t.susunBuktiTransaksi({ namaProduk: 'X', jid: PEMBELI, otomatis: false });
 cek('produk manual disebut apa adanya', buktiManual.includes('manual'));
 const buktiBanyak = t.susunBuktiTransaksi({ namaProduk: 'X', jid: PEMBELI, jumlah: 3 });
-cek('jumlah lebih dari satu ditulis', buktiBanyak.includes('×3'), buktiBanyak);
+cek('jumlah lebih dari satu ditulis', buktiBanyak.includes('3 pcs'), buktiBanyak);
 
 // ============================================================
 bagian('4. Layar testimoni kosong tidak mengarang contoh');
@@ -300,6 +300,58 @@ const jepit = await db.getReviewByOrder('ORD-UJI-JEPIT');
 cek('rating di atas 5 dijepit jadi 5', jepit?.rating === 5, String(jepit?.rating));
 await db.addReview('ORD-UJI-JEPIT2', PEMBELI, -3, '', 'UJI-TES');
 cek('rating negatif dijepit jadi 1', (await db.getReviewByOrder('ORD-UJI-JEPIT2'))?.rating === 1);
+
+// ============================================================
+bagian('13. Bukti publik vs notifikasi owner — batas yang tidak boleh kabur');
+
+const buktiPublik = t.susunBuktiTransaksi({
+  namaProduk: 'Gemini Pro 18 Bulan', jid: '6287712345678@s.whatsapp.net',
+  otomatis: true, jam: '00.29', tanggal: 'Rabu, 16 September 2026',
+  jumlah: 2, total: 60000, orderId: 'ORD-20260916-8007', durasiMs: 1300
+});
+cek('publik: produk tampil', buktiPublik.includes('Gemini Pro 18 Bulan'));
+cek('publik: jumlah tampil', buktiPublik.includes('2 pcs'), buktiPublik.slice(0, 160));
+cek('publik: total tampil', buktiPublik.includes('Rp60.000'));
+cek('publik: tanggal & jam tampil', buktiPublik.includes('16 September 2026') && buktiPublik.includes('00.29'));
+cek('publik: kecepatan kirim tampil', buktiPublik.includes('1 detik'), buktiPublik.slice(0, 220));
+cek('publik: nomor pesanan tampil sebagai rujukan', buktiPublik.includes('ORD-20260916-8007'));
+cek('publik: nomor pembeli DISAMARKAN', buktiPublik.includes('628\u2022\u2022\u2022\u20225678'));
+cek('publik: nomor utuh tidak pernah tercetak', !buktiPublik.includes('6287712345678'), buktiPublik);
+cek('publik: TIDAK menyebut sisa stok', !/sisa stok/i.test(buktiPublik), buktiPublik);
+cek('publik: TIDAK menyebut nama pembeli', !buktiPublik.includes('Budi'), buktiPublik);
+
+const notifOwner = t.susunNotifPenjualanOwner({
+  namaProduk: 'Gemini Pro 18 Bulan', produkKode: 'GEMINI', namaPembeli: 'Budi Santoso',
+  jid: '6287712345678@s.whatsapp.net', jumlah: 1, total: 60000,
+  metode: 'QRIS otomatis (Casaku)', tanggal: 'Rabu, 16 September 2026', jam: '00.29',
+  sisaStok: 6, stokSebelum: 7, orderId: 'ORD-20260916-8007',
+  refPembayaran: 'ORD-b75db045', durasiMs: 1300
+});
+cek('owner: nama pembeli tampil', notifOwner.includes('Budi Santoso'));
+cek('owner: tautan wa.me tampil', notifOwner.includes('wa.me/6287712345678'), notifOwner.slice(0, 200));
+cek('owner: kode produk tampil', notifOwner.includes('GEMINI'));
+cek('owner: sisa stok tampil sebagai penurunan', notifOwner.includes('6 pcs') && notifOwner.includes('dari 7'), notifOwner);
+cek('owner: metode bayar tampil', notifOwner.includes('Casaku'));
+cek('owner: ref pembayaran tampil', notifOwner.includes('ORD-b75db045'));
+
+const notifHabis = t.susunNotifPenjualanOwner({
+  namaProduk: 'X', produkKode: 'GEMINI', jid: '628123456789@s.whatsapp.net',
+  jumlah: 1, total: 1000, sisaStok: 0, stokSebelum: 1
+});
+cek('owner: stok habis diberi tanda merah', notifHabis.includes('HABIS'), notifHabis);
+cek('owner: menyebut perintah restoknya', notifHabis.includes('.addstock GEMINI'), notifHabis);
+
+const notifTipis = t.susunNotifPenjualanOwner({
+  namaProduk: 'X', produkKode: 'Y', jid: '628123456789@s.whatsapp.net', sisaStok: 2, stokSebelum: 3
+});
+cek('owner: stok menipis diperingatkan', notifTipis.includes('Menipis'), notifTipis);
+
+// Pembeli dari grup ber-@lid: angkanya BUKAN nomor HP, jadi tidak boleh jadi tautan.
+const notifLid = t.susunNotifPenjualanOwner({
+  namaProduk: 'X', jid: '59837887057934@lid', namaPembeli: 'Akbar', jumlah: 1, total: 1000
+});
+cek('owner: @lid tidak dijadikan tautan wa.me', !notifLid.includes('wa.me/'), notifLid);
+cek('owner: @lid dijelaskan apa adanya', /tidak terbaca/i.test(notifLid), notifLid);
 
 // ============================================================
 console.log('\n════════════════════════════════════════');

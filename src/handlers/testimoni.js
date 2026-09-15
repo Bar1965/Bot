@@ -97,21 +97,105 @@ export function susunTerimaKasihUlasan({ rating, komentar } = {}) {
   return t;
 }
 
+/** Rp60.000 */
+function rupiah(nilai) {
+  const n = Number(nilai);
+  if (!Number.isFinite(n)) return 'Rp0';
+  return 'Rp' + Math.round(n).toLocaleString('id-ID');
+}
+
 /**
- * Bukti transaksi untuk dipajang di grup pembeli.
- * Isinya fakta penjualan, bukan pendapat siapa pun.
+ * Bukti transaksi untuk dipajang di GRUP PEMBELI.
+ *
+ * Dibuat lebih rinci karena rincian itulah yang meyakinkan — "ada yang beli"
+ * gampang dikarang, "produk ini, jam segini, sampai dalam 1 detik, nomor
+ * pesanan ORD-xxx" tidak.
+ *
+ * Tapi dua hal SENGAJA tidak ikut, dan jangan ditambahkan:
+ *
+ *   • Nama & nomor pembeli. Ini dibaca seluruh anggota grup. Nomor disamarkan,
+ *     nama tidak ditampilkan sama sekali — pembeli tidak pernah setuju
+ *     identitasnya dipajang hanya karena ia belanja.
+ *   • Sisa stok. Itu angka dagang milik owner, dan memajangnya tiap transaksi
+ *     memberi tahu semua orang berapa banyak barang yang dipegang toko.
+ *
+ * Keduanya tetap dikirim ke owner lewat susunNotifPenjualanOwner().
  */
-export function susunBuktiTransaksi({ namaProduk, jid, otomatis = true, jam, jumlah = 1 } = {}) {
+export function susunBuktiTransaksi({
+  namaProduk, jid, otomatis = true, jam, tanggal, jumlah = 1, total, orderId, durasiMs
+} = {}) {
+  const qty = Math.max(1, Math.trunc(Number(jumlah) || 1));
+
   let t = `🧾 *TRANSAKSI BERHASIL*\n`;
   t += `━━━━━━━━━━━━━━━\n`;
-  t += `📦 ${namaProduk || 'Produk digital'}${Number(jumlah) > 1 ? ` ×${jumlah}` : ''}\n`;
+  t += `🛍️ *${namaProduk || 'Produk digital'}*\n`;
+  t += `📊 ${qty} pcs`;
+  if (Number(total) > 0) t += ` · 💰 *${rupiah(total)}*`;
+  t += `\n`;
   t += `👤 ${samarkanNomor(jid)}\n`;
-  if (jam) t += `⏰ ${jam} WIB\n`;
-  t += otomatis
-    ? `⚡ Dikirim otomatis, tanpa nunggu admin\n`
-    : `👨‍💼 Dikirim manual oleh admin\n`;
+  if (tanggal || jam) t += `📅 ${[tanggal, jam ? `${jam} WIB` : ''].filter(Boolean).join(' · ')}\n`;
+
+  const durasi = formatDurasi(durasiMs);
+  if (otomatis) {
+    t += durasi ? `⚡ Dikirim otomatis dalam *${durasi}*\n` : `⚡ Dikirim otomatis, tanpa nunggu admin\n`;
+  } else {
+    t += `👨‍💼 Dikirim manual oleh admin\n`;
+  }
+  if (orderId) t += `🆔 \`${orderId}\`\n`;
+
   t += `━━━━━━━━━━━━━━━\n`;
   t += `_Ketik_ \`.list\` _untuk lihat katalog._`;
+  return t;
+}
+
+/**
+ * Notifikasi penjualan untuk OWNER — bukan untuk grup pembeli.
+ *
+ * Di sini semuanya boleh tampil: nama pembeli, nomornya, sisa stok, nomor
+ * rujukan pembayaran. Tujuannya satu — owner tahu apa yang terjual dan apakah
+ * ada yang perlu direstok, tanpa membuka dashboard.
+ *
+ * Sisa stok ditulis "2 pcs (dari 3)" supaya terbaca sebagai penurunan, bukan
+ * angka lepas; dan kalau habis, peringatannya ikut menyebut perintah restoknya.
+ */
+export function susunNotifPenjualanOwner({
+  namaProduk, produkKode, namaPembeli, jid, jumlah = 1, total, metode,
+  tanggal, jam, sisaStok, stokSebelum, orderId, refPembayaran, durasiMs, otomatis = true
+} = {}) {
+  const qty = Math.max(1, Math.trunc(Number(jumlah) || 1));
+  const nomor = String(jid || '').split('@')[0].replace(/\D/g, '');
+  const lewatLid = String(jid || '').includes('@lid');
+
+  let t = `🎉 *PENJUALAN BARU*\n`;
+  t += `━━━━━━━━━━━━━━━\n`;
+  t += `👤 Pembeli: *${String(namaPembeli || '').trim() || 'Pelanggan'}*\n`;
+  // wa.me hanya kalau nomornya memang nomor HP. Identitas @lid bukan nomor —
+  // menjadikannya tautan menghasilkan chat ke nomor acak milik orang lain.
+  if (!lewatLid && nomor.length >= 8) t += `   wa.me/${nomor}\n`;
+  else t += `   _(dari grup — nomornya tidak terbaca)_\n`;
+  t += `🛍️ Produk: *${namaProduk || '-'}*${produkKode ? ` (\`${produkKode}\`)` : ''}\n`;
+  t += `📊 Jumlah: *${qty}x*\n`;
+  t += `💰 Total: *${rupiah(total)}*\n`;
+
+  t += `\n── Info tambahan ──\n`;
+  if (tanggal || jam) t += `📅 ${[tanggal, jam ? `pukul ${jam} WIB` : ''].filter(Boolean).join(' ')}\n`;
+  if (metode) t += `🏦 Metode: ${metode}\n`;
+
+  if (Number.isFinite(Number(sisaStok))) {
+    const sisa = Number(sisaStok);
+    const sebelum = Number.isFinite(Number(stokSebelum)) ? Number(stokSebelum) : sisa + qty;
+    t += `📦 Sisa stok: *${sisa} pcs* (dari ${sebelum})\n`;
+    if (sisa === 0) t += `   🔴 *HABIS* — restok: \`.addstock ${produkKode || '<kode>'}\`\n`;
+    else if (sisa <= 3) t += `   🟡 Menipis — siapkan restok\n`;
+  }
+
+  const durasi = formatDurasi(durasiMs);
+  t += otomatis
+    ? `⚡ Terkirim otomatis${durasi ? ` dalam ${durasi}` : ''}\n`
+    : `👨‍💼 Menunggu dikirim manual\n`;
+  if (orderId) t += `🆔 Order: \`${orderId}\`\n`;
+  if (refPembayaran) t += `🔗 Ref bayar: \`${refPembayaran}\`\n`;
+
   return t;
 }
 

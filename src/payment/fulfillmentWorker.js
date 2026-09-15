@@ -9,8 +9,8 @@
 import * as db from '../../database.js';
 import { barisGaransiAktif, barisKlaimGaransi } from '../utils/pesanGaransi.js';
 import { pasangSocketNotif, notifikasiOwner } from '../utils/notifOwner.js';
-import { susunBuktiTransaksi, susunPermintaanUlasan } from '../handlers/testimoni.js';
-import { jamWib } from '../utils/waktu.js';
+import { susunBuktiTransaksi, susunPermintaanUlasan, susunNotifPenjualanOwner } from '../handlers/testimoni.js';
+import { jamWib, tanggalPanjangWib } from '../utils/waktu.js';
 
 /**
  * Sesudah barang sampai: pajang bukti transaksi di grup pembeli, lalu tanyakan
@@ -27,21 +27,29 @@ import { jamWib } from '../utils/waktu.js';
 async function umumkanDanMintaUlasan(job, orderDetails, customerJid, deliveryResult) {
   const itemPertama = orderDetails?.items?.[0] || null;
   const namaProduk = itemPertama?.produk_nama || null;
+  const produkKode = itemPertama?.produk_kode || null;
   const jumlah = Number(itemPertama?.qty) || 1;
   const otomatis = String(itemPertama?.delivery_type || '').toUpperCase() === 'AUTO';
+  const jidPembeli = orderDetails?.customer_nomor || job.customer_number;
+  const total = Number(orderDetails?.payment_amount || orderDetails?.total || 0);
+  const sekarang = new Date();
+  const tanggal = tanggalPanjangWib(sekarang);
+  const jam = jamWib(sekarang);
 
-  // 1. Bukti transaksi ke grup pembeli.
+  // Lama pengiriman = sejak job diantrekan (pembayaran lunas) sampai sekarang.
+  const durasiMs = Number(job?.created_at) ? Date.now() - Number(job.created_at) : 0;
+
+  let settings = null;
+  try { settings = await db.getSettings(); } catch (_) {}
+
+  // 1. Bukti transaksi ke grup pembeli — tanpa nama pembeli, tanpa sisa stok.
   try {
-    const settings = await db.getSettings();
     const grupPembeli = settings?.buyerGroupId;
     if (sockRef && grupPembeli) {
       await sockRef.sendMessage(grupPembeli, {
         text: susunBuktiTransaksi({
-          namaProduk,
-          jid: orderDetails?.customer_nomor || job.customer_number,
-          otomatis,
-          jam: jamWib(new Date()),
-          jumlah
+          namaProduk, jid: jidPembeli, otomatis, jam, tanggal, jumlah, total,
+          orderId: job.order_id, durasiMs
         })
       });
     }
@@ -49,7 +57,48 @@ async function umumkanDanMintaUlasan(job, orderDetails, customerJid, deliveryRes
     console.error(`[FULFILLMENT] Bukti transaksi tidak terkirim: ${e.message}`);
   }
 
-  // 2. Permintaan ulasan ke pembeli. Hanya untuk produk yang benar-benar sudah
+  // 2. Notifikasi penjualan lengkap untuk OWNER. Sebelum ini owner hanya tahu
+  //    ada penjualan dari feed publik yang sengaja disamarkan — tidak tahu
+  //    siapa pembelinya, dan tidak tahu stoknya tinggal berapa.
+  try {
+    const tujuan = settings?.transactionGroupId || settings?.ownerJid || settings?.ownerNumber;
+    if (sockRef && tujuan && String(tujuan).includes('@')) {
+      let sisaStok = null;
+      try {
+        if (produkKode) sisaStok = await db.getAvailableItemsCount(produkKode);
+      } catch (_) {}
+
+      let refPembayaran = null;
+      try {
+        const trx = await db.getQuery(
+          'SELECT provider_transaction_id FROM payment_transactions WHERE order_id = ? ORDER BY rowid DESC LIMIT 1',
+          [job.order_id]
+        );
+        refPembayaran = trx?.provider_transaction_id || null;
+      } catch (_) {}
+
+      await sockRef.sendMessage(tujuan, {
+        text: susunNotifPenjualanOwner({
+          namaProduk, produkKode,
+          namaPembeli: orderDetails?.customer_nama,
+          jid: jidPembeli,
+          jumlah, total,
+          metode: refPembayaran ? 'QRIS otomatis (Casaku)' : null,
+          tanggal, jam,
+          sisaStok,
+          stokSebelum: Number.isFinite(Number(sisaStok)) ? Number(sisaStok) + jumlah : null,
+          orderId: job.order_id,
+          refPembayaran,
+          durasiMs,
+          otomatis
+        })
+      });
+    }
+  } catch (e) {
+    console.error(`[FULFILLMENT] Notifikasi penjualan ke owner gagal: ${e.message}`);
+  }
+
+  // 3. Permintaan ulasan ke pembeli. Hanya untuk produk yang benar-benar sudah
   //    di tangan — pesanan MANUAL yang masih menunggu admin belum layak ditanya
   //    "gimana pesananmu?".
   try {
