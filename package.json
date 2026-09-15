@@ -13,6 +13,7 @@
     "test:saldo": "node scripts/saldoAdminSmokeTest.mjs",
     "test:jebakan": "node scripts/runtimeTrapTest.mjs",
     "test:testimoni": "node scripts/testimoniSmokeTest.mjs",
+    "test:casaku": "node scripts/casakuJawabanTest.mjs",
     "balance:tcg": "node scripts/tcgBalance.mjs",
     "kalibrasi:abadi": "node scripts/tcgAbadiKalibrasi.mjs"
   },

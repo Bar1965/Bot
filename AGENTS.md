@@ -787,6 +787,37 @@ dashboard is optional rather than required.
   `os.tmpdir()`. 85 assertions, no WhatsApp session needed. It `chdir`s to the sandbox **before**
   importing the database layer; keep that order or it will write to the owner's live `shop.db`.
 
+### 10i2. Casaku wraps every response in an envelope — unwrap it or nothing gets paid
+
+Casaku API v2 answers like this:
+
+```json
+{ "status": 200, "data": { "transactionId": "ORD-…", "qr_string": "0002…", "status": "pending" } }
+```
+
+Two things follow, and both were wrong until 2026-09-15:
+
+- **`createCasakuQris` read `res.data.transactionId`** — one level too shallow. So a perfectly valid
+  200 response carrying a real `qr_string` and `payment_url` failed the check, was thrown as
+  `Casaku API error (200)`, and the customer's order was cancelled. The owner's log has it verbatim:
+  a success payload rejected as an error.
+- **`checkCasakuStatus` returned the envelope**, so callers testing `statusData.status === 'paid'`
+  were comparing the **number 200** against the string `'paid'`. Reconciliation could therefore never
+  find a settled payment — and since this bot runs on a home laptop with no inbound webhooks (§1),
+  polling reconciliation is the *only* way money is ever booked. Nothing could ever be paid.
+
+`isiJawaban()` unwraps `body.data` when present and passes flat bodies through untouched; never
+assume one shape, because guessing wrong kills the money path again.
+
+**HTTP status alone does not mean success.** Casaku returns HTTP 200 with `{"status":403,"message":
+"…aplikasi listener sedang offline…"}` when the owner's phone app is closed. `kodeJawaban()` prefers
+the body's own status. Errors go through `pesanGagalCasaku()`, which turns the two common failures
+into instructions the owner can act on ("open the Casaku app on your phone", "renew at
+casaku.id/pricing") instead of a JSON dump.
+
+`npm run test:casaku` replays the exact payloads captured from the owner's log, by stubbing
+`https.request`. It needs no network and no subscription.
+
 ### 10j. The numbered catalogue — `src/handlers/katalogView.js`
 
 The customer-facing shop is exactly two screens, and every number on them is bound to a **product
