@@ -1529,6 +1529,53 @@ export async function getPesananMenungguUlasan(customerNomor) {
   return null;
 }
 
+/**
+ * Bukti pengiriman: berapa pesanan yang benar-benar sampai, secepat apa, dan
+ * yang terakhir kapan.
+ *
+ * Ini artefak anti-tipu toko ini. Calon pembeli produk digital tidak bertanya
+ * "bagus tidak barangnya" — mereka bertanya "ini penipu bukan". Yang menjawab
+ * pertanyaan itu bukan bintang lima, tapi catatan bahwa barangnya memang
+ * terkirim, berulang kali, dalam hitungan detik.
+ *
+ * Diambil dari `fulfillment_jobs`, BUKAN dari `orders`, karena dua alasan:
+ * kolom waktunya (`created_at` saat pembayaran lunas, `updated_at` saat status
+ * jadi DELIVERED) memberi durasi pengiriman yang sesungguhnya, dan barisnya
+ * tetap hidup walau owner membersihkan riwayat pesanan.
+ *
+ * Top-up saldo (DEP-) sengaja tidak dihitung: itu bukan barang yang dijual.
+ */
+export async function getBuktiPengiriman(batas = 8) {
+  const n = Math.max(1, Math.min(30, Math.trunc(Number(batas) || 8)));
+
+  const ringkas = await getQuery(
+    `SELECT COUNT(*) AS jumlah,
+            AVG(CASE WHEN updated_at > created_at THEN updated_at - created_at END) AS rata_ms,
+            MAX(updated_at) AS terakhir
+     FROM fulfillment_jobs
+     WHERE status = 'DELIVERED' AND order_id NOT LIKE 'DEP-%'`
+  );
+
+  const terbaru = await allQuery(
+    `SELECT fj.order_id, fj.customer_number, fj.created_at, fj.updated_at,
+            (SELECT p.nama FROM order_items oi JOIN products p ON p.kode = oi.produk_kode
+              WHERE oi.order_id = fj.order_id ORDER BY oi.id ASC LIMIT 1) AS nama_produk,
+            (SELECT oi.qty FROM order_items oi WHERE oi.order_id = fj.order_id ORDER BY oi.id ASC LIMIT 1) AS qty
+     FROM fulfillment_jobs fj
+     WHERE fj.status = 'DELIVERED' AND fj.order_id NOT LIKE 'DEP-%'
+     ORDER BY fj.updated_at DESC
+     LIMIT ?`,
+    [n]
+  );
+
+  return {
+    jumlah: ringkas?.jumlah || 0,
+    rataMs: ringkas?.rata_ms ? Number(ringkas.rata_ms) : 0,
+    terakhirMs: ringkas?.terakhir ? Number(ringkas.terakhir) : 0,
+    terbaru: terbaru || []
+  };
+}
+
 /** Jumlah ulasan dan rata-rata rating seluruh toko. */
 export async function getRingkasanTestimoni() {
   const row = await getQuery("SELECT COUNT(*) AS jumlah, AVG(rating) AS rata FROM reviews");

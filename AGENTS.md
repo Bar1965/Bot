@@ -868,7 +868,41 @@ A credential already marked `USED` is rejected with its own reason (`SUDAH_DIKIR
 would resell an account that is already in a buyer's hands. `.addstock` prints what it skipped and
 why; silently dropping lines would leave the owner believing stock went up when it did not.
 
-### 10m. Testimonials and sales proof — two things, deliberately not one
+### 10m. `.testi` answers "is this shop a scam?", not "is the product good?"
+
+This is the owner's own framing, and it changes what the screen is for: *"testi ini kayak bukti kalau
+kita ga ngescam dan bener bener ngasih yang dijual. soalnya banyak yang minta testi takut ditipu."*
+Buyers of digital goods do not ask whether the product is good. They ask whether they will be robbed.
+Five stars do not answer that; a record of deliveries does.
+
+So `.testi` (aliases `.ulasan`, `.rating`, `.bukti`) leads with **delivery proof**, and stars are a
+secondary line:
+
+```
+✅ 47 pesanan sudah terkirim
+⚡ Rata-rata 4 detik dari bayar sampai akun diterima
+🕒 Pengiriman terakhir: 2 menit lalu
+⭐⭐⭐⭐⭐ 4.8/5 dari 12 ulasan pembeli
+📬 PENGIRIMAN TERAKHIR  …masked numbers + per-order delivery time
+💬 KATA PEMBELI         …up to 3 real reviews
+🔒 KENAPA TIDAK BISA DITIPU DI SINI  …structural guarantees
+```
+
+`getBuktiPengiriman` reads `fulfillment_jobs`, not `orders`, for two reasons: its `created_at`
+(queued the moment payment settled) and `updated_at` (set when the status became DELIVERED) give the
+true delivery duration, and the rows survive the owner clearing order history. `DEP-` top-ups and
+non-DELIVERED jobs are excluded — a deposit is not a sale and a failed job is not proof.
+
+**A shop with no deliveries must not invent numbers.** The zero state says so plainly and still
+answers the fear with the guarantees that hold from day one (bot delivery, official QRIS rather than
+a personal bank account, warranty, real stock). The test asserts no digit and no star appears there.
+
+One subtlety worth keeping: the screen falls back to a review-only layout when the delivery counter
+is zero *but reviews exist*. An order confirmed by hand with `.paid` does not always leave a
+DELIVERED job, and hiding genuine customer reviews because a counter reads zero throws away the one
+piece of evidence the buyers themselves wrote.
+
+### 10n. Testimonials and sales proof — two things, deliberately not one
 
 `src/handlers/testimoni.js` is pure text building, like `katalogView.js`. Two outputs, and the
 separation is the point:

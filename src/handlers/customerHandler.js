@@ -5,7 +5,7 @@ import { createMidtransTransaction, botState } from '../../server.js';
 import { buildCommandMenu, resolveCategoryId, kategoriDisembunyikanModeJualan } from '../../commandRegistry.js';
 import { getSystemChangelog } from '../utils/changelog.js';
 import { susunKatalog, susunHalamanProduk, kelompokkanPencarian, pesanNomorSalah, rupiah } from './katalogView.js';
-import { uraiBalasanUlasan, susunTerimaKasihUlasan, susunDaftarTestimoni, barisRating } from './testimoni.js';
+import { uraiBalasanUlasan, susunTerimaKasihUlasan, susunLayarTesti, barisRating } from './testimoni.js';
 import { keWaktu, tanggalJamWib, tanggalWib, tanggalPanjangWib, jamWib, akhirHariWib } from '../utils/waktu.js';
 import * as mediaHandler from '../../mediaHandler.js';
 import * as ent from '../../entertainmentHandler.js';
@@ -231,7 +231,7 @@ export function createCustomerHandler(ctx = {}) {
       'list', 'produk', 'katalog', 'listproduk', 'p', 'detail', 'info', 'lihat',
       // Testimoni boleh dibaca sebelum daftar: ini justru yang meyakinkan orang
       // untuk mendaftar, jadi mengunci layarnya di balik registrasi terbalik.
-      'testi', 'testimoni', 'ulasan', 'rating',
+      'testi', 'testimoni', 'ulasan', 'rating', 'bukti',
       'update', 'changelog', 'patchnotes', 'whatsnew', 'pembaruan'
     ];
 
@@ -991,17 +991,18 @@ export function createCustomerHandler(ctx = {}) {
   // Sengaja BUKAN perintah japri: ini bukti sosial, gunanya justru dibaca
   // ramai-ramai di grup. Yang tampil hanya ulasan yang betul-betul ditulis
   // pembeli — tidak ada satu baris pun yang dikarang bot.
-  if (['testi', 'testimoni', 'ulasan', 'rating'].includes(cleanCmd)) {
-    const [daftar, ringkas] = await Promise.all([
-      db.getTestimoniTerbaru(10),
+  if (['testi', 'testimoni', 'ulasan', 'rating', 'bukti'].includes(cleanCmd)) {
+    const [bukti, daftar, ringkas] = await Promise.all([
+      db.getBuktiPengiriman(8),
+      db.getTestimoniTerbaru(3),
       db.getRingkasanTestimoni()
     ]);
 
     await sendInteractiveButtons(sock, responseJid, {
-      text: susunDaftarTestimoni(daftar, { total: ringkas.jumlah, rataRata: ringkas.rataRata }),
+      text: susunLayarTesti({ bukti, ulasan: daftar, ringkasUlasan: ringkas }),
       buttons: [
         { type: 'reply', text: 'Katalog', id: '.list' },
-        { type: 'reply', text: 'Keranjang', id: '.keranjang' }
+        { type: 'reply', text: 'Garansi', id: '.garansi' }
       ]
     });
     return true;

@@ -115,42 +115,112 @@ export function susunBuktiTransaksi({ namaProduk, jid, otomatis = true, jam, jum
   return t;
 }
 
-/**
- * Layar `.testi`. `ulasan` adalah baris dari getTestimoniTerbaru().
- *
- * Kalau belum ada satu pun ulasan, layar ini TIDAK boleh mengarang atau
- * menampilkan contoh — ia mengatakan apa adanya.
- */
-export function susunDaftarTestimoni(ulasan, opts = {}) {
-  const daftar = (Array.isArray(ulasan) ? ulasan : []).slice(0, MAKS_TESTIMONI_TAMPIL);
+/** "3 detik", "2 menit", "1 jam" — durasi pengiriman dari milidetik. */
+export function formatDurasi(ms) {
+  const n = Number(ms);
+  if (!Number.isFinite(n) || n <= 0) return '';
+  const detik = Math.round(n / 1000);
+  if (detik < 60) return `${Math.max(1, detik)} detik`;
+  const menit = Math.round(detik / 60);
+  if (menit < 60) return `${menit} menit`;
+  const jam = Math.round(menit / 60);
+  if (jam < 24) return `${jam} jam`;
+  return `${Math.round(jam / 24)} hari`;
+}
 
-  if (daftar.length === 0) {
-    let t = `💬 *TESTIMONI PELANGGAN*\n\n`;
-    t += `Belum ada ulasan.\n\n`;
-    t += `_Setiap pembeli akan ditanya sendiri oleh bot setelah barangnya sampai, jadi yang tampil di sini selalu tulisan pembeli beneran._`;
+/** "2 menit lalu", "kemarin", "3 hari lalu". */
+export function formatSejak(epochMs, sekarang = Date.now()) {
+  const n = Number(epochMs);
+  if (!Number.isFinite(n) || n <= 0) return '';
+  const selisih = sekarang - n;
+  if (selisih < 60_000) return 'barusan';
+  const d = formatDurasi(selisih);
+  return d ? `${d} lalu` : '';
+}
+
+/**
+ * Layar `.testi` — dan tugasnya BUKAN memamerkan bintang.
+ *
+ * Pembeli produk digital tidak bertanya "bagus tidak barangnya". Mereka
+ * bertanya "ini penipu bukan". Yang menjawab pertanyaan itu adalah catatan
+ * bahwa barangnya memang terkirim, berulang kali, dalam hitungan detik — dan
+ * bahwa yang mengirim adalah bot, bukan admin yang bisa menghilang.
+ *
+ * Maka urutan layarnya: angka pengiriman dulu, riwayat pengiriman, baru kata
+ * pembeli, lalu alasan struktural kenapa penipuan tidak mungkin di sini.
+ *
+ * Toko yang belum pernah mengirim apa pun TIDAK boleh mengarang angka. Layar
+ * ini mengakuinya apa adanya lalu tetap menjawab ketakutannya lewat jaminan
+ * yang memang berlaku sejak hari pertama.
+ */
+export function susunLayarTesti({ bukti, ulasan, ringkasUlasan, sekarang = Date.now() } = {}) {
+  const b = bukti || { jumlah: 0, rataMs: 0, terakhirMs: 0, terbaru: [] };
+  const daftarUlasan = (Array.isArray(ulasan) ? ulasan : []).slice(0, 3);
+  const totalUlasan = Number(ringkasUlasan?.jumlah) || 0;
+  const rata = Number(ringkasUlasan?.rataRata) || 0;
+
+  const jaminan = [
+    '🔒 *KENAPA TIDAK BISA DITIPU DI SINI*',
+    '• Akun dikirim *bot*, otomatis beberapa detik setelah bayar — bukan admin yang ketik manual',
+    '• Bayar lewat *QRIS resmi*, bukan transfer ke rekening pribadi',
+    '• Ada *garansi*: ketik `.garansi` kalau akunnya bermasalah',
+    '• Stok yang tampil di `.list` adalah akun yang benar-benar ada'
+  ].join('\n');
+
+  // ── Toko yang belum punya catatan pengiriman DAN belum punya ulasan ──────
+  //
+  // Catatan pengiriman bisa kosong walau pesanannya sungguhan: pesanan yang
+  // dikonfirmasi manual oleh admin tidak selalu meninggalkan job DELIVERED.
+  // Karena itu layar hanya benar-benar kosong kalau ulasannya juga tidak ada —
+  // menyembunyikan ulasan asli hanya karena penghitung pengiriman nol adalah
+  // membuang satu-satunya bukti yang justru ditulis pembeli sendiri.
+  if (b.jumlah === 0 && totalUlasan === 0) {
+    let t = `🛡️ *JAMINAN TOKO INI*\n`;
+    t += `━━━━━━━━━━━━━━━\n`;
+    t += `Belum ada pengiriman yang bisa ditampilkan di sini.\n\n`;
+    t += `_Angkanya tidak akan pernah dikarang — begitu ada pesanan pertama yang terkirim, catatannya muncul otomatis di layar ini._\n\n`;
+    t += jaminan;
     return t;
   }
 
-  const total = Number(opts.total) || daftar.length;
-  const rata = Number(opts.rataRata);
-
-  let t = `💬 *TESTIMONI PELANGGAN*\n`;
-  if (Number.isFinite(rata) && rata > 0) {
-    t += `${bintang(rata)}  *${rata.toFixed(1)}/5* dari ${total} ulasan\n`;
-  } else {
-    t += `_${total} ulasan_\n`;
-  }
+  let t = b.jumlah > 0 ? `🛡️ *BUKTI PENGIRIMAN TOKO INI*\n` : `🛡️ *TESTIMONI PEMBELI*\n`;
   t += `━━━━━━━━━━━━━━━\n`;
-
-  for (const u of daftar) {
-    const nama = String(u.nama_pembeli || '').trim() || samarkanNomor(u.customer_nomor);
-    t += `\n${bintang(u.rating)}  *${nama}*\n`;
-    if (u.nama_produk) t += `📦 _${u.nama_produk}_\n`;
-    const komentar = String(u.comment || '').trim();
-    if (komentar) t += `"${komentar.slice(0, MAKS_KOMENTAR)}"\n`;
+  if (b.jumlah > 0) {
+    t += `✅ *${b.jumlah} pesanan* sudah terkirim\n`;
+    const rataTeks = formatDurasi(b.rataMs);
+    if (rataTeks) t += `⚡ Rata-rata *${rataTeks}* dari bayar sampai akun diterima\n`;
+    const sejak = formatSejak(b.terakhirMs, sekarang);
+    if (sejak) t += `🕒 Pengiriman terakhir: *${sejak}*\n`;
+  }
+  if (totalUlasan > 0 && rata > 0) {
+    t += `${bintang(rata)} *${rata.toFixed(1)}/5* dari ${totalUlasan} ulasan pembeli\n`;
   }
 
-  if (total > daftar.length) t += `\n_…dan ${total - daftar.length} ulasan lain._`;
+  if (b.terbaru.length > 0) {
+    t += `\n📬 *PENGIRIMAN TERAKHIR*\n`;
+    for (const p of b.terbaru.slice(0, 6)) {
+      const nama = String(p.nama_produk || '').trim() || 'Produk digital';
+      const durasi = formatDurasi(Number(p.updated_at) - Number(p.created_at));
+      const jumlah = Number(p.qty) > 1 ? ` ×${p.qty}` : '';
+      t += `• ${nama}${jumlah}\n`;
+      t += `  ${samarkanNomor(p.customer_number)}${durasi ? ` · ⚡ ${durasi}` : ''}\n`;
+    }
+  }
+
+  if (daftarUlasan.length > 0) {
+    t += `\n💬 *KATA PEMBELI*\n`;
+    for (const u of daftarUlasan) {
+      const nama = String(u.nama_pembeli || '').trim() || samarkanNomor(u.customer_nomor);
+      const komentar = String(u.comment || '').trim();
+      t += `${bintang(u.rating)} *${nama}*`;
+      t += komentar ? `\n"${komentar.slice(0, MAKS_KOMENTAR)}"\n` : `\n`;
+    }
+    if (totalUlasan > daftarUlasan.length) {
+      t += `_…dan ${totalUlasan - daftarUlasan.length} ulasan lain._\n`;
+    }
+  }
+
+  t += `\n━━━━━━━━━━━━━━━\n${jaminan}`;
   return t;
 }
 

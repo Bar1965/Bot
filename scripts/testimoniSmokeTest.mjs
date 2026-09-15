@@ -124,9 +124,13 @@ cek('jumlah lebih dari satu ditulis', buktiBanyak.includes('×3'), buktiBanyak);
 // ============================================================
 bagian('4. Layar testimoni kosong tidak mengarang contoh');
 
-const kosong = t.susunDaftarTestimoni([], {});
-cek('mengaku belum ada ulasan', kosong.includes('Belum ada ulasan'));
-cek('tidak menampilkan bintang palsu', !kosong.includes('⭐'), kosong);
+const kosong = t.susunLayarTesti({ bukti: { jumlah: 0, rataMs: 0, terakhirMs: 0, terbaru: [] } });
+cek('mengaku belum ada pengiriman', kosong.includes('Belum ada pengiriman'), kosong.slice(0, 80));
+cek('tidak mengarang angka pengiriman', !/[1-9]\d* pesanan/.test(kosong), kosong);
+cek('tidak menampilkan bintang palsu', !kosong.includes('⭐'), kosong.slice(0, 120));
+cek('tetap menjawab ketakutan ditipu', kosong.includes('TIDAK BISA DITIPU'), kosong.slice(-200));
+cek('menyebut pengiriman oleh bot', kosong.includes('bot'), kosong.slice(-260));
+cek('menyebut garansi', kosong.includes('.garansi'), kosong.slice(-200));
 
 // ============================================================
 bagian('5. Alur nyata: pesanan terkirim -> pembeli membalas bintang');
@@ -207,10 +211,53 @@ bagian('9. Layar .testi menampilkan ulasan asli');
 
 const layarTesti = await ketik('.testi');
 cek('.testi dijawab', layarTesti.length > 0);
-cek('menampilkan bintangnya', layarTesti.includes('⭐⭐⭐⭐⭐'), layarTesti.slice(0, 120));
-cek('menampilkan komentar pembeli', layarTesti.includes('cepet banget'), layarTesti.slice(0, 200));
-cek('menampilkan nama produk', layarTesti.includes('Produk Testi'), layarTesti.slice(0, 200));
-cek('menampilkan rata-rata', /5\.0\/5/.test(layarTesti), layarTesti.slice(0, 120));
+cek('menampilkan komentar pembeli', layarTesti.includes('cepet banget'), layarTesti.slice(0, 260));
+cek('menampilkan bintangnya', layarTesti.includes('⭐⭐⭐⭐⭐'), layarTesti.slice(0, 260));
+cek('menutup dengan alasan tidak bisa ditipu', layarTesti.includes('TIDAK BISA DITIPU'), layarTesti.slice(-200));
+cek('cukup ringkas untuk satu tangkapan layar (<= 34 baris)',
+  layarTesti.split('\n').length <= 34, String(layarTesti.split('\n').length));
+
+// ============================================================
+bagian('9b. Bukti pengiriman — angkanya dari catatan, bukan karangan');
+
+// Job pengiriman sungguhan: dibuat saat lunas, ditandai DELIVERED 3 detik lalu.
+const t0 = Date.now() - 3_000;
+await db.runQuery(
+  "INSERT INTO fulfillment_jobs (job_id, order_id, customer_number, status, attempts, created_at, updated_at) VALUES (?, ?, ?, 'DELIVERED', 1, ?, ?)",
+  ['FJ-' + ORDER, ORDER, PEMBELI, t0, t0 + 3_000]
+);
+// Top-up saldo TIDAK boleh ikut dihitung sebagai barang terjual.
+await db.runQuery(
+  "INSERT INTO fulfillment_jobs (job_id, order_id, customer_number, status, attempts, created_at, updated_at) VALUES (?, ?, ?, 'DELIVERED', 1, ?, ?)",
+  ['FJ-DEP-UJI', 'DEP-UJI-1', PEMBELI, t0, t0 + 1_000]
+);
+// Job yang gagal juga tidak boleh dihitung sebagai bukti.
+await db.runQuery(
+  "INSERT INTO fulfillment_jobs (job_id, order_id, customer_number, status, attempts, created_at, updated_at) VALUES (?, ?, ?, 'MANUAL_REVIEW', 6, ?, ?)",
+  ['FJ-GAGAL', 'ORD-GAGAL', PEMBELI, t0, t0 + 9_000]
+);
+
+const buktiDb = await db.getBuktiPengiriman(8);
+cek('hanya menghitung yang benar-benar terkirim', buktiDb.jumlah === 1, String(buktiDb.jumlah));
+cek('top-up saldo tidak dihitung sebagai penjualan',
+  !buktiDb.terbaru.some(x => String(x.order_id).startsWith('DEP-')), JSON.stringify(buktiDb.terbaru.map(x => x.order_id)));
+cek('pengiriman gagal tidak dihitung',
+  !buktiDb.terbaru.some(x => x.order_id === 'ORD-GAGAL'));
+cek('durasi pengiriman terbaca ~3 detik', Math.round(buktiDb.rataMs / 1000) === 3, String(buktiDb.rataMs));
+cek('nama produknya ikut terbawa', buktiDb.terbaru[0]?.nama_produk === 'Produk Testi', String(buktiDb.terbaru[0]?.nama_produk));
+
+cek('durasi diformat manusiawi', t.formatDurasi(3000) === '3 detik', t.formatDurasi(3000));
+cek('durasi menit', t.formatDurasi(120_000) === '2 menit', t.formatDurasi(120_000));
+cek('durasi nol tidak ditampilkan', t.formatDurasi(0) === '');
+cek('sejak barusan', t.formatSejak(Date.now() - 5_000) === 'barusan', t.formatSejak(Date.now() - 5_000));
+cek('sejak beberapa menit', t.formatSejak(Date.now() - 600_000) === '10 menit lalu', t.formatSejak(Date.now() - 600_000));
+
+const layarBukti = await ketik('.testi');
+cek('layar menyebut jumlah pesanan terkirim', layarBukti.includes('1 pesanan'), layarBukti.slice(0, 160));
+cek('layar menyebut kecepatan pengiriman', layarBukti.includes('3 detik'), layarBukti.slice(0, 200));
+cek('layar menampilkan riwayat pengiriman', layarBukti.includes('PENGIRIMAN TERAKHIR'), layarBukti.slice(0, 300));
+cek('nomor pembeli disamarkan di riwayat', layarBukti.includes('628••••0001'), layarBukti.slice(0, 400));
+cek('nomor utuh tidak pernah tercetak', !layarBukti.includes('628777000001'), layarBukti);
 
 // ============================================================
 bagian('10. Rating muncul di halaman produk');
