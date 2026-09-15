@@ -16,6 +16,7 @@
     "test:casaku": "node scripts/casakuJawabanTest.mjs",
     "test:kirimulang": "node scripts/kirimUlangTest.mjs",
     "test:menu": "node scripts/auditMenuTest.mjs",
+    "test:siaran": "node scripts/siaranSmokeTest.mjs",
     "balance:tcg": "node scripts/tcgBalance.mjs",
     "kalibrasi:abadi": "node scripts/tcgAbadiKalibrasi.mjs"
   },

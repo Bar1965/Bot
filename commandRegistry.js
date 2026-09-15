@@ -470,6 +470,10 @@ const categories = {
       {
         title: '📣 PROMO, LAPORAN & CHAT (Owner / Admin)',
         items: [
+          ['.siaran [on/off]', 'Pengumuman restok & turun harga otomatis 🆕'],
+          ['.umumkan [kode]', 'Kirim pengumuman ke grup sekarang 🆕'],
+          ['.restock <kode>', 'Siarkan restok ke pelanggan & grup'],
+          ['.setupdategroup', 'Jadikan grup ini tujuan pengumuman'],
           ['.flashsale <kode> <harga> [jam]', 'Harga kilat berbatas waktu'],
           ['.addcoupon <kode>|<tipe>|<nilai>|...', 'Buat kupon diskon belanja'],
           ['.listcoupon / .delcoupon <kode>', 'Lihat & hapus kupon'],

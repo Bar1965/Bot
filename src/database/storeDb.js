@@ -402,6 +402,7 @@ export async function addProductItems(kode, itemsArray) {
 
   // Jalur dashboard memakai penyaring yang sama dengan jalur WhatsApp, supaya
   // kredensial kembar tidak bisa masuk lewat pintu yang satunya.
+  const readyCountSebelum = await getAvailableItemsCount(code);
   const { baru, dilewati } = await saringKredensialBaru(code, itemsArray);
 
   for (const item of baru) {
@@ -422,7 +423,11 @@ export async function addProductItems(kode, itemsArray) {
   // melaporkan jumlah yang DIKIRIM sebagai jumlah yang ditambahkan. Menempel 50
   // tautan yang 10 di antaranya kembar tetap berbunyi "Berhasil menambahkan 50
   // kredensial", sementara stoknya cuma naik 40.
-  return { readyCount, addedCount: baru.length, dilewati };
+  //
+  // readyCountSebelum ikut dipulangkan karena siaranStok hanya mengumumkan
+  // produk yang tadinya BENAR-BENAR kosong, dan angka itu cuma bisa diketahui
+  // dari dalam sini — sesudah INSERT, jejaknya sudah hilang.
+  return { readyCount, readyCountSebelum, addedCount: baru.length, dilewati };
 }
 
 /**
@@ -450,6 +455,7 @@ export async function addProductItemsBatch(kode, itemsArray) {
   return withTransaction(async () => {
     // Penyaringan dilakukan DI DALAM transaksi, supaya dua `.addstock` yang
     // datang hampir bersamaan tidak sama-sama lolos pemeriksaan kembar.
+    const readyCountSebelum = await getAvailableItemsCount(code);
     const { baru, dilewati } = await saringKredensialBaru(code, validItems);
 
     if (baru.length === 0) {
@@ -488,6 +494,8 @@ export async function addProductItemsBatch(kode, itemsArray) {
       addedCount: baru.length,
       dilewati,
       readyCount,
+      readyCountSebelum,
+      harga: product.harga,
       switchedToAuto
     };
   });

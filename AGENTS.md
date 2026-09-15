@@ -41,9 +41,16 @@ plus a handful of standalone smoke tests (`npm run test:tcg`, `test:identity`, `
    runtime, which in this bot means the customer gets no reply at all. `npm run test:jebakan`
    (`scripts/runtimeTrapTest.mjs`) catches both across the whole repo — run it after any edit that
    touches message text or adds a helper. See §15a.
-2. Kill the old process **completely** — `taskkill /F /IM node.exe` on Windows. Nothing handles
-   SIGINT and `index.js` never exits on error, so a half-dead process keeps holding port 3000 and
-   the next boot fails with `EADDRINUSE`.
+2. Stop the old process. **Ctrl+C in its own terminal is the correct way** — since `7139314`,
+   `index.js` handles SIGINT/SIGTERM/SIGHUP/SIGBREAK and calls `tutupBotDenganRapi`, which flushes
+   `creds.json` and the Signal keys before closing the socket, then force-exits after 8 s. Killing
+   it mid-write is one of the ways the chat ends up undecryptable (`Bad MAC`).
+   `taskkill /F /IM node.exe` is the fallback when you have no access to that terminal: on Windows
+   it calls TerminateProcess, which **cannot be caught**, so the graceful path never runs. Never
+   leave a half-dead process holding port 3000 — the next boot fails with `EADDRINUSE`.
+   After stopping, **wait ~8 s and re-check**: Antigravity respawns the bot on its own, and starting
+   a second one means two sockets fighting over the same WhatsApp session
+   (`⚠️ Connection Replaced (405)`). Verify exactly one `node index.js` before and after.
 3. Restart and watch the terminal while the bot answers a real message.
 4. Exercise the change in **both** a private chat and a group. The two paths are separate code.
 
@@ -1140,6 +1147,55 @@ twice with different tracking params is correctly one voucher, and two links tha
 differ only in their code are correctly two.
 
 Covered by `scripts/produkAdminSmokeTest.mjs` §40.
+
+### 10p. Restock and price-drop announcements — `src/handlers/siaranStok.js`
+
+`.setupdategroup` had promised "Restock & Penurunan Harga" since long before
+anything implemented the price half. `triggerRestockBroadcast` existed but only
+`.restock <kode>` called it, by hand.
+
+The module holds two queues keyed by product code, flushed to one message after a
+quiet period (default 180 s, `pasangJedaSiaran`). Socket and settings reader are
+injected (`pasangSocketSiaran`, `pasangPembacaSettings`) from `bot.js` at
+connection-open, so the module never imports `bot.js` (§16) and the whole thing
+tests without WhatsApp.
+
+**Four things it deliberately refuses to announce.** These are the design, not
+missing features — an announcement channel that fires constantly stops being read,
+and then the announcements that matter are lost with the rest:
+
+| Refused | Why |
+|---|---|
+| restock where stock was never 0 | 20 → 25 is not news |
+| price **increases** | telling everyone prices went up is telling them to shop elsewhere |
+| out of stock, to buyers | negative advertising; the owner already learns it from `susunNotifPenjualanOwner` |
+| one message per `.addstock` | a restock session is several commands; they merge into one |
+
+The "was actually empty" rule is enforced inside `antrekanRestok`, not at each call
+site, so a future entry point cannot bypass it by forgetting. Same for "drops only"
+in `antrekanTurunHarga`. Two drops before the flush keep the *original* old price,
+so the announced discount is the full one, not just the last step.
+
+Callers: `.addstock`, `.stock`, `.ready`, `.price` in `groupAdminHandler.js`, and
+the dashboard import route. Stock figures must come from `getAvailableItemsCount`,
+never `products.stok` (§10l) — a wrong number on the owner's screen is fixable, a
+wrong number already broadcast to a group is not.
+
+Owner controls: `.siaran` (status + what is queued), `.siaran on|off`
+(`settings.siaranOtomatis`, default ON when the key is absent), `.umumkan` (flush
+now), `.umumkan <kode>` (force one product in even when the automatic rules say no
+— that is the escape hatch for the deliberate decisions the bot refuses to make on
+its own). `.umumkan <kode>` still refuses a product at zero stock.
+
+A failed send **keeps** the queue (`SOCKET_BELUM_SIAP`, `GRUP_BELUM_DISET`,
+`GAGAL_KIRIM`); only a successful send and an explicit `siaranOtomatis=OFF` clear
+it. Dropping a queue because WhatsApp happened to be down is the bug §10's
+subscriber notifier already had once.
+
+Target group: `updateGroupId` → `buyerGroupId` → `transactionGroupId`.
+
+`npm run test:siaran` (54 assertions) pins every refusal above, including that no
+message ever contains out-of-stock wording.
 
 ## 11. Dashboard (`server.js`, ~70 `/api` routes)
 

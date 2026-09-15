@@ -220,7 +220,14 @@ const ADMIN_BARU = [
   ['notif', 'dikabari saat restok'],
   ['simpan', 'wishlist'],
   ['carapake', 'cara pakai produk'],
-  ['ref', 'kode referral']
+  ['ref', 'kode referral'],
+  // Pengumuman restok & turun harga. `.setupdategroup` sudah lama menjanjikan
+  // "Restock & Penurunan Harga" di pesan konfirmasinya, tetapi tidak satu pun
+  // dari ketiganya pernah tercantum di menu.
+  ['siaran', 'pengumuman otomatis on/off'],
+  ['umumkan', 'kirim pengumuman sekarang'],
+  ['restock', 'siarkan restok'],
+  ['setupdategroup', 'set grup tujuan pengumuman']
 ];
 for (const [c, guna] of ADMIN_BARU) {
   cek(`.${c} (${guna}) ada di menu`, diMenu.has(c), 'belum terdaftar');

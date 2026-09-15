@@ -172,6 +172,20 @@ router.post('/products/:kode/items', authenticateJWT, authorizeRoles('Owner', 'A
         ? ` (${sudahDikirim} di antaranya sudah pernah dikirim ke pembeli).`
         : '.';
     }
+    // Restok lewat dashboard diperlakukan sama dengan lewat WhatsApp: kalau
+    // produknya tadinya benar-benar kosong, grup ikut dikabari. Aturan "hanya
+    // dari nol" ditegakkan di dalam antrekanRestok, bukan di sini.
+    try {
+      const produk = await db.getProductByKode(kode);
+      const { antrekanRestok } = await import('../handlers/siaranStok.js');
+      antrekanRestok({
+        kode, nama: produk?.nama, harga: produk?.harga,
+        stokSebelum: hasil.readyCountSebelum, stokSesudah: hasil.readyCount
+      });
+    } catch (siaranErr) {
+      console.warn('[SIARAN] Gagal mengantre pengumuman restok:', siaranErr.message);
+    }
+
     res.json({ success: true, message: pesan, stock: hasil.readyCount, added: hasil.addedCount, skipped: dilewati });
   } catch (err) {
     res.status(500).json({ success: false, message: pesanErrorAman(err, 'PRODUCT') });

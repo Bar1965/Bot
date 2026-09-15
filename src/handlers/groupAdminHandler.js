@@ -15,6 +15,7 @@ import { perisaiTarget } from '../utils/perisaiTarget.js';
 import { mulaiWizardProduk, simpanGambarProduk } from './storeWizard.js';
 import { handleSaldoOwner } from './saldoAdmin.js';
 import { uraiBarisAddstock } from './stokInput.js';
+import { antrekanRestok, antrekanTurunHarga, kirimSekarang, isiAntrean } from './siaranStok.js';
 import { penutupGaransi } from '../utils/pesanGaransi.js';
 import { tanggalWib, jamWib } from '../utils/waktu.js';
 
@@ -51,7 +52,7 @@ export function createGroupAdminHandler(ctx) {
     'restock', 'stock', 'price', 'out', 'ready', 'addproduct', 'takeover', 
     'release', 'setname', 'setowner', 'eval', 'exec', 'backup', 'resetleaderboard',
     'addstock', 'tambahstok', 'cekstok', 'liststock', 'delstock', 'setdelivery', 'listproduk', 'katalogadmin', 'stokyatim',
-    'sinkronstok', 'syncstok', 'perbaikistok',
+    'sinkronstok', 'syncstok', 'perbaikistok', 'umumkan', 'siaran',
     'addproduk', 'editproduk', 'ubahproduk', 'delproduk', 'hapusproduk', 'setgambar', 'tokobaru', 'produkbaru',
     // Saldo deposit — gerbang sesungguhnya ada di saldoAdmin.js dan HANYA owner
     // yang lolos. Didaftarkan di sini supaya perintahnya sampai ke handler;
@@ -1657,6 +1658,101 @@ ${panduanMode}`
       return true;
     }
 
+    // ── .umumkan — kirim antrean pengumuman SEKARANG, tanpa menunggu hening ──
+    //
+    // Ada dua bentuk, dan bedanya penting: tanpa argumen ia mengirim apa yang
+    // memang sudah mengantre; dengan kode produk ia MEMAKSA satu produk masuk
+    // pengumuman walau aturan otomatisnya tidak terpenuhi — restok yang stoknya
+    // tidak pernah nol, atau harga yang justru naik. Keputusan dagang seperti
+    // itu memang harus diketik manusia, bukan disimpulkan bot.
+    if (cleanCmd === 'umumkan') {
+      const code = args[1]?.toUpperCase();
+
+      if (code) {
+        const p = await db.getProductByKode(code);
+        if (!p) {
+          await sock.sendMessage(jid, { text: `❌ Produk dengan kode *${code}* tidak ditemukan.` });
+          return true;
+        }
+        // Angka stok yang disiarkan dibaca dari kredensial sungguhan, bukan
+        // kolom cache `products.stok` (§10l). Sekali tersiar tidak bisa ditarik.
+        const stokAsli = p.delivery_type === 'AUTO'
+          ? await db.getAvailableItemsCount(code)
+          : (p.stok || 0);
+        if (stokAsli <= 0) {
+          await sock.sendMessage(jid, { text: `⚠️ *${p.nama}* (\`${code}\`) stoknya *0*. Tidak diumumkan — mengajak orang membeli barang yang tidak ada justru merusak kepercayaan.\n\n_Isi dulu:_ \`.addstock ${code}\`` });
+          return true;
+        }
+        antrekanRestok({ kode: code, nama: p.nama, harga: p.harga, stokSebelum: 0, stokSesudah: stokAsli });
+      }
+
+      const tertunda = isiAntrean();
+      if (tertunda.restok.length === 0 && tertunda.turunHarga.length === 0) {
+        await sock.sendMessage(jid, { text: `📭 Tidak ada yang mengantre untuk diumumkan.\n\n_Pakai_ \`.umumkan <KODE>\` _untuk mengumumkan satu produk sekarang juga._` });
+        return true;
+      }
+
+      const hasil = await kirimSekarang();
+      if (hasil.terkirim) {
+        await sock.sendMessage(jid, { text: `📣 *Pengumuman terkirim ke grup.*\n\n${hasil.teks}` });
+      } else {
+        const sebab = {
+          GRUP_BELUM_DISET: 'Grup pengumuman belum diset. Ketik `.setupdategroup` di grup yang dituju.',
+          SOCKET_BELUM_SIAP: 'Koneksi WhatsApp belum siap. Coba lagi sebentar lagi.',
+          DIMATIKAN: 'Siaran otomatis sedang *OFF*. Nyalakan dengan `.siaran on`.',
+          KOSONG: 'Tidak ada yang layak diumumkan.'
+        }[hasil.alasan] || `Gagal mengirim: ${hasil.pesan || hasil.alasan}`;
+        await sock.sendMessage(jid, { text: `⚠️ ${sebab}` });
+      }
+      return true;
+    }
+
+    // ── .siaran — lihat / nyalakan / matikan pengumuman otomatis ─────────────
+    if (cleanCmd === 'siaran') {
+      const pilihan = (args[1] || '').toLowerCase();
+
+      if (pilihan === 'on' || pilihan === 'off') {
+        await db.updateSettings({ siaranOtomatis: pilihan.toUpperCase() });
+        botSettings.siaranOtomatis = pilihan.toUpperCase();
+        await sock.sendMessage(jid, {
+          text: pilihan === 'on'
+            ? `🔔 *Siaran otomatis: ON*\n\nRestok produk yang tadinya kosong dan penurunan harga akan diumumkan ke grup.`
+            : `🔕 *Siaran otomatis: OFF*\n\nTidak ada yang diumumkan otomatis. \`.umumkan <KODE>\` tetap bisa dipakai manual.`
+        });
+        return true;
+      }
+
+      const s = await db.getSettings();
+      const aktif = String(s?.siaranOtomatis ?? 'ON').toUpperCase() !== 'OFF';
+      const grup = s?.updateGroupId || s?.buyerGroupId || s?.transactionGroupId;
+      const tertunda = isiAntrean();
+
+      let teks = `📣 *SIARAN STOK & HARGA*\n━━━━━━━━━━━━━━━\n`;
+      teks += `Status: ${aktif ? '🔔 *ON*' : '🔕 *OFF*'}\n`;
+      teks += `Grup tujuan: ${grup ? `\`${grup}\`` : '⚠️ *belum diset* — ketik `.setupdategroup` di grup tujuan'}\n\n`;
+      teks += `*Yang diumumkan otomatis:*\n`;
+      teks += `• Restok produk yang tadinya *benar-benar kosong*\n`;
+      teks += `• Harga yang *turun*\n\n`;
+      teks += `*Yang sengaja TIDAK:*\n`;
+      teks += `• Restok biasa (20 → 25 bukan kabar)\n`;
+      teks += `• Harga *naik*\n`;
+      teks += `• Stok habis (itu iklan negatif — kamu sendiri sudah dikabari)\n\n`;
+
+      if (tertunda.restok.length || tertunda.turunHarga.length) {
+        teks += `⏳ *Sedang mengantre:*\n`;
+        for (const r of tertunda.restok) teks += `   🟢 ${r.nama} (restok ${r.stok} pcs)\n`;
+        for (const h of tertunda.turunHarga) teks += `   🔻 ${h.nama} (turun harga)\n`;
+        teks += `\n_Ketik_ \`.umumkan\` _untuk mengirim sekarang._\n`;
+      } else {
+        teks += `📭 _Tidak ada yang mengantre._\n`;
+      }
+
+      teks += `━━━━━━━━━━━━━━━\n`;
+      teks += `\`.siaran on\` · \`.siaran off\` · \`.umumkan <KODE>\``;
+      await sock.sendMessage(jid, { text: teks });
+      return true;
+    }
+
     // ==========================================
     // PERINTAH ADMIN & TRANSAKSI
     // ==========================================
@@ -2094,6 +2190,18 @@ user2@gmail.com|pass456
 
       // Picu notifikasi stok ready jika stok baru > 0
       await checkAndNotifySubscribers(code, res.readyCount);
+
+      // Pengumuman grup hanya untuk produk yang tadinya BENAR-BENAR kosong, dan
+      // tidak dikirim sekarang juga — antrean menunggu hening dulu supaya satu
+      // sesi restok jadi satu pesan, bukan lima. Aturannya ada di siaranStok.
+      if (antrekanRestok({
+        kode: code, nama: res.productName, harga: res.harga,
+        stokSebelum: res.readyCountSebelum, stokSesudah: res.readyCount
+      })) {
+        await sock.sendMessage(jid, {
+          text: `📣 _Produk ini tadinya kosong — pengumuman restok akan disiarkan ke grup sebentar lagi._\n_Ketik_ \`.umumkan\` _untuk mengirim sekarang, atau_ \`.siaran off\` _untuk membatalkan._`
+        });
+      }
       return true;
     }
 
@@ -2370,6 +2478,8 @@ user2@gmail.com|pass456
 
       // Picu notifikasi stok ready jika stok baru > 0
       await checkAndNotifySubscribers(code, stock);
+      // Produk MANUAL: di sinilah `products.stok` memang angka yang sah (§10l).
+      antrekanRestok({ kode: code, nama: p.nama, harga: p.harga, stokSebelum: p.stok, stokSesudah: stock });
       return true;
     }
 
@@ -2403,6 +2513,16 @@ user2@gmail.com|pass456
       await db.updateProductPrice(code, price);
       await sock.sendMessage(jid, { text: `💸 Harga *${p.nama}* (\`${code}\`) berhasil diperbarui menjadi *Rp${price.toLocaleString('id-ID')}*.` });
       await logToSystem('SYSTEM', `💸 Harga produk *${code}* diperbarui menjadi Rp${price} oleh admin.`);
+
+      // Hanya PENURUNAN yang diumumkan. Menyiarkan kenaikan harga sama saja
+      // menyuruh semua orang belanja di tempat lain; kalau memang mau dipakai
+      // sebagai dorongan, owner mengetiknya sendiri lewat `.umumkan`.
+      if (antrekanTurunHarga({ kode: code, nama: p.nama, hargaLama: p.harga, hargaBaru: price })) {
+        const hemat = (p.harga - price).toLocaleString('id-ID');
+        await sock.sendMessage(jid, {
+          text: `📣 _Turun Rp${hemat} — pengumuman akan disiarkan ke grup sebentar lagi._\n_Ketik_ \`.umumkan\` _untuk kirim sekarang._`
+        });
+      }
       return true;
     }
 
@@ -2474,6 +2594,7 @@ user2@gmail.com|pass456
 
       // Picu notifikasi stok ready jika stok baru > 0
       await checkAndNotifySubscribers(code, 10);
+      antrekanRestok({ kode: code, nama: p.nama, harga: p.harga, stokSebelum: p.stok, stokSesudah: 10 });
       return true;
     }
 

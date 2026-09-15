@@ -1153,6 +1153,19 @@ export async function startBot(onSocketReady) {
         console.warn('[CASAKU] Fulfillment Worker not started:', fwErr.message);
       }
 
+      // Siaran restok & turun harga. Socket dan pembaca settings DITITIPKAN,
+      // bukan diimpor dari sini, supaya siaranStok.js tetap bebas dari bot.js
+      // dan bisa diuji tanpa menyalakan WhatsApp (§16).
+      try {
+        const siaran = await import('./src/handlers/siaranStok.js');
+        siaran.pasangSocketSiaran(sock);
+        siaran.pasangPembacaSettings(() => db.getSettings());
+        if (botSettings.siaranJedaDetik) siaran.pasangJedaSiaran(botSettings.siaranJedaDetik);
+        console.log('[SIARAN] Pengumuman restok & turun harga siap.');
+      } catch (siaranErr) {
+        console.warn('[SIARAN] Tidak bisa disiapkan:', siaranErr.message);
+      }
+
       // Pulihkan sesi game Undercover yang sedang berjalan jika ada restart/update
       try {
         const { restoreUndercoverSessions } = await import('./src/games/undercover.js');
