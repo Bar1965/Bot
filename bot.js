@@ -840,6 +840,43 @@ export function statistikKirimUlang() {
   return { tersimpan: pesanKeluarCache.size, batas: MAKS_PESAN_KELUAR, meleset: getMessageMeleset };
 }
 
+// --- PENUTUPAN RAPI ---
+//
+// Kunci Signal ditulis ke ./session lewat saveCreds(), dan saveCreds HANYA
+// dipanggil saat Baileys memancarkan 'creds.update'. Mematikan proses di tengah
+// jalan membuat perubahan kunci yang belum sempat dipancarkan hilang — bot
+// hidup lagi memakai keadaan ratchet yang sudah tertinggal dari perangkat lawan
+// bicara, dan SEMUA pesan berikutnya tidak bisa didekripsi di sana. Gejalanya di
+// HP penerima: "Menunggu pesan ini" yang tidak pernah hilang.
+//
+// Catatan jujur: di Windows, `taskkill /F` dan `Stop-Process -Force` memakai
+// TerminateProcess yang TIDAK BISA ditangkap — penutup ini tidak menolong untuk
+// itu. Yang tertolong adalah Ctrl+C di terminal owner dan penghentian biasa.
+// Karena itu: hentikan bot dengan Ctrl+C, jangan dengan /F, kecuali terpaksa.
+let simpanKredensial = null;
+
+export function daftarkanPenutupRapi(fn) {
+  simpanKredensial = fn;
+}
+
+export async function tutupBotDenganRapi(alasan = 'SIGNAL') {
+  console.log(`[SHUTDOWN] Menutup bot dengan rapi (${alasan})...`);
+  try {
+    if (typeof simpanKredensial === 'function') {
+      await simpanKredensial();
+      console.log('[SHUTDOWN] Credentials & Signal keys tersimpan.');
+    }
+  } catch (e) {
+    console.error('[SHUTDOWN] Gagal menyimpan credentials:', e.message);
+  }
+  try {
+    if (sock?.end) sock.end(undefined);
+    console.log('[SHUTDOWN] Socket WhatsApp ditutup.');
+  } catch (e) {
+    console.error('[SHUTDOWN] Gagal menutup socket:', e.message);
+  }
+}
+
 
 // Fungsi terpusat aman untuk mengirim pesan WA (Connection Guard & Retries & Queueing)
 export async function safeSendMessage(jid, content, options = {}) {
@@ -958,6 +995,8 @@ export async function startBot(onSocketReady) {
   // Folder sesi WA
   const sessionFolder = './session';
   const { state, saveCreds } = await useMultiFileAuthState(sessionFolder);
+  // Supaya penutup rapi di index.js bisa memaksa flush kunci sebelum keluar.
+  daftarkanPenutupRapi(saveCreds);
 
   // Ambil versi terbaru WhatsApp Web dari Baileys, fallback ke versi stabil 2.3000.1043857760
   let waVersion = [2, 3000, 1043857760];

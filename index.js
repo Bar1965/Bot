@@ -1,7 +1,7 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
-import { startBot } from './bot.js';
+import { startBot, tutupBotDenganRapi } from './bot.js';
 import { startServer } from './server.js';
 import { startScheduler } from './scheduler.js';
 
@@ -19,6 +19,36 @@ process.on('unhandledRejection', (reason) => {
   console.error('[WATCHDOG] ⚠️ Unhandled Rejection terdeteksi!');
   console.error(reason?.stack || reason);
 });
+
+// --- PENUTUPAN RAPI SAAT DIHENTIKAN ---
+//
+// Tanpa ini, menghentikan bot memutus proses tepat di tengah pembaruan kunci
+// Signal. Kunci yang belum tersimpan hilang, dan saat bot hidup lagi ia memakai
+// keadaan ratchet yang sudah tertinggal dari perangkat lawan bicara — di HP
+// mereka setiap pesan berikutnya berhenti di "Menunggu pesan ini".
+//
+// Batas waktu wajib ada: kalau penyimpanan menggantung, proses tetap harus
+// keluar. Menggantung berarti port 3000 tidak pernah dilepas dan boot
+// berikutnya gagal dengan EADDRINUSE.
+let sedangMenutup = false;
+for (const sinyal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) {
+  process.on(sinyal, async () => {
+    if (sedangMenutup) return;
+    sedangMenutup = true;
+    const paksaKeluar = setTimeout(() => {
+      console.error('[SHUTDOWN] Penutupan terlalu lama, memaksa keluar.');
+      process.exit(0);
+    }, 8000);
+    paksaKeluar.unref?.();
+    try {
+      await tutupBotDenganRapi(sinyal);
+    } catch (e) {
+      console.error('[SHUTDOWN] Galat saat menutup:', e?.message || e);
+    }
+    clearTimeout(paksaKeluar);
+    process.exit(0);
+  });
+}
 
 // Periodic Temp Folder Cleaner (Tiap 1 Jam)
 setInterval(() => {
