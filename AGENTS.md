@@ -1160,26 +1160,44 @@ injected (`pasangSocketSiaran`, `pasangPembacaSettings`) from `bot.js` at
 connection-open, so the module never imports `bot.js` (§16) and the whole thing
 tests without WhatsApp.
 
-**Four things it deliberately refuses to announce.** These are the design, not
+**Four triggers**, all queued and merged into one message:
+
+| Trigger | Rule | Queued by |
+|---|---|---|
+| new product | stock > 0 | `storeWizard.js` after `.tokobaru` |
+| restock | stock **was ≤ `lowStockLimit`** and went up | `.addstock`, `.stock`, `.ready`, dashboard import |
+| price drop | new < old | `.price` |
+| running low | `0 < stock ≤ lowStockLimit` | `fulfillmentWorker.js` after a sale |
+
+**Never tagall.** The owner asked for this explicitly: `sendMessage` is called with
+`{ text }` and nothing else. Do not add `mentions` — `broadcastTagAll` exists for
+when tagging is actually wanted.
+
+**Five things it deliberately refuses to announce.** These are the design, not
 missing features — an announcement channel that fires constantly stops being read,
 and then the announcements that matter are lost with the rest:
 
 | Refused | Why |
 |---|---|
-| restock where stock was never 0 | 20 → 25 is not news |
+| restock where stock was already healthy | 20 → 25 is not news |
 | price **increases** | telling everyone prices went up is telling them to shop elsewhere |
-| out of stock, to buyers | negative advertising; the owner already learns it from `susunNotifPenjualanOwner` |
+| **out of stock** (0), to buyers | negative advertising; the owner already learns it from `susunNotifPenjualanOwner` |
+| repeat "running low" for the same product | stock 3 would shout three times before selling out; muted until restocked |
 | one message per `.addstock` | a restock session is several commands; they merge into one |
 
-The "was actually empty" rule is enforced inside `antrekanRestok`, not at each call
-site, so a future entry point cannot bypass it by forgetting. Same for "drops only"
-in `antrekanTurunHarga`. Two drops before the flush keep the *original* old price,
-so the announced discount is the full one, not just the last step.
+Note the deliberate split: **"tinggal sedikit" is announced, "habis" is not.**
+Scarcity moves people; an empty shelf tells them not to come.
 
-Callers: `.addstock`, `.stock`, `.ready`, `.price` in `groupAdminHandler.js`, and
-the dashboard import route. Stock figures must come from `getAvailableItemsCount`,
-never `products.stok` (§10l) — a wrong number on the owner's screen is fixable, a
-wrong number already broadcast to a group is not.
+Every rule is enforced inside the `antrekan*` functions, not at the call sites, so
+a future entry point cannot bypass one by forgetting to check. A product can only
+occupy one section per message — `lepaskanDariAntreanLain` drops it from the
+others, which is how the wizard turns a batch-queued "restock" line into the
+"produk baru" line it should have been. Two price drops before the flush keep the
+*original* old price, so the announced discount is the full one.
+
+Stock figures must come from `getAvailableItemsCount`, never `products.stok`
+(§10l) — a wrong number on the owner's screen is fixable, a wrong number already
+broadcast to a group is not.
 
 Owner controls: `.siaran` (status + what is queued), `.siaran on|off`
 (`settings.siaranOtomatis`, default ON when the key is absent), `.umumkan` (flush
@@ -1194,8 +1212,31 @@ subscriber notifier already had once.
 
 Target group: `updateGroupId` → `buyerGroupId` → `transactionGroupId`.
 
-`npm run test:siaran` (54 assertions) pins every refusal above, including that no
-message ever contains out-of-stock wording.
+`npm run test:siaran` (80 assertions) pins every refusal above, that no message
+ever contains out-of-stock wording, and that the sent payload's only key is `text`.
+
+### 10p1. The registration gate locked 165 players out of their own progress
+
+The 15 Sep 2026 store reset emptied `customers` and left `game_profiles` alone —
+correctly, there is no cascade; the game tables key on `customer_jid` themselves.
+But `src/games/index.js` refuses anyone without a `customers` row **before any game
+command runs**, so 165 of 172 profiles became unreachable. Data intact, door
+locked. One of them was level 286 holding 66 850 banked points.
+
+Two fixes, both applied:
+
+1. The 236 deleted rows were restored from
+   `backups/shop_backup_20260915_221654_tepat_sebelum_reset.db` with
+   `INSERT OR IGNORE` (the 8 people who had already re-registered keep their newer
+   row). Locked profiles: 165 → 3, and those 3 are `@s.whatsapp.net` test rows.
+2. `pulihkanMemberLama(jid)` in `userDb.js` — before the gate refuses anyone, it
+   checks for a game profile that shows actual play (`games_played`, points, or
+   level > 1) and re-creates the customer row if so. An empty profile is not proof
+   of membership; `getOrCreateGameProfile` creates those on first touch.
+   `profile_completed` stays 0 so `.daftar Nama` can still fix the name — what is
+   restored is access, not identity.
+
+Covered by `scripts/produkAdminSmokeTest.mjs` §41.
 
 ### 10q. Price floor — the only brake on three stacking discounts
 

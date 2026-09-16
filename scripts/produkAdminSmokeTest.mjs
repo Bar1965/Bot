@@ -840,6 +840,63 @@ cek('dashboard: kembar dilaporkan, bukan disembunyikan', impor2.addedCount === 1
 cek('dashboard: parameter pelacak tidak membuat voucher lama jadi "baru"',
   impor2.dilewati[0]?.alasan === 'SUDAH_ADA', impor2.dilewati[0]?.alasan);
 
+bagian('41. Pemain lama tidak disuruh mendaftar ulang');
+
+// Reset toko mengosongkan `customers` tanpa menyentuh `game_profiles`. Gerbang
+// registrasi lalu mengunci 165 profil di luar — datanya utuh, orangnya tidak
+// bisa masuk. Salah satunya level 286 dengan 66.850 poin di bank.
+const VETERAN = '111222333444555@lid';
+const PEMULA = '555444333222111@lid';
+const ASING = '999888777666555@lid';
+
+await db.runQuery(
+  "INSERT OR REPLACE INTO game_profiles (customer_jid, points, bank_points, xp, level, games_played, games_won, daily_streak) VALUES (?, 110, 7514, 0, 119, 340, 100, 0)",
+  [VETERAN]
+);
+// Profil yang terlanjur dibuat getOrCreateGameProfile tapi belum pernah dipakai.
+await db.runQuery(
+  "INSERT OR REPLACE INTO game_profiles (customer_jid, points, bank_points, xp, level, games_played, games_won, daily_streak) VALUES (?, 0, 0, 0, 1, 0, 0, 0)",
+  [PEMULA]
+);
+
+cek('veteran belum terdaftar sebelum dipulihkan',
+  !(await db.getQuery('SELECT nomor FROM customers WHERE nomor = ?', [VETERAN])));
+
+const pulih = await db.pulihkanMemberLama(VETERAN);
+cek('veteran dipulihkan', pulih !== null, JSON.stringify(pulih));
+cek('levelnya dilaporkan apa adanya', pulih?.level === 119, String(pulih?.level));
+cek('poin banknya dilaporkan', pulih?.bank === 7514, String(pulih?.bank));
+cek('barisnya benar-benar ada di customers',
+  Boolean(await db.getQuery('SELECT nomor FROM customers WHERE nomor = ?', [VETERAN])));
+
+const barisVeteran = await db.getQuery('SELECT * FROM customers WHERE nomor = ?', [VETERAN]);
+cek('rolenya MEMBER, bukan sesuatu yang istimewa', barisVeteran.role === 'MEMBER', barisVeteran.role);
+cek('profile_completed 0 — namanya masih bisa dibetulkan lewat .daftar',
+  Number(barisVeteran.profile_completed) === 0, String(barisVeteran.profile_completed));
+
+cek('profilnya TIDAK disentuh — poinnya utuh',
+  (await db.getQuery('SELECT points, bank_points, level FROM game_profiles WHERE customer_jid = ?', [VETERAN])).bank_points === 7514);
+
+cek('dipanggil dua kali tidak menggandakan apa pun', (await db.pulihkanMemberLama(VETERAN)) === null);
+
+// Profil kosong bukan bukti keanggotaan.
+cek('profil yang belum pernah dipakai TIDAK diloloskan', (await db.pulihkanMemberLama(PEMULA)) === null);
+cek('dan tidak dibuatkan baris customers',
+  !(await db.getQuery('SELECT nomor FROM customers WHERE nomor = ?', [PEMULA])));
+
+// Orang yang memang belum pernah menyentuh bot tetap harus mendaftar.
+cek('yang sama sekali tanpa profil game ditolak', (await db.pulihkanMemberLama(ASING)) === null);
+cek('nomor kosong tidak melempar', (await db.pulihkanMemberLama('')) === null);
+cek('null tidak melempar', (await db.pulihkanMemberLama(null)) === null);
+
+// `.daftar` sesudahnya harus tetap bisa membetulkan namanya.
+await db.registerCustomer(VETERAN, 'Nama Asli');
+const sesudahDaftar = await db.getQuery('SELECT nama, profile_completed FROM customers WHERE nomor = ?', [VETERAN]);
+cek('.daftar tetap bisa membetulkan nama "Pemain Lama"', sesudahDaftar.nama === 'Nama Asli', sesudahDaftar.nama);
+cek('dan menandainya sebagai lengkap', Number(sesudahDaftar.profile_completed) === 1);
+cek('poin gamenya TETAP utuh sesudah .daftar',
+  (await db.getQuery('SELECT bank_points FROM game_profiles WHERE customer_jid = ?', [VETERAN])).bank_points === 7514);
+
 console.log(`\n${'='.repeat(50)}`);
 console.log(`HASIL: ${lulus} lulus, ${gagal} gagal`);
 console.log('='.repeat(50));

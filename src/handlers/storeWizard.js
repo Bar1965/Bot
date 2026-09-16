@@ -19,6 +19,7 @@ import fs from 'fs';
 import path from 'path';
 import { downloadMediaMessage } from '@whiskeysockets/baileys';
 import * as db from '../../database.js';
+import { antrekanProdukBaru } from './siaranStok.js';
 
 // Sesi aktif per (chat, pengirim). Hanya di memori: wizard yang menggantung saat
 // bot restart lebih baik hilang daripada hidup lagi entah di langkah mana.
@@ -333,6 +334,18 @@ async function simpanProduk(sock, jid, sesi) {
   }
 
   const siapJual = d.mode === 'AUTO' ? jumlahKredensial > 0 : stokAwal > 0;
+  const stokSiap = d.mode === 'AUTO' ? jumlahKredensial : stokAwal;
+
+  // Produk BARU, bukan restok. Dipanggil sesudah addProductItemsBatch karena
+  // batch itu sudah sempat mengantre baris "RESTOK" lewat pemanggilnya —
+  // antrekanProdukBaru mencabutnya dan menggantinya dengan baris yang benar.
+  if (siapJual) {
+    try {
+      antrekanProdukBaru({ kode: d.kode, nama: d.nama, harga: d.harga, stok: stokSiap });
+    } catch (errSiar) {
+      console.error('[SIARAN] Gagal mengantre produk baru:', errSiar.message);
+    }
+  }
   let pesan =
     `${GARIS}\n✅ *PRODUK BARU TERSIMPAN*\n${GARIS}\n` +
     `📦 *${d.nama}* (\`${d.kode}\`)\n` +

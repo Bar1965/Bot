@@ -280,7 +280,30 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
   }
 
   // REGISTRATION CHECK: User non-admin yang belum daftar tidak boleh menggunakan fitur game/fun
-  const isReg = await db.isCustomerRegistered(senderNumber);
+  let isReg = await db.isCustomerRegistered(senderNumber);
+
+  // Sebelum menolak, periksa dulu apakah orang ini PERNAH bermain. Reset toko
+  // mengosongkan `customers` tanpa menyentuh `game_profiles`, jadi pemain lama
+  // berdiri di depan gerbang ini sementara progresnya duduk utuh di baris
+  // sebelah. Menyuruh pemain level 286 "daftar dulu" adalah pertanyaan yang
+  // jawabannya sudah ada di database.
+  if (!isReg && !isAdmin && !isOwner) {
+    try {
+      const pulih = await db.pulihkanMemberLama(senderNumber);
+      if (pulih) {
+        isReg = true;
+        const totalPoin = (pulih.poin + pulih.bank).toLocaleString('id-ID');
+        await send(sock, jid, messageObj,
+          `👋 *Selamat datang kembali!*\n\n` +
+          `Datamu masih lengkap — *Level ${pulih.level}*, *${totalPoin} poin*. Tidak ada yang hilang, kamu tinggal lanjut main.\n\n` +
+          `_Kalau namamu belum benar, betulkan dengan_ \`.daftar Nama Kamu\``
+        );
+      }
+    } catch (errPulih) {
+      console.error('[GAME] Gagal memulihkan member lama:', errPulih.message);
+    }
+  }
+
   if (!isReg && !isAdmin && !isOwner) {
     const senderMention = senderNumber.split('@')[0];
     const regNotice = `⚠️ *AKSES DITOLAK — REGISTRASI DIPERLUKAN* ⚠️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nHalo @${senderMention}! Anda harus terdaftar sebagai member terlebih dahulu untuk bermain game & menggunakan fitur hiburan (100% Gratis & Cepat).\n\n📌 *Cara Pendaftaran (Hanya 5 Detik):*\nKetik: \`.daftar Nama Kamu\`\n\n_Contoh:_ \`.daftar Budi Santoso\`\n\nSetelah terdaftar, Anda dapat langsung menikmati semua game dan fitur bot! 🙏`;

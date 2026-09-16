@@ -10,6 +10,7 @@ import * as db from '../../database.js';
 import { barisGaransiAktif, barisKlaimGaransi } from '../utils/pesanGaransi.js';
 import { pasangSocketNotif, notifikasiOwner } from '../utils/notifOwner.js';
 import { susunBuktiTransaksi, susunPermintaanUlasan, susunNotifPenjualanOwner } from '../handlers/testimoni.js';
+import { antrekanStokMenipis } from '../handlers/siaranStok.js';
 import { jamWib, tanggalPanjangWib } from '../utils/waktu.js';
 
 /**
@@ -93,6 +94,18 @@ async function umumkanDanMintaUlasan(job, orderDetails, customerJid, deliveryRes
           otomatis
         })
       });
+
+      // Stok yang menipis KARENA terjual adalah kabar yang mendorong orang
+      // bergerak: "tinggal 2" bekerja, "habis" tidak. Yang nol ditolak di dalam
+      // antrekanStokMenipis, dan sekali berbunyi tidak diulang sampai direstok.
+      try {
+        if (produkKode && Number.isFinite(Number(sisaStok))) {
+          const p = await db.getProductByKode(produkKode);
+          if (p) antrekanStokMenipis({ kode: produkKode, nama: p.nama, harga: p.harga, stok: Number(sisaStok) });
+        }
+      } catch (errTipis) {
+        console.error('[SIARAN] Gagal mengantre peringatan stok menipis:', errTipis.message);
+      }
     }
   } catch (e) {
     console.error(`[FULFILLMENT] Notifikasi penjualan ke owner gagal: ${e.message}`);

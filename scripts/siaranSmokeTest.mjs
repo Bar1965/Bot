@@ -40,7 +40,7 @@ const GRUP_PEMBELI = '120363000000000002@g.us';
 
 const terkirim = [];
 const sockPalsu = {
-  sendMessage: async (tujuan, isi) => { terkirim.push({ tujuan, teks: isi.text || '' }); return { key: { id: 'uji' } }; }
+  sendMessage: async (tujuan, isi) => { terkirim.push({ tujuan, teks: isi.text || '', isi }); return { key: { id: 'uji' } }; }
 };
 const sockRusak = {
   sendMessage: async () => { throw new Error('Connection Closed'); }
@@ -228,6 +228,96 @@ cek('satu pesan itu memuat ketiganya',
   terkirim[0]?.teks.includes('Produk A') && terkirim[0]?.teks.includes('Produk B') && terkirim[0]?.teks.includes('Produk C'),
   terkirim[0]?.teks);
 cek('antrean kosong sesudahnya', s.isiAntrean().restok.length === 0 && s.isiAntrean().turunHarga.length === 0);
+
+// ============================================================
+bagian('7. Produk baru, dan restok menurut ambang "hampir habis"');
+
+bersih();
+s.pasangAmbangTipis(3);
+
+cek('produk baru dengan stok siap diterima',
+  s.antrekanProdukBaru({ kode: 'BARU', nama: 'Produk Baru', harga: 15000, stok: 5 }) === true);
+cek('produk baru TANPA stok ditolak — jangan ajak beli barang yang belum ada',
+  s.antrekanProdukBaru({ kode: 'KOSONG', nama: 'Belum Ada', harga: 1000, stok: 0 }) === false);
+
+const teksBaru = s.susunSiaran({ produkBaru: s.isiAntrean().produkBaru });
+cek('pesan produk baru memakai label PRODUK BARU', teksBaru.includes('PRODUK BARU'), teksBaru);
+cek('pesan produk baru TIDAK menyebut restok', !/restok/i.test(teksBaru), teksBaru);
+
+// Ambangnya yang menentukan restok mana yang jadi kabar.
+bersih();
+cek('restok dari 0 diterima', s.antrekanRestok({ kode: 'A', nama: 'A', harga: 1, stokSebelum: 0, stokSesudah: 5 }) === true);
+bersih();
+cek('restok dari 2 (di bawah ambang 3) diterima', s.antrekanRestok({ kode: 'A', nama: 'A', harga: 1, stokSebelum: 2, stokSesudah: 9 }) === true);
+bersih();
+cek('restok dari 3 (tepat di ambang) diterima', s.antrekanRestok({ kode: 'A', nama: 'A', harga: 1, stokSebelum: 3, stokSesudah: 9 }) === true);
+bersih();
+cek('restok dari 4 (di atas ambang) DITOLAK', s.antrekanRestok({ kode: 'A', nama: 'A', harga: 1, stokSebelum: 4, stokSesudah: 9 }) === false);
+bersih();
+cek('stok turun bukan restok', s.antrekanRestok({ kode: 'A', nama: 'A', harga: 1, stokSebelum: 2, stokSesudah: 1 }) === false);
+
+// ============================================================
+bagian('8. "Tinggal sedikit" — dan tidak pernah "habis"');
+
+bersih();
+cek('sisa 2 dari ambang 3 diterima', s.antrekanStokMenipis({ kode: 'A', nama: 'Produk A', harga: 5000, stok: 2 }) === true);
+bersih();
+cek('sisa 0 DITOLAK — itu iklan negatif', s.antrekanStokMenipis({ kode: 'A', nama: 'A', harga: 1, stok: 0 }) === false);
+bersih();
+cek('sisa 10 (masih banyak) DITOLAK', s.antrekanStokMenipis({ kode: 'A', nama: 'A', harga: 1, stok: 10 }) === false);
+
+// Sekali berbunyi, diam sampai direstok.
+bersih();
+s.antrekanStokMenipis({ kode: 'A', nama: 'Produk A', harga: 5000, stok: 3 });
+cek('peringatan kedua untuk produk yang sama DITOLAK',
+  s.antrekanStokMenipis({ kode: 'A', nama: 'Produk A', harga: 5000, stok: 2 }) === false);
+cek('peringatan ketiga juga DITOLAK',
+  s.antrekanStokMenipis({ kode: 'A', nama: 'Produk A', harga: 5000, stok: 1 }) === false);
+cek('antreannya tetap satu baris', s.isiAntrean().menipis.length === 1);
+
+// Sesudah direstok, siklus berikutnya boleh berbunyi lagi.
+s.antrekanRestok({ kode: 'A', nama: 'Produk A', harga: 5000, stokSebelum: 1, stokSesudah: 20 });
+cek('restok mencabut baris "tinggal sedikit"', s.isiAntrean().menipis.length === 0, JSON.stringify(s.isiAntrean().menipis));
+cek('sesudah direstok, peringatan menipis boleh berbunyi lagi',
+  s.antrekanStokMenipis({ kode: 'A', nama: 'Produk A', harga: 5000, stok: 2 }) === false,
+  'masih dalam antrean restok yang sama — benar ditolak');
+
+bersih();
+const teksTipis = s.susunSiaran({ menipis: [{ kode: 'A', nama: 'Produk A', harga: 5000, stok: 2 }] });
+cek('pesannya berbunyi "TINGGAL SEDIKIT"', teksTipis.includes('TINGGAL SEDIKIT'), teksTipis);
+cek('pesannya TIDAK pernah menulis "habis" atau "kosong"',
+  !/habis|kosong|sold out/i.test(teksTipis), teksTipis);
+
+// Satu produk tidak boleh muncul di dua bagian sekaligus.
+bersih();
+s.antrekanRestok({ kode: 'A', nama: 'Produk A', harga: 5000, stokSebelum: 0, stokSesudah: 9 });
+s.antrekanProdukBaru({ kode: 'A', nama: 'Produk A', harga: 5000, stok: 9 });
+const isi = s.isiAntrean();
+cek('produk baru mencabut baris restok untuk kode yang sama',
+  isi.restok.length === 0 && isi.produkBaru.length === 1,
+  JSON.stringify(isi));
+
+// ============================================================
+bagian('9. Tanpa tagall — tidak satu pun anggota grup ter-tag');
+
+bersih();
+settingsPalsu = { updateGroupId: GRUP_UPDATE };
+s.pasangSocketSiaran(sockPalsu);
+s.antrekanProdukBaru({ kode: 'A', nama: 'Produk A', harga: 5000, stok: 9 });
+s.antrekanTurunHarga({ kode: 'B', nama: 'Produk B', hargaLama: 9000, hargaBaru: 6000 });
+s.antrekanStokMenipis({ kode: 'C', nama: 'Produk C', harga: 7000, stok: 1 });
+const kirim = await s.kirimSekarang();
+cek('terkirim', kirim.terkirim === true, JSON.stringify(kirim));
+cek('payload TIDAK punya field mentions sama sekali',
+  terkirim[0]?.isi && !('mentions' in terkirim[0].isi), JSON.stringify(Object.keys(terkirim[0]?.isi || {})));
+cek('payload cuma teks', JSON.stringify(Object.keys(terkirim[0]?.isi || {})) === '["text"]',
+  JSON.stringify(Object.keys(terkirim[0]?.isi || {})));
+cek('teksnya tidak memuat pola mention @nomor',
+  !/@\d{5,}/.test(terkirim[0]?.teks || ''), terkirim[0]?.teks);
+cek('ketiga bagian muat dalam satu pesan',
+  terkirim[0].teks.includes('Produk A') && terkirim[0].teks.includes('Produk B') && terkirim[0].teks.includes('Produk C'),
+  terkirim[0].teks);
+cek('tetap SATU pesan, bukan tiga', terkirim.length === 1, String(terkirim.length));
 
 bersih();
 

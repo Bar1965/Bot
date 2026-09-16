@@ -37,13 +37,28 @@ import { rupiah } from './katalogView.js';
 /** Jeda hening sebelum antrean dikirim. Owner bisa mengubah lewat settings. */
 const JEDA_BAWAAN_DETIK = 180;
 
+/** Ambang "hampir habis". Disamakan dengan lowStockLimit milik katalog. */
+const AMBANG_BAWAAN = 3;
+
 let sockRef = null;
 let timer = null;
 let jedaDetik = JEDA_BAWAAN_DETIK;
+let ambangTipis = AMBANG_BAWAAN;
 
 /** Antrean per kode produk, supaya `.addstock` dua kali tidak jadi dua baris. */
 const antreanRestok = new Map();
 const antreanTurunHarga = new Map();
+const antreanProdukBaru = new Map();
+const antreanMenipis = new Map();
+
+/**
+ * Kode yang peringatan menipisnya SUDAH tersiar.
+ *
+ * Tanpa ini, tiap penjualan berikutnya mengumumkan "tinggal sedikit" lagi —
+ * produk dengan sisa 3 akan berteriak tiga kali sebelum habis. Ingatannya
+ * dihapus begitu produknya direstok, jadi siklus berikutnya boleh berbunyi lagi.
+ */
+const sudahDiumumkanMenipis = new Set();
 
 /** Disuntik saat uji supaya tidak perlu database maupun socket sungguhan. */
 let bacaSettings = null;
@@ -62,6 +77,12 @@ export function pasangJedaSiaran(detik) {
   if (Number.isFinite(n) && n >= 1) jedaDetik = Math.max(1, Math.floor(n));
 }
 
+/** Ambang "hampir habis", disamakan dengan lowStockLimit. */
+export function pasangAmbangTipis(n) {
+  const x = Number(n);
+  if (Number.isFinite(x) && x >= 0) ambangTipis = Math.floor(x);
+}
+
 // ============================================================
 // PENYUSUN PESAN — murni teks, tidak menyentuh apa pun
 // ============================================================
@@ -70,8 +91,18 @@ export function pasangJedaSiaran(detik) {
  * Pengumuman gabungan. Memulangkan null kalau tidak ada yang layak diumumkan,
  * supaya pemanggil tidak pernah mengirim pesan kosong ke grup.
  */
-export function susunSiaran({ restok = [], turunHarga = [] } = {}) {
+export function susunSiaran({ restok = [], turunHarga = [], produkBaru = [], menipis = [] } = {}) {
   const bagian = [];
+
+  if (produkBaru.length > 0) {
+    let t = produkBaru.length === 1 ? `✨ *PRODUK BARU*\n` : `✨ *PRODUK BARU DI TOKO*\n`;
+    t += `━━━━━━━━━━━━━━━\n`;
+    for (const p of produkBaru) {
+      t += `🆕 *${p.nama}* — ${rupiah(p.harga)}\n`;
+      t += `   Stok siap: *${p.stok} pcs* · kode \`${p.kode}\`\n`;
+    }
+    bagian.push(t.trimEnd());
+  }
 
   if (restok.length > 0) {
     let t = restok.length === 1 ? `📦 *STOK READY KEMBALI*\n` : `📦 *RESTOK HARI INI*\n`;
@@ -95,11 +126,23 @@ export function susunSiaran({ restok = [], turunHarga = [] } = {}) {
     bagian.push(t.trimEnd());
   }
 
+  if (menipis.length > 0) {
+    // "Tinggal sedikit", bukan "habis". Yang pertama mendorong orang bergerak;
+    // yang kedua memberitahu mereka jangan datang. Produk yang benar-benar nol
+    // tidak pernah sampai ke sini — antrekanStokMenipis menolaknya.
+    let t = `⏳ *TINGGAL SEDIKIT*\n━━━━━━━━━━━━━━━\n`;
+    for (const p of menipis) {
+      t += `🟠 *${p.nama}* — ${rupiah(p.harga)}\n`;
+      t += `   Sisa *${p.stok} pcs* · kode \`${p.kode}\`\n`;
+    }
+    bagian.push(t.trimEnd());
+  }
+
   if (bagian.length === 0) return null;
 
   // Satu ajakan di akhir, bukan satu per produk. Tiga baris "ketik .beli" dalam
   // satu pesan terbaca sebagai iklan, bukan kabar.
-  const kode = [...restok, ...turunHarga][0]?.kode || 'KODE';
+  const kode = [...produkBaru, ...restok, ...turunHarga, ...menipis][0]?.kode || 'KODE';
   return `${bagian.join('\n\n')}\n━━━━━━━━━━━━━━━\n🛒 Ketik \`.list\` untuk katalog, atau \`.beli ${kode} 1\` untuk pesan langsung.`;
 }
 
@@ -107,21 +150,82 @@ export function susunSiaran({ restok = [], turunHarga = [] } = {}) {
 // ANTREAN
 // ============================================================
 
+/** Satu produk hanya boleh menempati SATU bagian dalam satu pengumuman. */
+function lepaskanDariAntreanLain(kode, kecuali) {
+  for (const [nama, peta] of Object.entries({
+    restok: antreanRestok, produkBaru: antreanProdukBaru, menipis: antreanMenipis
+  })) {
+    if (nama !== kecuali) peta.delete(kode);
+  }
+}
+
 /**
- * Restok DITERIMA hanya kalau produknya tadinya benar-benar kosong. Aturan itu
- * ditegakkan DI SINI, bukan di setiap pemanggil, supaya jalur baru mana pun
- * (dashboard, wizard, perintah yang belum ada) tidak bisa melewatinya.
+ * Restok DITERIMA kalau produknya tadinya sudah menipis atau habis.
+ *
+ * Aturan ini ditegakkan DI SINI, bukan di setiap pemanggil, supaya jalur baru
+ * mana pun (dashboard, wizard, perintah yang belum ada) tidak bisa melewatinya.
+ *
+ * Ambangnya sama dengan ambang "hampir habis", dan itu disengaja: yang layak
+ * diumumkan adalah produk yang memang sedang dinanti. Naik dari 20 ke 25 bukan
+ * kabar — mengumumkannya cuma melatih orang melewati pesan dari kanal ini, dan
+ * pengumuman yang benar-benar penting ikut terlewat.
  */
 export function antrekanRestok({ kode, nama, harga, stokSebelum, stokSesudah }) {
   if (!kode || !nama) return false;
-  if (!(Number(stokSebelum) === 0 && Number(stokSesudah) > 0)) return false;
+  const sebelum = Number(stokSebelum);
+  const sesudah = Number(stokSesudah);
+  if (!Number.isFinite(sebelum) || !(sesudah > 0)) return false;
+  if (sebelum > ambangTipis) return false;
+  if (sesudah <= sebelum) return false;
 
-  antreanRestok.set(String(kode).toUpperCase(), {
-    kode: String(kode).toUpperCase(),
-    nama,
-    harga: Number(harga) || 0,
-    stok: Number(stokSesudah)
-  });
+  const K = String(kode).toUpperCase();
+  // Sudah direstok berarti tidak "tinggal sedikit" lagi; peringatan lamanya
+  // dicabut, dan siklus menipis berikutnya boleh berbunyi lagi.
+  sudahDiumumkanMenipis.delete(K);
+  lepaskanDariAntreanLain(K, 'restok');
+
+  antreanRestok.set(K, { kode: K, nama, harga: Number(harga) || 0, stok: sesudah });
+  jadwalkanKirim();
+  return true;
+}
+
+/** Produk yang baru dibuat. Tidak diumumkan kalau stoknya masih kosong. */
+export function antrekanProdukBaru({ kode, nama, harga, stok }) {
+  if (!kode || !nama) return false;
+  if (!(Number(stok) > 0)) return false;
+
+  const K = String(kode).toUpperCase();
+  sudahDiumumkanMenipis.delete(K);
+  lepaskanDariAntreanLain(K, 'produkBaru');
+
+  antreanProdukBaru.set(K, { kode: K, nama, harga: Number(harga) || 0, stok: Number(stok) });
+  jadwalkanKirim();
+  return true;
+}
+
+/**
+ * "Tinggal sedikit" — dan HANYA itu, tidak pernah "habis".
+ *
+ * Stok nol ditolak. Mengumumkan barang kosong ke grup pembeli adalah iklan
+ * negatif: yang dibaca orang cuma "toko ini sering kosong". Owner sendiri sudah
+ * dikabari lewat notifikasi penjualan.
+ *
+ * Sekali berbunyi, tidak berbunyi lagi sampai produknya direstok. Tanpa itu,
+ * produk dengan sisa 3 akan mengumumkan dirinya tiga kali sebelum habis.
+ */
+export function antrekanStokMenipis({ kode, nama, harga, stok }) {
+  if (!kode || !nama) return false;
+  const sisa = Number(stok);
+  if (!(sisa > 0 && sisa <= ambangTipis)) return false;
+
+  const K = String(kode).toUpperCase();
+  if (sudahDiumumkanMenipis.has(K)) return false;
+  // Produk yang baru saja direstok atau baru dibuat tidak boleh langsung
+  // diumumkan "tinggal sedikit" di pesan yang sama.
+  if (antreanRestok.has(K) || antreanProdukBaru.has(K)) return false;
+
+  sudahDiumumkanMenipis.add(K);
+  antreanMenipis.set(K, { kode: K, nama, harga: Number(harga) || 0, stok: sisa });
   jadwalkanKirim();
   return true;
 }
@@ -169,12 +273,21 @@ export async function kirimSekarang() {
 
   const restok = [...antreanRestok.values()];
   const turunHarga = [...antreanTurunHarga.values()];
-  if (restok.length === 0 && turunHarga.length === 0) return { terkirim: false, alasan: 'KOSONG' };
+  const produkBaru = [...antreanProdukBaru.values()];
+  const menipis = [...antreanMenipis.values()];
+  const jumlah = restok.length + turunHarga.length + produkBaru.length + menipis.length;
+  if (jumlah === 0) return { terkirim: false, alasan: 'KOSONG' };
+
+  const kosongkan = () => {
+    antreanRestok.clear();
+    antreanTurunHarga.clear();
+    antreanProdukBaru.clear();
+    antreanMenipis.clear();
+  };
 
   const settings = bacaSettings ? await bacaSettings() : {};
   if (String(settings?.siaranOtomatis ?? 'ON').toUpperCase() === 'OFF') {
-    antreanRestok.clear();
-    antreanTurunHarga.clear();
+    kosongkan();
     return { terkirim: false, alasan: 'DIMATIKAN' };
   }
 
@@ -182,27 +295,36 @@ export async function kirimSekarang() {
   if (!tujuan) return { terkirim: false, alasan: 'GRUP_BELUM_DISET' };
   if (!sockRef) return { terkirim: false, alasan: 'SOCKET_BELUM_SIAP' };
 
-  const teks = susunSiaran({ restok, turunHarga });
+  const teks = susunSiaran({ restok, turunHarga, produkBaru, menipis });
   if (!teks) return { terkirim: false, alasan: 'KOSONG' };
 
   try {
+    // TEKS SAJA — tidak ada `mentions`, jadi tidak ada satu pun anggota grup
+    // yang ter-tag. Owner minta tegas: pengumuman ini tidak boleh membunyikan
+    // notifikasi semua orang seperti tagall. Jangan pernah menambahkan
+    // `mentions` di sini; broadcastTagAll punya tempatnya sendiri.
     await sockRef.sendMessage(tujuan, { text: teks });
   } catch (err) {
     console.error('[SIARAN] Gagal mengirim pengumuman:', err.message);
     return { terkirim: false, alasan: 'GAGAL_KIRIM', pesan: err.message };
   }
 
-  antreanRestok.clear();
-  antreanTurunHarga.clear();
-  console.log(`[SIARAN] Pengumuman terkirim ke ${tujuan} (${restok.length} restok, ${turunHarga.length} turun harga).`);
-  return { terkirim: true, tujuan, restok: restok.length, turunHarga: turunHarga.length, teks };
+  kosongkan();
+  console.log(`[SIARAN] Pengumuman terkirim ke ${tujuan} (${produkBaru.length} baru, ${restok.length} restok, ${turunHarga.length} turun harga, ${menipis.length} menipis).`);
+  return {
+    terkirim: true, tujuan, teks,
+    restok: restok.length, turunHarga: turunHarga.length,
+    produkBaru: produkBaru.length, menipis: menipis.length
+  };
 }
 
 /** Isi antrean saat ini — dipakai `.siaran` untuk melaporkan apa yang tertunda. */
 export function isiAntrean() {
   return {
     restok: [...antreanRestok.values()],
-    turunHarga: [...antreanTurunHarga.values()]
+    turunHarga: [...antreanTurunHarga.values()],
+    produkBaru: [...antreanProdukBaru.values()],
+    menipis: [...antreanMenipis.values()]
   };
 }
 
@@ -211,4 +333,7 @@ export function kosongkanAntrean() {
   if (timer) { clearTimeout(timer); timer = null; }
   antreanRestok.clear();
   antreanTurunHarga.clear();
+  antreanProdukBaru.clear();
+  antreanMenipis.clear();
+  sudahDiumumkanMenipis.clear();
 }

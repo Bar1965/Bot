@@ -366,6 +366,59 @@ function calculateCustomerTier(totalOrders) {
   return 'BRONZE';
 }
 
+/**
+ * Meloloskan pemain lama yang barisnya di `customers` hilang.
+ *
+ * Reset toko 15 September 2026 mengosongkan tabel `customers` tanpa menyentuh
+ * `game_profiles` — memang tidak ter-cascade, tabel game berkunci
+ * `customer_jid` sendiri. Tapi gerbang registrasi di src/games/index.js menolak
+ * siapa pun tanpa baris customers SEBELUM perintah game mana pun jalan, jadi 165
+ * profil ikut terkunci di luar: datanya utuh, orangnya tidak bisa masuk. Salah
+ * satunya level 286 dengan 66.850 poin di bank.
+ *
+ * Menanyai orang seperti itu "silakan daftar dulu" adalah pertanyaan yang
+ * jawabannya sudah ada di database. Jadi kalau profil gamenya menunjukkan dia
+ * PERNAH BERMAIN, barisnya dibuatkan lagi dan dia diteruskan.
+ *
+ * `profile_completed` sengaja 0: namanya belum tentu benar, jadi `.daftar Nama`
+ * tetap bisa memperbaikinya nanti. Yang dipulihkan aksesnya, bukan identitasnya.
+ *
+ * Profil kosong (belum pernah main sama sekali) TIDAK diloloskan — itu bukan
+ * bukti keanggotaan, cuma baris yang terlanjur dibuat getOrCreateGameProfile.
+ */
+export async function pulihkanMemberLama(nomor) {
+  if (!nomor) return null;
+
+  const sudahAda = await getQuery("SELECT nomor FROM customers WHERE nomor = ?", [nomor]);
+  if (sudahAda) return null;
+
+  const profil = await getQuery(
+    "SELECT points, bank_points, level, games_played FROM game_profiles WHERE customer_jid = ?",
+    [nomor]
+  );
+  if (!profil) return null;
+
+  const pernahMain =
+    Number(profil.games_played || 0) > 0 ||
+    Number(profil.points || 0) > 0 ||
+    Number(profil.bank_points || 0) > 0 ||
+    Number(profil.level || 1) > 1;
+  if (!pernahMain) return null;
+
+  await runQuery(
+    "INSERT OR IGNORE INTO customers (nomor, nama, role, profile_completed, registered_at, last_seen_at) VALUES (?, ?, 'MEMBER', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+    [nomor, 'Pemain Lama']
+  );
+  await addLog('CUSTOMER', `♻️ Member lama dipulihkan otomatis: ${nomor} (level ${profil.level}, ${Number(profil.points || 0) + Number(profil.bank_points || 0)} poin).`);
+
+  return {
+    nomor,
+    level: Number(profil.level || 1),
+    poin: Number(profil.points || 0),
+    bank: Number(profil.bank_points || 0)
+  };
+}
+
 export async function registerCustomer(nomor, nama) {
   const cleanName = String(nama || '').trim().replace(/\s+/g, ' ');
   if (cleanName.length < 2 || cleanName.length > 40) {

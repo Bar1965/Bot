@@ -1710,7 +1710,9 @@ ${panduanMode}`
       }
 
       const tertunda = isiAntrean();
-      if (tertunda.restok.length === 0 && tertunda.turunHarga.length === 0) {
+      const adaAntrean = tertunda.restok.length + tertunda.turunHarga.length +
+                         tertunda.produkBaru.length + tertunda.menipis.length;
+      if (adaAntrean === 0) {
         await sock.sendMessage(jid, { text: `📭 Tidak ada yang mengantre untuk diumumkan.\n\n_Pakai_ \`.umumkan <KODE>\` _untuk mengumumkan satu produk sekarang juga._` });
         return true;
       }
@@ -1753,18 +1755,27 @@ ${panduanMode}`
       let teks = `📣 *SIARAN STOK & HARGA*\n━━━━━━━━━━━━━━━\n`;
       teks += `Status: ${aktif ? '🔔 *ON*' : '🔕 *OFF*'}\n`;
       teks += `Grup tujuan: ${grup ? `\`${grup}\`` : '⚠️ *belum diset* — ketik `.setupdategroup` di grup tujuan'}\n\n`;
+      const ambang = Number(s?.lowStockLimit ?? 3);
+      teks += `Tanpa tag: ✅ *pengumuman tidak pernah men-tag anggota grup*\n\n`;
       teks += `*Yang diumumkan otomatis:*\n`;
-      teks += `• Restok produk yang tadinya *benar-benar kosong*\n`;
-      teks += `• Harga yang *turun*\n\n`;
+      teks += `• 🆕 Produk baru yang stoknya sudah siap\n`;
+      teks += `• 🟢 Restok produk yang stoknya *≤ ${ambang}* (termasuk yang habis)\n`;
+      teks += `• 🔻 Harga yang *turun*\n`;
+      teks += `• ⏳ Stok yang *tinggal ≤ ${ambang}* karena terjual\n\n`;
       teks += `*Yang sengaja TIDAK:*\n`;
-      teks += `• Restok biasa (20 → 25 bukan kabar)\n`;
+      teks += `• Restok yang stoknya masih banyak (20 → 25 bukan kabar)\n`;
       teks += `• Harga *naik*\n`;
-      teks += `• Stok habis (itu iklan negatif — kamu sendiri sudah dikabari)\n\n`;
+      teks += `• Stok *habis* — itu iklan negatif; kamu sendiri sudah dikabari\n`;
+      teks += `• Peringatan "tinggal sedikit" berulang — sekali saja sampai direstok\n\n`;
 
-      if (tertunda.restok.length || tertunda.turunHarga.length) {
+      const total = tertunda.restok.length + tertunda.turunHarga.length +
+                    tertunda.produkBaru.length + tertunda.menipis.length;
+      if (total > 0) {
         teks += `⏳ *Sedang mengantre:*\n`;
+        for (const p of tertunda.produkBaru) teks += `   🆕 ${p.nama} (produk baru, ${p.stok} pcs)\n`;
         for (const r of tertunda.restok) teks += `   🟢 ${r.nama} (restok ${r.stok} pcs)\n`;
         for (const h of tertunda.turunHarga) teks += `   🔻 ${h.nama} (turun harga)\n`;
+        for (const m of tertunda.menipis) teks += `   ⏳ ${m.nama} (tinggal ${m.stok} pcs)\n`;
         teks += `\n_Ketik_ \`.umumkan\` _untuk mengirim sekarang._\n`;
       } else {
         teks += `📭 _Tidak ada yang mengantre._\n`;
@@ -2222,7 +2233,7 @@ user2@gmail.com|pass456
         stokSebelum: res.readyCountSebelum, stokSesudah: res.readyCount
       })) {
         await sock.sendMessage(jid, {
-          text: `📣 _Produk ini tadinya kosong — pengumuman restok akan disiarkan ke grup sebentar lagi._\n_Ketik_ \`.umumkan\` _untuk mengirim sekarang, atau_ \`.siaran off\` _untuk membatalkan._`
+          text: `📣 _Stoknya tadinya menipis — pengumuman restok akan disiarkan ke grup sebentar lagi, tanpa men-tag siapa pun._\n_Ketik_ \`.umumkan\` _untuk mengirim sekarang, atau_ \`.siaran off\` _untuk membatalkan._`
         });
       }
       return true;
