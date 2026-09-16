@@ -59,11 +59,15 @@ router.post('/products', authenticateJWT, authorizeRoles('Owner', 'Admin'), uplo
       }
     }
 
+    // Dicatat SEBELUM addProduct, karena addProduct memakai INSERT OR REPLACE —
+    // sesudahnya tidak ada lagi cara membedakan produk baru dari penyuntingan.
+    const sudahAdaSebelumnya = Boolean(await db.getProductByKode(normalizedKode));
+
     await db.addProduct(
-      normalizedKode, 
-      normalizedNama, 
-      parsedHarga, 
-      parsedStok, 
+      normalizedKode,
+      normalizedNama,
+      parsedHarga,
+      parsedStok,
       String(deskripsi || '').slice(0, 5000), 
       gambarUrl, 
       deliveryType, 
@@ -74,6 +78,22 @@ router.post('/products', authenticateJWT, authorizeRoles('Owner', 'Admin'), uplo
       duration ? String(duration).trim() : null
     );
     await checkAndNotifySubscribers(normalizedKode, parsedStok);
+
+    // Produk baru lewat dashboard diumumkan sama seperti lewat WhatsApp.
+    // Penyuntingan produk lama TIDAK — menyimpan perubahan deskripsi bukan kabar.
+    if (!sudahAdaSebelumnya) {
+      try {
+        const tersimpan = await db.getProductByKode(normalizedKode);
+        const { antrekanProdukBaru } = await import('../handlers/siaranStok.js');
+        antrekanProdukBaru({
+          kode: normalizedKode, nama: normalizedNama,
+          harga: parsedHarga, stok: tersimpan?.stok ?? parsedStok
+        });
+      } catch (siaranErr) {
+        console.warn('[SIARAN] Gagal mengantre produk baru:', siaranErr.message);
+      }
+    }
+
     res.json({ success: true, message: "Produk berhasil disimpan." });
   } catch (err) {
     res.status(500).json({ success: false, message: pesanErrorAman(err, 'PRODUCT') });

@@ -319,6 +319,49 @@ cek('ketiga bagian muat dalam satu pesan',
   terkirim[0].teks);
 cek('tetap SATU pesan, bukan tiga', terkirim.length === 1, String(terkirim.length));
 
+// ============================================================
+bagian('10. `.umumkan <KODE>` — jalur manual yang tidak boleh berbohong');
+
+bersih();
+cek('sorotan diterima', s.antrekanSorotan({ kode: 'A', nama: 'Produk A', harga: 15000, stok: 4 }) === true);
+cek('sorotan stok nol DITOLAK', s.antrekanSorotan({ kode: 'B', nama: 'B', harga: 1, stok: 0 }) === false);
+
+const teksSorot = s.susunSiaran({ sorotan: s.isiAntrean().sorotan });
+cek('judulnya netral: INFO PRODUK', teksSorot.includes('INFO PRODUK'), teksSorot);
+// Ini inti regresinya: `.umumkan` dulu menumpang antrean restok, jadi produk
+// yang stoknya tidak pernah habis tetap diumumkan "STOK READY KEMBALI".
+cek('TIDAK mengaku "stok ready kembali" padahal tidak pernah habis',
+  !/READY KEMBALI|RESTOK/i.test(teksSorot), teksSorot);
+cek('harga dan stok tetap tampil',
+  teksSorot.includes('Rp15.000') && teksSorot.includes('4 pcs'), teksSorot);
+
+bersih();
+const sorotNaik = s.susunSiaran({ sorotan: [{ kode: 'A', nama: 'A', harga: 15000, stok: 2, hargaLama: 10000 }] });
+cek('harga naik disebut netral, bukan sebagai diskon',
+  sorotNaik.includes('menyesuaikan') && !/hemat/i.test(sorotNaik), sorotNaik);
+
+const sorotTurun = s.susunSiaran({ sorotan: [{ kode: 'A', nama: 'A', harga: 8000, stok: 2, hargaLama: 10000 }] });
+cek('harga turun disebut turun', sorotTurun.includes('Turun dari'), sorotTurun);
+
+// Sorotan mencabut baris otomatis untuk kode yang sama.
+bersih();
+s.antrekanRestok({ kode: 'A', nama: 'A', harga: 1000, stokSebelum: 0, stokSesudah: 5 });
+s.antrekanSorotan({ kode: 'A', nama: 'A', harga: 1000, stok: 5 });
+const isiSorot = s.isiAntrean();
+cek('satu produk tidak muncul dua kali', isiSorot.restok.length === 0 && isiSorot.sorotan.length === 1,
+  JSON.stringify(isiSorot));
+
+// Sorotan ikut terkirim dan ikut dibersihkan.
+bersih();
+settingsPalsu = { updateGroupId: GRUP_UPDATE };
+s.pasangSocketSiaran(sockPalsu);
+s.antrekanSorotan({ kode: 'A', nama: 'Produk A', harga: 15000, stok: 4 });
+const hasilSorot = await s.kirimSekarang();
+cek('sorotan terkirim', hasilSorot.terkirim === true && hasilSorot.sorotan === 1, JSON.stringify(hasilSorot));
+cek('antrean sorotan ikut dikosongkan', s.isiAntrean().sorotan.length === 0);
+cek('payload sorotan juga tanpa mentions',
+  terkirim[0]?.isi && !('mentions' in terkirim[0].isi));
+
 bersih();
 
 console.log(`\n${'='.repeat(50)}`);

@@ -10,10 +10,10 @@
  *      Karena itu ada jeda: pengumuman baru dikirim setelah beberapa menit tanpa
  *      perubahan lagi, dan semua produk dalam sesi itu digabung jadi SATU pesan.
  *
- *   2. TIDAK menyiarkan restok yang stoknya tidak pernah habis. Naik dari 20 ke
+ *   2. TIDAK menyiarkan restok yang stoknya memang masih banyak. Naik dari 20 ke
  *      25 bukan kabar; mengumumkannya cuma melatih orang untuk melewati pesan
  *      dari kanal ini — dan pengumuman yang benar-benar penting ikut terlewat.
- *      Yang diumumkan hanya yang tadinya BENAR-BENAR nol.
+ *      Yang diumumkan hanya yang tadinya berada di ambang menipis atau di bawah.
  *
  *   3. TIDAK menyiarkan harga NAIK. Memberi tahu semua orang bahwa harga naik
  *      sama saja menyuruh mereka belanja di tempat lain. Kalau owner memang mau
@@ -50,6 +50,7 @@ const antreanRestok = new Map();
 const antreanTurunHarga = new Map();
 const antreanProdukBaru = new Map();
 const antreanMenipis = new Map();
+const antreanSorotan = new Map();
 
 /**
  * Kode yang peringatan menipisnya SUDAH tersiar.
@@ -91,8 +92,26 @@ export function pasangAmbangTipis(n) {
  * Pengumuman gabungan. Memulangkan null kalau tidak ada yang layak diumumkan,
  * supaya pemanggil tidak pernah mengirim pesan kosong ke grup.
  */
-export function susunSiaran({ restok = [], turunHarga = [], produkBaru = [], menipis = [] } = {}) {
+export function susunSiaran({ restok = [], turunHarga = [], produkBaru = [], menipis = [], sorotan = [] } = {}) {
   const bagian = [];
+
+  if (sorotan.length > 0) {
+    // Pengumuman yang diketik owner sendiri lewat `.umumkan <KODE>`. Judulnya
+    // netral dengan sengaja: dulu jalur ini menumpang antrean restok, sehingga
+    // produk yang stoknya tidak pernah habis tetap diumumkan sebagai "STOK READY
+    // KEMBALI" — kalimat yang tidak benar, di kanal yang gunanya dipercaya.
+    let t = `📢 *INFO PRODUK*\n━━━━━━━━━━━━━━━\n`;
+    for (const p of sorotan) {
+      t += `📦 *${p.nama}* — ${rupiah(p.harga)}\n`;
+      t += `   Stok siap: *${p.stok} pcs* · kode \`${p.kode}\`\n`;
+      if (p.hargaLama && p.hargaLama !== p.harga) {
+        t += p.hargaLama > p.harga
+          ? `   _Turun dari ${rupiah(p.hargaLama)}_\n`
+          : `   _Harga menyesuaikan dari ${rupiah(p.hargaLama)}_\n`;
+      }
+    }
+    bagian.push(t.trimEnd());
+  }
 
   if (produkBaru.length > 0) {
     let t = produkBaru.length === 1 ? `✨ *PRODUK BARU*\n` : `✨ *PRODUK BARU DI TOKO*\n`;
@@ -142,7 +161,7 @@ export function susunSiaran({ restok = [], turunHarga = [], produkBaru = [], men
 
   // Satu ajakan di akhir, bukan satu per produk. Tiga baris "ketik .beli" dalam
   // satu pesan terbaca sebagai iklan, bukan kabar.
-  const kode = [...produkBaru, ...restok, ...turunHarga, ...menipis][0]?.kode || 'KODE';
+  const kode = [...sorotan, ...produkBaru, ...restok, ...turunHarga, ...menipis][0]?.kode || 'KODE';
   return `${bagian.join('\n\n')}\n━━━━━━━━━━━━━━━\n🛒 Ketik \`.list\` untuk katalog, atau \`.beli ${kode} 1\` untuk pesan langsung.`;
 }
 
@@ -153,10 +172,38 @@ export function susunSiaran({ restok = [], turunHarga = [], produkBaru = [], men
 /** Satu produk hanya boleh menempati SATU bagian dalam satu pengumuman. */
 function lepaskanDariAntreanLain(kode, kecuali) {
   for (const [nama, peta] of Object.entries({
-    restok: antreanRestok, produkBaru: antreanProdukBaru, menipis: antreanMenipis
+    restok: antreanRestok, produkBaru: antreanProdukBaru,
+    menipis: antreanMenipis, sorotan: antreanSorotan
   })) {
     if (nama !== kecuali) peta.delete(kode);
   }
+}
+
+/**
+ * Pengumuman manual `.umumkan <KODE>` — owner yang memutuskan, bukan bot.
+ *
+ * Satu-satunya jalur yang boleh melewati aturan otomatis: restok yang stoknya
+ * tidak pernah habis, atau harga yang justru NAIK dan mau dipakai sebagai
+ * dorongan ("besok naik, beli sekarang"). Keputusan dagang seperti itu memang
+ * harus diketik manusia.
+ *
+ * Yang tetap ditolak: stok nol. Mengajak orang membeli barang yang tidak ada
+ * merusak hal yang justru sedang dibangun kanal ini.
+ */
+export function antrekanSorotan({ kode, nama, harga, stok, hargaLama = null }) {
+  if (!kode || !nama) return false;
+  if (!(Number(stok) > 0)) return false;
+
+  const K = String(kode).toUpperCase();
+  lepaskanDariAntreanLain(K, 'sorotan');
+  antreanSorotan.set(K, {
+    kode: K, nama,
+    harga: Number(harga) || 0,
+    stok: Number(stok),
+    hargaLama: Number(hargaLama) || null
+  });
+  jadwalkanKirim();
+  return true;
 }
 
 /**
@@ -275,7 +322,8 @@ export async function kirimSekarang() {
   const turunHarga = [...antreanTurunHarga.values()];
   const produkBaru = [...antreanProdukBaru.values()];
   const menipis = [...antreanMenipis.values()];
-  const jumlah = restok.length + turunHarga.length + produkBaru.length + menipis.length;
+  const sorotan = [...antreanSorotan.values()];
+  const jumlah = restok.length + turunHarga.length + produkBaru.length + menipis.length + sorotan.length;
   if (jumlah === 0) return { terkirim: false, alasan: 'KOSONG' };
 
   const kosongkan = () => {
@@ -283,6 +331,7 @@ export async function kirimSekarang() {
     antreanTurunHarga.clear();
     antreanProdukBaru.clear();
     antreanMenipis.clear();
+    antreanSorotan.clear();
   };
 
   const settings = bacaSettings ? await bacaSettings() : {};
@@ -295,7 +344,7 @@ export async function kirimSekarang() {
   if (!tujuan) return { terkirim: false, alasan: 'GRUP_BELUM_DISET' };
   if (!sockRef) return { terkirim: false, alasan: 'SOCKET_BELUM_SIAP' };
 
-  const teks = susunSiaran({ restok, turunHarga, produkBaru, menipis });
+  const teks = susunSiaran({ restok, turunHarga, produkBaru, menipis, sorotan });
   if (!teks) return { terkirim: false, alasan: 'KOSONG' };
 
   try {
@@ -310,11 +359,11 @@ export async function kirimSekarang() {
   }
 
   kosongkan();
-  console.log(`[SIARAN] Pengumuman terkirim ke ${tujuan} (${produkBaru.length} baru, ${restok.length} restok, ${turunHarga.length} turun harga, ${menipis.length} menipis).`);
+  console.log(`[SIARAN] Pengumuman terkirim ke ${tujuan} (${produkBaru.length} baru, ${restok.length} restok, ${turunHarga.length} turun harga, ${menipis.length} menipis, ${sorotan.length} sorotan).`);
   return {
     terkirim: true, tujuan, teks,
     restok: restok.length, turunHarga: turunHarga.length,
-    produkBaru: produkBaru.length, menipis: menipis.length
+    produkBaru: produkBaru.length, menipis: menipis.length, sorotan: sorotan.length
   };
 }
 
@@ -324,7 +373,8 @@ export function isiAntrean() {
     restok: [...antreanRestok.values()],
     turunHarga: [...antreanTurunHarga.values()],
     produkBaru: [...antreanProdukBaru.values()],
-    menipis: [...antreanMenipis.values()]
+    menipis: [...antreanMenipis.values()],
+    sorotan: [...antreanSorotan.values()]
   };
 }
 
@@ -335,5 +385,6 @@ export function kosongkanAntrean() {
   antreanTurunHarga.clear();
   antreanProdukBaru.clear();
   antreanMenipis.clear();
+  antreanSorotan.clear();
   sudahDiumumkanMenipis.clear();
 }

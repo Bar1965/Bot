@@ -1164,10 +1164,23 @@ tests without WhatsApp.
 
 | Trigger | Rule | Queued by |
 |---|---|---|
-| new product | stock > 0 | `storeWizard.js` after `.tokobaru` |
+| new product | stock > 0, and the product did not exist before | `.tokobaru` wizard, `.addproduk`, dashboard create |
 | restock | stock **was ≤ `lowStockLimit`** and went up | `.addstock`, `.stock`, `.ready`, dashboard import |
 | price drop | new < old | `.price` |
 | running low | `0 < stock ≤ lowStockLimit` | `fulfillmentWorker.js` after a sale |
+
+A fifth, `antrekanSorotan`, is the manual escape hatch behind `.umumkan <kode>`:
+it announces a product regardless of the automatic rules (a restock that never hit
+zero, a price *rise* the owner wants to use as urgency). It still refuses stock 0.
+It exists because `.umumkan <kode>` used to borrow the restock queue, so a product
+that had never run out was announced as "STOK READY KEMBALI" — a false sentence in
+the one channel whose entire value is being believed.
+
+**Silence must be explained.** When `.price` raises a price, nothing is broadcast
+*and the owner is told so*, with the `.umumkan` override. The first version just
+stayed quiet, and the owner read that as the feature being broken. A deliberate
+refusal that looks identical to a malfunction is a bug in the reporting, not proof
+the rule is wrong.
 
 **Never tagall.** The owner asked for this explicitly: `sendMessage` is called with
 `{ text }` and nothing else. Do not add `mentions` — `broadcastTagAll` exists for
@@ -1212,7 +1225,7 @@ subscriber notifier already had once.
 
 Target group: `updateGroupId` → `buyerGroupId` → `transactionGroupId`.
 
-`npm run test:siaran` (80 assertions) pins every refusal above, that no message
+`npm run test:siaran` (91 assertions) pins every refusal above, that no message
 ever contains out-of-stock wording, and that the sent payload's only key is `text`.
 
 ### 10p1. The registration gate locked 165 players out of their own progress
