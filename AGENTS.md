@@ -1336,11 +1336,12 @@ flash price sits below the owner's own floor but still sets it.
 no stack ever lands under the floor or above the subtotal, plus a real cart with
 all three discounts applied at once.
 
-### 10r. Rate limits — three different brakes, for three different abuses
+### 10r. Rate limits — four different brakes, for four different abuses
 
 | Brake | Stops | Where |
 |---|---|---|
 | `mediaDailyLimit` + `mediaCooldownSec` | bulk downloading | `src/commands/mediaRouter.js`, and the auto-download path in `bot.js` |
+| `mediaPerHour` | **download pacing** — the whole day's quota spent in two minutes | `media_hourly_logs`, `periksaKuotaMediaJam` in `gamesDb.js` |
 | `aiDailyLimit` | burning paid AI quota | `src/games/index.js` |
 | `funPerMinute` | **bursts** — twenty commands in thirty seconds | `src/utils/pembatasLaju.js`, called in `src/games/index.js` |
 
@@ -1358,6 +1359,33 @@ download limit was 15/day and `media_usage_logs` showed the all-time high was 12
 in one day, once, by one person — typical heavy use was 4-7. A limit nothing ever
 reaches is not a limit. It is now 10/day with a 30 s gap, which the heaviest users
 touch a few times a month.
+
+**`mediaPerHour` is the brake that actually bites** ("khusus downloader aja
+batesin jadi sekitar 3 per jam", 2026-09-16). Free is **3/hour**, then 6 / 8 / 15 /
+30 up the ladder. A daily quota alone lets someone spend the whole day's 10 in two
+minutes and then complain the bot is slow; 3/hour spreads the same 10 across at
+least four hours, which is the difference between rationing and merely counting.
+
+Two things about it that are not obvious:
+
+- **It is stored in SQLite, not in memory**, unlike `funPerMinute`. The bot gets
+  restarted; a quota that empties on every restart is not a quota. `media_hourly_logs`
+  holds one row per download and prunes itself after 2 hours.
+- **`incrementMediaUsage` records both the daily count and the hourly timestamp.**
+  Deliberately one function: if callers had to remember two, some path would
+  eventually call only one and the hourly brake would silently die on that path.
+
+The daily check runs **before** the hourly one. Reversed, a person whose daily quota
+is already gone gets told "wait 20 minutes" and then walks into an entirely different
+wall — refused twice for one situation.
+
+Two invariants `npm run test:kuota` pins, because breaking either makes a number
+meaningless rather than wrong: `mediaPerHour <= mediaDailyLimit` (an hourly cap above
+the daily one never bites) and `mediaPerHour * 24 >= mediaDailyLimit` (a paid daily
+quota must be spendable within a day).
+
+`SHOP_DB_PATH` (env, defaults to `./shop.db`) exists so that suite can run the real
+data-layer functions against a temp file. Never point it at the owner's database.
 
 The free burst rate is **7/min**, rising to 40 for Diamond. Seven is the owner's
 own number, chosen 2026-09-16 after seeing 8 in the first cut; `npm run test:laju`

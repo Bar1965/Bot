@@ -1095,6 +1095,25 @@ You can now enjoy:
   `);
   await runQuery("CREATE INDEX IF NOT EXISTS idx_media_usage_jid_date ON media_usage_logs(jid, usage_date)");
 
+  // Rem PER JAM untuk unduhan, diminta owner: "khusus downloader aja batesin
+  // jadi sekitar 3 per jam."
+  //
+  // Tidak bisa ditumpangkan ke media_usage_logs di atas: tabel itu cuma
+  // menyimpan satu angka per hari, sedangkan jendela sejam perlu tahu KAPAN
+  // tiap unduhan terjadi. Dan tidak boleh disimpan di memori seperti rem
+  // semburan perintah fun — bot ini kadang dinyalakan ulang, dan jatah yang
+  // hangus tiap restart bukan jatah.
+  //
+  // Barisnya dibuang sendiri setelah 2 jam, jadi tabel ini tidak pernah tumbuh.
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS media_hourly_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      jid TEXT NOT NULL,
+      ts INTEGER NOT NULL
+    )
+  `);
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_media_hourly_jid_ts ON media_hourly_logs(jid, ts)");
+
   await runQuery("CREATE INDEX IF NOT EXISTS idx_ai_usage_jid_date ON ai_usage_logs(jid, usage_date)");
   await runQuery("CREATE INDEX IF NOT EXISTS idx_wishlist_produk ON user_wishlists(produk_kode)");
 

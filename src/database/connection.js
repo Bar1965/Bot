@@ -2,7 +2,12 @@ import { AsyncLocalStorage } from 'async_hooks';
 import sqlite3 from 'sqlite3';
 
 const sqlite = sqlite3.verbose();
-const dbFile = './shop.db';
+
+// Bot selalu memakai ./shop.db. Variabel lingkungan ini ada supaya uji otomatis
+// bisa menjalankan kode database yang SEBENARNYA di atas berkas sementara, bukan
+// menyalin ulang SQL-nya ke dalam uji — salinan SQL cuma menguji salinannya, dan
+// database asli milik owner tidak boleh disentuh uji apa pun.
+const dbFile = process.env.SHOP_DB_PATH || './shop.db';
 
 let db;
 let transactionQueue = Promise.resolve();

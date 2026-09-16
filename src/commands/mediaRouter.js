@@ -23,6 +23,7 @@ import * as db from '../../database.js';
 import * as mediaHandler from '../../mediaHandler.js';
 import * as ent from '../../entertainmentHandler.js';
 import { getPremiumBenefits } from '../../premiumHandler.js';
+import { formatTunggu } from '../utils/pembatasLaju.js';
 
 export function createMediaRouter(ctx) {
   const {
@@ -107,6 +108,21 @@ export function createMediaRouter(ctx) {
     if (dipakai >= batasHarian) {
       await sock.sendMessage(jid, {
         text: `⚠️ *KUOTA UNDUHAN HARIAN HABIS* (${dipakai}/${batasHarian})\n\nTier kamu: *${tier}*\nKuota berganti otomatis tengah malam WIB.\n\n💎 Butuh lebih banyak? Ketik *.premium*\n🥉 Perunggu *Rp3.000* — 25x/hari\n🥈 Silver Rp5.000 — 30x · 🥇 Gold Rp10.000 — 60x · 💎 Diamond Rp25.000 — 150x`
+      }, { quoted: m });
+      return false;
+    }
+
+    // Jatah harian diperiksa DULU, baru jatah per jam. Kalau urutannya dibalik,
+    // orang yang jatah hariannya sudah habis akan disuruh "tunggu 20 menit" lalu
+    // kembali dan menabrak tembok yang sama sekali lain — dua kali ditolak untuk
+    // satu keadaan.
+    const perJam = await db.periksaKuotaMediaJam(walletJid, Number(benefit.mediaPerHour) || 0);
+    if (!perJam.boleh) {
+      await sock.sendMessage(jid, {
+        text: `🕐 *BATAS UNDUHAN PER JAM* (${perJam.dipakai}/${perJam.batas})\n\n` +
+          `Slot berikutnya terbuka *${formatTunggu(perJam.tungguDetik)}* lagi.\n` +
+          `Sisa jatah hari ini masih *${batasHarian - dipakai}x* — cuma perlu diatur jaraknya.\n\n` +
+          `_Tier kamu: ${tier}. Ketik_ \`.premium\` _untuk jatah per jam lebih besar — mulai Rp3.000 (6x/jam)._`
       }, { quoted: m });
       return false;
     }

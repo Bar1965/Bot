@@ -32,6 +32,7 @@ import { buildCommandMenu } from './commandRegistry.js';
 import { createWelcomeGoodbyeCard, createLevelUpCard } from './cardGenerator.js';
 import { tickPesanGrup } from './src/games/tcg/drop.js';
 import { adalahJidBot } from './src/utils/botIdentity.js';
+import { formatTunggu } from './src/utils/pembatasLaju.js';
 import { createMediaRouter } from './src/commands/mediaRouter.js';
 
 
@@ -1854,6 +1855,19 @@ _Kuota berganti tengah malam WIB. Ketik *.premium* untuk jatah lebih besar._`,
                   });
                   continue;
                 }
+
+                // Rem per jam berlaku di sini juga. Justru di sini yang paling
+                // perlu: jalur ini terpicu oleh tautan, tanpa siapa pun perlu
+                // mengetik perintah, dan satu tautan bisa jadi 10 kiriman.
+                const perJam = await db.periksaKuotaMediaJam(senderNormalized, Number(benefit.mediaPerHour) || 0);
+                if (!perJam.boleh) {
+                  await sock.sendMessage(jid, {
+                    text: `🕐 @${senderNormalized.split('@')[0]} batas unduhan per jam tercapai (${perJam.dipakai}/${perJam.batas}). Auto-download dilewati.\n\n_Slot berikutnya terbuka ${formatTunggu(perJam.tungguDetik)} lagi. Ketik *.premium* untuk jatah per jam lebih besar._`,
+                    mentions: [senderNormalized]
+                  });
+                  continue;
+                }
+
                 await db.incrementMediaUsage(senderNormalized);
               }
               await db.setCooldown(jid, 'AUTODL', 30 * 1000);

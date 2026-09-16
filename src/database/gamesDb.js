@@ -1,5 +1,6 @@
 import { runQuery, getQuery, allQuery, withTransaction, normalizePhoneDigits } from './connection.js';
 import { config } from '../../config.js';
+import { putusanJendela } from '../utils/pembatasLaju.js';
 
 import { addLog, getOrCreateCustomer, getCustomerMembershipProfile, getSettings, addLoyaltyPoints } from './userDb.js';
 
@@ -1371,6 +1372,9 @@ export async function getMediaUsageToday(jid) {
   return row ? row.count : 0;
 }
 
+/** Lebar jendela rem unduhan: satu jam, digeser terus, bukan jam bulat. */
+export const JENDELA_MEDIA_JAM_MS = 60 * 60 * 1000;
+
 export async function incrementMediaUsage(jid) {
   const todayStr = tanggalWIB();
   await runQuery(
@@ -1378,7 +1382,35 @@ export async function incrementMediaUsage(jid) {
      ON CONFLICT(jid, usage_date) DO UPDATE SET count = count + 1`,
     [jid, todayStr]
   );
+  // Jatah per jam dicatat di tempat yang SAMA dengan jatah harian dengan sengaja.
+  // Kalau pemanggil harus ingat memanggil dua fungsi, cepat atau lambat ada
+  // jalur yang cuma memanggil satu — dan rem per jamnya diam-diam mati di situ.
+  const sekarang = Date.now();
+  await runQuery("INSERT INTO media_hourly_logs (jid, ts) VALUES (?, ?)", [jid, sekarang]);
+  await runQuery(
+    "DELETE FROM media_hourly_logs WHERE jid = ? AND ts < ?",
+    [jid, sekarang - 2 * JENDELA_MEDIA_JAM_MS]
+  );
   return await getMediaUsageToday(jid);
+}
+
+/**
+ * Berapa unduhan orang ini dalam satu jam terakhir, dan kalau sudah mentok,
+ * berapa lama lagi slot berikutnya terbuka.
+ *
+ * Batas <= 0 berarti tanpa rem — dipakai owner & admin toko, yang membayar
+ * internetnya sendiri.
+ */
+export async function periksaKuotaMediaJam(jid, batasPerJam, sekarang = Date.now()) {
+  const batas = Number(batasPerJam);
+  if (!jid || !Number.isFinite(batas) || batas <= 0) {
+    return { boleh: true, dipakai: 0, batas: Infinity, sisa: Infinity, tungguDetik: 0, hidup: [] };
+  }
+  const rows = await allQuery(
+    "SELECT ts FROM media_hourly_logs WHERE jid = ? AND ts > ? ORDER BY ts ASC",
+    [jid, sekarang - JENDELA_MEDIA_JAM_MS]
+  );
+  return putusanJendela((rows || []).map(r => Number(r.ts)), batas, JENDELA_MEDIA_JAM_MS, sekarang);
 }
 
 /** Buang catatan pemakaian yang sudah lewat, dipanggil scheduler. */
@@ -1386,6 +1418,12 @@ export async function bersihkanPemakaianMediaLama(simpanHari = 7) {
   const batas = new Date(Date.now() + 7 * 60 * 60 * 1000 - simpanHari * 86400000)
     .toISOString().slice(0, 10);
   const res = await runQuery("DELETE FROM media_usage_logs WHERE usage_date < ?", [batas]);
+  // Stempel per jam tidak perlu disimpan berhari-hari; 2 jam sudah jauh di luar
+  // jendela dan menjaga tabelnya tetap sekecil mungkin.
+  await runQuery(
+    "DELETE FROM media_hourly_logs WHERE ts < ?",
+    [Date.now() - 2 * JENDELA_MEDIA_JAM_MS]
+  );
   return res.changes || 0;
 }
 

@@ -37,6 +37,7 @@ export const PREMIUM_TIERS = {
       aiDailyLimit: 5,
       funPerMinute: 12,
       mediaDailyLimit: 25,
+      mediaPerHour: 6,
       mediaCooldownSec: 15,
       dailyRewardMult: 1.2,
       rpgGoldMult: 1.2,
@@ -50,7 +51,7 @@ export const PREMIUM_TIERS = {
       xpMult: 1.5,
       badge: '🥉 Perunggu'
     },
-    description: '5x AI/hari, 25x unduhan/hari, jeda 15 dtk, 1.5x XP Booster. Paket masuk termurah.'
+    description: '5x AI/hari, 25x unduhan/hari (6x/jam), jeda 15 dtk, 1.5x XP Booster. Paket masuk termurah.'
   },
   Silver: {
     tier: 'Silver', emoji: '🥈',
@@ -60,6 +61,7 @@ export const PREMIUM_TIERS = {
       aiDailyLimit: 10,
       funPerMinute: 16,
       mediaDailyLimit: 30,
+      mediaPerHour: 8,
       mediaCooldownSec: 15,
       dailyRewardMult: 1.5,
       rpgGoldMult: 1.5,
@@ -73,7 +75,7 @@ export const PREMIUM_TIERS = {
       xpMult: 2.0,
       badge: '🥈 Silver Member'
     },
-    description: '10x AI/hari, 30x unduhan/hari, diskon 5%, Akses Lapak Reseller, 2x XP Booster.'
+    description: '10x AI/hari, 30x unduhan/hari (8x/jam), diskon 5%, Akses Lapak Reseller, 2x XP Booster.'
   },
   Gold: {
     tier: 'Gold', emoji: '🥇',
@@ -83,6 +85,7 @@ export const PREMIUM_TIERS = {
       aiDailyLimit: 25,
       funPerMinute: 25,
       mediaDailyLimit: 60,
+      mediaPerHour: 15,
       mediaCooldownSec: 10,
       dailyRewardMult: 2.0,
       rpgGoldMult: 2.0,
@@ -96,7 +99,7 @@ export const PREMIUM_TIERS = {
       xpMult: 3.0,
       badge: '🥇 Gold Member'
     },
-    description: '25x AI/hari, 60x unduhan/hari, diskon 10%, Lapak Reseller + DM Restock Alert, 3x XP Booster.'
+    description: '25x AI/hari, 60x unduhan/hari (15x/jam), diskon 10%, Lapak Reseller + DM Restock Alert, 3x XP Booster.'
   },
   Diamond: {
     tier: 'Diamond', emoji: '💎',
@@ -106,6 +109,7 @@ export const PREMIUM_TIERS = {
       aiDailyLimit: 50,
       funPerMinute: 40,
       mediaDailyLimit: 150,
+      mediaPerHour: 30,
       mediaCooldownSec: 5,
       dailyRewardMult: 3.0,
       rpgGoldMult: 3.0,
@@ -119,7 +123,7 @@ export const PREMIUM_TIERS = {
       xpMult: 5.0,
       badge: '💎 Diamond Member'
     },
-    description: '50x AI/hari, 150x unduhan/hari, diskon 15%, Lapak Reseller, DM Restock Alert, Voucher Rp10k/bln, 5x XP Booster.'
+    description: '50x AI/hari, 150x unduhan/hari (30x/jam), diskon 15%, Lapak Reseller, DM Restock Alert, Voucher Rp10k/bln, 5x XP Booster.'
   }
 };
 
@@ -138,6 +142,11 @@ export function getPremiumBenefits(tier) {
     // untuk menahan pemborongan dan untuk membuat Perunggu Rp3.000 punya alasan
     // dibeli, tanpa mengganggu orang yang cuma unduh sesekali.
     mediaDailyLimit: 10,
+    // Rem per JAM, diminta owner: "khusus downloader aja batesin jadi sekitar
+    // 3 per jam." Ini rem yang sebenarnya menggigit. Jatah harian 10 tetap ada,
+    // tapi sekarang paling cepat habis dalam empat jam, bukan dalam dua menit —
+    // dan itulah bedanya menjatah dengan sekadar menghitung.
+    mediaPerHour: 3,
     mediaCooldownSec: 30,
     // Rem semburan untuk perintah fun & game — lihat src/utils/pembatasLaju.js.
     // Tujuh perintah per menit masih lebih cepat daripada siapa pun yang benar-
@@ -472,7 +481,7 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
       return [
         `${t.emoji} *${key}* — Rp${t.priceRp.toLocaleString('id-ID')} / ${t.days} hari`,
         `  • AI Gemini: *${b.aiDailyLimit}x / hari*`,
-        `  • Downloader: *${b.mediaDailyLimit}x / hari* _(jeda ${b.mediaCooldownSec} dtk)_`,
+        `  • Downloader: *${b.mediaDailyLimit}x / hari* — maks *${b.mediaPerHour}x / jam* _(jeda ${b.mediaCooldownSec} dtk)_`,
         `  • Diskon belanja: *${b.shopDiscountPct}%*`,
         `  • Reseller Lapak: *${b.resellerAccess ? '✅ Aktif' : '❌'}*`,
         `  • DM Restock Alert: *${b.restockDmAlert ? '✅ Aktif' : '❌'}*`,

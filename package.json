@@ -19,6 +19,7 @@
     "test:siaran": "node scripts/siaranSmokeTest.mjs",
     "test:lantai": "node scripts/lantaiHargaTest.mjs",
     "test:laju": "node scripts/pembatasLajuTest.mjs",
+    "test:kuota": "node scripts/kuotaUnduhJamTest.mjs",
     "balance:tcg": "node scripts/tcgBalance.mjs",
     "kalibrasi:abadi": "node scripts/tcgAbadiKalibrasi.mjs",
     "stop": "node -e \"require('fs').writeFileSync('.stop-bot',String(Date.now()))\""
