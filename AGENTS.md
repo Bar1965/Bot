@@ -41,13 +41,16 @@ plus a handful of standalone smoke tests (`npm run test:tcg`, `test:identity`, `
    runtime, which in this bot means the customer gets no reply at all. `npm run test:jebakan`
    (`scripts/runtimeTrapTest.mjs`) catches both across the whole repo — run it after any edit that
    touches message text or adds a helper. See §15a.
-2. Stop the old process. **Ctrl+C in its own terminal is the correct way** — since `7139314`,
-   `index.js` handles SIGINT/SIGTERM/SIGHUP/SIGBREAK and calls `tutupBotDenganRapi`, which flushes
-   `creds.json` and the Signal keys before closing the socket, then force-exits after 8 s. Killing
-   it mid-write is one of the ways the chat ends up undecryptable (`Bad MAC`).
-   `taskkill /F /IM node.exe` is the fallback when you have no access to that terminal: on Windows
-   it calls TerminateProcess, which **cannot be caught**, so the graceful path never runs. Never
-   leave a half-dead process holding port 3000 — the next boot fails with `EADDRINUSE`.
+2. Stop the old process with **`npm run stop`**, from anywhere — it writes a `.stop-bot` sentinel
+   that `index.js` polls once a second, then closes through `tutupBotDenganRapi`: Signal keys
+   flushed, socket closed, exit 0, force-exit after 8 s if the save hangs. Ctrl+C in the bot's own
+   terminal does the same thing via SIGINT.
+   **Do not use `taskkill /F` / `Stop-Process -Force`.** On Windows those call TerminateProcess,
+   which **cannot be caught**, so the graceful path never runs and unsaved Signal keys leave the
+   on-disk ratchet behind the peer's — which is exactly how a chat ends up stuck on "Menunggu pesan
+   ini" (§5a). The sentinel exists because Windows offers no way to send SIGINT to another process;
+   before it existed, one working session with five forced restarts was enough to kill a session.
+   Never leave a half-dead process holding port 3000 — the next boot fails with `EADDRINUSE`.
    After stopping, **wait ~8 s and re-check**: Antigravity respawns the bot on its own, and starting
    a second one means two sockets fighting over the same WhatsApp session
    (`⚠️ Connection Replaced (405)`). Verify exactly one `node index.js` before and after.
@@ -256,6 +259,22 @@ the same message id requested over and over. The remedy that worked on 2026-09-1
 3. Delete only that peer's files — `session-<jid>.*.json`, both the `@lid` number and the phone
    number, since they are the same human. Eight files in that case.
 4. Restart. The next message negotiates a fresh session from prekeys.
+
+**Finding the dead peer takes one grep, not guesswork.** libsignal prints the device
+address in its own stack frame, so the failures name their peer:
+
+```bash
+grep -oE "at (async )?[0-9]+\.[0-9]+ \[as awaitable\]" bot.log | grep -oE "[0-9]+\.[0-9]+" | sort | uniq -c | sort -rn
+```
+
+On 2026-09-16 that turned 79 `Bad MAC` lines into a single culprit — one peer,
+one device — instead of a repo-wide session wipe. Its `session-*.json` had bloated
+to 38 KB of dead ratchet state against ~9 KB for healthy peers, which is a second
+tell. After deleting it: 0.
+
+Deleting the *pairwise* session also fixes that peer's **group** messages. A group
+sender key is distributed over the 1:1 session, so a broken pairwise session makes
+everything from that person unreadable everywhere. Leave `sender-key-*` alone.
 
 `creds.json` and `pre-key-*.json` must be left alone: `creds.json` is the device link, and deleting
 it means scanning a QR code again. Deleting per-peer `session-*.json` cannot unlink the bot.

@@ -19,7 +19,8 @@
     "test:siaran": "node scripts/siaranSmokeTest.mjs",
     "test:lantai": "node scripts/lantaiHargaTest.mjs",
     "balance:tcg": "node scripts/tcgBalance.mjs",
-    "kalibrasi:abadi": "node scripts/tcgAbadiKalibrasi.mjs"
+    "kalibrasi:abadi": "node scripts/tcgAbadiKalibrasi.mjs",
+    "stop": "node -e \"require('fs').writeFileSync('.stop-bot',String(Date.now()))\""
   },
   "dependencies": {
     "@distube/ytdl-core": "^4.16.12",

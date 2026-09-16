@@ -31,24 +31,62 @@ process.on('unhandledRejection', (reason) => {
 // keluar. Menggantung berarti port 3000 tidak pernah dilepas dan boot
 // berikutnya gagal dengan EADDRINUSE.
 let sedangMenutup = false;
-for (const sinyal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) {
-  process.on(sinyal, async () => {
-    if (sedangMenutup) return;
-    sedangMenutup = true;
-    const paksaKeluar = setTimeout(() => {
-      console.error('[SHUTDOWN] Penutupan terlalu lama, memaksa keluar.');
-      process.exit(0);
-    }, 8000);
-    paksaKeluar.unref?.();
-    try {
-      await tutupBotDenganRapi(sinyal);
-    } catch (e) {
-      console.error('[SHUTDOWN] Galat saat menutup:', e?.message || e);
-    }
-    clearTimeout(paksaKeluar);
+
+async function tutupLaluKeluar(alasan) {
+  if (sedangMenutup) return;
+  sedangMenutup = true;
+  const paksaKeluar = setTimeout(() => {
+    console.error('[SHUTDOWN] Penutupan terlalu lama, memaksa keluar.');
     process.exit(0);
-  });
+  }, 8000);
+  paksaKeluar.unref?.();
+  try {
+    await tutupBotDenganRapi(alasan);
+  } catch (e) {
+    console.error('[SHUTDOWN] Galat saat menutup:', e?.message || e);
+  }
+  clearTimeout(paksaKeluar);
+  process.exit(0);
 }
+
+for (const sinyal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) {
+  process.on(sinyal, () => tutupLaluKeluar(sinyal));
+}
+
+// --- SAKELAR BERHENTI LEWAT BERKAS ---
+//
+// Di Windows tidak ada cara mengirim SIGINT ke proses lain dari luar
+// terminalnya: `taskkill /F` dan `Stop-Process -Force` memakai TerminateProcess,
+// yang TIDAK BISA DITANGKAP. Jadi penutupan rapi di atas — satu-satunya yang
+// menyimpan kunci Signal sebelum keluar — terlewati setiap kali bot dimatikan
+// oleh siapa pun yang tidak sedang memegang terminalnya.
+//
+// Akibatnya bukan teoretis: kunci yang belum tersimpan membuat keadaan ratchet
+// di disk tertinggal dari perangkat lawan bicara, dan di HP mereka pesan
+// berikutnya berhenti di "Menunggu pesan ini". Satu sesi kerja dengan lima kali
+// restart paksa sudah cukup untuk merusaknya.
+//
+// Berkas sentinel memberi jalan keluar yang tidak butuh terminal dan tidak
+// membuka satu pun port: buat berkas `.stop-bot`, bot menutup dirinya dengan
+// rapi. `npm run stop` melakukannya.
+const BERKAS_STOP = path.join(process.cwd(), '.stop-bot');
+
+// Sentinel sisa dari sesi sebelumnya harus dibuang SEBELUM pengawas menyala,
+// kalau tidak bot yang baru hidup langsung menutup dirinya sendiri.
+try { if (fs.existsSync(BERKAS_STOP)) fs.unlinkSync(BERKAS_STOP); } catch {}
+
+const pengawasStop = setInterval(() => {
+  try {
+    if (!fs.existsSync(BERKAS_STOP)) return;
+    // Dihapus DULU, supaya bot berikutnya tidak menemukan sentinel yang sama
+    // meskipun penutupan ini gagal di tengah jalan.
+    try { fs.unlinkSync(BERKAS_STOP); } catch {}
+    clearInterval(pengawasStop);
+    console.log('[SHUTDOWN] Berkas .stop-bot terdeteksi — menutup dengan rapi.');
+    tutupLaluKeluar('BERKAS_STOP');
+  } catch {}
+}, 1000);
+pengawasStop.unref?.();
 
 // Periodic Temp Folder Cleaner (Tiap 1 Jam)
 setInterval(() => {
