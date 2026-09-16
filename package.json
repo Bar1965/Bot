@@ -17,6 +17,7 @@
     "test:kirimulang": "node scripts/kirimUlangTest.mjs",
     "test:menu": "node scripts/auditMenuTest.mjs",
     "test:siaran": "node scripts/siaranSmokeTest.mjs",
+    "test:lantai": "node scripts/lantaiHargaTest.mjs",
     "balance:tcg": "node scripts/tcgBalance.mjs",
     "kalibrasi:abadi": "node scripts/tcgAbadiKalibrasi.mjs"
   },

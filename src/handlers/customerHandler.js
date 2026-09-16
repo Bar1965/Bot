@@ -1859,9 +1859,27 @@ Kami akan otomatis mengirimkan pesan WhatsApp ke nomor ini begitu produk *${p.na
     }
     if (discount > lastOrder.total) discount = lastOrder.total;
     
-    await db.applyCouponToOrder(lastOrder.order_id, code, discount);
+    // Angka yang dicetak diambil dari HASIL perhitungan, bukan dihitung ulang
+    // di sini. `lastOrder.total` sudah basi begitu updateOrderTotal jalan —
+    // kupon persen dihitung ulang dari subtotal, dan lantai harga bisa memangkas
+    // potongannya. Menghitung sendiri berarti menjanjikan angka yang berbeda
+    // dari yang nanti ditagih.
+    const hasilKupon = await db.applyCouponToOrder(lastOrder.order_id, code, discount);
+    const dipakai = hasilKupon?.diskonKupon ?? discount;
+    const totalAkhir = hasilKupon?.total ?? Math.max(0, lastOrder.total - discount);
     const discountLabel = coupon.type === 'percent' ? `${coupon.value}%` : `Rp${coupon.value.toLocaleString('id-ID')}`;
-    await sock.sendMessage(responseJid, { text: `✅ *Kupon ${code} berhasil diterapkan!*\n\n🏷️ Diskon: ${discountLabel}\n💰 Potongan: *-Rp${discount.toLocaleString('id-ID')}*\n🧾 Total setelah diskon: *Rp${(lastOrder.total - discount).toLocaleString('id-ID')}*\n\nKetik \`.checkout\` untuk melanjutkan pembayaran.` });
+
+    let pesanKupon = `✅ *Kupon ${code} berhasil diterapkan!*\n\n`;
+    pesanKupon += `🏷️ Diskon: ${discountLabel}\n`;
+    pesanKupon += `💰 Potongan: *-Rp${dipakai.toLocaleString('id-ID')}*\n`;
+    pesanKupon += `🧾 Total setelah diskon: *Rp${totalAkhir.toLocaleString('id-ID')}*\n`;
+    // Kalau potongannya dipangkas, pelanggan HARUS diberi tahu. Diam di sini
+    // berarti bot menjanjikan satu angka lalu menagih angka lain.
+    if (hasilKupon?.kenaLantai && hasilKupon.dipangkas?.kupon > 0) {
+      pesanKupon += `\n_Potongan kupon ini dibatasi karena produknya sudah mendapat potongan lain._\n`;
+    }
+    pesanKupon += `\nKetik \`.checkout\` untuk melanjutkan pembayaran.`;
+    await sock.sendMessage(responseJid, { text: pesanKupon });
     await sendRedirectNotice();
     return;
   }

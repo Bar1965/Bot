@@ -1197,6 +1197,54 @@ Target group: `updateGroupId` → `buyerGroupId` → `transactionGroupId`.
 `npm run test:siaran` (54 assertions) pins every refusal above, including that no
 message ever contains out-of-stock wording.
 
+### 10q. Price floor — the only brake on three stacking discounts
+
+Three discounts can land on one order at once: **flash sale** (replaces the unit
+price in `order_items` before anything else runs), **coupon** (percent or fixed),
+and **premium tier discount**. `updateOrderTotal` used to end with
+
+```js
+const finalTotal = Math.max(0, rawTotal - discount - diskonPremium);
+```
+
+The coupon was clamped to `rawTotal`, but `diskonPremium` came off on top of that,
+so the stack reached **Rp0**. Two outcomes, both bad: exactly zero makes
+`settleOrderWithBalance` refuse with "Nilai pesanan tidak valid" and asks Casaku
+for a zero QRIS, so the buyer simply cannot complete the order; near-zero goes
+through and **ships the product**.
+
+`src/utils/lantaiHarga.js` is pure and holds the whole rule.
+
+**The floor is computed from the catalogue price, not from `rawTotal`.** This is
+the part that is easy to get wrong: `addToCart` writes `harga_flash` into
+`order_items.harga`, so by the time `updateOrderTotal` runs, `rawTotal` is already
+flash-discounted — basing the floor on it lets flash sale escape entirely and
+restarts the discount budget from the smaller number. `hitungLantaiHarga` takes
+`max(totalKatalog, rawTotal)` as its base, then clamps the result to `rawTotal` so
+a deliberately-below-floor flash sale never *raises* what the buyer pays.
+
+**It trims the discount, never rejects the order.** The buyer does not know the
+shop has a floor; refusing their order over an internal rule just loses the sale.
+Trim order is coupon first, premium second — premium is a benefit the customer
+paid for, the coupon is a promo the owner handed out.
+
+**Trimmed amounts are written back to `discount_amount` / `premium_discount`.**
+Skipping that write would make the cart screen print discounts larger than the
+ones actually applied, and the item lines would stop summing to the total — the
+exact complaint already fixed once in `getCartDetails`. `applyCouponToOrder`
+returns the result so the `.kupon` reply quotes the real figure and says when a
+coupon was capped.
+
+Settings: `lantaiHargaPersen` (default 40) and `lantaiHargaMinimal` (default 1000),
+both in `config.defaults`, both readable as strings from the settings table
+(`Number()` handles either). Owner command `.lantaiharga [persen] [minimal]`, which
+also prints the resulting minimum for every product. `.flashsale` warns when the
+flash price sits below the owner's own floor but still sets it.
+
+`npm run test:lantai` (39 assertions) includes a 900-combination sweep asserting
+no stack ever lands under the floor or above the subtotal, plus a real cart with
+all three discounts applied at once.
+
 ## 11. Dashboard (`server.js`, ~70 `/api` routes)
 
 - Routes are `app.VERB(path, authenticateJWT, authorizeRoles(...), handler)`. Roles are exactly

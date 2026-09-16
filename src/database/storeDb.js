@@ -1,6 +1,7 @@
 import { runQuery, getQuery, allQuery, withTransaction, formatPhoneNumber, normalizePhoneDigits, isPhoneMatch } from './connection.js';
 
-import { addLog, generateOrderId, addLoyaltyPoints, samaOrangnya } from './userDb.js';
+import { addLog, generateOrderId, addLoyaltyPoints, samaOrangnya, getSettings } from './userDb.js';
+import { hitungLantaiHarga, terapkanLantaiHarga } from '../utils/lantaiHarga.js';
 import { addCustomerBalance, deductCustomerBalance, tebusKupon, createFulfillmentJob, awardPurchasePoints } from './gamesDb.js';
 import { masaGaransiMs } from '../utils/pesanGaransi.js';
 
@@ -940,8 +941,52 @@ async function updateOrderTotal(orderId) {
   }
   if (discount > rawTotal) discount = rawTotal;
 
-  const finalTotal = Math.max(0, rawTotal - discount - diskonPremium);
-  await runQuery("UPDATE orders SET total = ? WHERE order_id = ?", [finalTotal, orderId]);
+  // Lantai harga dihitung dari harga KATALOG, bukan dari rawTotal.
+  //
+  // rawTotal sudah memakai harga flash sale (addToCart menyimpan harga_flash ke
+  // order_items.harga), jadi menghitung lantai dari sana membuat flash sale
+  // lolos sepenuhnya: jatah diskonnya dimulai lagi dari angka yang sudah kecil.
+  //
+  // LEFT JOIN dengan COALESCE: produk yang sudah dihapus tidak boleh membuat
+  // barisnya hilang dari penjumlahan — kalau hilang, totalKatalog mengecil dan
+  // lantainya ikut turun, yaitu kebalikan dari yang seharusnya.
+  const barisKatalog = await allQuery(
+    `SELECT oi.qty, COALESCE(p.harga, oi.harga) AS harga_katalog
+     FROM order_items oi LEFT JOIN products p ON p.kode = oi.produk_kode
+     WHERE oi.order_id = ?`,
+    [orderId]
+  );
+  const totalKatalog = (barisKatalog || []).reduce(
+    (a, r) => a + (Number(r.qty) || 0) * (Number(r.harga_katalog) || 0), 0
+  );
+
+  let persenMinimal;
+  let minimalRupiah;
+  try {
+    const s = await getSettings();
+    persenMinimal = s?.lantaiHargaPersen;
+    minimalRupiah = s?.lantaiHargaMinimal;
+  } catch (_) {
+    // Gagal membaca settings bukan alasan menonaktifkan pengaman. Dibiarkan
+    // undefined supaya hitungLantaiHarga memakai nilai bawaannya.
+  }
+
+  const lantai = hitungLantaiHarga({ totalKatalog, rawTotal, persenMinimal, minimalRupiah });
+  const hasil = terapkanLantaiHarga({ rawTotal, diskonKupon: discount, diskonPremium, lantai });
+
+  // Angka yang dipangkas DITULIS BALIK. Layar keranjang mencetak baris potongan
+  // dari kolom-kolom ini; kalau tidak disamakan, jumlah barisnya tidak akan
+  // pernah cocok dengan "Total Belanja" dan tidak ada keterangan kenapa.
+  if (hasil.kenaLantai) {
+    await runQuery(
+      "UPDATE orders SET discount_amount = ?, premium_discount = ? WHERE order_id = ?",
+      [hasil.diskonKupon, hasil.diskonPremium, orderId]
+    );
+    await addLog('ORDER', `🛡️ Lantai harga menahan pesanan ${orderId} di Rp${hasil.total.toLocaleString('id-ID')} (potongan dipangkas: kupon Rp${hasil.dipangkas.kupon.toLocaleString('id-ID')}, premium Rp${hasil.dipangkas.premium.toLocaleString('id-ID')}).`);
+  }
+
+  await runQuery("UPDATE orders SET total = ? WHERE order_id = ?", [hasil.total, orderId]);
+  return { ...hasil, rawTotal, totalKatalog };
 }
 
 export async function checkoutCart(customerNomor) {
@@ -1453,7 +1498,11 @@ export async function incrementCouponUsage(code) {
 
 export async function applyCouponToOrder(orderId, couponCode, discountAmount) {
   await runQuery("UPDATE orders SET coupon_code = ?, discount_amount = ? WHERE order_id = ?", [couponCode, discountAmount, orderId]);
-  await updateOrderTotal(orderId);
+  // Hasilnya dipulangkan supaya pemanggil bisa MEMBERI TAHU pelanggan kalau
+  // potongannya dipangkas lantai harga. Tanpa itu bot menjanjikan "hemat
+  // Rp25.000" lalu menagih angka lain, dan tidak ada satu pun baris yang
+  // menjelaskan selisihnya.
+  return await updateOrderTotal(orderId);
 }
 
 

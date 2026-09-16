@@ -16,6 +16,7 @@ import { mulaiWizardProduk, simpanGambarProduk } from './storeWizard.js';
 import { handleSaldoOwner } from './saldoAdmin.js';
 import { uraiBarisAddstock } from './stokInput.js';
 import { antrekanRestok, antrekanTurunHarga, kirimSekarang, isiAntrean } from './siaranStok.js';
+import { PERSEN_BAWAAN, MINIMAL_BAWAAN } from '../utils/lantaiHarga.js';
 import { penutupGaransi } from '../utils/pesanGaransi.js';
 import { tanggalWib, jamWib } from '../utils/waktu.js';
 
@@ -52,7 +53,7 @@ export function createGroupAdminHandler(ctx) {
     'restock', 'stock', 'price', 'out', 'ready', 'addproduct', 'takeover', 
     'release', 'setname', 'setowner', 'eval', 'exec', 'backup', 'resetleaderboard',
     'addstock', 'tambahstok', 'cekstok', 'liststock', 'delstock', 'setdelivery', 'listproduk', 'katalogadmin', 'stokyatim',
-    'sinkronstok', 'syncstok', 'perbaikistok', 'umumkan', 'siaran',
+    'sinkronstok', 'syncstok', 'perbaikistok', 'umumkan', 'siaran', 'lantaiharga', 'batasdiskon',
     'addproduk', 'editproduk', 'ubahproduk', 'delproduk', 'hapusproduk', 'setgambar', 'tokobaru', 'produkbaru',
     // Saldo deposit — gerbang sesungguhnya ada di saldoAdmin.js dan HANYA owner
     // yang lolos. Didaftarkan di sini supaya perintahnya sampai ke handler;
@@ -1213,6 +1214,28 @@ ${panduanMode}`
       if (hFlash >= p.harga) {
         await sock.sendMessage(jid, { text: `\u26a0\ufe0f Harga flash sale (*Rp${hFlash.toLocaleString('id-ID')}*) tidak lebih murah dari harga normal (*Rp${p.harga.toLocaleString('id-ID')}*). Flash sale dibatalkan.` });
         return true;
+      }
+
+      // Flash sale di bawah lantai harga TIDAK dilarang — itu keputusan dagang
+      // owner sendiri, dan lantai harga memang tidak pernah menaikkan kembali
+      // harga yang sudah sengaja dipasang murah. Tapi owner harus TAHU, karena
+      // konsekuensinya: kupon dan diskon premium tidak akan bisa memotong apa
+      // pun lagi di atasnya, dan pembeli yang memegang kupon akan bingung.
+      try {
+        const st = await db.getSettings();
+        const persenLantai = Number(st?.lantaiHargaPersen ?? PERSEN_BAWAAN);
+        const minLantai = Number(st?.lantaiHargaMinimal ?? MINIMAL_BAWAAN);
+        const lantaiProduk = Math.min(p.harga, Math.max(Math.ceil(p.harga * persenLantai / 100), minLantai));
+        if (hFlash < lantaiProduk) {
+          await sock.sendMessage(jid, {
+            text: `⚠️ *Di bawah lantai hargamu sendiri.*\n\n` +
+                  `Lantai untuk produk ini *Rp${lantaiProduk.toLocaleString('id-ID')}* (${persenLantai}% dari Rp${p.harga.toLocaleString('id-ID')}), flash sale-nya *Rp${hFlash.toLocaleString('id-ID')}*.\n\n` +
+                  `Tetap dipasang — flash sale memang hakmu. Tapi selama berlaku, kupon dan diskon premium *tidak akan memotong apa pun lagi*.\n\n` +
+                  `_Ubah batasnya:_ \`.lantaiharga <persen>\``
+          });
+        }
+      } catch (_) {
+        // Gagal membaca setelan bukan alasan membatalkan flash sale-nya.
       }
 
       const endTime = await db.setFlashSale(pKode, hFlash, dur);
@@ -2523,6 +2546,60 @@ user2@gmail.com|pass456
           text: `📣 _Turun Rp${hemat} — pengumuman akan disiarkan ke grup sebentar lagi._\n_Ketik_ \`.umumkan\` _untuk kirim sekarang._`
         });
       }
+      return true;
+    }
+
+    // ── .lantaiharga — batas bawah tumpukan diskon ──────────────────────────
+    if (['lantaiharga', 'batasdiskon'].includes(cleanCmd)) {
+      const s = await db.getSettings();
+      const persenSekarang = Number(s?.lantaiHargaPersen ?? PERSEN_BAWAAN);
+      const minimalSekarang = Number(s?.lantaiHargaMinimal ?? MINIMAL_BAWAAN);
+
+      if (args[1]) {
+        const angka = parseInt(String(args[1]).replace(/[^0-9]/g, ''), 10);
+        if (!Number.isFinite(angka) || angka < 0 || angka > 100) {
+          await sock.sendMessage(jid, { text: "⚠️ Persennya harus 0–100.\n\n_Contoh:_ `.lantaiharga 40` — harga jual tidak boleh turun di bawah 40% harga katalog." });
+          return true;
+        }
+        const minimalBaru = args[2] ? db.parseHargaIndonesia(args.slice(2).join(' ')) : minimalSekarang;
+        if (!Number.isFinite(minimalBaru) || minimalBaru < 0) {
+          await sock.sendMessage(jid, { text: "⚠️ Nominal minimalnya tidak terbaca. Boleh ditulis `1000`, `1.000`, atau `1rb`." });
+          return true;
+        }
+        await db.updateSettings({ lantaiHargaPersen: angka, lantaiHargaMinimal: minimalBaru });
+        botSettings.lantaiHargaPersen = angka;
+        botSettings.lantaiHargaMinimal = minimalBaru;
+        await sock.sendMessage(jid, {
+          text: `🛡️ *Lantai harga disetel.*\n\n` +
+                `Harga jual tidak boleh turun di bawah *${angka}%* harga katalog, dan tidak pernah di bawah *Rp${minimalBaru.toLocaleString('id-ID')}*.\n\n` +
+                `_Contoh: produk Rp50.000 → paling murah Rp${Math.max(Math.ceil(50000 * angka / 100), minimalBaru).toLocaleString('id-ID')} sesudah semua diskon._`
+        });
+        if (angka === 0) {
+          await sock.sendMessage(jid, { text: `⚠️ *0% berarti tidak ada lantai persen sama sekali.* Yang tersisa cuma batas Rp${minimalBaru.toLocaleString('id-ID')}. Flash sale + kupon + diskon premium bisa menumpuk sampai angka itu.` });
+        }
+        return true;
+      }
+
+      let teks = `🛡️ *LANTAI HARGA*\n━━━━━━━━━━━━━━━\n`;
+      teks += `Sisa minimal: *${persenSekarang}%* dari harga katalog\n`;
+      teks += `Tidak pernah di bawah: *Rp${minimalSekarang.toLocaleString('id-ID')}*\n\n`;
+      teks += `Toko ini punya *tiga* potongan yang bisa menempel sekaligus:\n`;
+      teks += `• Flash sale\n• Kupon\n• Diskon premium\n\n`;
+      teks += `Tanpa lantai, ketiganya bisa menumpuk sampai *Rp0* — dan barangnya tetap terkirim. Yang dipangkas potongannya, bukan pesanannya: pembeli tidak pernah ditolak.\n\n`;
+
+      const contoh = await db.getProducts();
+      if (contoh.length) {
+        teks += `*Harga terendah tiap produk:*\n`;
+        for (const p of contoh.slice(0, 6)) {
+          const batas = Math.max(Math.ceil((p.harga || 0) * persenSekarang / 100), minimalSekarang);
+          teks += `• ${p.nama} — Rp${(p.harga || 0).toLocaleString('id-ID')} → min *Rp${Math.min(batas, p.harga || 0).toLocaleString('id-ID')}*\n`;
+        }
+        teks += `\n`;
+      }
+
+      teks += `━━━━━━━━━━━━━━━\n`;
+      teks += `\`.lantaiharga <persen>\` · \`.lantaiharga <persen> <minimal>\``;
+      await sock.sendMessage(jid, { text: teks });
       return true;
     }
 

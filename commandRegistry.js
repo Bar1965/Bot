@@ -446,7 +446,8 @@ const categories = {
           ['.delproduk <kode>', 'Hapus produk (minta konfirmasi) 🆕'],
           ['.setgambar <kode>', 'Pasang gambar (kirim/balas foto) 🆕'],
           ['.listproduk', 'Ringkasan semua produk & stok toko'],
-          ['.price <kode> <harga>', 'Ubah harga produk']
+          ['.price <kode> <harga>', 'Ubah harga produk'],
+          ['.lantaiharga [persen]', 'Batas bawah tumpukan diskon 🆕']
         ]
       },
       {

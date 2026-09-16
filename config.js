@@ -45,6 +45,14 @@ export const config = {
     // Batas stok minimal untuk status produk "Hampir Habis" (🟡 Low)
     lowStockLimit: 3,
 
+    // Lantai harga: sisa harga minimal yang tetap harus dibayar, dalam persen
+    // harga KATALOG. Flash sale + kupon + diskon premium bisa bertumpuk; tanpa
+    // batas ini tumpukannya bisa mencapai nol. Lihat src/utils/lantaiHarga.js.
+    lantaiHargaPersen: 40,
+
+    // Nominal minimal sekali transaksi, berapa pun persennya.
+    lantaiHargaMinimal: 1000,
+
     // Jeda waktu pengiriman pesan broadcast (dalam milidetik)
     broadcastDelay: 3000,
 

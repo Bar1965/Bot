@@ -227,7 +227,9 @@ const ADMIN_BARU = [
   ['siaran', 'pengumuman otomatis on/off'],
   ['umumkan', 'kirim pengumuman sekarang'],
   ['restock', 'siarkan restok'],
-  ['setupdategroup', 'set grup tujuan pengumuman']
+  ['setupdategroup', 'set grup tujuan pengumuman'],
+  // Satu-satunya rem untuk tumpukan flash sale + kupon + diskon premium.
+  ['lantaiharga', 'batas bawah tumpukan diskon']
 ];
 for (const [c, guna] of ADMIN_BARU) {
   cek(`.${c} (${guna}) ada di menu`, diMenu.has(c), 'belum terdaftar');
