@@ -140,10 +140,10 @@ export function getPremiumBenefits(tier) {
     mediaDailyLimit: 10,
     mediaCooldownSec: 30,
     // Rem semburan untuk perintah fun & game — lihat src/utils/pembatasLaju.js.
-    // Delapan perintah per menit itu lebih cepat daripada siapa pun yang benar-
+    // Tujuh perintah per menit masih lebih cepat daripada siapa pun yang benar-
     // benar sedang bermain, dan jauh lebih lambat daripada orang yang sedang
     // membanjiri grup.
-    funPerMinute: 8,
+    funPerMinute: 7,
     dailyRewardMult: 1.0,
     rpgGoldMult: 1.0,
     rpgXpMult: 1.0,

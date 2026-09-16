@@ -131,6 +131,9 @@ cek('gratisan: jatah unduhan di bawah Perunggu', gratis.mediaDailyLimit < perung
 cek('gratisan: jatah AI di bawah Perunggu', gratis.aiDailyLimit < perunggu.aiDailyLimit);
 cek('gratisan: laju fun di bawah Perunggu', gratis.funPerMinute < perunggu.funPerMinute,
   `${gratis.funPerMinute} vs ${perunggu.funPerMinute}`);
+// Angka yang dipilih owner sendiri (16 Sep 2026): 7, bukan 8. Dipatok di sini
+// supaya tidak diam-diam bergeser lagi tanpa ada yang memutuskan.
+cek('laju gratisan dipatok 7 per menit', gratis.funPerMinute === 7, String(gratis.funPerMinute));
 cek('gratisan: jeda unduhan lebih lama', gratis.mediaCooldownSec > perunggu.mediaCooldownSec);
 
 // Perunggu tidak boleh mematikan Silver yang harganya hampir dua kali lipat.

@@ -1359,6 +1359,10 @@ in one day, once, by one person — typical heavy use was 4-7. A limit nothing e
 reaches is not a limit. It is now 10/day with a 30 s gap, which the heaviest users
 touch a few times a month.
 
+The free burst rate is **7/min**, rising to 40 for Diamond. Seven is the owner's
+own number, chosen 2026-09-16 after seeing 8 in the first cut; `npm run test:laju`
+pins it so it cannot drift back without someone deciding to move it.
+
 `PREMIUM_TIERS` gained **Perunggu at Rp3.000** ("kalau mau naik premium minimal
 3k") as the cheapest rung. It deliberately carries **no** shop discount and **no**
 reseller access — those stay with Silver at Rp5.000, or the cheaper tier
