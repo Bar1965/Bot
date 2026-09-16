@@ -890,7 +890,7 @@ export async function getCartDetails(customerNomor) {
  *
  * UBAH DI SINI DAN DI premiumHandler.js SEKALIGUS.
  */
-const DISKON_PREMIUM_PERSEN = { Silver: 5, Gold: 10, Diamond: 15 };
+const DISKON_PREMIUM_PERSEN = { Perunggu: 0, Silver: 5, Gold: 10, Diamond: 15 };
 
 /** Berapa rupiah potongan premium untuk subtotal ini, 0 kalau bukan premium aktif. */
 async function hitungDiskonPremium(customerNomor, subtotal) {

@@ -353,7 +353,7 @@ const categories = {
     id: 'premium',
     number: '6',
     title: '👑 PREMIUM & AI',
-    tagline: 'Membership VIP Silver/Gold/Diamond & AI Gemini',
+    tagline: 'Membership VIP Perunggu/Silver/Gold/Diamond & AI Gemini',
     aliases: ['6', 'premium', 'vip', 'ai', 'gemini'],
     groups: [
       {

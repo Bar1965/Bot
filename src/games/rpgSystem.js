@@ -22,7 +22,7 @@ function profileText(profile, name, premiumTier) {
   const safeXp = Math.max(0, Math.floor(Number(profile?.xp) || 0));
   const safeLevel = Math.max(1, Math.floor(Number(profile?.level) || 1));
   const safeStreak = Math.max(0, Math.floor(Number(profile?.daily_streak) || 0));
-  const premBadge = { Free: '🎮', Silver: '🥈 Silver', Gold: '🥇 Gold', Diamond: '💎 Diamond' }[premiumTier || 'Free'] || '🎮';
+  const premBadge = { Free: '🎮', Perunggu: '🥉 Perunggu', Silver: '🥈 Silver', Gold: '🥇 Gold', Diamond: '💎 Diamond' }[premiumTier || 'Free'] || '🎮';
   return `🏆 *PROFIL GAME PEMAIN*\n\n👤 Nick: ${name || 'Pelanggan'} [${premBadge}]\n💰 Akbar Poin: *${safePoints.toLocaleString('id-ID')} Poin*\n⭐ Level: *Lv.${safeLevel}* (${safeXp} XP)\n🎮 Total Game: *${safePlayed}*\n🥇 Menang: *${safeWon}* (${winRate}%)\n🔥 Streak Harian: *${safeStreak} Hari*`;
 }
 

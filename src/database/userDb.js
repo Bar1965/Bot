@@ -1105,7 +1105,7 @@ export async function getPremiumTier(jid) {
  *   jadi kalau ditumpuk lagi hari yang sama akan terhitung dua kali.
  */
 export async function grantPremium(jid, tier, days, activatedBy = 'ADMIN', opsi = {}) {
-  const validTiers = ['Silver', 'Gold', 'Diamond'];
+  const validTiers = ['Perunggu', 'Silver', 'Gold', 'Diamond'];
   if (!validTiers.includes(tier)) throw new Error(`Tier tidak valid: ${tier}`);
   const safeDays = Math.max(1, Math.min(365, Number.parseInt(days, 10) || 30));
 

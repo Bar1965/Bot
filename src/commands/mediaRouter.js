@@ -106,7 +106,7 @@ export function createMediaRouter(ctx) {
     const dipakai = await db.getMediaUsageToday(walletJid);
     if (dipakai >= batasHarian) {
       await sock.sendMessage(jid, {
-        text: `⚠️ *KUOTA UNDUHAN HARIAN HABIS* (${dipakai}/${batasHarian})\n\nTier kamu: *${tier}*\nKuota berganti otomatis tengah malam WIB.\n\n💎 Butuh lebih banyak? Ketik *.premium* — Silver 30x, Gold 60x, Diamond 150x per hari.`
+        text: `⚠️ *KUOTA UNDUHAN HARIAN HABIS* (${dipakai}/${batasHarian})\n\nTier kamu: *${tier}*\nKuota berganti otomatis tengah malam WIB.\n\n💎 Butuh lebih banyak? Ketik *.premium*\n🥉 Perunggu *Rp3.000* — 25x/hari\n🥈 Silver Rp5.000 — 30x · 🥇 Gold Rp10.000 — 60x · 💎 Diamond Rp25.000 — 150x`
       }, { quoted: m });
       return false;
     }

@@ -1336,6 +1336,42 @@ flash price sits below the owner's own floor but still sets it.
 no stack ever lands under the floor or above the subtotal, plus a real cart with
 all three discounts applied at once.
 
+### 10r. Rate limits — three different brakes, for three different abuses
+
+| Brake | Stops | Where |
+|---|---|---|
+| `mediaDailyLimit` + `mediaCooldownSec` | bulk downloading | `src/commands/mediaRouter.js`, and the auto-download path in `bot.js` |
+| `aiDailyLimit` | burning paid AI quota | `src/games/index.js` |
+| `funPerMinute` | **bursts** — twenty commands in thirty seconds | `src/utils/pembatasLaju.js`, called in `src/games/index.js` |
+
+A daily quota does not stop a burst: twenty fun commands in half a minute sits far
+under any day's limit while making the group unusable. That is what `funPerMinute`
+is for, and it is a **sliding window**, not a per-minute bucket — a bucket that
+empties on the minute boundary is beaten by spending the quota at :59 and again at
+:01. Owner and admins are exempt; they are the ones who clean up a noisy group.
+
+**Only the first refusal in a window replies.** Answering every throttled command
+turns the brake itself into the flood it was added to stop.
+
+Free tier numbers were set from real data, not taste. Before 2026-09-16 the free
+download limit was 15/day and `media_usage_logs` showed the all-time high was 12
+in one day, once, by one person — typical heavy use was 4-7. A limit nothing ever
+reaches is not a limit. It is now 10/day with a 30 s gap, which the heaviest users
+touch a few times a month.
+
+`PREMIUM_TIERS` gained **Perunggu at Rp3.000** ("kalau mau naik premium minimal
+3k") as the cheapest rung. It deliberately carries **no** shop discount and **no**
+reseller access — those stay with Silver at Rp5.000, or the cheaper tier
+cannibalises the one costing nearly double.
+
+Adding a tier means touching every hardcoded tier list, and they are scattered:
+`PREMIUM_TIERS`, `tierOrder` and the `.premiumbenefit` rows in `premiumHandler.js`,
+`validTiers` in `userDb.js`, `DISKON_PREMIUM_PERSEN` in `storeDb.js`, `premBadge`
+in `rpgSystem.js`. `npm run test:laju` asserts the ladder rises on every axis
+(price, downloads, AI, burst rate) and that every tier defines every key a caller
+reads — an absent key becomes `undefined >= limit`, which is `false`, which lets
+everyone through.
+
 ## 11. Dashboard (`server.js`, ~70 `/api` routes)
 
 - Routes are `app.VERB(path, authenticateJWT, authorizeRoles(...), handler)`. Roles are exactly

@@ -2,6 +2,7 @@ import * as db from '../../database.js';
 import * as entertainment from '../../entertainmentHandler.js';
 import { sendInteractiveButtons } from '../../bot.js';
 import { getPremiumBenefits } from '../../premiumHandler.js';
+import { periksaLaju } from '../utils/pembatasLaju.js';
 import * as ww from '../../werewolfGame.js';
 import { send, isOnCooldown, randomItem, normalizeAnswer, scopeKey } from './helpers.js';
 import { activeFamily100, activeCakLontong, startFamily100, handleFamily100Answer, surrenderFamily100, startCakLontong, handleCakLontongAnswer, surrenderCakLontong } from './family100.js';
@@ -314,6 +315,37 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
       ]
     });
     return true;
+  }
+
+  // REM SEMBURAN: perintah fun & game dipanggil bertubi-tubi.
+  //
+  // Jatah harian unduhan tidak menolong di sini — dua puluh perintah dalam
+  // setengah menit masih jauh di bawah batas hari itu, tapi sudah cukup membuat
+  // grupnya tidak bisa dipakai bicara. Yang menahannya adalah laju, bukan total.
+  //
+  // Owner dan admin dilewati: mereka yang membereskan keadaan saat grup ramai,
+  // jadi merekalah yang paling tidak boleh ikut terkunci.
+  if (!isAdmin && !isOwner) {
+    try {
+      const tierLaju = await db.getPremiumTier(senderNumber);
+      const batasLaju = getPremiumBenefits(tierLaju)?.funPerMinute;
+      const laju = periksaLaju(senderNumber, batasLaju);
+      if (!laju.boleh) {
+        // Hanya penolakan PERTAMA yang dibalas. Membalas setiap perintah yang
+        // ditolak akan membuat rem ini sendiri jadi sumber keramaian baru.
+        if (laju.perluBeriTahu) {
+          await send(sock, jid, messageObj,
+            `🐢 *Pelan-pelan dulu* — ${laju.batas} perintah per menit sudah kepakai.\n\n` +
+            `Coba lagi *${laju.tungguDetik} detik* lagi.\n\n` +
+            `_Tier kamu: ${tierLaju}. Ketik_ \`.premium\` _kalau mau jatah lebih besar — mulai Rp3.000._`
+          );
+        }
+        return true;
+      }
+    } catch (errLaju) {
+      // Rem yang error tidak boleh ikut mematikan fiturnya.
+      console.error('[LAJU] Gagal memeriksa laju:', errLaju.message);
+    }
   }
 
   // JAIL CHECK: User yang sedang dipenjara hanya bisa menggunakan command pelarian .jailbreak / .kabur

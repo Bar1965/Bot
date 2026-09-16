@@ -5,24 +5,62 @@ const aiContextMap = new Map();
 
 // Bersihkan konteks AI yang tidak aktif lebih dari 30 menit setiap 10 menit
 setInterval(() => {
-  const now = Date.now();
-  for (const [key, val] of aiContextMap.entries()) {
-    if (val && val.lastActive && (now - val.lastActive > 30 * 60 * 1000)) {
-      aiContextMap.delete(key);
+  try {
+    const now = Date.now();
+    for (const [key, val] of aiContextMap.entries()) {
+      if (val && val.lastActive && (now - val.lastActive > 30 * 60 * 1000)) {
+        aiContextMap.delete(key);
+      }
     }
-  }
+  } catch (e) {}
 }, 10 * 60 * 1000).unref?.();
 
 // ============================================================
 // KONFIGURASI TIER PREMIUM
 // ============================================================
 export const PREMIUM_TIERS = {
+  // Tangga paling bawah, diminta owner: "kalau mau naik premium minimal 3k."
+  //
+  // Gunanya bukan menjual benefit besar, melainkan menurunkan ongkos masuk. Yang
+  // kena batas gratisan sekarang menghadapi pilihan Rp3.000, bukan Rp5.000 —
+  // selisih yang kecil buat toko tapi menentukan buat anak sekolah yang cuma mau
+  // mengunduh beberapa video lagi.
+  //
+  // Sengaja TIDAK memberi diskon belanja maupun akses reseller: dua itu milik
+  // Silver ke atas, supaya tangganya tetap punya arti dan Perunggu tidak
+  // mematikan tier yang harganya dua kali lipat.
+  Perunggu: {
+    tier: 'Perunggu', emoji: '🥉',
+    priceRp: 3000,
+    days: 30,
+    benefits: {
+      aiDailyLimit: 5,
+      funPerMinute: 12,
+      mediaDailyLimit: 25,
+      mediaCooldownSec: 15,
+      dailyRewardMult: 1.2,
+      rpgGoldMult: 1.2,
+      rpgXpMult: 1.2,
+      healCooldownMult: 0.9,
+      slotMaxBet: 35000,
+      shopDiscountPct: 0,
+      resellerAccess: false,
+      restockDmAlert: false,
+      monthlyVoucherRp: 0,
+      xpMult: 1.5,
+      badge: '🥉 Perunggu'
+    },
+    description: '5x AI/hari, 25x unduhan/hari, jeda 15 dtk, 1.5x XP Booster. Paket masuk termurah.'
+  },
   Silver: {
     tier: 'Silver', emoji: '🥈',
     priceRp: 5000,
     days: 30,
     benefits: {
       aiDailyLimit: 10,
+      funPerMinute: 16,
+      mediaDailyLimit: 30,
+      mediaCooldownSec: 15,
       dailyRewardMult: 1.5,
       rpgGoldMult: 1.5,
       rpgXpMult: 1.5,
@@ -35,7 +73,7 @@ export const PREMIUM_TIERS = {
       xpMult: 2.0,
       badge: '🥈 Silver Member'
     },
-    description: '10x AI/hari, diskon 5%, Akses Lapak Reseller, 2x XP Booster.'
+    description: '10x AI/hari, 30x unduhan/hari, diskon 5%, Akses Lapak Reseller, 2x XP Booster.'
   },
   Gold: {
     tier: 'Gold', emoji: '🥇',
@@ -43,6 +81,9 @@ export const PREMIUM_TIERS = {
     days: 30,
     benefits: {
       aiDailyLimit: 25,
+      funPerMinute: 25,
+      mediaDailyLimit: 60,
+      mediaCooldownSec: 10,
       dailyRewardMult: 2.0,
       rpgGoldMult: 2.0,
       rpgXpMult: 2.0,
@@ -55,7 +96,7 @@ export const PREMIUM_TIERS = {
       xpMult: 3.0,
       badge: '🥇 Gold Member'
     },
-    description: '25x AI/hari, diskon 10%, Lapak Reseller + DM Restock Alert, 3x XP Booster.'
+    description: '25x AI/hari, 60x unduhan/hari, diskon 10%, Lapak Reseller + DM Restock Alert, 3x XP Booster.'
   },
   Diamond: {
     tier: 'Diamond', emoji: '💎',
@@ -63,6 +104,9 @@ export const PREMIUM_TIERS = {
     days: 30,
     benefits: {
       aiDailyLimit: 50,
+      funPerMinute: 40,
+      mediaDailyLimit: 150,
+      mediaCooldownSec: 5,
       dailyRewardMult: 3.0,
       rpgGoldMult: 3.0,
       rpgXpMult: 3.0,
@@ -75,13 +119,31 @@ export const PREMIUM_TIERS = {
       xpMult: 5.0,
       badge: '💎 Diamond Member'
     },
-    description: '50x AI/hari, diskon 15%, Lapak Reseller, DM Restock Alert, Voucher Rp10k/bln, 5x XP Booster.'
+    description: '50x AI/hari, 150x unduhan/hari, diskon 15%, Lapak Reseller, DM Restock Alert, Voucher Rp10k/bln, 5x XP Booster.'
   }
 };
 
 export function getPremiumBenefits(tier) {
   return PREMIUM_TIERS[tier]?.benefits || {
     aiDailyLimit: 3,
+    // Jatah unduhan pemain gratisan.
+    //
+    // Diturunkan dari 15 ke 10 pada 16 September 2026 atas permintaan owner
+    // ("banyak spam"). Angka 15 dipilih tanpa data dan ternyata TIDAK PERNAH
+    // tersentuh: pemakaian tertinggi yang pernah tercatat 12 kali sehari, satu
+    // orang, satu kali; sehari-harinya 4-7. Batas yang tidak pernah kena bukan
+    // batas, cuma angka di layar.
+    //
+    // Pada 10, pemakai terberat mulai menyentuhnya beberapa kali sebulan — cukup
+    // untuk menahan pemborongan dan untuk membuat Perunggu Rp3.000 punya alasan
+    // dibeli, tanpa mengganggu orang yang cuma unduh sesekali.
+    mediaDailyLimit: 10,
+    mediaCooldownSec: 30,
+    // Rem semburan untuk perintah fun & game — lihat src/utils/pembatasLaju.js.
+    // Delapan perintah per menit itu lebih cepat daripada siapa pun yang benar-
+    // benar sedang bermain, dan jauh lebih lambat daripada orang yang sedang
+    // membanjiri grup.
+    funPerMinute: 8,
     dailyRewardMult: 1.0,
     rpgGoldMult: 1.0,
     rpgXpMult: 1.0,
@@ -237,20 +299,35 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
 
               if (extractedText.length > 5) {
                 aiResponse = extractedText;
+              } else {
+                try {
+                  aiResponse = await askGeminiOCR({ imageBuffer: imgBuffer, mimeType: 'application/pdf' });
+                } catch (_) {}
               }
 
               if (!aiResponse || !aiResponse.trim()) {
                 aiResponse = "❌ *Gagal Mengunduh / Membaca Teks PDF*\n\nPDF tidak memuat teks yang dapat dibaca atau proteksi file aktif. Silakan kirimkan berupa tangkapan layar (screenshot) gambar.";
               }
            } else {
-              const { createRequire } = await import('module');
-              const require = createRequire(import.meta.url);
-              const Tesseract = require('tesseract.js');
-              
-              const worker = await Tesseract.createWorker('eng');
-              const { data: { text } } = await worker.recognize(imgBuffer);
-              await worker.terminate();
-              aiResponse = text;
+              try {
+                const { createRequire } = await import('module');
+                const require = createRequire(import.meta.url);
+                const Tesseract = require('tesseract.js');
+                
+                const worker = await Tesseract.createWorker('eng');
+                const { data: { text } } = await worker.recognize(imgBuffer);
+                await worker.terminate();
+                if (text && text.trim().length > 3) {
+                  aiResponse = text.trim();
+                }
+              } catch (tessErr) {
+                console.warn('[TESSERACT_OCR_WARN]', tessErr.message);
+              }
+
+              // Fallback ke Gemini Vision OCR jika Tesseract kosong / gagal
+              if (!aiResponse || aiResponse.trim().length < 3) {
+                aiResponse = await askGeminiOCR({ imageBuffer: imgBuffer, mimeType });
+              }
            }
         } else {
            aiResponse = await askGeminiVision({
@@ -288,17 +365,26 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
       await db.incrementAiUsage(senderNumber);
       const remaining = benefits.aiDailyLimit - (usedCount + 1);
 
-      const formattedReply = `🤖 *GEMINI AI RESPONSE*\n━━━━━━━━━━━━━━━━━━━━\n\n${aiResponse}\n\n━━━━━━━━━━━━━━━━━━━━\n💡 _Sisa kuota AI hari ini: ${remaining}/${benefits.aiDailyLimit}_`;
+      const header = isOcr ? '📄 *HASIL EKSTRAK TEKS (OCR)*' : '🤖 *AI ASSISTANT RESPONSE*';
+      const formattedReply = `${header}\n━━━━━━━━━━━━━━━━━━━━\n\n${aiResponse}\n\n━━━━━━━━━━━━━━━━━━━━\n💡 _Sisa kuota AI hari ini: ${remaining}/${benefits.aiDailyLimit}_`;
       await sock.sendMessage(jid, { text: formattedReply }, { quoted: messageObj });
     } catch (err) {
       console.error('[AI_ERR]', err.stack);
+      // Pesan mentah dari Google bisa memuat detail endpoint, status kuota, dan
+      // potongan konfigurasi — tidak boleh sampai ke customer. Admin/Owner tetap
+      // menerima detailnya supaya tetap bisa mendiagnosis.
+      const detailAdmin = (isAdmin || isOwner) ? `\n\n_Detail (admin):_ ${err.message}` : '';
       if (isOcr) {
         await sock.sendMessage(jid, {
-          text: `❌ *Gagal mengekstrak teks (OCR lokal):* ${err.message}`
+          text: `❌ *Gagal Membaca Teks (OCR)*\n\nDokumen atau gambarnya tidak terbaca. Coba kirim ulang dengan foto yang lebih jelas dan tidak miring.${detailAdmin}`
         }, { quoted: messageObj });
       } else {
+        const koneksiLambat = /timeout|tidak merespons|ETIMEDOUT|ECONNRESET|socket hang up|EAI_AGAIN/i.test(String(err.message || ''));
+        const pesanRamah = koneksiLambat
+          ? 'Server AI sedang lambat merespons, jadi permintaanmu dihentikan otomatis. Coba lagi sebentar lagi.'
+          : 'Layanan AI sedang bermasalah. Coba lagi beberapa saat lagi.';
         await sock.sendMessage(jid, {
-          text: `❌ *Gagal menghubungi AI:* ${err.message}\n\n_Pastikan GEMINI_API_KEY sudah terpasang di .env._`
+          text: `❌ *AI Tidak Bisa Dihubungi*\n\n${pesanRamah}${detailAdmin}`
         }, { quoted: messageObj });
       }
     }
@@ -386,6 +472,7 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
       return [
         `${t.emoji} *${key}* — Rp${t.priceRp.toLocaleString('id-ID')} / ${t.days} hari`,
         `  • AI Gemini: *${b.aiDailyLimit}x / hari*`,
+        `  • Downloader: *${b.mediaDailyLimit}x / hari* _(jeda ${b.mediaCooldownSec} dtk)_`,
         `  • Diskon belanja: *${b.shopDiscountPct}%*`,
         `  • Reseller Lapak: *${b.resellerAccess ? '✅ Aktif' : '❌'}*`,
         `  • DM Restock Alert: *${b.restockDmAlert ? '✅ Aktif' : '❌'}*`,
@@ -439,23 +526,48 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
       return true;
     }
 
-    // Cek kalau sudah premium tier yang sama atau lebih tinggi
+    // Cek kalau sudah premium di tier yang LEBIH TINGGI — itu saja yang ditolak.
+    //
+    // Dulu syaratnya `>=`, jadi pemilik Gold tidak bisa membeli Gold lagi. Padahal
+    // `.cekpremium` sendiri menyuruh: "Premium hampir habis! Segera perpanjang
+    // dengan .upgradepremium gold" — perintah yang persis itu selalu ditolak.
+    // Pelanggan yang sedang siap membayar Rp10.000-25.000 untuk bulan berikutnya
+    // justru dihentikan tepat di detik dia mau membayar.
     const current = await db.getPremiumUser(senderNumber);
-    const tierOrder = { Silver: 1, Gold: 2, Diamond: 3 };
-    if (current && tierOrder[current.tier] >= tierOrder[tierKey]) {
+    const tierOrder = { Perunggu: 1, Silver: 2, Gold: 3, Diamond: 4 };
+    const masihAktif = current && new Date(current.expires_at) > new Date();
+
+    if (masihAktif && tierOrder[current.tier] > tierOrder[tierKey]) {
       await sock.sendMessage(jid, {
-        text: `⚠️ Kamu sudah punya tier *${current.tier}* yang setara/lebih tinggi!\nMasa aktif: ${daysLeft(current.expires_at)} hari lagi.\n\nUpgrade ke tier lebih tinggi atau perpanjang nanti.`
+        text: `⚠️ Kamu sudah punya tier *${current.tier}* yang lebih tinggi dari *${tierKey}*!\nMasa aktif: ${daysLeft(current.expires_at)} hari lagi.\n\n_Perpanjang tier yang sekarang:_ *.upgradepremium ${current.tier.toLowerCase()}*`
       }, { quoted: messageObj });
       return true;
+    }
+
+    const naikTier = masihAktif && tierOrder[current.tier] < tierOrder[tierKey];
+    const perpanjangan = masihAktif && current.tier === tierKey;
+
+    // Naik tier: sisa hari di tier lama TIDAK dibawa apa adanya ke tier baru.
+    // Kalau dibawa, siapa pun bisa menimbun hari murah di Silver (Rp5.000/30 hari)
+    // lalu menaikkan seluruh timbunan itu jadi Diamond (Rp25.000/30 hari) dengan
+    // sekali bayar. Sisa hari dikonversi menurut nilai rupiahnya.
+    let hariBonus = 0;
+    if (naikTier) {
+      const lama = PREMIUM_TIERS[current.tier];
+      const sisaHari = Math.max(0, daysLeft(current.expires_at));
+      const nilaiSisa = sisaHari * (lama.priceRp / lama.days);
+      hariBonus = Math.floor(nilaiSisa / (tierInfo.priceRp / tierInfo.days));
     }
 
     // Konfirmasi sebelum deduct
     if (args[2]?.toLowerCase() !== 'confirm') {
       await sock.sendMessage(jid, {
         text: [
-          `${tierInfo.emoji} *KONFIRMASI UPGRADE PREMIUM*`,
+          `${tierInfo.emoji} *KONFIRMASI ${perpanjangan ? 'PERPANJANGAN' : 'UPGRADE'} PREMIUM*`,
           ``,
           `Paket: *${tierKey}* (${tierInfo.days} hari)`,
+          ...(perpanjangan ? [`Ditambahkan ke sisa masa aktifmu (${daysLeft(current.expires_at)} hari).`] : []),
+          ...(naikTier ? [`Sisa ${daysLeft(current.expires_at)} hari *${current.tier}* dikonversi jadi *+${hariBonus} hari ${tierKey}*.`] : []),
           `Harga: *Rp${tierInfo.priceRp.toLocaleString('id-ID')}* (dipotong dari saldo deposit)`,
           `Saldo kamu: *Rp${currentBalance.toLocaleString('id-ID')}*`,
           `Sisa setelah: *Rp${(currentBalance - tierInfo.priceRp).toLocaleString('id-ID')}*`,
@@ -485,14 +597,21 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
       return true;
     }
     const newBalance = deductRes.newBalance;
-    const result = await db.grantPremium(senderNumber, tierKey, tierInfo.days, 'SELF');
+    const result = naikTier
+      // Naik tier: mulai hitung dari sekarang, karena hariBonus SUDAH memuat sisa
+      // masa aktif tier lama yang dikonversi. Menumpuknya di atas expiry lama akan
+      // menghitung hari yang sama dua kali.
+      ? await db.grantPremium(senderNumber, tierKey, tierInfo.days + hariBonus, 'SELF', { mulaiDariSekarang: true })
+      // Baru / perpanjangan tier yang sama: ditumpuk di atas masa aktif yang ada.
+      : await db.grantPremium(senderNumber, tierKey, tierInfo.days, 'SELF');
     await db.logPremiumBenefit(senderNumber, 'UPGRADE', `${tierKey} for ${tierInfo.days} days`);
 
     await sock.sendMessage(jid, {
       text: [
-        `🎉 *SELAMAT! PREMIUM AKTIF!*`,
+        `🎉 *SELAMAT! PREMIUM ${perpanjangan ? 'DIPERPANJANG' : 'AKTIF'}!*`,
         ``,
         `${tierInfo.emoji} Tier: *${tierKey}*`,
+        ...(naikTier && hariBonus > 0 ? [`🔁 Sisa *${current.tier}* dikonversi: *+${hariBonus} hari*`] : []),
         `📅 Aktif hingga: *${formatExpiry(result.expiresAt)}*`,
         `💳 Sisa saldo deposit: *Rp${(newBalance || 0).toLocaleString('id-ID')}*`,
         ``,
@@ -514,7 +633,7 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
     const profile = await db.getGameProfile(senderNumber);
 
     if (!current) {
-      const nextCheapest = PREMIUM_TIERS.Silver;
+      const nextCheapest = PREMIUM_TIERS.Perunggu;
       const saldo = await db.getCustomerBalance(senderNumber);
       await sock.sendMessage(jid, {
         text: [
@@ -563,7 +682,7 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
     const current = await db.getPremiumUser(senderNumber);
     const activeTier = current?.tier || 'Free';
 
-    const rows = ['Free', 'Silver', 'Gold', 'Diamond'].map(tier => {
+    const rows = ['Free', 'Perunggu', 'Silver', 'Gold', 'Diamond'].map(tier => {
       const t = PREMIUM_TIERS[tier];
       const b = t ? t.benefits : { dailyRewardMult: 1, shopDiscountPct: 0, rpgGoldMult: 1, rpgXpMult: 1 };
       const active = tier === activeTier ? ' ← *KAMU*' : '';
@@ -587,7 +706,21 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
 
     if (cmd === 'setpremium') {
       const mentions = messageObj?.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
-      const targetJid = mentions[0] || (args[1] ? args[1].replace(/[^0-9]/g, '') + '@s.whatsapp.net' : null);
+      // Nomor mentah TIDAK boleh dirakit jadi `628xxx@s.whatsapp.net` begitu saja:
+      // 191 dari 194 pelanggan tersimpan sebagai @lid, jadi baris premium yang
+      // ditulis tidak akan pernah cocok dengan siapa pun. Bot tetap membalas
+      // "✅ Premium berhasil diberikan!" — uangnya diterima, tier tidak pernah naik.
+      let targetJid = mentions[0] || null;
+      if (!targetJid && args[1]) {
+        const hasil = await db.resolveTargetJid(args[1]);
+        if (!hasil.ditemukan) {
+          await sock.sendMessage(jid, {
+            text: `❌ *NOMOR TIDAK DITEMUKAN*\n\nNomor \`${args[1]}\` tidak cocok dengan pelanggan mana pun di database.\n\n_Pakai mention supaya pasti tepat sasaran:_\n*.setpremium @user ${args[2] || 'gold'} ${args[3] || 30}*`
+          }, { quoted: messageObj });
+          return true;
+        }
+        targetJid = hasil.jid;
+      }
       const tierArg = args[2];
       const daysArg = parseInt(args[3]) || 30;
 
@@ -618,7 +751,17 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
 
     if (cmd === 'revokepremium') {
       const mentions = messageObj?.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
-      const targetJid = mentions[0] || (args[1] ? args[1].replace(/[^0-9]/g, '') + '@s.whatsapp.net' : null);
+      let targetJid = mentions[0] || null;
+      if (!targetJid && args[1]) {
+        const hasil = await db.resolveTargetJid(args[1]);
+        if (!hasil.ditemukan) {
+          await sock.sendMessage(jid, {
+            text: `❌ Nomor \`${args[1]}\` tidak cocok dengan pelanggan mana pun. Pakai mention: *.revokepremium @user*`
+          }, { quoted: messageObj });
+          return true;
+        }
+        targetJid = hasil.jid;
+      }
 
       if (!targetJid) {
         await sock.sendMessage(jid, { text: `❌ Format: *.revokepremium @user*` }, { quoted: messageObj });
