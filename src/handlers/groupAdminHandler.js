@@ -15,7 +15,7 @@ import { perisaiTarget } from '../utils/perisaiTarget.js';
 import { mulaiWizardProduk, simpanGambarProduk } from './storeWizard.js';
 import { handleSaldoOwner } from './saldoAdmin.js';
 import { uraiBarisAddstock } from './stokInput.js';
-import { antrekanRestok, antrekanTurunHarga, antrekanProdukBaru, antrekanSorotan, kirimSekarang, isiAntrean } from './siaranStok.js';
+import { antrekanRestok, antrekanTurunHarga, antrekanProdukBaru, antrekanSorotan, antrekanStokHabis, pasangModeSiaran, modeSekarang, kirimSekarang, isiAntrean } from './siaranStok.js';
 import { PERSEN_BAWAAN, MINIMAL_BAWAAN } from '../utils/lantaiHarga.js';
 import { penutupGaransi } from '../utils/pesanGaransi.js';
 import { tanggalWib, jamWib } from '../utils/waktu.js';
@@ -1716,7 +1716,7 @@ ${panduanMode}`
       const tertunda = isiAntrean();
       const adaAntrean = tertunda.restok.length + tertunda.turunHarga.length +
                          tertunda.produkBaru.length + tertunda.menipis.length +
-                         tertunda.sorotan.length;
+                         tertunda.sorotan.length + tertunda.habis.length;
       if (adaAntrean === 0) {
         await sock.sendMessage(jid, { text: `📭 Tidak ada yang mengantre untuk diumumkan.\n\n_Pakai_ \`.umumkan <KODE>\` _untuk mengumumkan satu produk sekarang juga._` });
         return true;
@@ -1741,6 +1741,19 @@ ${panduanMode}`
     if (cleanCmd === 'siaran') {
       const pilihan = (args[1] || '').toLowerCase();
 
+      if (pilihan === 'semua' || pilihan === 'penting') {
+        const mode = pilihan.toUpperCase();
+        await db.updateSettings({ siaranMode: mode });
+        botSettings.siaranMode = mode;
+        pasangModeSiaran(mode);
+        await sock.sendMessage(jid, {
+          text: mode === 'SEMUA'
+            ? `📣 *Mode siaran: SEMUA*\n\nSetiap perubahan diumumkan — restok berapa pun, harga naik maupun turun, produk baru, stok menipis, stok habis.\n\n_Tetap digabung jadi satu pesan per sesi, dan tetap tanpa men-tag siapa pun._`
+            : `🎯 *Mode siaran: PENTING*\n\nHanya yang layak jadi kabar: produk baru, restok dari stok menipis, harga *turun*, dan stok tinggal sedikit.\n\n_Harga naik dan stok habis tidak diumumkan. Pakai_ \`.umumkan <KODE>\` _kalau salah satunya tetap mau dikirim._`
+        });
+        return true;
+      }
+
       if (pilihan === 'on' || pilihan === 'off') {
         await db.updateSettings({ siaranOtomatis: pilihan.toUpperCase() });
         botSettings.siaranOtomatis = pilihan.toUpperCase();
@@ -1761,22 +1774,33 @@ ${panduanMode}`
       teks += `Status: ${aktif ? '🔔 *ON*' : '🔕 *OFF*'}\n`;
       teks += `Grup tujuan: ${grup ? `\`${grup}\`` : '⚠️ *belum diset* — ketik `.setupdategroup` di grup tujuan'}\n\n`;
       const ambang = Number(s?.lowStockLimit ?? 3);
-      teks += `Tanpa tag: ✅ *pengumuman tidak pernah men-tag anggota grup*\n\n`;
-      teks += `*Yang diumumkan otomatis:*\n`;
+      const mode = modeSekarang();
+      teks += `Mode: ${mode === 'SEMUA' ? '📣 *SEMUA perubahan*' : '🎯 *PENTING saja*'}\n`;
+      teks += `Tanpa tag: ✅ *tidak pernah men-tag anggota grup*\n\n`;
+      teks += `*Yang diumumkan:*\n`;
       teks += `• 🆕 Produk baru yang stoknya sudah siap\n`;
-      teks += `• 🟢 Restok produk yang stoknya *≤ ${ambang}* (termasuk yang habis)\n`;
-      teks += `• 🔻 Harga yang *turun*\n`;
-      teks += `• ⏳ Stok yang *tinggal ≤ ${ambang}* karena terjual\n\n`;
-      teks += `*Yang sengaja TIDAK:*\n`;
-      teks += `• Restok yang stoknya masih banyak (20 → 25 bukan kabar)\n`;
-      teks += `• Harga *naik*\n`;
-      teks += `• Stok *habis* — itu iklan negatif; kamu sendiri sudah dikabari\n`;
-      teks += `• Peringatan "tinggal sedikit" berulang — sekali saja sampai direstok\n`;
-      teks += `_Mau salah satunya tetap diumumkan? Kirim sendiri:_ \`.umumkan <KODE>\`\n\n`;
+      if (mode === 'SEMUA') {
+        teks += `• 🟢 Restok, berapa pun stok sebelumnya\n`;
+        teks += `• 🔻🔺 Harga *turun maupun naik*\n`;
+        teks += `• ⏳ Stok yang *tinggal ≤ ${ambang}* karena terjual\n`;
+        teks += `• 🔴 Stok *habis* — pembaca diajak pasang \`.notif\`\n\n`;
+        teks += `*Yang tetap ditahan:*\n`;
+        teks += `• Peringatan "tinggal sedikit" berulang — sekali saja sampai direstok\n`;
+        teks += `• Pengiriman satu per satu — satu sesi digabung jadi satu pesan\n\n`;
+      } else {
+        teks += `• 🟢 Restok produk yang stoknya *≤ ${ambang}*\n`;
+        teks += `• 🔻 Harga yang *turun*\n`;
+        teks += `• ⏳ Stok yang *tinggal ≤ ${ambang}* karena terjual\n\n`;
+        teks += `*Yang sengaja TIDAK:*\n`;
+        teks += `• Restok yang stoknya masih banyak (20 → 25 bukan kabar)\n`;
+        teks += `• Harga *naik*\n`;
+        teks += `• Stok *habis*\n`;
+        teks += `_Mau salah satunya tetap diumumkan?_ \`.umumkan <KODE>\`\n\n`;
+      }
 
       const total = tertunda.restok.length + tertunda.turunHarga.length +
                     tertunda.produkBaru.length + tertunda.menipis.length +
-                    tertunda.sorotan.length;
+                    tertunda.sorotan.length + tertunda.habis.length;
       if (total > 0) {
         teks += `⏳ *Sedang mengantre:*\n`;
         for (const p of tertunda.produkBaru) teks += `   🆕 ${p.nama} (produk baru, ${p.stok} pcs)\n`;
@@ -1784,13 +1808,14 @@ ${panduanMode}`
         for (const h of tertunda.turunHarga) teks += `   🔻 ${h.nama} (turun harga)\n`;
         for (const m of tertunda.menipis) teks += `   ⏳ ${m.nama} (tinggal ${m.stok} pcs)\n`;
         for (const o of tertunda.sorotan) teks += `   📢 ${o.nama} (diumumkan manual)\n`;
+        for (const x of tertunda.habis) teks += `   🔴 ${x.nama} (habis)\n`;
         teks += `\n_Ketik_ \`.umumkan\` _untuk mengirim sekarang._\n`;
       } else {
         teks += `📭 _Tidak ada yang mengantre._\n`;
       }
 
       teks += `━━━━━━━━━━━━━━━\n`;
-      teks += `\`.siaran on\` · \`.siaran off\` · \`.umumkan <KODE>\``;
+      teks += `\`.siaran semua\` · \`.siaran penting\` · \`.siaran off\` · \`.umumkan <KODE>\``;
       await sock.sendMessage(jid, { text: teks });
       return true;
     }
@@ -2560,9 +2585,10 @@ user2@gmail.com|pass456
       // menyuruh semua orang belanja di tempat lain; kalau memang mau dipakai
       // sebagai dorongan, owner mengetiknya sendiri lewat `.umumkan`.
       if (antrekanTurunHarga({ kode: code, nama: p.nama, hargaLama: p.harga, hargaBaru: price })) {
-        const hemat = (p.harga - price).toLocaleString('id-ID');
+        const selisih = Math.abs(p.harga - price).toLocaleString('id-ID');
+        const arah = price < p.harga ? `Turun Rp${selisih}` : `Naik Rp${selisih}`;
         await sock.sendMessage(jid, {
-          text: `📣 _Turun Rp${hemat} — pengumuman akan disiarkan ke grup sebentar lagi, tanpa men-tag siapa pun._\n_Ketik_ \`.umumkan\` _untuk kirim sekarang._`
+          text: `📣 _${arah} — pengumuman akan disiarkan ke grup sebentar lagi, tanpa men-tag siapa pun._\n_Ketik_ \`.umumkan\` _untuk kirim sekarang, atau_ \`.price ${code} ${p.harga}\` _untuk membatalkan perubahannya._`
         });
       } else if (price > p.harga) {
         // Diamnya bot di sini pernah terbaca sebagai kerusakan: owner menaikkan
@@ -2665,6 +2691,11 @@ user2@gmail.com|pass456
         return true;
       }
       await sock.sendMessage(jid, { text: `🔴 Produk *${p.nama}* (\`${code}\`) ditandai sebagai *Habis* (stok diset ke 0).` });
+      if (antrekanStokHabis({ kode: code, nama: p.nama })) {
+        await sock.sendMessage(jid, {
+          text: `📣 _Grup akan dikabari bahwa produk ini sementara kosong, sekalian diajak pasang_ \`.notif ${code}\`_._`
+        });
+      }
       await logToSystem('SYSTEM', `🔴 Produk *${code}* diset habis oleh admin.`);
       return true;
     }

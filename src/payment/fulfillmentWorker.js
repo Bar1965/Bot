@@ -10,7 +10,7 @@ import * as db from '../../database.js';
 import { barisGaransiAktif, barisKlaimGaransi } from '../utils/pesanGaransi.js';
 import { pasangSocketNotif, notifikasiOwner } from '../utils/notifOwner.js';
 import { susunBuktiTransaksi, susunPermintaanUlasan, susunNotifPenjualanOwner } from '../handlers/testimoni.js';
-import { antrekanStokMenipis } from '../handlers/siaranStok.js';
+import { antrekanStokMenipis, antrekanStokHabis } from '../handlers/siaranStok.js';
 import { jamWib, tanggalPanjangWib } from '../utils/waktu.js';
 
 /**
@@ -101,7 +101,13 @@ async function umumkanDanMintaUlasan(job, orderDetails, customerJid, deliveryRes
       try {
         if (produkKode && Number.isFinite(Number(sisaStok))) {
           const p = await db.getProductByKode(produkKode);
-          if (p) antrekanStokMenipis({ kode: produkKode, nama: p.nama, harga: p.harga, stok: Number(sisaStok) });
+          if (p && Number(sisaStok) > 0) {
+            antrekanStokMenipis({ kode: produkKode, nama: p.nama, harga: p.harga, stok: Number(sisaStok) });
+          } else if (p) {
+            // Terjual sampai habis. Di mode SEMUA ini ikut dikabarkan sebagai
+            // ajakan pasang `.notif`; di mode PENTING antreannya menolak sendiri.
+            antrekanStokHabis({ kode: produkKode, nama: p.nama });
+          }
         }
       } catch (errTipis) {
         console.error('[SIARAN] Gagal mengantre peringatan stok menipis:', errTipis.message);

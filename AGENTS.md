@@ -1160,14 +1160,27 @@ injected (`pasangSocketSiaran`, `pasangPembacaSettings`) from `bot.js` at
 connection-open, so the module never imports `bot.js` (§16) and the whole thing
 tests without WhatsApp.
 
-**Four triggers**, all queued and merged into one message:
+**Two modes**, `settings.siaranMode`, default **SEMUA**. The owner weighed the
+filtered design and chose against it — *"pokoknya setiap ada perubahan ada
+pengumuman"* — so SEMUA is the default, and PENTING preserves the original
+judgement for whoever wants it back (`.siaran semua` / `.siaran penting`).
+
+| | SEMUA (default) | PENTING |
+|---|---|---|
+| restock | any increase | only from stock ≤ `lowStockLimit` |
+| price | up **and** down | drops only |
+| sold out | announced, framed as a `.notif` invitation | not announced |
+| new product, running low | announced | announced |
+
+**Triggers**, all queued and merged into one message:
 
 | Trigger | Rule | Queued by |
 |---|---|---|
 | new product | stock > 0, and the product did not exist before | `.tokobaru` wizard, `.addproduk`, dashboard create |
-| restock | stock **was ≤ `lowStockLimit`** and went up | `.addstock`, `.stock`, `.ready`, dashboard import |
-| price drop | new < old | `.price` |
+| restock | stock went up (PENTING: only from ≤ `lowStockLimit`) | `.addstock`, `.stock`, `.ready`, dashboard import |
+| price change | new ≠ old (PENTING: drops only) | `.price` |
 | running low | `0 < stock ≤ lowStockLimit` | `fulfillmentWorker.js` after a sale |
+| sold out | SEMUA mode only | `.out`, `fulfillmentWorker.js` when a sale empties it |
 
 A fifth, `antrekanSorotan`, is the manual escape hatch behind `.umumkan <kode>`:
 it announces a product regardless of the automatic rules (a restock that never hit
@@ -1186,20 +1199,25 @@ the rule is wrong.
 `{ text }` and nothing else. Do not add `mentions` — `broadcastTagAll` exists for
 when tagging is actually wanted.
 
-**Five things it deliberately refuses to announce.** These are the design, not
-missing features — an announcement channel that fires constantly stops being read,
-and then the announcements that matter are lost with the rest:
+**Two things are withheld in both modes**, because neither is about *which*
+changes deserve an announcement:
 
-| Refused | Why |
+| Withheld | Why |
 |---|---|
-| restock where stock was already healthy | 20 → 25 is not news |
-| price **increases** | telling everyone prices went up is telling them to shop elsewhere |
-| **out of stock** (0), to buyers | negative advertising; the owner already learns it from `susunNotifPenjualanOwner` |
-| repeat "running low" for the same product | stock 3 would shout three times before selling out; muted until restocked |
-| one message per `.addstock` | a restock session is several commands; they merge into one |
+| repeat "running low" for the same product | stock 3 would shout three times on its way to zero, in near-identical words; muted until restocked |
+| one message per command | a work session is several commands; the debounce merges them. In SEMUA mode this is what makes "announce everything" survivable at all |
 
-Note the deliberate split: **"tinggal sedikit" is announced, "habis" is not.**
-Scarcity moves people; an empty shelf tells them not to come.
+The three filters that PENTING adds and SEMUA drops — restock from a healthy
+level, price increases, sold-out — were the original design, and the reasoning is
+kept here because it is still the reasoning: 20 → 25 is not news, announcing a
+price rise tells people to shop elsewhere, and an empty shelf tells them not to
+come. The owner read all three and chose SEMUA. Do not quietly re-impose them.
+
+In SEMUA mode a sold-out notice is written as an **invitation**, not a defeat —
+the reader gets one thing to do (`.notif <KODE>`), and that subscriber queue is
+the list of people most likely to buy the moment stock lands. A price rise is
+stated plainly under its own heading ("PENYESUAIAN HARGA") and never dressed up as
+a saving; polishing an increase costs more trust than the increase does.
 
 Every rule is enforced inside the `antrekan*` functions, not at the call sites, so
 a future entry point cannot bypass one by forgetting to check. A product can only
@@ -1225,7 +1243,7 @@ subscriber notifier already had once.
 
 Target group: `updateGroupId` → `buyerGroupId` → `transactionGroupId`.
 
-`npm run test:siaran` (91 assertions) pins every refusal above, that no message
+`npm run test:siaran` (115 assertions, both modes) pins every refusal above, that no message
 ever contains out-of-stock wording, and that the sent payload's only key is `text`.
 
 ### 10p1. The registration gate locked 165 players out of their own progress

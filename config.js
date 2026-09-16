@@ -53,6 +53,11 @@ export const config = {
     // Nominal minimal sekali transaksi, berapa pun persennya.
     lantaiHargaMinimal: 1000,
 
+    // Mode siaran ke grup pengumuman. 'SEMUA' = setiap perubahan diumumkan
+    // (restok berapa pun, harga naik & turun, stok habis). 'PENTING' = hanya
+    // yang layak jadi kabar. Lihat src/handlers/siaranStok.js.
+    siaranMode: 'SEMUA',
+
     // Jeda waktu pengiriman pesan broadcast (dalam milidetik)
     broadcastDelay: 3000,
 

@@ -98,13 +98,17 @@ cek('tidak ada kosakata "stok habis" di pesan mana pun',
   !/habis|kosong|sold out/i.test(`${cumaRestok}${banyakRestok}${turun}${gabungan}`));
 
 // ============================================================
-bagian('2. Restok — hanya yang tadinya BENAR-BENAR nol');
+bagian('2. Restok — penyaringan mode PENTING');
+
+// Mode PENTING adalah rancangan awal: hanya yang layak jadi kabar. Owner memilih
+// SEMUA untuk tokonya, tapi penyaringnya harus tetap benar kalau dia kembali.
+s.pasangModeSiaran('PENTING');
 
 bersih();
 cek('0 -> 5 diterima', s.antrekanRestok({ kode: 'A', nama: 'Produk A', harga: 1000, stokSebelum: 0, stokSesudah: 5 }) === true);
 
 bersih();
-cek('20 -> 25 DITOLAK (bukan kabar)',
+cek('PENTING: 20 -> 25 DITOLAK (bukan kabar)',
   s.antrekanRestok({ kode: 'A', nama: 'Produk A', harga: 1000, stokSebelum: 20, stokSesudah: 25 }) === false);
 cek('yang ditolak tidak menyisakan apa pun di antrean', s.isiAntrean().restok.length === 0);
 
@@ -123,14 +127,16 @@ cek('yang dipakai angka stok TERBARU', s.isiAntrean().restok[0].stok === 8, Stri
 cek('kode selalu huruf besar', s.isiAntrean().restok[0].kode === 'A');
 
 // ============================================================
-bagian('3. Harga — hanya yang TURUN');
+bagian('3. Harga — mode PENTING hanya menyiarkan yang TURUN');
+
+s.pasangModeSiaran('PENTING');
 
 bersih();
 cek('75.000 -> 60.000 diterima',
   s.antrekanTurunHarga({ kode: 'A', nama: 'A', hargaLama: 75000, hargaBaru: 60000 }) === true);
 
 bersih();
-cek('60.000 -> 75.000 (NAIK) DITOLAK',
+cek('PENTING: 60.000 -> 75.000 (NAIK) DITOLAK',
   s.antrekanTurunHarga({ kode: 'A', nama: 'A', hargaLama: 60000, hargaBaru: 75000 }) === false);
 cek('harga sama DITOLAK',
   s.antrekanTurunHarga({ kode: 'A', nama: 'A', hargaLama: 60000, hargaBaru: 60000 }) === false);
@@ -150,6 +156,7 @@ cek('turun dua kali: harga baru yang terakhir', dobel.hargaBaru === 60000, Strin
 // ============================================================
 bagian('4. Pengiriman — dan apa yang terjadi saat gagal');
 
+s.pasangModeSiaran('SEMUA');
 bersih();
 s.pasangSocketSiaran(null);
 settingsPalsu = { updateGroupId: GRUP_UPDATE };
@@ -252,7 +259,9 @@ cek('restok dari 2 (di bawah ambang 3) diterima', s.antrekanRestok({ kode: 'A', 
 bersih();
 cek('restok dari 3 (tepat di ambang) diterima', s.antrekanRestok({ kode: 'A', nama: 'A', harga: 1, stokSebelum: 3, stokSesudah: 9 }) === true);
 bersih();
-cek('restok dari 4 (di atas ambang) DITOLAK', s.antrekanRestok({ kode: 'A', nama: 'A', harga: 1, stokSebelum: 4, stokSesudah: 9 }) === false);
+s.pasangModeSiaran('PENTING');
+cek('PENTING: restok dari 4 (di atas ambang) DITOLAK', s.antrekanRestok({ kode: 'A', nama: 'A', harga: 1, stokSebelum: 4, stokSesudah: 9 }) === false);
+s.pasangModeSiaran('SEMUA');
 bersih();
 cek('stok turun bukan restok', s.antrekanRestok({ kode: 'A', nama: 'A', harga: 1, stokSebelum: 2, stokSesudah: 1 }) === false);
 
@@ -361,6 +370,100 @@ cek('sorotan terkirim', hasilSorot.terkirim === true && hasilSorot.sorotan === 1
 cek('antrean sorotan ikut dikosongkan', s.isiAntrean().sorotan.length === 0);
 cek('payload sorotan juga tanpa mentions',
   terkirim[0]?.isi && !('mentions' in terkirim[0].isi));
+
+// ============================================================
+bagian('11. Mode SEMUA — "pokoknya setiap ada perubahan ada pengumuman"');
+
+s.pasangModeSiaran('SEMUA');
+cek('modenya terbaca', s.modeSekarang() === 'SEMUA');
+
+bersih();
+cek('SEMUA: restok 20 -> 25 DITERIMA',
+  s.antrekanRestok({ kode: 'A', nama: 'A', harga: 1000, stokSebelum: 20, stokSesudah: 25 }) === true);
+bersih();
+cek('SEMUA: restok 100 -> 101 pun diterima',
+  s.antrekanRestok({ kode: 'A', nama: 'A', harga: 1000, stokSebelum: 100, stokSesudah: 101 }) === true);
+bersih();
+cek('stok yang TIDAK naik tetap bukan restok',
+  s.antrekanRestok({ kode: 'A', nama: 'A', harga: 1000, stokSebelum: 20, stokSesudah: 20 }) === false);
+
+bersih();
+cek('SEMUA: harga NAIK diterima',
+  s.antrekanTurunHarga({ kode: 'A', nama: 'A', hargaLama: 10000, hargaBaru: 15000 }) === true);
+cek('harga sama tetap ditolak di mode mana pun',
+  s.antrekanTurunHarga({ kode: 'B', nama: 'B', hargaLama: 10000, hargaBaru: 10000 }) === false);
+
+const teksNaik = s.susunSiaran({ turunHarga: [{ kode: 'A', nama: 'Produk A', hargaLama: 10000, hargaBaru: 15000 }] });
+cek('kenaikan punya bagiannya sendiri: PENYESUAIAN HARGA', teksNaik.includes('PENYESUAIAN HARGA'), teksNaik);
+cek('kenaikan TIDAK dipoles sebagai penghematan', !/hemat|TURUN HARGA/i.test(teksNaik), teksNaik);
+cek('angka lama dan baru dua-duanya tampil',
+  teksNaik.includes('Rp10.000') && teksNaik.includes('Rp15.000'), teksNaik);
+
+// Naik lalu turun lagi ke harga semula = tidak ada perubahan untuk dikabarkan.
+bersih();
+s.antrekanTurunHarga({ kode: 'A', nama: 'A', hargaLama: 10000, hargaBaru: 15000 });
+cek('kembali ke harga semula mencabut antreannya',
+  s.antrekanTurunHarga({ kode: 'A', nama: 'A', hargaLama: 15000, hargaBaru: 10000 }) === false);
+cek('dan tidak menyisakan baris harga', s.isiAntrean().turunHarga.length === 0, JSON.stringify(s.isiAntrean().turunHarga));
+
+// Turun dua kali tetap mempertahankan harga paling awal.
+bersih();
+s.antrekanTurunHarga({ kode: 'A', nama: 'A', hargaLama: 100000, hargaBaru: 80000 });
+s.antrekanTurunHarga({ kode: 'A', nama: 'A', hargaLama: 80000, hargaBaru: 60000 });
+cek('turun bertahap tetap dihitung dari harga awal',
+  s.isiAntrean().turunHarga[0]?.hargaLama === 100000, String(s.isiAntrean().turunHarga[0]?.hargaLama));
+
+// Stok habis.
+bersih();
+cek('SEMUA: stok habis diumumkan', s.antrekanStokHabis({ kode: 'A', nama: 'Produk A' }) === true);
+const teksHabis = s.susunSiaran({ habis: s.isiAntrean().habis });
+cek('judulnya "SEMENTARA KOSONG", bukan kekalahan', teksHabis.includes('SEMENTARA KOSONG'), teksHabis);
+cek('pembaca diberi satu hal untuk dilakukan', teksHabis.includes('.notif'), teksHabis);
+
+bersih();
+s.antrekanRestok({ kode: 'A', nama: 'A', harga: 1, stokSebelum: 0, stokSesudah: 5 });
+cek('produk yang baru direstok tidak bisa sekaligus diumumkan habis',
+  s.antrekanStokHabis({ kode: 'A', nama: 'A' }) === false);
+
+bersih();
+s.antrekanStokHabis({ kode: 'A', nama: 'A' });
+s.antrekanRestok({ kode: 'A', nama: 'A', harga: 1, stokSebelum: 0, stokSesudah: 5 });
+cek('restok mencabut baris "habis" untuk kode yang sama',
+  s.isiAntrean().habis.length === 0 && s.isiAntrean().restok.length === 1,
+  JSON.stringify(s.isiAntrean()));
+
+// Mode PENTING menolaknya lagi.
+s.pasangModeSiaran('PENTING');
+bersih();
+cek('PENTING: stok habis TIDAK diumumkan', s.antrekanStokHabis({ kode: 'A', nama: 'A' }) === false);
+s.pasangModeSiaran('SEMUA');
+
+// Yang tetap ditahan di mode SEMUA sekalipun: fakta yang sama berulang.
+bersih();
+s.antrekanStokMenipis({ kode: 'A', nama: 'A', harga: 1000, stok: 3 });
+cek('SEMUA: peringatan "tinggal sedikit" tetap tidak diulang',
+  s.antrekanStokMenipis({ kode: 'A', nama: 'A', harga: 1000, stok: 2 }) === false);
+
+// Dan semuanya tetap satu pesan.
+bersih();
+settingsPalsu = { updateGroupId: GRUP_UPDATE };
+s.pasangSocketSiaran(sockPalsu);
+s.antrekanProdukBaru({ kode: 'P1', nama: 'Produk Satu', harga: 1000, stok: 5 });
+s.antrekanRestok({ kode: 'P2', nama: 'Produk Dua', harga: 2000, stokSebelum: 40, stokSesudah: 50 });
+s.antrekanTurunHarga({ kode: 'P3', nama: 'Produk Tiga', hargaLama: 3000, hargaBaru: 5000 });
+s.antrekanTurunHarga({ kode: 'P4', nama: 'Produk Empat', hargaLama: 9000, hargaBaru: 6000 });
+s.antrekanStokMenipis({ kode: 'P5', nama: 'Produk Lima', harga: 5000, stok: 1 });
+s.antrekanStokHabis({ kode: 'P6', nama: 'Produk Enam' });
+const enam = await s.kirimSekarang();
+cek('enam perubahan sekaligus tetap SATU pesan', terkirim.length === 1, String(terkirim.length));
+cek('semuanya ikut tercetak', ['Produk Satu','Produk Dua','Produk Tiga','Produk Empat','Produk Lima','Produk Enam']
+  .every(n => terkirim[0].teks.includes(n)), terkirim[0].teks);
+cek('turun dan naik dipisah ke dua bagian berbeda',
+  terkirim[0].teks.includes('TURUN HARGA') && terkirim[0].teks.includes('PENYESUAIAN HARGA'), terkirim[0].teks);
+cek('masih tanpa mentions', terkirim[0]?.isi && !('mentions' in terkirim[0].isi));
+cek('hitungannya dilaporkan lengkap',
+  enam.produkBaru === 1 && enam.restok === 1 && enam.turunHarga === 2 && enam.menipis === 1 && enam.habis === 1,
+  JSON.stringify(enam));
 
 bersih();
 

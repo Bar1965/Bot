@@ -1,27 +1,28 @@
 /**
  * SIARAN STOK & HARGA — pengumuman otomatis ke grup pengumuman.
  *
- * Owner minta: begitu selesai restok atau turun harga, grup langsung dikabari.
- * Yang TIDAK dilakukan, dan alasannya, karena ini bagian yang menentukan apakah
- * kanalnya masih dibaca orang enam bulan lagi:
+ * Owner memutuskan: "pokoknya setiap ada perubahan ada pengumuman." Mode bawaan
+ * karena itu SEMUA — restok berapa pun, harga naik maupun turun, produk baru,
+ * stok menipis, stok habis.
  *
- *   1. TIDAK menyiarkan setiap `.addstock`. Satu sesi restok biasanya beberapa
- *      perintah berturut-turut — grup akan menerima lima pesan dalam dua menit.
- *      Karena itu ada jeda: pengumuman baru dikirim setelah beberapa menit tanpa
- *      perubahan lagi, dan semua produk dalam sesi itu digabung jadi SATU pesan.
+ * Mode PENTING masih ada dan berisi pertimbangan yang saya ajukan sebelumnya:
+ * restok 20→25 bukan kabar, mengumumkan kenaikan harga mendorong orang belanja di
+ * tempat lain, dan mengumumkan stok habis adalah iklan negatif. Owner menimbang
+ * itu lalu memilih sebaliknya — tokonya, keputusannya. `.siaran penting`
+ * mengembalikan penyaringannya kapan pun dia berubah pikiran.
  *
- *   2. TIDAK menyiarkan restok yang stoknya memang masih banyak. Naik dari 20 ke
- *      25 bukan kabar; mengumumkannya cuma melatih orang untuk melewati pesan
- *      dari kanal ini — dan pengumuman yang benar-benar penting ikut terlewat.
- *      Yang diumumkan hanya yang tadinya berada di ambang menipis atau di bawah.
+ * DUA HAL YANG TETAP BERLAKU DI KEDUA MODE, karena keduanya bukan soal perubahan
+ * mana yang layak diumumkan:
  *
- *   3. TIDAK menyiarkan harga NAIK. Memberi tahu semua orang bahwa harga naik
- *      sama saja menyuruh mereka belanja di tempat lain. Kalau owner memang mau
- *      memakainya sebagai dorongan ("besok naik"), itu keputusan dagang yang
- *      harus diketik sendiri lewat `.umumkan`, bukan diputuskan bot.
+ *   1. JEDA HENING. Satu sesi kerja biasanya beberapa perintah berturut-turut;
+ *      tanpa jeda, grup menerima sepuluh pesan dalam dua menit. Justru di mode
+ *      SEMUA inilah jeda itu paling menentukan — semuanya digabung jadi SATU
+ *      pesan. Perubahannya tetap diumumkan semua, cuma tidak satu per satu.
  *
- *   4. TIDAK menyiarkan stok HABIS ke pembeli. Itu iklan negatif. Owner sudah
- *      diberi tahu lewat notifikasi penjualan (lihat susunNotifPenjualanOwner).
+ *   2. PERINGATAN "TINGGAL SEDIKIT" TIDAK DIULANG sampai produknya direstok.
+ *      Ini bukan menahan perubahan, melainkan menahan FAKTA YANG SAMA berbunyi
+ *      berkali-kali: produk sisa 3 akan mengumumkan dirinya tiga kali sebelum
+ *      habis, dengan kalimat yang nyaris sama persis.
  *
  * Angka stok di sini WAJIB datang dari penghitung kredensial sungguhan, bukan
  * kolom `products.stok` yang cuma cache untuk produk AUTO (AGENTS.md §10l).
@@ -40,10 +41,26 @@ const JEDA_BAWAAN_DETIK = 180;
 /** Ambang "hampir habis". Disamakan dengan lowStockLimit milik katalog. */
 const AMBANG_BAWAAN = 3;
 
+/**
+ * Mode siaran.
+ *
+ *   SEMUA   — setiap perubahan diumumkan: restok berapa pun, harga naik maupun
+ *             turun, stok habis. Ini yang diminta owner secara tegas.
+ *   PENTING — hanya yang layak jadi kabar: restok dari stok menipis, harga
+ *             turun, produk baru, stok tinggal sedikit.
+ *
+ * Yang TIDAK berubah di mode mana pun: jeda hening. Justru di mode SEMUA jeda
+ * itu yang menahan satu sesi kerja jadi satu pesan, bukan sepuluh.
+ */
+const MODE_BAWAAN = 'SEMUA';
+
 let sockRef = null;
 let timer = null;
 let jedaDetik = JEDA_BAWAAN_DETIK;
 let ambangTipis = AMBANG_BAWAAN;
+let modeSiaran = MODE_BAWAAN;
+
+const semuaPerubahan = () => modeSiaran === 'SEMUA';
 
 /** Antrean per kode produk, supaya `.addstock` dua kali tidak jadi dua baris. */
 const antreanRestok = new Map();
@@ -51,6 +68,7 @@ const antreanTurunHarga = new Map();
 const antreanProdukBaru = new Map();
 const antreanMenipis = new Map();
 const antreanSorotan = new Map();
+const antreanHabis = new Map();
 
 /**
  * Kode yang peringatan menipisnya SUDAH tersiar.
@@ -84,6 +102,16 @@ export function pasangAmbangTipis(n) {
   if (Number.isFinite(x) && x >= 0) ambangTipis = Math.floor(x);
 }
 
+/** 'SEMUA' (setiap perubahan) atau 'PENTING' (hanya yang layak jadi kabar). */
+export function pasangModeSiaran(mode) {
+  const m = String(mode || '').toUpperCase();
+  if (m === 'SEMUA' || m === 'PENTING') modeSiaran = m;
+}
+
+export function modeSekarang() {
+  return modeSiaran;
+}
+
 // ============================================================
 // PENYUSUN PESAN — murni teks, tidak menyentuh apa pun
 // ============================================================
@@ -92,7 +120,7 @@ export function pasangAmbangTipis(n) {
  * Pengumuman gabungan. Memulangkan null kalau tidak ada yang layak diumumkan,
  * supaya pemanggil tidak pernah mengirim pesan kosong ke grup.
  */
-export function susunSiaran({ restok = [], turunHarga = [], produkBaru = [], menipis = [], sorotan = [] } = {}) {
+export function susunSiaran({ restok = [], turunHarga = [], produkBaru = [], menipis = [], sorotan = [], habis = [] } = {}) {
   const bagian = [];
 
   if (sorotan.length > 0) {
@@ -133,15 +161,31 @@ export function susunSiaran({ restok = [], turunHarga = [], produkBaru = [], men
     bagian.push(t.trimEnd());
   }
 
-  if (turunHarga.length > 0) {
+  // Satu antrean harga, dua bagian. Turun dijual sebagai penghematan; naik
+  // disampaikan apa adanya tanpa basa-basi — memoles kenaikan justru bikin
+  // pembaca merasa dibohongi, dan itu ongkos yang jauh lebih mahal.
+  const hargaTurun = turunHarga.filter(p => Number(p.hargaBaru) < Number(p.hargaLama));
+  const hargaNaik = turunHarga.filter(p => Number(p.hargaBaru) > Number(p.hargaLama));
+
+  if (hargaTurun.length > 0) {
     let t = `🏷️ *TURUN HARGA*\n━━━━━━━━━━━━━━━\n`;
-    for (const p of turunHarga) {
+    for (const p of hargaTurun) {
       const hemat = Math.max(0, p.hargaLama - p.hargaBaru);
       const persen = p.hargaLama > 0 ? Math.round((hemat / p.hargaLama) * 100) : 0;
       t += `🔻 *${p.nama}* \`${p.kode}\`\n`;
       t += `   ~${rupiah(p.hargaLama)}~ → *${rupiah(p.hargaBaru)}*`;
       t += hemat > 0 ? ` _(hemat ${rupiah(hemat)}${persen > 0 ? ` · ${persen}%` : ''})_\n` : `\n`;
     }
+    bagian.push(t.trimEnd());
+  }
+
+  if (hargaNaik.length > 0) {
+    let t = `📈 *PENYESUAIAN HARGA*\n━━━━━━━━━━━━━━━\n`;
+    for (const p of hargaNaik) {
+      t += `🔺 *${p.nama}* \`${p.kode}\`\n`;
+      t += `   ${rupiah(p.hargaLama)} → *${rupiah(p.hargaBaru)}*\n`;
+    }
+    t += `_Harga baru berlaku mulai sekarang._`;
     bagian.push(t.trimEnd());
   }
 
@@ -154,6 +198,19 @@ export function susunSiaran({ restok = [], turunHarga = [], produkBaru = [], men
       t += `🟠 *${p.nama}* — ${rupiah(p.harga)}\n`;
       t += `   Sisa *${p.stok} pcs* · kode \`${p.kode}\`\n`;
     }
+    bagian.push(t.trimEnd());
+  }
+
+  if (habis.length > 0) {
+    // Owner minta setiap perubahan diumumkan, termasuk yang ini. Bentuknya
+    // dibuat sebagai AJAKAN, bukan pengumuman kekalahan: yang membaca diberi
+    // satu hal untuk dilakukan, dan antrean `.notif` itu justru daftar orang
+    // yang paling mungkin membeli begitu barangnya datang.
+    let t = `🔴 *SEMENTARA KOSONG*\n━━━━━━━━━━━━━━━\n`;
+    for (const p of habis) {
+      t += `⚫ *${p.nama}* \`${p.kode}\`\n`;
+    }
+    t += `_Ketik_ \`.notif <KODE>\` _— kami japri begitu restok, sebelum diumumkan di sini._`;
     bagian.push(t.trimEnd());
   }
 
@@ -173,7 +230,7 @@ export function susunSiaran({ restok = [], turunHarga = [], produkBaru = [], men
 function lepaskanDariAntreanLain(kode, kecuali) {
   for (const [nama, peta] of Object.entries({
     restok: antreanRestok, produkBaru: antreanProdukBaru,
-    menipis: antreanMenipis, sorotan: antreanSorotan
+    menipis: antreanMenipis, sorotan: antreanSorotan, habis: antreanHabis
   })) {
     if (nama !== kecuali) peta.delete(kode);
   }
@@ -222,7 +279,9 @@ export function antrekanRestok({ kode, nama, harga, stokSebelum, stokSesudah }) 
   const sebelum = Number(stokSebelum);
   const sesudah = Number(stokSesudah);
   if (!Number.isFinite(sebelum) || !(sesudah > 0)) return false;
-  if (sebelum > ambangTipis) return false;
+  // Mode SEMUA: setiap penambahan stok adalah perubahan, jadi diumumkan.
+  // Mode PENTING: hanya yang tadinya di ambang menipis atau di bawah.
+  if (!semuaPerubahan() && sebelum > ambangTipis) return false;
   if (sesudah <= sebelum) return false;
 
   const K = String(kode).toUpperCase();
@@ -283,19 +342,49 @@ export function antrekanTurunHarga({ kode, nama, hargaLama, hargaBaru }) {
   const lama = Number(hargaLama);
   const baru = Number(hargaBaru);
   if (!Number.isFinite(lama) || !Number.isFinite(baru)) return false;
-  if (!(baru < lama)) return false;
+  // Harga yang tidak berubah bukan perubahan, mode apa pun.
+  if (baru === lama) return false;
+  // Mode PENTING hanya menyiarkan penurunan; mode SEMUA menyiarkan dua-duanya.
+  if (!semuaPerubahan() && baru > lama) return false;
 
   const K = String(kode).toUpperCase();
-  // Kalau harga turun dua kali sebelum terkirim, yang diumumkan adalah harga
-  // AWAL sebelum sesi ini dibanding harga terakhir — bukan potongan terakhirnya
-  // saja, yang akan membuat diskonnya terlihat jauh lebih kecil dari kenyataan.
+  // Kalau harga berubah dua kali sebelum terkirim, yang diumumkan adalah harga
+  // AWAL sebelum sesi ini dibanding harga terakhir — bukan langkah terakhirnya
+  // saja, yang akan membuat perubahannya terlihat jauh lebih kecil dari
+  // kenyataan. Kalau ternyata kembali ke harga semula, barisnya dicabut: tidak
+  // ada perubahan yang perlu dikabarkan.
   const sudahAda = antreanTurunHarga.get(K);
-  antreanTurunHarga.set(K, {
-    kode: K,
-    nama,
-    hargaLama: sudahAda ? sudahAda.hargaLama : lama,
-    hargaBaru: baru
-  });
+  const asli = sudahAda ? sudahAda.hargaLama : lama;
+  if (asli === baru) {
+    antreanTurunHarga.delete(K);
+    return false;
+  }
+
+  antreanTurunHarga.set(K, { kode: K, nama, hargaLama: asli, hargaBaru: baru });
+  jadwalkanKirim();
+  return true;
+}
+
+/** Nama yang jujur untuk fungsi yang sekarang menangani dua arah. */
+export const antrekanPerubahanHarga = antrekanTurunHarga;
+
+/**
+ * Stok habis. Hanya di mode SEMUA — owner minta setiap perubahan diumumkan.
+ *
+ * Bentuknya dibuat sebagai AJAKAN, bukan kabar kekalahan: pembaca diberi satu
+ * hal untuk dilakukan (`.notif <KODE>`), dan antrean itu justru daftar orang
+ * yang paling mungkin membeli begitu barangnya datang.
+ */
+export function antrekanStokHabis({ kode, nama }) {
+  if (!kode || !nama) return false;
+  if (!semuaPerubahan()) return false;
+
+  const K = String(kode).toUpperCase();
+  // Baru saja direstok atau baru dibuat — jangan mengaku habis di pesan yang sama.
+  if (antreanRestok.has(K) || antreanProdukBaru.has(K)) return false;
+
+  lepaskanDariAntreanLain(K, 'habis');
+  antreanHabis.set(K, { kode: K, nama });
   jadwalkanKirim();
   return true;
 }
@@ -323,7 +412,8 @@ export async function kirimSekarang() {
   const produkBaru = [...antreanProdukBaru.values()];
   const menipis = [...antreanMenipis.values()];
   const sorotan = [...antreanSorotan.values()];
-  const jumlah = restok.length + turunHarga.length + produkBaru.length + menipis.length + sorotan.length;
+  const habis = [...antreanHabis.values()];
+  const jumlah = restok.length + turunHarga.length + produkBaru.length + menipis.length + sorotan.length + habis.length;
   if (jumlah === 0) return { terkirim: false, alasan: 'KOSONG' };
 
   const kosongkan = () => {
@@ -332,6 +422,7 @@ export async function kirimSekarang() {
     antreanProdukBaru.clear();
     antreanMenipis.clear();
     antreanSorotan.clear();
+    antreanHabis.clear();
   };
 
   const settings = bacaSettings ? await bacaSettings() : {};
@@ -344,7 +435,7 @@ export async function kirimSekarang() {
   if (!tujuan) return { terkirim: false, alasan: 'GRUP_BELUM_DISET' };
   if (!sockRef) return { terkirim: false, alasan: 'SOCKET_BELUM_SIAP' };
 
-  const teks = susunSiaran({ restok, turunHarga, produkBaru, menipis, sorotan });
+  const teks = susunSiaran({ restok, turunHarga, produkBaru, menipis, sorotan, habis });
   if (!teks) return { terkirim: false, alasan: 'KOSONG' };
 
   try {
@@ -359,11 +450,12 @@ export async function kirimSekarang() {
   }
 
   kosongkan();
-  console.log(`[SIARAN] Pengumuman terkirim ke ${tujuan} (${produkBaru.length} baru, ${restok.length} restok, ${turunHarga.length} turun harga, ${menipis.length} menipis, ${sorotan.length} sorotan).`);
+  console.log(`[SIARAN] Pengumuman terkirim ke ${tujuan} (${produkBaru.length} baru, ${restok.length} restok, ${turunHarga.length} turun harga, ${menipis.length} menipis, ${sorotan.length} sorotan, ${habis.length} habis).`);
   return {
     terkirim: true, tujuan, teks,
     restok: restok.length, turunHarga: turunHarga.length,
-    produkBaru: produkBaru.length, menipis: menipis.length, sorotan: sorotan.length
+    produkBaru: produkBaru.length, menipis: menipis.length, sorotan: sorotan.length,
+    habis: habis.length
   };
 }
 
@@ -374,7 +466,8 @@ export function isiAntrean() {
     turunHarga: [...antreanTurunHarga.values()],
     produkBaru: [...antreanProdukBaru.values()],
     menipis: [...antreanMenipis.values()],
-    sorotan: [...antreanSorotan.values()]
+    sorotan: [...antreanSorotan.values()],
+    habis: [...antreanHabis.values()]
   };
 }
 
@@ -386,5 +479,6 @@ export function kosongkanAntrean() {
   antreanProdukBaru.clear();
   antreanMenipis.clear();
   antreanSorotan.clear();
+  antreanHabis.clear();
   sudahDiumumkanMenipis.clear();
 }

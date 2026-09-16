@@ -1162,6 +1162,7 @@ export async function startBot(onSocketReady) {
         siaran.pasangPembacaSettings(() => db.getSettings());
         if (botSettings.siaranJedaDetik) siaran.pasangJedaSiaran(botSettings.siaranJedaDetik);
         siaran.pasangAmbangTipis(botSettings.lowStockLimit ?? config.defaults.lowStockLimit);
+        siaran.pasangModeSiaran(botSettings.siaranMode ?? config.defaults.siaranMode);
         console.log('[SIARAN] Pengumuman restok & turun harga siap.');
       } catch (siaranErr) {
         console.warn('[SIARAN] Tidak bisa disiapkan:', siaranErr.message);
