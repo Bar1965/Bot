@@ -211,3 +211,8 @@ console.log(`  deviasi terbesar: ${(devMaks * 100).toFixed(2)}%`);
 
 if (ada('dek')) ujiDek();
 else turnamen();
+
+// Modul game menarik bot.js -> mediaHandler.js, dan mediaHandler menembakkan
+// `pip install -U yt-dlp` saat di-import. Tanpa exit eksplisit, test yang sudah
+// lulus tetap menggantung menunggu proses itu selesai.
+process.exit(0);

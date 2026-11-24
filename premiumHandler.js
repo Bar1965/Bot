@@ -194,7 +194,9 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
   const cmd = String(cleanCmd || '').toLowerCase();
 
   const knownPremCmds = [
-    'ocr', 'ai', 'gemini', 'tanyaai', 'askai', 'resetai',
+    'ocr', 'ai', 'gemini', 'tanya', 'tanyaai', 'askai', 'resetai',
+    'transkrip', 'stt', 'voicetotext', 'audiototext',
+    'remind', 'ingat', 'reminder',
     'lapak', 'jual', 'claimvoucher', 'klaimvoucher', 'vouchergobay',
     'wishlist', 'ingatkan', 'premium', 'upgradepremium', 'buypremium',
     'cekpremium', 'checkpremium', 'statuspremium', 'myplan',
@@ -221,7 +223,7 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
     const isFromGroup = jid.endsWith('@g.us');
     const groupSettings = isFromGroup ? await db.getGroupSettings(jid) : {};
     if (isFromGroup && groupSettings.features_config && groupSettings.features_config.ai === false) return false;
-    if (['ocr', 'ai', 'gemini', 'tanyaai', 'askai'].includes(cmd)) {
+    if (['ocr', 'ai', 'gemini', 'tanya', 'tanyaai', 'askai'].includes(cmd)) {
 
     const isOcr = cmd === 'ocr';
     const promptText = args.slice(1).join(' ').trim();
@@ -468,6 +470,191 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
     }, { quoted: messageObj });
     return true;
   }
+
+  // ─── .transkrip / .stt — Voice Note / Audio to Text via AI ───────
+  if (['transkrip', 'stt', 'voicetotext', 'audiototext'].includes(cmd)) {
+    const quotedAudio = messageObj?.message?.extendedTextMessage?.contextInfo?.quotedMessage?.audioMessage;
+    const directAudio = messageObj?.message?.audioMessage;
+    const audioObj = quotedAudio || directAudio;
+
+    if (!audioObj) {
+      await sock.sendMessage(jid, {
+        text: '🎙️ *TRANSKRIP VOICE NOTE / AUDIO KE TEKS* 🎙️\n\n💡 *Cara Pakai:*\nKirim atau reply rekaman suara (Voice Note / Audio) dengan perintah `.transkrip` atau `.stt`.\n\nBot AI akan mendengarkan dan mengetikkan isi audionya secara otomatis!'
+      }, { quoted: messageObj });
+      return true;
+    }
+
+    // Cek batas kuota harian AI
+    const premiumTier = await db.getPremiumTier(senderNumber);
+    const benefits = getPremiumBenefits(premiumTier);
+    const usedCount = await db.getAiUsageToday(senderNumber);
+
+    if (!isAdmin && !isOwner && usedCount >= benefits.aiDailyLimit) {
+      await sock.sendMessage(jid, {
+        text: `⚠️ *KUOTA AI HARIAN HABIS* (${usedCount}/${benefits.aiDailyLimit})\n\nKuotamu untuk tier *${premiumTier}* telah terpakai semua hari ini.\n\n💸 Upgrade ke *Gold* / *Diamond* untuk kuota AI lebih banyak!\nKetik *.premium* untuk info paket.`
+      }, { quoted: messageObj });
+      return true;
+    }
+
+    await sock.sendMessage(jid, { text: '🎙️ _Sedang mendengarkan dan mentranskripsikan audio... Mohon tunggu sebentar._' }, { quoted: messageObj });
+
+    try {
+      const { downloadContentFromMessage } = await import('@whiskeysockets/baileys');
+      const stream = await downloadContentFromMessage(audioObj, 'audio');
+      let audioBuffer = Buffer.from([]);
+      for await (const chunk of stream) {
+        audioBuffer = Buffer.concat([audioBuffer, chunk]);
+      }
+
+      const mimeType = audioObj.mimetype || 'audio/ogg';
+      const { askGeminiAudioTranscription } = await import('./src/ai/geminiService.js');
+      const transcriptText = await askGeminiAudioTranscription({ audioBuffer, mimeType });
+
+      await db.incrementAiUsage(senderNumber);
+
+      let reply = `🎙️ *HASIL TRANSKRIP AUDIO* 🎙️\n━━━━━━━━━━━━━━━━━━━━\n\n`;
+      reply += `${transcriptText}\n\n`;
+      reply += `━━━━━━━━━━━━━━━━━━━━\n`;
+      reply += `_Sisa kuota AI hari ini: ${Math.max(0, benefits.aiDailyLimit - (usedCount + 1))}x_`;
+
+      await sock.sendMessage(jid, { text: reply }, { quoted: messageObj });
+      return true;
+    } catch (err) {
+      console.error('[TRANSKRIP_ERR]', err);
+      await sock.sendMessage(jid, {
+        text: `❌ *Gagal Mentranskripsikan Audio*\n\nAlasan: ${err.message || 'Format audio tidak didukung atau AI gagal memproses.'}`
+      }, { quoted: messageObj });
+      return true;
+    }
+  }
+
+  // ─── .remind / .ingat / .reminder — Asisten Pengingat Pribadi ───────
+  if (['remind', 'ingat', 'reminder'].includes(cmd)) {
+    const sub = (args[1] || '').toLowerCase();
+
+    // .remind list
+    if (sub === 'list' || sub === 'daftar') {
+      const activeReminders = await db.getUserActiveReminders(senderNumber);
+      if (!activeReminders || activeReminders.length === 0) {
+        await sock.sendMessage(jid, {
+          text: '📝 Kamu tidak memiliki pengingat aktif saat ini.\n\n_Buat pengingat dengan:_\n`.remind 10m Matikan kompor`\n`.remind 2j Ikut kelas`'
+        }, { quoted: messageObj });
+        return true;
+      }
+
+      let listText = `⏰ *DAFTAR PENGINGAT AKTIFMU* ⏰\n━━━━━━━━━━━━━━━━━━━━\n\n`;
+      for (const r of activeReminders) {
+        const sisaMenit = Math.max(1, Math.round((r.remind_at - Date.now()) / 60000));
+        let durasiTeks = `${sisaMenit} menit lagi`;
+        if (sisaMenit >= 60) {
+          const jam = Math.floor(sisaMenit / 60);
+          const menit = sisaMenit % 60;
+          durasiTeks = `${jam} jam ${menit} menit lagi`;
+        }
+        listText += `• *[ID:${r.id}]* _"${r.message}"_\n  ⏳ Waktu: ${durasiTeks}\n\n`;
+      }
+      listText += `_Untuk membatalkan, ketik:_\n\`.remind batal <id>\``;
+
+      await sock.sendMessage(jid, { text: listText }, { quoted: messageObj });
+      return true;
+    }
+
+    // .remind batal <id>
+    if (sub === 'batal' || sub === 'cancel' || sub === 'hapus') {
+      const id = parseInt(args[2]);
+      if (isNaN(id) || id <= 0) {
+        await sock.sendMessage(jid, { text: '⚠️ Masukkan ID pengingat yang valid. Contoh: `.remind batal 3`' }, { quoted: messageObj });
+        return true;
+      }
+      const cancelled = await db.cancelPersonalReminder(senderNumber, id);
+      if (cancelled) {
+        await sock.sendMessage(jid, { text: `✅ Pengingat [ID:${id}] berhasil dibatalkan.` }, { quoted: messageObj });
+      } else {
+        await sock.sendMessage(jid, { text: `❌ Pengingat [ID:${id}] tidak ditemukan atau sudah selesai.` }, { quoted: messageObj });
+      }
+      return true;
+    }
+
+    // Bantuan cara pakai
+    if (!args[1] || !args[2]) {
+      let help = `⏰ *ASISTEN PENGINGAT PRIBADI (REMINDER)* ⏰\n\n`;
+      help += `Bot akan mengirimkan pesan DM tepat waktu untuk mengingatkan tugasmu!\n\n`;
+      help += `📌 *Format Penggunaan:*\n`;
+      help += `\`.remind <waktu> <pesan>\`\n\n`;
+      help += `💡 *Contoh:*\n`;
+      help += `• \`.remind 10m Matikan kompor\` (10 menit)\n`;
+      help += `• \`.remind 2j Ikut webinar zoom\` (2 jam)\n`;
+      help += `• \`.remind 1h Bayar tagihan wifi\` (1 hari)\n`;
+      help += `• \`.remind 45s Ambil mie\` (45 detik)\n\n`;
+      help += `📋 *Perintah Lain:*\n`;
+      help += `• \`.remind list\` - Lihat pengingat aktifmu\n`;
+      help += `• \`.remind batal <id>\` - Batalkan pengingat`;
+      await sock.sendMessage(jid, { text: help }, { quoted: messageObj });
+      return true;
+    }
+
+    // Cek batas kuota pengingat aktif berdasarkan tier
+    const premiumTier = await db.getPremiumTier(senderNumber);
+    const limitMap = { Free: 3, Perunggu: 10, Silver: 20, Gold: 50, Diamond: 999 };
+    const maxActive = limitMap[premiumTier] || 3;
+    const currentActive = await db.getUserActiveReminders(senderNumber);
+
+    if (currentActive.length >= maxActive && !isAdmin && !isOwner) {
+      await sock.sendMessage(jid, {
+        text: `⚠️ *BATAS PENGINGAT TERCAPAI*\n\nKamu sudah memiliki *${currentActive.length}* pengingat aktif (Maksimal ${maxActive} untuk tier *${premiumTier}*).\n\nBatalkan pengingat lama dengan \`.remind batal <id>\` atau upgrade ke Premium (\`.premium\`)!`
+      }, { quoted: messageObj });
+      return true;
+    }
+
+    // Parse waktu
+    const timeArg = args[1].toLowerCase();
+    const timeMatch = timeArg.match(/^(\d+)(s|detik|m|menit|j|jam|h|hari|d)$/);
+    if (!timeMatch) {
+      await sock.sendMessage(jid, {
+        text: `⚠️ Format waktu tidak dikenali: *"${args[1]}"*\n\nGunakan format:\n• \`10m\` (10 menit)\n• \`2j\` (2 jam)\n• \`1h\` (1 hari)\n• \`30s\` (30 detik)`
+      }, { quoted: messageObj });
+      return true;
+    }
+
+    const value = parseInt(timeMatch[1], 10);
+    const unit = timeMatch[2];
+    let durationMs = 0;
+
+    if (['s', 'detik'].includes(unit)) durationMs = value * 1000;
+    else if (['m', 'menit'].includes(unit)) durationMs = value * 60 * 1000;
+    else if (['j', 'jam', 'h'].includes(unit) && unit !== 'hari') durationMs = value * 60 * 60 * 1000;
+    else if (['hari', 'd'].includes(unit) || (unit === 'h' && timeArg.includes('hari'))) durationMs = value * 24 * 60 * 60 * 1000;
+
+    if (durationMs < 10 * 1000) {
+      await sock.sendMessage(jid, { text: '⚠️ Waktu pengingat minimal 10 detik.' }, { quoted: messageObj });
+      return true;
+    }
+    if (durationMs > 30 * 24 * 60 * 60 * 1000) {
+      await sock.sendMessage(jid, { text: '⚠️ Waktu pengingat maksimal 30 hari ke depan.' }, { quoted: messageObj });
+      return true;
+    }
+
+    const remindAt = Date.now() + durationMs;
+    const reminderMsg = args.slice(2).join(' ').trim();
+
+    // Kirim selalu ke DM pengirim (senderNumber)
+    const res = await db.createPersonalReminder(senderNumber, senderNumber, reminderMsg, remindAt);
+    if (!res.success) {
+      await sock.sendMessage(jid, { text: `❌ Gagal membuat pengingat: ${res.message}` }, { quoted: messageObj });
+      return true;
+    }
+
+    const targetTimeStr = new Date(remindAt + 7 * 60 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 16) + ' WIB';
+    let successText = `⏰ *Pengingat Berhasil Dibuat!*\n\n`;
+    successText += `• Pesan: *"${reminderMsg}"*\n`;
+    successText += `• Diingatkan pada: *${targetTimeStr}*\n`;
+    successText += `• ID Pengingat: *#${res.id}*\n\n`;
+    successText += `_Bot akan mengirim pesan pengingat ke chat pribadi (DM) kamu saat waktunya tiba._`;
+
+    await sock.sendMessage(jid, { text: successText }, { quoted: messageObj });
+    return true;
+  }
+
 
   // ─── .premium — Info paket ───────────────────────────────────
   if (cmd === 'premium') {

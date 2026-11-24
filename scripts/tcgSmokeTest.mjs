@@ -1675,3 +1675,8 @@ console.log('══════════════════════�
 
 try { fs.rmSync(kotakPasir, { recursive: true, force: true }); } catch { /* biar sistem yang bersihkan */ }
 process.exit(gagal.length ? 1 : 0);
+
+// Modul game menarik bot.js -> mediaHandler.js, dan mediaHandler menembakkan
+// `pip install -U yt-dlp` saat di-import. Tanpa exit eksplisit, test yang sudah
+// lulus tetap menggantung menunggu proses itu selesai.
+process.exit(0);

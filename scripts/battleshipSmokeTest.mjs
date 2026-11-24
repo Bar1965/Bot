@@ -77,3 +77,8 @@ assert.strictEqual(allSunk, true, 'Kemenangan harus tercapai saat seluruh armada
 console.log('✅ 2. Mekanisme Hit, Miss, Sunk, dan Victory Detection valid');
 
 console.log('\n🎉 SEMUA SMOKE TESTS BATTLESHIP 1V1 100% SUKSES!');
+
+// Modul game menarik bot.js -> mediaHandler.js, dan mediaHandler menembakkan
+// `pip install -U yt-dlp` saat di-import. Tanpa exit eksplisit, test yang sudah
+// lulus tetap menggantung menunggu proses itu selesai.
+process.exit(0);

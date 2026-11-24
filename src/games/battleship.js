@@ -14,7 +14,7 @@
  */
 
 import * as db from '../../database.js';
-import { send } from './helpers.js';
+import { send, catatJejak, perbaruiPapan, lepasPapan } from './helpers.js';
 
 export const activeBattleships = new Map();
 export const pendingBattleships = new Map();
@@ -96,7 +96,12 @@ export function generateRandomFleet() {
 }
 
 /**
- * Render visualisasi radar tembakan
+ * Render radar — sengaja dipadatkan.
+ *
+ * Papan ini muncul di setiap tembakan, jadi setiap baris hiasan terbayar
+ * puluhan kali per pertandingan. Yang disisakan hanya yang benar-benar dipakai
+ * pemain untuk memilih koordinat berikutnya: grid, sisa armada musuh, jejak
+ * tiga langkah terakhir, dan giliran siapa sekarang.
  */
 function renderRadarVisual(session, shooterJid) {
   const isP1 = shooterJid === session.player1;
@@ -104,39 +109,39 @@ function renderRadarVisual(session, shooterJid) {
   const shots = isP1 ? session.p1Shots : session.p2Shots;
   const enemyFleet = isP1 ? session.p2Fleet : session.p1Fleet;
 
+  const IKON = { MISS: '🌊', HIT: '🔥', SUNK: '💥' };
+
   let radarGrid = '   A  B  C  D  E\n';
   for (let r = 1; r <= GRID_SIZE; r++) {
     radarGrid += `${r} `;
     for (let c = 0; c < GRID_SIZE; c++) {
-      const coord = `${COLS[c]}${r}`;
-      const shotResult = shots.get(coord);
-
-      if (!shotResult) {
-        radarGrid += '⬛ '; // Belum ditembak
-      } else if (shotResult === 'MISS') {
-        radarGrid += '🌊 '; // Meleset
-      } else if (shotResult === 'HIT') {
-        radarGrid += '🔥 '; // Kena
-      } else if (shotResult === 'SUNK') {
-        radarGrid += '💥 '; // Tenggelam
-      }
+      radarGrid += `${IKON[shots.get(`${COLS[c]}${r}`)] || '⬛'} `;
     }
     radarGrid += '\n';
   }
 
-  const enemyStatus = Object.values(enemyFleet).map(s => {
-    return `${s.icon} ${s.name}: ${s.sunk ? '💥 *TENGGELAM*' : `(${s.size - s.hits}/${s.size} HP)`}`;
-  }).join('\n');
+  const armada = Object.values(enemyFleet)
+    .map(s => (s.sunk ? `~${s.icon}~` : `${s.icon}${s.size - s.hits}/${s.size}`))
+    .join(' · ');
+
+  const jejak = (session.jejak || []).length
+    ? `\n${session.jejak.map(r => `▸ ${r}`).join('\n')}`
+    : '';
 
   return (
-`🚢 ─── *RADAR TEMBAKAN ARMADA* ─── 🚢
-[ 🎯 *Penembak:* ${tag(shooterJid)} ➔ *Target:* ${tag(enemyJid)} ]
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-${radarGrid}
-[ ⬛: Kosong | 🌊: Meleset | 🔥: Kena | 💥: Tenggelam ]
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🎯 *Status Armada Musuh:*
-${enemyStatus}`
+`🚢 *BATTLESHIP* · 🎯 ${tag(shooterJid)} ➔ ${tag(enemyJid)}
+${radarGrid}🛡️ Armada musuh: ${armada}
+_⬛ kosong · 🌊 meleset · 🔥 kena · 💥 tenggelam_${jejak}
+👉 Giliran ${tag(session.activeTurn)} — ketik \`.tembak B3\` _(${TURN_TIMEOUT_MS / 1000}s)_`
+  );
+}
+
+/** Papan radar hidup: satu pesan yang diedit, bukan dua pesan tiap tembakan. */
+async function perbaruiRadar(sock, jid, session, opsi = {}) {
+  return await perbaruiPapan(
+    sock, jid, session,
+    s => renderRadarVisual(s, s.activeTurn),
+    { mentions: [session.player1, session.player2], ...opsi }
   );
 }
 
@@ -170,7 +175,9 @@ function armBattleshipTurnTimer(sock, jid) {
       if (unshot.length === 0) return;
       const randomCoord = unshot[Math.floor(Math.random() * unshot.length)];
 
-      await send(sock, jid, null, `⏰ *Waktu menembak habis!* ${tag(currentP)} menembak acak ke koordinat *${randomCoord}*!`, { mentions: [currentP] });
+      // Tidak perlu pesan sendiri: `executeShot` sudah menuliskan hasilnya
+      // sebagai baris jejak, dan baris ini menandai bahwa tembakannya otomatis.
+      catatJejak(live, `⏰ Waktu ${tag(currentP)} habis — tembakan acak ke *${randomCoord}*`);
       await executeShot(sock, jid, currentP, randomCoord);
     } catch (e) {
       console.error('[BATTLESHIP_TIMEOUT_ERR]', e);
@@ -355,19 +362,20 @@ async function acceptBattleshipChallenge(sock, jid, senderNumber, messageObj) {
     players: [{ jid: challenge.challenger, points: challenge.buyIn }, { jid: challenge.target, points: challenge.buyIn }]
   });
 
-  const startAnnouncement =
+  // Pengumuman pembuka memang layak berdering sekali. Sesudah ini seluruh
+  // pertandingan berjalan di dalam satu papan radar yang diedit di tempat.
+  await send(sock, jid, messageObj,
 `🌊🚀 *PERANG LAUT DIMULAI!* 🚀🌊
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Kedua armada telah berlayar dan menempati posisi tempur rahasia!
-💰 *Total Pot Pertempuran:* *${session.pot} Poin*
-🎯 *Giliran Tembakan Pertama:* ${tag(session.activeTurn)}
+${tag(session.player1)} vs ${tag(session.player2)}
+💰 *Pot Pertempuran:* *${session.pot} Poin*
 
-${renderRadarVisual(session, session.activeTurn)}
+👉 Ketik \`.tembak B3\` saat giliranmu. Papan radar di bawah diperbarui otomatis — tidak perlu di-scroll ulang.`,
+    { mentions: [session.player1, session.player2] });
 
-👉 *Cara Menembak:* Ketik \`.tembak <koordinat>\` (Contoh: \`.tembak B3\` atau \`.tembak C1\`)
-_⏳ Sisa Waktu Tembak: ${TURN_TIMEOUT_MS / 1000} detik_`;
-
-  await send(sock, jid, messageObj, startAnnouncement, { mentions: [session.player1, session.player2] });
+  lepasPapan(session);
+  catatJejak(session, '🚩 Pertempuran dimulai — armada sudah menempati posisi');
+  await perbaruiRadar(sock, jid, session);
   armBattleshipTurnTimer(sock, jid);
   return true;
 }
@@ -446,21 +454,16 @@ async function executeShot(sock, jid, shooterJid, coord, messageObj = null) {
     }
   }
 
+  // Setiap hasil tembakan dulu jadi pesan panjangnya sendiri, DITAMBAH papan
+  // radar penuh — dua pesan per tembakan, dan satu pertandingan bisa 40
+  // tembakan. Sekarang hasilnya cuma satu baris jejak di dalam papan hidup.
   if (!hitShipKey) {
     // 🌊 MISSED (Meleset ke Air)
     shots.set(coord, 'MISS');
-
-    const missMsg =
-`🌊 *SPLASH! MELESET!* 🌊
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🚀 ${tag(shooterJid)} meluncurkan rudal ke *${coord}*, namun peluru jatuh ke air!
-👉 Giliran berganti ke ${tag(enemyJid)}!`;
-
-    // Ganti giliran ke lawan
     session.activeTurn = enemyJid;
-    await send(sock, jid, messageObj, missMsg, { mentions: [shooterJid, enemyJid] });
 
-    await send(sock, jid, null, renderRadarVisual(session, session.activeTurn), { mentions: [session.activeTurn] });
+    catatJejak(session, `🌊 ${tag(shooterJid)} tembak *${coord}* — meleset, giliran pindah`);
+    await perbaruiRadar(sock, jid, session);
     armBattleshipTurnTimer(sock, jid);
     return true;
   }
@@ -475,22 +478,9 @@ async function executeShot(sock, jid, shooterJid, coord, messageObj = null) {
     ship.sunk = true;
     // Perbarui semua koordinat kapal ini jadi 'SUNK'
     ship.coords.forEach(c => shots.set(c, 'SUNK'));
-
-    const sunkMsg =
-`💥💥💥 *BOOM! KAPAL TENGGELAM!* 💥💥💥
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🎯 Tembakan ${tag(shooterJid)} ke *${coord}* menghancurkan seluruh bagian *${ship.icon} ${ship.name}* musuh!
-🚨 Armada ${tag(enemyJid)} kehilangan 1 kapal perang!`;
-
-    await send(sock, jid, messageObj, sunkMsg, { mentions: [shooterJid, enemyJid] });
+    catatJejak(session, `💥 ${tag(shooterJid)} tembak *${coord}* — *${ship.icon} ${ship.name}* TENGGELAM!`);
   } else {
-    const hitMsg =
-`🔥 *DIRECT HIT! TEMBAKAN TELAK!* 🔥
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🎯 Tembakan ${tag(shooterJid)} ke koordinat *${coord}* telak mengenai *${ship.icon} ${ship.name}* musuh!
-🎁 *Bonus:* Kamu mendapatkan 1x tembakan tambahan!`;
-
-    await send(sock, jid, messageObj, hitMsg, { mentions: [shooterJid, enemyJid] });
+    catatJejak(session, `🔥 ${tag(shooterJid)} tembak *${coord}* — kena ${ship.icon} ${ship.name}, nembak lagi!`);
   }
 
   // Cek apakah seluruh armada musuh sudah tenggelam (Menang)
@@ -501,7 +491,7 @@ async function executeShot(sock, jid, shooterJid, coord, messageObj = null) {
   }
 
   // Jika HIT dan belum menang, giliran TETAP milik shooter (Streak Tembak)
-  await send(sock, jid, null, renderRadarVisual(session, shooterJid), { mentions: [shooterJid] });
+  await perbaruiRadar(sock, jid, session);
   armBattleshipTurnTimer(sock, jid);
   return true;
 }
@@ -514,6 +504,11 @@ async function finishBattleshipGame(sock, jid, winnerJid, loserJid) {
   if (!session) return;
 
   clearSessionTimer(session);
+
+  // Papan terakhir diperbarui sekali lagi supaya keadaan akhir radar tetap
+  // terbaca di atas pengumuman kemenangan, lalu dilepas.
+  await perbaruiRadar(sock, jid, session).catch(() => {});
+  lepasPapan(session);
   activeBattleships.delete(jid);
 
   await db.addGamePoints(winnerJid, session.pot);

@@ -177,3 +177,8 @@ console.log(`   Middle: ${arranged.middleEval.name}`);
 console.log(`   Bottom: ${arranged.bottomEval.name}`);
 
 console.log('\n🎉 SEMUA POKER SMOKE TESTS BERHASIL DENGAN NILAI 100%!');
+
+// Modul game menarik bot.js -> mediaHandler.js, dan mediaHandler menembakkan
+// `pip install -U yt-dlp` saat di-import. Tanpa exit eksplisit, test yang sudah
+// lulus tetap menggantung menunggu proses itu selesai.
+process.exit(0);

@@ -915,6 +915,91 @@ You can now enjoy:
     await runQuery("UPDATE products SET brand_category = 'Google Gemini', variant_type = 'Gemini Pro + 5TB', duration = '18 Bulan' WHERE kode = 'GEMINI' AND (brand_category IS NULL OR brand_category = '')");
   } catch (e) {}
 
+  // Seed / update produk Canva Pro (Multi-Paket Manual)
+  try {
+    const canvaVariants = [
+      {
+        kode: 'CANVA-HEMAT',
+        nama: 'Canva Pro Paket Hemat 30 Hari',
+        harga: 3000,
+        stok: 100,
+        deskripsi: 'Buka semua fitur premium Canva tanpa ribet! Cukup kirim EMAIL kamu, langsung aktif ke akun pribadi (Desain lama dijamin aman & privasi terjaga 100%).\n• Buka jutaan template & elemen Pro\n• Hapus background otomatis (1-klik)\n• Download kualitas HD & transparan\n• Garansi aktif 30 hari',
+        gambar: '',
+        delivery_type: 'MANUAL',
+        brand_category: 'Canva',
+        variant_type: 'Paket Hemat',
+        duration: '30 Hari'
+      },
+      {
+        kode: 'CANVA-EDU',
+        nama: 'Canva Pro Paket Permanen Edu',
+        harga: 5000,
+        stok: 100,
+        deskripsi: '⭐ BEST SELLER Canva Pro Edu!\n• Durasi permanen selama domain aktif\n• Akses seluruh fitur Canva Pro tanpa batas\n• Cocok untuk pelajar, mahasiswa, & tugas harian\n• Garansi 30 Hari Replace',
+        gambar: '',
+        delivery_type: 'MANUAL',
+        brand_category: 'Canva',
+        variant_type: 'Paket Permanen Edu ⭐ BEST SELLER',
+        duration: 'Permanen'
+      },
+      {
+        kode: 'CANVA-DESAINER',
+        nama: 'Canva Pro Paket Desainer (+ Brand Kit)',
+        harga: 8000,
+        stok: 100,
+        deskripsi: 'Paket Desainer (+ Brand Kit) untuk UMKM & kreator!\n• Semua fitur Paket Permanen aktif\n• Bebas titip pasang custom font (.ttf/.otf) & palet warna\n• Cocok untuk panitia acara, UMKM, & kreator\n• Garansi 30 Hari Replace',
+        gambar: '',
+        delivery_type: 'MANUAL',
+        brand_category: 'Canva',
+        variant_type: 'Paket Desainer (+ Brand Kit)',
+        duration: 'Permanen'
+      },
+      {
+        kode: 'CANVA-ROMBONGAN',
+        nama: 'Canva Pro Paket Rombongan (5 Akun)',
+        harga: 20000,
+        stok: 100,
+        deskripsi: 'Paket Rombongan (Grup Tugas / Tim / 5 Akun)!\n• Langsung aktifkan 5 akun sekaligus (cuma Rp 4.000/orang)\n• Dibuatkan ruang kelas/folder khusus tim tugas\n• Garansi 30 Hari Replace',
+        gambar: '',
+        delivery_type: 'MANUAL',
+        brand_category: 'Canva',
+        variant_type: 'Paket Rombongan (5 Akun)',
+        duration: 'Permanen'
+      }
+    ];
+
+    const canvaPetunjuk = `🎨 *PANDUAN AKTIVASI CANVA PRO*
+
+1. Kirimkan alamat EMAIL akun Canva kamu ke chat ini setelah pembayaran.
+2. Tim admin akan mengundang email kamu ke Tim/Kelas Canva Pro (proses kilat 1–2 menit).
+3. Buka email kamu, cek pesan masuk dari Canva, lalu klik *Join Team / Gabung Tim*.
+4. Buka aplikasi Canva atau canva.com, beralih profil ke tim baru.
+5. Selesai! Semua fitur Canva Pro langsung aktif di akun pribadi kamu.
+
+🔒 *Keunggulan:*
+✅ Tanpa password (cukup kirim email)
+✅ Akun pribadi sendiri, bukan akun sharing
+✅ Desain lama dijamin aman & privasi terjaga 100%
+🛡️ Garansi replace 30 hari`;
+
+    for (const v of canvaVariants) {
+      const existing = await getQuery("SELECT kode, stok FROM products WHERE kode = ?", [v.kode]);
+      if (!existing) {
+        await runQuery(
+          "INSERT INTO products (kode, nama, harga, stok, deskripsi, gambar, delivery_type, petunjuk, brand_category, variant_type, duration) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          [v.kode, v.nama, v.harga, v.stok, v.deskripsi, v.gambar, v.delivery_type, canvaPetunjuk, v.brand_category, v.variant_type, v.duration]
+        );
+      } else {
+        await runQuery(
+          "UPDATE products SET nama = ?, harga = ?, deskripsi = ?, delivery_type = ?, petunjuk = ?, brand_category = ?, variant_type = ?, duration = ? WHERE kode = ?",
+          [v.nama, v.harga, v.deskripsi, v.delivery_type, canvaPetunjuk, v.brand_category, v.variant_type, v.duration, v.kode]
+        );
+      }
+    }
+  } catch (e) {
+    console.error("Gagal inisialisasi produk Canva:", e);
+  }
+
   // 10. Tabel Conversations (Live Chat State)
   await runQuery(`
     CREATE TABLE IF NOT EXISTS conversations (
@@ -1374,6 +1459,34 @@ You can now enjoy:
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+
+  // 58. Tabel Catatan Keuangan Pribadi (.catat & .rekap)
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS finance_records (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_jid TEXT NOT NULL,
+      type TEXT NOT NULL,
+      amount INTEGER NOT NULL,
+      description TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_finance_user ON finance_records(user_jid)");
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_finance_user_date ON finance_records(user_jid, created_at)");
+
+  // 59. Tabel Pengingat Pribadi via DM (.remind / .ingat)
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS personal_reminders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_jid TEXT NOT NULL,
+      target_jid TEXT NOT NULL,
+      message TEXT NOT NULL,
+      remind_at INTEGER NOT NULL,
+      status TEXT DEFAULT 'PENDING',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_reminders_status_time ON personal_reminders(status, remind_at)");
 
   // Cleanup & Migration untuk mencegah NULL/NaN/Non-Integer points/xp di database
   await runQuery("UPDATE game_profiles SET points = 0 WHERE points IS NULL OR typeof(points) != 'integer' OR points < 0 OR points > 1000000");

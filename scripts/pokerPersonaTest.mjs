@@ -222,3 +222,8 @@ for (const b of BOT_NAMES) {
 
 console.log(`\n${gagal === 0 ? '🎉 SEMUA GERBANG LULUS!' : `💥 ${gagal} GERBANG GAGAL`}`);
 if (gagal > 0) process.exit(1);
+
+// Modul game menarik bot.js -> mediaHandler.js, dan mediaHandler menembakkan
+// `pip install -U yt-dlp` saat di-import. Tanpa exit eksplisit, test yang sudah
+// lulus tetap menggantung menunggu proses itu selesai.
+process.exit(0);

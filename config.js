@@ -101,7 +101,21 @@ Setelah transfer, harap kirim BUKTI TRANSFER (berupa gambar/screenshot) langsung
     sholatCity: "Jakarta",
 
     // Anti-Ban & Human-Like Typing Delay
-    humanDelayEnabled: "true"
+    humanDelayEnabled: "true",
+
+    // Sakelar Fitur Game Berat (TCG / Arena Kartu Monster)
+    // Diset ke "false" untuk pemeliharaan dan penghematan memori server
+    tcgEnabled: "false",
+
+    // Sakelar Fitur Private Message (DM) & Grup
+    privateMsgEnabled: "true",
+    groupMsgEnabled: "true",
+
+    // Jadwal Tidur Malam Otomatis (Dinonaktifkan agar bot beroperasi 24 jam)
+    nightSleepEnabled: "false",
+    nightSleepStartHour: 23,
+    nightSleepEndHour: 6,
+    nightSleepAnnounceGroup: "false"
   },
 
   // ============================================================

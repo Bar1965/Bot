@@ -5,7 +5,8 @@ import { createMidtransTransaction, botState } from '../../server.js';
 import { buildCommandMenu, resolveCategoryId, kategoriDisembunyikanModeJualan } from '../../commandRegistry.js';
 import { getSystemChangelog } from '../utils/changelog.js';
 import { susunKatalog, susunHalamanProduk, kelompokkanPencarian, pesanNomorSalah, rupiah } from './katalogView.js';
-import { uraiBalasanUlasan, susunTerimaKasihUlasan, susunLayarTesti, barisRating } from './testimoni.js';
+import { uraiBalasanUlasan, susunTerimaKasihUlasan, susunLayarTesti, barisRating, samarkanNomor, formatDurasi } from './testimoni.js';
+import { createStoreReputationCard } from '../../cardGenerator.js';
 import { keWaktu, tanggalJamWib, tanggalWib, tanggalPanjangWib, jamWib, akhirHariWib } from '../utils/waktu.js';
 import * as mediaHandler from '../../mediaHandler.js';
 import * as ent from '../../entertainmentHandler.js';
@@ -87,10 +88,14 @@ export function createCustomerHandler(ctx = {}) {
     else if (/(?:6\s*(?:bulan|bln|month|m))\b/i.test(cleanQ)) targetDuration = '6 Bulan';
     else if (/(?:12\s*(?:bulan|bln|month|m)|1\s*(?:tahun|thn|year|y)|setahun)\b/i.test(cleanQ)) targetDuration = '1 Tahun';
 
-    // Cek tipe (sharing / private)
+    // Cek tipe (sharing / private / hemat / edu / desainer / rombongan)
     let targetType = null;
     if (/\b(?:sharing|shared|sh|1\s*profil|profil)\b/i.test(cleanQ)) targetType = 'Sharing';
     if (/\b(?:private|privat|pv|full|5\s*profil)\b/i.test(cleanQ)) targetType = 'Private';
+    if (/\b(?:hemat)\b/i.test(cleanQ)) targetType = 'Hemat';
+    if (/\b(?:edu|permanen)\b/i.test(cleanQ)) targetType = 'Edu';
+    if (/\b(?:desainer|designer|brand\s*kit)\b/i.test(cleanQ)) targetType = 'Desainer';
+    if (/\b(?:rombongan|grup|tim|team|5\s*akun)\b/i.test(cleanQ)) targetType = 'Rombongan';
 
     const allProducts = await db.getProducts();
     let matchedProducts = [];
@@ -134,6 +139,7 @@ export function createCustomerHandler(ctx = {}) {
     return {
       bestMatch: filtered[0] || matchedProducts[0],
       matches: filtered,
+      hasSpecificFilter: Boolean(targetType || targetDuration),
       allBrandVariants: matchedProducts
     };
   };
@@ -220,15 +226,18 @@ export function createCustomerHandler(ctx = {}) {
       } catch (_) {}
     }
 
-    // STRICT PREFIX RULE: Hanya perbolehkan pesan ber-prefix atau angka dial saat sesi navigasi aktif
-    if (!isPrefix && !((isNumericDial || isBackDial) && hasNavSession) && !fotoBuktiBayar && !pesananUntukDiulas) {
+    const isNaturalOrder = !isFromGroup && /^(?:beli|buy|order|pesan|mau|ambil|tolong)\s+\S+/i.test(cleanText);
+
+    // STRICT PREFIX RULE: Hanya perbolehkan pesan ber-prefix atau angka dial saat sesi navigasi aktif, bukti bayar, ulasan, atau order santai di DM
+    if (!isPrefix && !((isNumericDial || isBackDial) && hasNavSession) && !fotoBuktiBayar && !pesananUntukDiulas && !isNaturalOrder) {
       return false;
     }
 
     // REGISTRATION CHECK
     const exemptCustomerCmds = [
       'daftar', 'register', 'registrasi', 'owner', 'kontakowner', 'menu', 'help', 'bantuan',
-      'list', 'produk', 'katalog', 'listproduk', 'p', 'detail', 'info', 'lihat',
+      'linkgrup', 'linkgroup', 'grup', 'group',
+      'list', 'produk', 'katalog', 'listproduk', 'p', 'detail', 'info', 'lihat', 'canva',
       // Testimoni boleh dibaca sebelum daftar: ini justru yang meyakinkan orang
       // untuk mendaftar, jadi mengunci layarnya di balik registrasi terbalik.
       'testi', 'testimoni', 'ulasan', 'rating', 'bukti',
@@ -258,9 +267,9 @@ export function createCustomerHandler(ctx = {}) {
     // begitu juga profil, yang memuat saldo, total belanja dan kode referralnya.
     // Itu informasi keuangan pribadi, bukan bahan obrolan grup.
     const isPrivateCommand =
-      ['beli', 'buy', 'buynow'].includes(cleanCmd) ||
+      ['beli', 'buy', 'buynow', 'order'].includes(cleanCmd) ||
       ['cart', 'keranjang', 'checkout', 'bayar', 'cancel', 'batal', 'status', 'cekbayar', 'sudahbayar', 'riwayat', 'history'].includes(cleanCmd) ||
-      ['me', 'aku', 'saya', 'saldo', 'profil', 'profile', 'akun', 'member', 'statusakun', 'deposit'].includes(cleanCmd);
+      ['me', 'aku', 'saya', 'saldo', 'profil', 'profile', 'akun', 'member', 'statusakun', 'deposit', 'rekap', 'catatan'].includes(cleanCmd);
     const responseJid = (isFromGroup && isPrivateCommand) ? senderNumber : jid;
 
     // Pemberitahuan "cek DM" untuk perintah yang balasannya dialihkan ke japri.
@@ -790,6 +799,122 @@ export function createCustomerHandler(ctx = {}) {
     return;
   }
 
+  // ====================================================================
+  // 💵 PENCATAT KEUANGAN PRIBADI (.catat & .rekap)
+  // ====================================================================
+  if (['catat', 'keuangan', 'catatan', 'rekap'].includes(cleanCmd)) {
+    if (cleanCmd === 'rekap' || (cleanCmd === 'catat' && args[1]?.toLowerCase() === 'rekap') || cleanCmd === 'catatan') {
+      const summary = await db.getMonthlyFinanceSummary(senderNumber);
+      const recents = await db.getRecentFinanceRecords(senderNumber, 5);
+
+      const senderMention = senderNumber.split('@')[0];
+      let textRekap = `📊 *REKAP KEUANGAN BULAN INI* 📊\n`;
+      textRekap += `━━━━━━━━━━━━━━━━━━━━━\n`;
+      textRekap += `👤 Pemilik: *@${senderMention}*\n`;
+      textRekap += `📅 Periode: *${summary.period}*\n\n`;
+      textRekap += `🟢 *Total Pemasukan:* Rp${summary.income.toLocaleString('id-ID')}\n`;
+      textRekap += `🔴 *Total Pengeluaran:* Rp${summary.expense.toLocaleString('id-ID')}\n`;
+      const diffIcon = summary.balance >= 0 ? '📈' : '📉';
+      textRekap += `${diffIcon} *Saldo Bersih:* Rp${summary.balance.toLocaleString('id-ID')}\n`;
+      textRekap += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+      textRekap += `📝 *5 Catatan Terakhir:*\n`;
+
+      if (!recents || recents.length === 0) {
+        textRekap += `_Belum ada catatan keuangan bulan ini._\n`;
+      } else {
+        for (const item of recents) {
+          const tanda = item.type === 'INCOME' ? '🟢 +' : '🔴 -';
+          const nominal = `Rp${item.amount.toLocaleString('id-ID')}`;
+          textRekap += `• [ID:${item.id}] ${tanda}${nominal} _(${item.description})_\n`;
+        }
+      }
+
+      textRekap += `\n💡 *Tips Menambah Catatan:*\n`;
+      textRekap += `• Pengeluaran: \`.catat -15k Makan siang\`\n`;
+      textRekap += `• Pemasukan: \`.catat +500k Gaji bulanan\`\n`;
+      textRekap += `• Hapus catatan: \`.catat hapus <id>\``;
+
+      await sendRedirectNotice();
+      await sock.sendMessage(responseJid, {
+        text: textRekap,
+        mentions: [senderNumber]
+      }, { quoted: messageObj });
+      return;
+    }
+
+    // Subcommand: .catat hapus <id>
+    if (args[1]?.toLowerCase() === 'hapus' || args[1]?.toLowerCase() === 'del') {
+      const id = parseInt(args[2]);
+      if (isNaN(id) || id <= 0) {
+        await sock.sendMessage(jid, { text: '⚠️ Format salah. Contoh: `.catat hapus 12`' }, { quoted: messageObj });
+        return;
+      }
+      const deleted = await db.deleteFinanceRecord(senderNumber, id);
+      if (deleted) {
+        await sock.sendMessage(jid, { text: `✅ Catatan keuangan [ID:${id}] berhasil dihapus.` }, { quoted: messageObj });
+      } else {
+        await sock.sendMessage(jid, { text: `❌ Catatan [ID:${id}] tidak ditemukan atau bukan milikmu.` }, { quoted: messageObj });
+      }
+      return;
+    }
+
+    // Input catatan: .catat -15000 Beli seblak ATAU .catat +500000 Gaji
+    const rawArg1 = args[1] || '';
+    const isExpense = rawArg1.startsWith('-');
+    const isIncome = rawArg1.startsWith('+');
+
+    if (!isExpense && !isIncome) {
+      let helpText = `💰 *BUKU CATATAN KEUANGAN PRIBADI* 💰\n\n`;
+      helpText += `Catat pengeluaran dan pemasukan harianmu langsung di WhatsApp!\n\n`;
+      helpText += `📌 *Cara Pakai:*\n`;
+      helpText += `• Catat Pengeluaran: \`.catat -15000 Beli makan siang\`\n`;
+      helpText += `• Catat Pemasukan: \`.catat +500000 Bonus jualan\`\n`;
+      helpText += `• Format singkat didukung: \`.catat -25k Kopi\` atau \`.catat +1.5jt Freelance\`\n`;
+      helpText += `• Lihat Ringkasan: \`.rekap\`\n`;
+      helpText += `• Hapus Catatan: \`.catat hapus <ID>\``;
+      await sock.sendMessage(jid, { text: helpText }, { quoted: messageObj });
+      return;
+    }
+
+    let nominalStr = rawArg1.slice(1).toLowerCase().trim();
+    let multiplier = 1;
+    if (nominalStr.endsWith('jt') || nominalStr.endsWith('juta')) {
+      multiplier = 1000000;
+      nominalStr = nominalStr.replace(/jt|juta/, '');
+    } else if (nominalStr.endsWith('k') || nominalStr.endsWith('rb') || nominalStr.endsWith('ribu')) {
+      multiplier = 1000;
+      nominalStr = nominalStr.replace(/k|rb|ribu/, '');
+    }
+    nominalStr = nominalStr.replace(/[.,]/g, '');
+    const parsedAmount = Math.floor(Number(nominalStr) * multiplier);
+
+    if (isNaN(parsedAmount) || parsedAmount <= 0) {
+      await sock.sendMessage(jid, { text: '⚠️ Nominal tidak valid. Contoh: `.catat -15k Makan siang` atau `.catat +500000 Gaji`' }, { quoted: messageObj });
+      return;
+    }
+
+    const description = args.slice(2).join(' ').trim() || (isExpense ? 'Pengeluaran' : 'Pemasukan');
+    const type = isExpense ? 'EXPENSE' : 'INCOME';
+
+    const res = await db.addFinanceRecord(senderNumber, type, parsedAmount, description);
+    if (!res.success) {
+      await sock.sendMessage(jid, { text: `❌ Gagal menyimpan catatan: ${res.message}` }, { quoted: messageObj });
+      return;
+    }
+
+    const tanda = type === 'INCOME' ? '🟢 Pemasukan' : '🔴 Pengeluaran';
+    let confirmText = `✅ *Catatan Berhasil Disimpan!*\n\n`;
+    confirmText += `• Jenis: *${tanda}*\n`;
+    confirmText += `• Nominal: *Rp${parsedAmount.toLocaleString('id-ID')}*\n`;
+    confirmText += `• Keterangan: *${description}*\n`;
+    confirmText += `• ID Catatan: *#${res.id}*\n\n`;
+    confirmText += `_Ketik \`.rekap\` untuk melihat laporan keuangan bulan ini._`;
+
+    await sock.sendMessage(jid, { text: confirmText }, { quoted: messageObj });
+    return;
+  }
+
+
 
 
   // ==========================================
@@ -907,6 +1032,25 @@ export function createCustomerHandler(ctx = {}) {
   }
 
   // ====================================================================
+  // 1B. INFORMASI LINK GRUP UTAMA TOKO (.linkgrup, .linkgroup, .grup, .group)
+  // ====================================================================
+  if (['linkgrup', 'linkgroup', 'grup', 'group'].includes(cleanCmd)) {
+    const groupCheck = await checkIsUserInGroup(senderNumber);
+    const targetGroupName = groupCheck.groupName || 'Grup Utama Toko';
+    const inviteLink = groupCheck.inviteLink || botSettings.groupInviteLink || '';
+
+    const textGrup = `📢 *INFORMASI GRUP RESMI TOKO* 📢\n━━━━━━━━━━━━━━━━━━━━\n\n📌 *Nama Grup:* ${targetGroupName}\n🔗 *Link Undangan:*\n${inviteLink || 'Silakan hubungi Admin atau Owner untuk mendapatkan link grup.'}\n\n_Bergabunglah ke grup resmi toko untuk menikmati katalog produk, info restok, promo flash sale, dan akses bot WhatsApp!_ 🙏`;
+
+    await sendInteractiveButtons(sock, responseJid, {
+      text: textGrup,
+      buttons: inviteLink ? [
+        { type: 'cta_url', text: '🔗 Gabung Grup Sekarang', url: inviteLink }
+      ] : []
+    });
+    return true;
+  }
+
+  // ====================================================================
   // 2A. CARI PRODUK LEWAT KATA KUNCI (.p netflix, .detail NET-SH-7D)
   // ====================================================================
   //
@@ -914,11 +1058,12 @@ export function createCustomerHandler(ctx = {}) {
   // hasilnya SELALU berakhir di layar yang sama dengan layar yang dibuka lewat
   // nomor, jadi bentuk layar toko cuma ada satu dan pelanggan tidak perlu
   // belajar dua cara membaca.
-  const isDetailCmd = ['p', 'detail', 'info', 'lihat'].includes(cleanCmd) ||
+  const isDetailCmd = ['p', 'detail', 'info', 'lihat', 'canva'].includes(cleanCmd) ||
     (['list', 'produk', 'katalog'].includes(cleanCmd) && args.length > 1);
 
   if (isDetailCmd) {
-    const targetQuery = args.slice(1).join(' ').trim();
+    let targetQuery = args.slice(1).join(' ').trim();
+    if (!targetQuery && cleanCmd === 'canva') targetQuery = 'canva';
 
     if (targetQuery && !['ALL', 'PRODUK', 'BARANG', 'LIST', 'SEMUA'].includes(targetQuery.toUpperCase())) {
       const hasilVarian = await db.getProductVariants(targetQuery);
@@ -998,8 +1143,30 @@ export function createCustomerHandler(ctx = {}) {
       db.getRingkasanTestimoni()
     ]);
 
+    const layarTeks = susunLayarTesti({ bukti, ulasan: daftar, ringkasUlasan: ringkas });
+
+    try {
+      const repCardBuf = await createStoreReputationCard({
+        storeName: botSettings.botName || 'Akbar Store',
+        totalOrders: bukti?.jumlah || 0,
+        deliverySpeed: formatDurasi(bukti?.rataMs) || '< 5 Detik',
+        averageRating: Number(ringkas?.rataRata) || 5.0,
+        totalReviews: Number(ringkas?.jumlah) || 0,
+        recentReviews: daftar || []
+      });
+      if (repCardBuf && Buffer.isBuffer(repCardBuf)) {
+        await sock.sendMessage(responseJid, {
+          image: repCardBuf,
+          caption: `${layarTeks}\n\n💡 _Ketik \`.list\` untuk belanja atau \`.garansi\` untuk info garansi._`
+        });
+        return true;
+      }
+    } catch (cardErr) {
+      console.warn('[TESTI_CARD] Gagal membuat kartu reputasi:', cardErr.message);
+    }
+
     await sendInteractiveButtons(sock, responseJid, {
-      text: susunLayarTesti({ bukti, ulasan: daftar, ringkasUlasan: ringkas }),
+      text: layarTeks,
       buttons: [
         { type: 'reply', text: 'Katalog', id: '.list' },
         { type: 'reply', text: 'Garansi', id: '.garansi' }
@@ -1010,41 +1177,61 @@ export function createCustomerHandler(ctx = {}) {
 
   // 2C. SMART NATURAL LANGUAGE ORDERING (Deteksi Pembelian Bahasa Santai)
   const naturalOrderMatch = await matchNaturalOrder(cleanText);
-  if (naturalOrderMatch && naturalOrderMatch.bestMatch && !isPrefix && cleanCmd !== 'cari') {
-    const item = naturalOrderMatch.bestMatch;
-    
-    const addRes = await db.addToCart(senderNumber, item.kode, 1);
-    if (addRes.success) {
-      setUserNavSession(senderNumber, {
-        type: 'ORDER_READY',
-        selectedSku: item.kode,
-        productName: item.nama,
-        price: item.harga
-      });
+  if (naturalOrderMatch && cleanCmd !== 'cari') {
+    if (naturalOrderMatch.matches.length > 1 && !naturalOrderMatch.hasSpecificFilter) {
+      // Pembeli menyebut merek tapi belum memilih paket (misal: "order canva") -> Buka pilihan paketnya
+      return await tampilkanHalamanProduk(
+        naturalOrderMatch.matches.map(v => v.kode),
+        { brand: naturalOrderMatch.matches[0].brand_category || 'Canva' }
+      );
+    }
 
-      const confirmMsg = `✅ *Masuk keranjang*
+    const item = naturalOrderMatch.bestMatch;
+    if (item) {
+      const addRes = await db.addToCart(senderNumber, item.kode, 1);
+      if (addRes.success) {
+        setUserNavSession(senderNumber, {
+          type: 'ORDER_READY',
+          selectedSku: item.kode,
+          productName: item.nama,
+          price: item.harga
+        });
+
+        const confirmMsg = `✅ *Masuk keranjang*
 🛍️ ${item.nama}
 💰 *Rp${item.harga.toLocaleString('id-ID')}* · kode \`${item.kode}\`
 
 💡 Ketik \`.bayar\` untuk dapat QRIS tagihannya.`;
 
-      await sendInteractiveButtons(sock, responseJid, {
-        text: confirmMsg,
-        // `title` dilepas: `confirmMsg` sudah membuka dengan kepalanya sendiri,
-        // dan mengisi keduanya menumpuk dua kepala di satu pesan pendek.
-        footer: 'Ketik bayar untuk langsung ke pembayaran',
-        buttons: [
-          { type: 'reply', text: 'Bayar', id: '.checkout' },
-          { type: 'reply', text: 'Keranjang', id: '.keranjang' },
-          { type: 'reply', text: 'Katalog', id: '.list' }
-        ]
-      });
-      return true;
+        await sendInteractiveButtons(sock, responseJid, {
+          text: confirmMsg,
+          footer: 'Ketik bayar untuk langsung ke pembayaran',
+          buttons: [
+            { type: 'reply', text: 'Bayar', id: '.checkout' },
+            { type: 'reply', text: 'Keranjang', id: '.keranjang' },
+            { type: 'reply', text: 'Katalog', id: '.list' }
+          ]
+        });
+        return true;
+      }
     }
   }
 
-  // 3. BELI [KODE] [JUMLAH] / BUYNOW [KODE] [JUMLAH] (Beli Langsung 1-Klik)
-  const buyRegex = /^(?:beli|buy|buynow)\s+([a-zA-Z0-9_-]+)(?:\s+(\d+))?(?:\s+(langsung|instant|now|fast))?$/i;
+  // 2D. BANTUAN ORDER KOSONG (.order / order tanpa argumen)
+  if (cleanCmd === 'order' && args.length === 1) {
+    const teksOrder = `🛍️ *PANDUAN PEMESANAN TOKO*
+
+Ketik nama produk atau paket yang ingin Anda pesan:
+• \`.canva\` atau \`.p canva\` (Pilihan paket Canva Pro)
+• \`.beli CANVA-EDU\` (Pesan langsung dengan kode)
+• \`order canva hemat\` (Pesan via chat santai)
+• \`.list\` (Buka seluruh katalog toko)`;
+    await sock.sendMessage(responseJid, { text: teksOrder });
+    return true;
+  }
+
+  // 3. BELI [KODE] [JUMLAH] / BUYNOW [KODE] [JUMLAH] / ORDER [KODE] (Beli Langsung 1-Klik)
+  const buyRegex = /^(?:beli|buy|buynow|order)\s+([a-zA-Z0-9_-]+)(?:\s+(\d+))?(?:\s+(langsung|instant|now|fast))?$/i;
   if (buyRegex.test(cleanText)) {
     const match = cleanText.match(buyRegex);
     const code = match[1].toUpperCase();
@@ -1053,6 +1240,14 @@ export function createCustomerHandler(ctx = {}) {
     // Cek apakah kode produk benar-benar terdaftar di database toko
     const existingProduct = await db.getProductByKode(code);
     if (!existingProduct) {
+      // Cek apakah kode ini nama merek (seperti CANVA) yang punya varian
+      const sekeluarga = await db.getProductsByBrand(code);
+      if (sekeluarga.length > 0) {
+        return await tampilkanHalamanProduk(
+          sekeluarga.map(v => v.kode),
+          { brand: sekeluarga[0].brand_category || code }
+        );
+      }
       // Jika kode produk tidak terdaftar di database (misal: "lu kemaren beli itu kah"), anggap ini percakapan biasa -> Bot DIAM
       return;
     }
@@ -2286,27 +2481,28 @@ Halo *${customerName}*, berikut adalah daftar voucher / akun digital dari pesana
 Pembayaran untuk Order ID *${lastOrder.order_id}* sedang diverifikasi oleh admin. Kami akan memberikan notifikasi otomatis jika status pesanan berubah. Terima kasih!`;
       await sock.sendMessage(jid, { text: confirmText });
 
-      // Kirim info ke Grup Transaksi WhatsApp jika diatur
-      if (botSettings.transactionGroupId) {
-        const groupMsg = `━━━━━━━━━━━━━━━━━━
-📥 *BUKTI PEMBAYARAN BARU*
-━━━━━━━━━━━━━━━━━━
-Order ID: *${orderDetails.order_id}*
-Nama: *${orderDetails.customer_nama}*
-No WA: wa.me/${senderNumber.split('@')[0]}
-Total Belanja: *Rp${orderDetails.total.toLocaleString('id-ID')}*
-Status: *WAITING_CONFIRMATION*
+      // Kirim info ke Grup Testimoni / Transaksi WhatsApp jika diatur
+      const targetGroupId = botSettings.testimoniGroupId || botSettings.transactionGroupId;
+      if (targetGroupId) {
+        const itemLines = orderDetails.items && orderDetails.items.length > 0
+          ? orderDetails.items.map(item => `• ${item.produk_nama} (\`${item.produk_kode}\`) x${item.qty}`).join('\n')
+          : `• Deposit Saldo Rp${Number(orderDetails.total || 0).toLocaleString('id-ID')}`;
 
-*Item:*
-${orderDetails.items.map(item => `- ${item.produk_nama} (\`${item.produk_kode}\`) x${item.qty}`).join('\n')}
+        const groupMsg = `📸 *TESTIMONI / BUKTI PEMBAYARAN MASUK* 📸
 ━━━━━━━━━━━━━━━━━━
-⚙️ *PERINTAH ADMIN (Balas di grup ini):*
-• \`/paid ${orderDetails.order_id}\` : Konfirmasi pembayaran
-• \`/done ${orderDetails.order_id}\` : Pesanan selesai diproses
-• \`/cancel ${orderDetails.order_id}\` : Batalkan pesanan
-━━━━━━━━━━━━━━━━━━`;
+🧾 *Order ID:* ${orderDetails.order_id}
+👤 *Pelanggan:* ${orderDetails.customer_nama} (${samarkanNomor(senderNumber)})
+💰 *Total Transaksi:* Rp${Number(orderDetails.total || 0).toLocaleString('id-ID')}
+📅 *Waktu:* ${tanggalWib(Date.now())} ${jamWib(Date.now())} WIB
 
-        await sock.sendMessage(botSettings.transactionGroupId, { 
+📦 *Pesanan:*
+${itemLines}
+
+⏳ *Status:* Menunggu Konfirmasi (Admin cukup reply \`done\` untuk ACC)
+━━━━━━━━━━━━━━━━━━
+✨ _Terima kasih atas kepercayaannya berbelanja di toko kami!_ 🙏`;
+
+        await sock.sendMessage(targetGroupId, { 
           image: buffer, 
           caption: groupMsg 
         });

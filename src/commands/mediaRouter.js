@@ -24,6 +24,30 @@ import * as mediaHandler from '../../mediaHandler.js';
 import * as ent from '../../entertainmentHandler.js';
 import { getPremiumBenefits } from '../../premiumHandler.js';
 import { formatTunggu } from '../utils/pembatasLaju.js';
+import { createSpotifyLyricsCard, createSpotifyCanvasImage } from '../../cardGenerator.js';
+
+/**
+ * Bongkar pembungkus pesan WhatsApp (ephemeral, viewOnce, viewOnceV2, documentWithCaption)
+ * agar media di dalamnya dapat diakses langsung.
+ */
+function unboxMessage(rawMsg) {
+  if (!rawMsg) return null;
+  let msg = rawMsg;
+  while (
+    msg?.ephemeralMessage?.message ||
+    msg?.viewOnceMessage?.message ||
+    msg?.viewOnceMessageV2?.message ||
+    msg?.viewOnceMessageV2Extension?.message ||
+    msg?.documentWithCaptionMessage?.message
+  ) {
+    msg = msg.ephemeralMessage?.message ||
+          msg.viewOnceMessage?.message ||
+          msg.viewOnceMessageV2?.message ||
+          msg.viewOnceMessageV2Extension?.message ||
+          msg.documentWithCaptionMessage?.message;
+  }
+  return msg;
+}
 
 export function createMediaRouter(ctx) {
   const {
@@ -52,7 +76,7 @@ export function createMediaRouter(ctx) {
   // sengaja dibiarkan bebas supaya obrolan grup tidak ikut tersendat.
   const PERINTAH_MEDIA_BERAT = [
     // pengunduh
-    'tt', 'tiktok', 'ttmp3', 'ig', 'instagram',
+    'tt', 'tiktok', 'ttmp3', 'ttaudio', 'ig', 'instagram',
     'yt', 'youtube', 'ytmp3', 'ytmp4', 'fb', 'facebook',
     'pin', 'pinterest', 'tw', 'twitter', 'x', 'play', 'song',
     // pekerjaan berat lain
@@ -193,12 +217,12 @@ export function createMediaRouter(ctx) {
     const knownMediaCmds = [
       'hd', 'remini', 'upscale', 'stiker', 'sticker', 's', 'gif', 'sgif', 'toimg', 'unstick', 'toimage', 'tovideo', 'tovid', 'togif',
       'getpp', 'colongpp', 'curipp', 'pp', 'ambilpp', 'stikerpp', 'stickerpp', 'spp',
-      'qc', 'quote', 'brat', 'meme', 'draw', 'aiimg',
+      'qc', 'quote', 'brat', 'meme', 'smeme', 'draw', 'aiimg',
       'ssweb', 'ss', 'khodam', 'tts', 'shortlink', 'short', 'cuaca', 'invoice', 'struk',
       'tebakgambar', 'susunkata', 'roulette',
       'ping', 'statusbot', 'speed', 'owner', 'kontakowner',
-      'tt', 'tiktok', 'ttmp3', 'ig', 'instagram', 'yt', 'youtube', 'ytmp3', 'ytmp4',
-      'fb', 'facebook', 'pin', 'pinterest', 'tw', 'twitter', 'x', 'play', 'song', 'tomp3', 'tovn',
+      'tt', 'tiktok', 'ttmp3', 'ttaudio', 'ig', 'instagram', 'yt', 'youtube', 'ytmp3', 'ytmp4',
+      'fb', 'facebook', 'pin', 'pinterest', 'tw', 'twitter', 'x', 'play', 'song', 'canvas', 'lirik', 'lyrics', 'tomp3', 'tovn',
       'tr', 'translate', 'jadwalsholat', 'sholat', 'menfess', 'confess', 'balasmenfess', 'menfessreply', 'replymenfess', 'stopmenfess', 'closemenfess', 'endmenfess'
     ];
 
@@ -326,9 +350,11 @@ export function createMediaRouter(ctx) {
 
     // 0. HD Remini Image Upscaler
     if (['hd', 'remini', 'upscale'].includes(cleanCmd)) {
-      const quoted = m.message?.extendedTextMessage?.contextInfo?.quotedMessage;
-      const isQuotedImage = quoted?.imageMessage;
-      const isDirectImage = m.message?.imageMessage;
+      const quoted = unboxMessage(m.message?.extendedTextMessage?.contextInfo?.quotedMessage);
+      const direct = unboxMessage(m.message);
+
+      const isQuotedImage = quoted?.imageMessage || (quoted?.documentMessage?.mimetype?.startsWith('image/'));
+      const isDirectImage = direct?.imageMessage || (direct?.documentMessage?.mimetype?.startsWith('image/'));
 
       if (!isQuotedImage && !isDirectImage) {
         await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Harap kirim/reply foto dengan caption `.hd` atau `.remini` untuk meningkatkan kualitas foto." });
@@ -337,7 +363,14 @@ export function createMediaRouter(ctx) {
 
       await react('⏳');
       try {
-        const targetMessage = isDirectImage ? m : { message: quoted };
+        const targetMessage = isDirectImage ? m : {
+          key: {
+            remoteJid: jid,
+            id: m.message?.extendedTextMessage?.contextInfo?.stanzaId,
+            participant: m.message?.extendedTextMessage?.contextInfo?.participant
+          },
+          message: quoted?.imageMessage ? { imageMessage: quoted.imageMessage } : quoted
+        };
         const imageBuffer = await downloadMediaMessage(
           targetMessage,
           'buffer',
@@ -364,10 +397,12 @@ export function createMediaRouter(ctx) {
       return true;
     }
     
-    // 1. TikTok Downloader (.tt, .tiktok, .ttmp3)
-    if (['tt', 'tiktok', 'ttmp3'].includes(cleanCmd)) {
-      const isAudio = cleanCmd === 'ttmp3';
-      const url = args[1] || (msgText.match(/https?:\/\/[^\s]+/i)?.[0]);
+    // 1. TikTok Downloader (.tt, .tiktok, .ttmp3, .ttaudio)
+    if (['tt', 'tiktok', 'ttmp3', 'ttaudio'].includes(cleanCmd)) {
+      const isAudio = ['ttmp3', 'ttaudio'].includes(cleanCmd);
+      let rawUrl = args[1] || (msgText.match(/https?:\/\/[^\s]+/i)?.[0]);
+      if (rawUrl) rawUrl = rawUrl.replace(/[)\]}>.,!]+$/, '');
+      const url = await mediaHandler.expandCanonicalUrl(rawUrl);
       if (!url || (!url.includes('tiktok.com') && !url.includes('douyin.com'))) {
         await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Harap sertakan link TikTok yang valid.\n\n_Contoh:_ `.tt https://vt.tiktok.com/xxxx`" });
         return true;
@@ -398,7 +433,9 @@ export function createMediaRouter(ctx) {
 
     // 2. Instagram Downloader (.ig, .instagram) — Mendukung Foto Tunggal, Slide/Carousel & Video Reels
     if (['ig', 'instagram'].includes(cleanCmd)) {
-      const url = args[1] || (msgText.match(/https?:\/\/[^\s]+/i)?.[0]);
+      let rawUrl = args[1] || (msgText.match(/https?:\/\/[^\s]+/i)?.[0]);
+      if (rawUrl) rawUrl = rawUrl.replace(/[)\]}>.,!]+$/, '');
+      const url = await mediaHandler.expandCanonicalUrl(rawUrl);
       if (!url || !url.includes('instagram.com')) {
         await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Harap sertakan link Instagram Reels/Post/Foto yang valid.\n\n_Contoh:_ `.ig https://www.instagram.com/p/xxxx`" });
         return true;
@@ -416,7 +453,9 @@ export function createMediaRouter(ctx) {
     // pemiliknya cabang pencarian lagu di bawah.
     if (['yt', 'youtube', 'ytmp4', 'ytmp3'].includes(cleanCmd)) {
       const isAudio = cleanCmd === 'ytmp3';
-      const url = args[1] || (msgText.match(/https?:\/\/[^\s]+/i)?.[0]);
+      let rawUrl = args[1] || (msgText.match(/https?:\/\/[^\s]+/i)?.[0]);
+      if (rawUrl) rawUrl = rawUrl.replace(/[)\]}>.,!]+$/, '');
+      const url = await mediaHandler.expandCanonicalUrl(rawUrl);
       if (!url || (!url.includes('youtube.com') && !url.includes('youtu.be'))) {
         const cmdExample = isAudio ? '.ytmp3' : '.yt';
         await sock.sendMessage(jid, { text: `⚠️ *Format Salah:* Harap sertakan link YouTube/Shorts yang valid.\n\n_Contoh:_ \`${cmdExample} https://youtu.be/xxxx\`` });
@@ -462,7 +501,9 @@ export function createMediaRouter(ctx) {
 
     // 4. Facebook Downloader (.fb, .facebook) — Mendukung Foto & Video Reels
     if (['fb', 'facebook'].includes(cleanCmd)) {
-      const url = args[1] || (msgText.match(/https?:\/\/[^\s]+/i)?.[0]);
+      let rawUrl = args[1] || (msgText.match(/https?:\/\/[^\s]+/i)?.[0]);
+      if (rawUrl) rawUrl = rawUrl.replace(/[)\]}>.,!]+$/, '');
+      const url = await mediaHandler.expandCanonicalUrl(rawUrl);
       if (!url || (!url.includes('facebook.com') && !url.includes('fb.watch') && !url.includes('fb.com'))) {
         await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Harap sertakan link Facebook Video/Reels/Foto yang valid.\n\n_Contoh:_ `.fb https://fb.watch/xxxx`" });
         return true;
@@ -475,7 +516,9 @@ export function createMediaRouter(ctx) {
 
     // 5. Pinterest Downloader (.pin, .pinterest) — Mendukung Foto & Video Pinterest
     if (['pin', 'pinterest'].includes(cleanCmd)) {
-      const url = args[1] || (msgText.match(/https?:\/\/[^\s]+/i)?.[0]);
+      let rawUrl = args[1] || (msgText.match(/https?:\/\/[^\s]+/i)?.[0]);
+      if (rawUrl) rawUrl = rawUrl.replace(/[)\]}>.,!]+$/, '');
+      const url = await mediaHandler.expandCanonicalUrl(rawUrl);
       if (!url || (!url.includes('pinterest.com') && !url.includes('pin.it'))) {
         await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Harap sertakan link Pinterest yang valid.\n\n_Contoh:_ `.pin https://pin.it/xxxx`" });
         return true;
@@ -488,7 +531,9 @@ export function createMediaRouter(ctx) {
 
     // 6. Twitter / X Downloader (.tw, .twitter, .x) — Mendukung Foto & Video
     if (['tw', 'twitter', 'x'].includes(cleanCmd)) {
-      const url = args[1] || (msgText.match(/https?:\/\/[^\s]+/i)?.[0]);
+      let rawUrl = args[1] || (msgText.match(/https?:\/\/[^\s]+/i)?.[0]);
+      if (rawUrl) rawUrl = rawUrl.replace(/[)\]}>.,!]+$/, '');
+      const url = await mediaHandler.expandCanonicalUrl(rawUrl);
       if (!url || (!url.includes('twitter.com') && !url.includes('x.com'))) {
         await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Harap sertakan link Twitter/X yang valid.\n\n_Contoh:_ `.tw https://x.com/username/status/xxxx`" });
         return true;
@@ -501,8 +546,16 @@ export function createMediaRouter(ctx) {
 
     // 5. Stiker / GIF Converter (.stiker, .sticker, .s, .gif, .sgif)
     if (['stiker', 'sticker', 's', 'gif', 'sgif'].includes(cleanCmd)) {
-      const hasImage = m.message?.imageMessage || m.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage;
-      const hasVideo = m.message?.videoMessage || m.message?.extendedTextMessage?.contextInfo?.quotedMessage?.videoMessage;
+      const quoted = unboxMessage(m.message?.extendedTextMessage?.contextInfo?.quotedMessage);
+      const direct = unboxMessage(m.message);
+
+      const hasDirectImage = direct?.imageMessage || (direct?.documentMessage?.mimetype?.startsWith('image/'));
+      const hasQuotedImage = quoted?.imageMessage || (quoted?.documentMessage?.mimetype?.startsWith('image/'));
+      const hasDirectVideo = direct?.videoMessage;
+      const hasQuotedVideo = quoted?.videoMessage;
+
+      const hasImage = hasDirectImage || hasQuotedImage;
+      const hasVideo = hasDirectVideo || hasQuotedVideo;
       
       if (!hasImage && !hasVideo) {
         await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Harap kirim foto/video dengan caption `.stiker` atau balas (reply) pesan foto/video dengan `.stiker`!" });
@@ -512,14 +565,14 @@ export function createMediaRouter(ctx) {
       try {
         await react('⏳');
         let targetMessage = m;
-        if (m.message?.extendedTextMessage?.contextInfo?.quotedMessage) {
+        if (!hasDirectImage && !hasDirectVideo && (hasQuotedImage || hasQuotedVideo)) {
           targetMessage = {
             key: {
               remoteJid: jid,
-              id: m.message.extendedTextMessage.contextInfo.stanzaId,
-              participant: m.message.extendedTextMessage.contextInfo.participant
+              id: m.message?.extendedTextMessage?.contextInfo?.stanzaId,
+              participant: m.message?.extendedTextMessage?.contextInfo?.participant
             },
-            message: m.message.extendedTextMessage.contextInfo.quotedMessage
+            message: hasQuotedVideo ? { videoMessage: quoted.videoMessage } : (quoted?.imageMessage ? { imageMessage: quoted.imageMessage } : quoted)
           };
         }
 
@@ -544,20 +597,24 @@ export function createMediaRouter(ctx) {
 
     // 5. Sticker to Image (.toimg, /toimg)
     if (['toimg', 'unstick', 'toimage'].includes(cleanCmd)) {
-      const quotedSticker = m.message?.extendedTextMessage?.contextInfo?.quotedMessage?.stickerMessage;
-      if (!quotedSticker) {
+      const quoted = unboxMessage(m.message?.extendedTextMessage?.contextInfo?.quotedMessage);
+      const direct = unboxMessage(m.message);
+      const stickerMsg = quoted?.stickerMessage || direct?.stickerMessage;
+
+      if (!stickerMsg) {
         await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Harap balas (reply) stiker WhatsApp yang ingin diubah menjadi gambar dengan perintah `.toimg`!" });
         return true;
       }
 
       try {
         await react('⏳');
-        const targetMessage = {
+        const targetMessage = direct?.stickerMessage ? m : {
           key: {
             remoteJid: jid,
-            id: m.message.extendedTextMessage.contextInfo.stanzaId
+            id: m.message?.extendedTextMessage?.contextInfo?.stanzaId,
+            participant: m.message?.extendedTextMessage?.contextInfo?.participant
           },
-          message: m.message.extendedTextMessage.contextInfo.quotedMessage
+          message: { stickerMessage: stickerMsg }
         };
 
         const stickerBuffer = await downloadMediaMessage(targetMessage, 'buffer', {});
@@ -619,6 +676,7 @@ export function createMediaRouter(ctx) {
       const isQuoted = !!m.message?.extendedTextMessage?.contextInfo?.quotedMessage;
       let textToQuote = '';
       let senderName = '';
+      let avatarUrl = null;
 
       if (isQuoted) {
         const contextInfo = m.message.extendedTextMessage.contextInfo;
@@ -646,25 +704,32 @@ export function createMediaRouter(ctx) {
             senderName = formatPhoneNumber(normalizedParticipant);
           }
         }
+
+        try {
+          avatarUrl = await sock.profilePictureUrl(normalizedParticipant, 'image');
+        } catch (_) {}
       } else {
         textToQuote = args.slice(1).join(' ');
         senderName = m.pushName || 'Pelanggan';
+        try {
+          avatarUrl = await sock.profilePictureUrl(senderNumber, 'image');
+        } catch (_) {}
       }
 
       if (!textToQuote) {
-        await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Ketik `.qc [TEKS]` atau balas (reply) pesan orang lain dengan `.qc`!\n\n_Contoh:_ `.qc halo ini quote stiker`" });
+        await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Ketik `.qc [TEKS]` atau balas (reply) pesan orang lain dengan `.qc`!\n\n_Contoh:_ `.qc halo ini quote stiker 😂🔥`" });
         return true;
       }
 
       try {
         await react('⏳');
-        const qcRes = await mediaHandler.generateQuoteSticker(senderName, textToQuote);
+        const qcRes = await mediaHandler.generateQuoteSticker(senderName, textToQuote, avatarUrl);
         if (qcRes.success && qcRes.buffer) {
           await sock.sendMessage(jid, { sticker: qcRes.buffer });
           await react('✅');
         } else {
           await react('❌');
-          await sock.sendMessage(jid, { text: `❌ Gagal membuat quote sticker.` });
+          await sock.sendMessage(jid, { text: `❌ Gagal membuat quote sticker: ${qcRes.message || 'Terjadi kesalahan sistem'}` });
         }
       } catch (err) {
         await react('❌');
@@ -674,11 +739,16 @@ export function createMediaRouter(ctx) {
       return true;
     }
 
-    // 8. Meme Generator (.meme, /meme)
-    if (['meme'].includes(cleanCmd)) {
-      const hasImage = m.message?.imageMessage || m.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage;
-      if (!hasImage) {
-        await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Kirim foto dengan caption `.meme TEKS ATAS | TEKS BAWAH` atau balas foto orang lain dengan `.meme TEKS ATAS | TEKS BAWAH`!" });
+    // 8. Meme Generator (.meme, .smeme, /meme)
+    if (['meme', 'smeme'].includes(cleanCmd)) {
+      const quoted = unboxMessage(m.message?.extendedTextMessage?.contextInfo?.quotedMessage);
+      const direct = unboxMessage(m.message);
+
+      const isQuotedImage = quoted?.imageMessage || (quoted?.documentMessage?.mimetype?.startsWith('image/'));
+      const isDirectImage = direct?.imageMessage || (direct?.documentMessage?.mimetype?.startsWith('image/'));
+
+      if (!isQuotedImage && !isDirectImage) {
+        await sock.sendMessage(jid, { text: `⚠️ *Format Salah:* Kirim foto dengan caption \`.${cleanCmd} TEKS ATAS | TEKS BAWAH\` atau balas foto orang lain dengan \`.${cleanCmd} TEKS ATAS | TEKS BAWAH\`!` });
         return true;
       }
 
@@ -689,24 +759,32 @@ export function createMediaRouter(ctx) {
 
       try {
         await react('⏳');
-        let targetMessage = m;
-        if (m.message?.extendedTextMessage?.contextInfo?.quotedMessage) {
-          targetMessage = {
-            key: {
-              remoteJid: jid,
-              id: m.message.extendedTextMessage.contextInfo.stanzaId,
-              participant: m.message.extendedTextMessage.contextInfo.participant
-            },
-            message: m.message.extendedTextMessage.contextInfo.quotedMessage
-          };
-        }
+        const targetMessage = isDirectImage ? m : {
+          key: {
+            remoteJid: jid,
+            id: m.message?.extendedTextMessage?.contextInfo?.stanzaId,
+            participant: m.message?.extendedTextMessage?.contextInfo?.participant
+          },
+          message: quoted?.imageMessage ? { imageMessage: quoted.imageMessage } : quoted
+        };
 
         const imageBuffer = await downloadMediaMessage(targetMessage, 'buffer', {});
         const memeRes = await mediaHandler.generateMeme(imageBuffer, topText, bottomText);
 
         if (memeRes.success && memeRes.buffer) {
-          await sock.sendMessage(jid, { image: memeRes.buffer, caption: "🎨 *Meme Generator by Akbar Store Bot*" });
-          await react('✅');
+          if (cleanCmd === 'smeme') {
+            const stickerRes = await mediaHandler.createSticker(memeRes.buffer, 'Sticker Meme', 'Akbar Store', false, false);
+            if (stickerRes.success && stickerRes.buffer) {
+              await sock.sendMessage(jid, { sticker: stickerRes.buffer });
+              await react('✅');
+            } else {
+              await react('❌');
+              await sock.sendMessage(jid, { text: `❌ Gagal mengubah meme ke stiker.` });
+            }
+          } else {
+            await sock.sendMessage(jid, { image: memeRes.buffer, caption: "🎨 *Meme Generator by Akbar Store Bot*" });
+            await react('✅');
+          }
         } else {
           await react('❌');
           await sock.sendMessage(jid, { text: `❌ Gagal membuat meme.` });
@@ -1226,53 +1304,285 @@ _Silakan simpan kontak kartu di atas jika ada kendala khusus atau pertanyaan ker
     }
 
     // 21. Cari & Download Lagu (.song, .play)
-    if (['song', 'play'].includes(cleanCmd)) {
-      const query = args.slice(1).join(' ');
+    // 21. Cari & Unduh Lagu / Spotify Offline Player (.play, .song, .canvas)
+    if (['song', 'play', 'canvas'].includes(cleanCmd)) {
+      let isVideoMode = cleanCmd === 'canvas';
+      let isZipMode = false;
+      let query = '';
+
+      if (cleanCmd === 'canvas') {
+        query = args.slice(1).join(' ').trim();
+      } else {
+        const sub = (args[1] || '').toLowerCase();
+        if (sub === 'video' || sub === 'canvas') {
+          isVideoMode = true;
+          query = args.slice(2).join(' ').trim();
+        } else if (sub === 'zip' || sub === 'bundle') {
+          isZipMode = true;
+          query = args.slice(2).join(' ').trim();
+        } else {
+          query = args.slice(1).join(' ').trim();
+        }
+      }
+
       if (!query) {
-        await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Harap sertakan judul lagu.\n\n_Contoh:_ `.song Laskar Pelangi`" });
+        await sock.sendMessage(jid, {
+          text: `⚠️ *Format Perintah Kurang Lengkap!*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📌 *Pilihan Penggunaan:*\n• \`.play <judul>\` — Unduh MP3 + Cover & Lirik tertanam di player\n• \`.play video <judul>\` atau \`.canvas <judul>\` — Video Vertikal 9:16 Spotify Canvas\n• \`.play zip <judul>\` — Paket lengkap ZIP (MP3 + LRC + Cover HD)\n\n_Contoh:_ \`.play Laskar Pelangi\` atau \`.play video Sheila On 7 - Dan\``
+        });
         return true;
       }
+
       try {
         await react('⏳');
 
-        // Tempelan tautan tetap dilayani: dicari di YouTube hanya kalau yang
-        // diketik memang berupa judul.
-        const tautanYt = query.match(/https?:\/\/[^\s]*(?:youtube\.com|youtu\.be)[^\s]*/i)?.[0];
-        let songRes;
-        if (tautanYt) {
-          const res = await mediaHandler.downloadYouTubeAudio(tautanYt);
-          const siap = res.success ? await mediaHandler.siapkanMediaWA({ buffer: res.buffer, url: res.audioUrl, type: 'audio' }) : null;
-          songRes = siap?.ok
-            ? { success: true, buffer: siap.buffer, title: (res.title || 'YouTube Audio').replace(/[/\\?%*:|"<>]/g, ''), mimetype: siap.mimetype, ext: siap.ext }
-            : { success: false, message: res.success ? mediaHandler.pesanGagalMedia(siap, 'Audio YouTube') : (res.message || 'Gagal mengunduh audio YouTube.') };
-        } else {
-          // Hasil pencarian dilewatkan gerbang yang SAMA dengan jalur berlink di
-          // atas. Dulu cabang ini mengirim buffer mentah langsung: batas 48 MB
-          // tidak diperiksa, dan mimetype-nya dipakai apa adanya — padahal wadah
-          // m4a terbaca sebagai 'mp4', jadi lagunya dikirim berlabel video.
-          const hasilCari = await mediaHandler.downloadSongBySearch(query);
-          const siapCari = hasilCari.success
-            ? await mediaHandler.siapkanMediaWA({ buffer: hasilCari.buffer, type: 'audio' })
-            : null;
-          songRes = siapCari?.ok
-            ? { success: true, buffer: siapCari.buffer, title: hasilCari.title, mimetype: siapCari.mimetype, ext: siapCari.ext }
-            : { success: false, message: hasilCari.success ? mediaHandler.pesanGagalMedia(siapCari, 'Lagu') : hasilCari.message };
-        }
-        if (songRes.success && songRes.buffer) {
-          await sock.sendMessage(jid, {
-            audio: songRes.buffer,
-            mimetype: songRes.mimetype || 'audio/mp4',
-            fileName: `${songRes.title}.${songRes.ext || 'm4a'}`
+        // 1. Ambil preview info lagu dari YouTube
+        const songInfo = await mediaHandler.getSongInfo(query);
+        const infoTitle = (songInfo.success && songInfo.title) ? songInfo.title : query;
+        const infoDuration = songInfo.duration || '-';
+        const infoUrl = songInfo.url || (query.match(/https?:\/\/[^\s]+/i)?.[0] || '');
+        const targetDownload = songInfo.url || query;
+
+        // 2. Ambil lirik lagu secara cepat (maks 6 detik)
+        let lyricsRes = null;
+        try {
+          const lrcSearchQuery = query.includes(' - ') ? query : `${infoTitle} ${songInfo.artist !== 'Artis' ? songInfo.artist : ''}`.trim();
+          lyricsRes = await Promise.race([
+            mediaHandler.getSongLyrics(lrcSearchQuery, songInfo.artist),
+            new Promise(resolve => setTimeout(() => resolve(null), 6000))
+          ]);
+        } catch {}
+
+        // 3. Tentukan Judul, Artis, dan Album Resmi:
+        // Jika LRCLIB berhasil mencocokkan, metadata LRCLIB (katalog Spotify resmi) 100% otoritatif!
+        const finalTitle = (lyricsRes?.title || songInfo.title || query).replace(/[/\\?%*:|"<>]/g, '').trim();
+        const finalArtist = (lyricsRes?.artist || (songInfo.artist && songInfo.artist !== 'Artis' ? songInfo.artist : (query.includes(' - ') ? query.split(' - ')[0].trim() : 'Artis'))).replace(/[/\\?%*:|"<>]/g, '').trim();
+        const finalAlbum = (lyricsRes?.album || finalTitle).replace(/[/\\?%*:|"<>]/g, '').trim();
+        const coverBuf = lyricsRes?.coverBuffer || songInfo.thumbnailBuffer;
+
+        const baseFileName = `${finalArtist} - ${finalTitle}`;
+        const mp3FileName = `${baseFileName}.mp3`;
+        const lrcFileName = `${baseFileName}.lrc`;
+
+        // MODE A: VIDEO SPOTIFY CANVAS (9:16)
+        if (isVideoMode) {
+          const canvasImgBuf = await createSpotifyCanvasImage({
+            title: finalTitle,
+            artist: finalArtist,
+            coverBuffer: coverBuf,
+            lyricsLines: lyricsRes?.snippetLines || [],
+            duration: infoDuration
           });
+
+          const songRes = await mediaHandler.downloadSongBySearch(targetDownload);
+          if (songRes.success && songRes.buffer) {
+            const canvasVidBuf = await mediaHandler.generateSpotifyCanvasVideo({
+              imageBuffer: canvasImgBuf,
+              audioBuffer: songRes.buffer,
+              duration: 25
+            });
+
+            if (canvasVidBuf) {
+              await sock.sendMessage(jid, {
+                video: canvasVidBuf,
+                caption: `🟢 *SPOTIFY CANVAS VIDEO (9:16)* 🟢\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🎵 *Judul*  : *${finalTitle}*\n👤 *Artis*  : ${finalArtist}\n⏱️ *Format* : Vertikal 9:16 (Layar Penuh HP / Status WA)\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🎧 _Spotify Canvas Engine • ${botSettings.botName || 'Akbar Store'}_`
+              }, { quoted: m });
+              await react('✅');
+              return true;
+            }
+          }
+          // Jika video gagal, lanjut fallback ke MP3
+        }
+
+        // MODE B: PAKET ZIP LENGKAP
+        if (isZipMode) {
+          const songRes = await mediaHandler.downloadSongBySearch(targetDownload);
+          if (songRes.success && songRes.buffer) {
+            const taggedMp3 = await mediaHandler.embedMetadataAndLyricsToMp3({
+              audioBuffer: songRes.buffer,
+              coverBuffer: coverBuf,
+              lyrics: lyricsRes?.lyrics || '',
+              syncedLyrics: lyricsRes?.syncedLyrics || '',
+              title: finalTitle,
+              artist: finalArtist,
+              album: finalAlbum
+            });
+
+            let lrcContent = lyricsRes?.syncedLyrics || lyricsRes?.lyrics || '';
+            if (lrcContent && !lrcContent.includes('[ti:')) {
+              lrcContent = `[ti:${finalTitle}]\n[ar:${finalArtist}]\n[al:${finalAlbum}]\n\n${lrcContent}`;
+            }
+
+            const zipRes = await mediaHandler.createSongBundleZip({
+              mp3Buffer: taggedMp3 || songRes.buffer,
+              lrcText: lrcContent,
+              coverBuffer: coverBuf,
+              title: baseFileName,
+              artist: finalArtist
+            });
+
+            if (zipRes?.buffer) {
+              await sock.sendMessage(jid, {
+                document: zipRes.buffer,
+                mimetype: 'application/zip',
+                fileName: zipRes.fileName,
+                caption: `📦 *PAKET SPOTIFY OFFLINE PLAYER (.ZIP)* 📦\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🎵 *${finalTitle}*\n👤 *${finalArtist}*\n💽 *${finalAlbum}*\n\n📁 *Isi Arsip Paket:*\n1. 🎧 \`${mp3FileName}\` (Lirik & Cover Tertanam)\n2. 📜 \`${lrcFileName}\` (File Lirik Sinkron untuk Pemutar HP)\n3. 🖼️ \`${baseFileName}_Cover.jpg\` (Cover Resolusi Tinggi)\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n💡 _Ekstrak file ini di smartphone Anda untuk pengalaman pemutar musik offline terbaik!_`
+              }, { quoted: m });
+              await react('✅');
+              return true;
+            }
+          }
+        }
+
+        // MODE C: DEFAULT (AUDIO MP3 DENGAN LIRIK & COVER TERTANAM)
+        // Render kartu lirik visual
+        let spotifyCardBuf = null;
+        if (lyricsRes?.success && lyricsRes?.snippetLines?.length) {
+          try {
+            spotifyCardBuf = await createSpotifyLyricsCard({
+              title: finalTitle,
+              artist: finalArtist,
+              coverBuffer: coverBuf,
+              lyricsLines: lyricsRes.snippetLines,
+              duration: infoDuration
+            });
+          } catch {}
+        }
+
+        // Siapkan cuplikan lirik yang rapi di preview caption (maksimal 700 karakter)
+        let lyricSnippetText = '';
+        if (lyricsRes?.lyrics) {
+          const rawLines = lyricsRes.lyrics.split('\n').filter(Boolean);
+          const topLines = rawLines.slice(0, 8).join('\n');
+          lyricSnippetText = topLines.length > 500 ? topLines.slice(0, 500) + '...' : topLines;
+          if (rawLines.length > 8) {
+            lyricSnippetText += '\n_...(Lirik lengkap sudah tertanam di pemutar musik HP)_';
+          }
+        }
+
+        const previewText = `🟢 *SPOTIFY OFFLINE PLAYER* 🟢\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📌 *Judul*    : *${finalTitle}*\n👤 *Artis*    : ${finalArtist}\n💽 *Album*    : ${finalAlbum}\n⏱️ *Durasi*   : ${infoDuration}${infoUrl ? `\n🔗 *Sumber*   : ${infoUrl}` : ''}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n${lyricSnippetText ? `📜 *LIRIK LAGU (SPOTIFY):*\n${lyricSnippetText}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` : ''}⏳ _Sedang memproses audio MP3 (Cover & Lirik Tertanam)..._`;
+
+        const imageToSend = spotifyCardBuf || songInfo.thumbnailBuffer;
+        if (imageToSend) {
+          try {
+            await sock.sendMessage(jid, {
+              image: imageToSend,
+              caption: previewText
+            }, { quoted: m });
+          } catch {
+            await sock.sendMessage(jid, { text: previewText }, { quoted: m });
+          }
+        } else {
+          await sock.sendMessage(jid, { text: previewText }, { quoted: m });
+        }
+
+        // Unduh lagu MP3
+        const songRes = await mediaHandler.downloadSongBySearch(targetDownload);
+
+        if (songRes.success && songRes.buffer) {
+          // Tanamkan metadata ID3 Asli (Cover APIC, Lirik USLT & SYLT Sinkron) via NodeID3
+          const taggedMp3 = await mediaHandler.embedMetadataAndLyricsToMp3({
+            audioBuffer: songRes.buffer,
+            coverBuffer: coverBuf,
+            lyrics: lyricsRes?.lyrics || '',
+            syncedLyrics: lyricsRes?.syncedLyrics || '',
+            title: finalTitle,
+            artist: finalArtist,
+            album: finalAlbum
+          });
+
+          // Kirim berkas MP3 sebagai DOKUMEN agar WhatsApp mempertahankan nama file asli
+          await sock.sendMessage(jid, {
+            document: taggedMp3 || songRes.buffer,
+            mimetype: 'audio/mpeg',
+            fileName: mp3FileName,
+            caption: `🎧 *${finalTitle}*\n👤 *Artis:* ${finalArtist}\n💽 *Album:* ${finalAlbum}\n✅ *Siap diputar di Offline Player HP!*\n\n✨ *Fitur Spotify Offline:*
+• Cover album & lirik lagu (USLT & SYLT) sudah tertanam di dalam berkas.
+• Kompatibel dengan Poweramp, Samsung Music, Musicolet, Retro Music, Oto Music, dll.
+
+💡 *Tips Poweramp:*
+Jika lirik belum muncul otomatis, di layar lirik Poweramp ketuk ikon roda gigi ⚙️ -> centang *Rescan Lyrics Tags* / *Search for embedded lyrics*, atau simpan file \`.lrc\` di folder yang sama dengan MP3.
+
+💡 *Pilihan Format Lainnya:*
+• Video Canvas 9:16: Ketik \`.play video ${finalTitle}\`
+• Paket Lengkap ZIP: Ketik \`.play zip ${finalTitle}\``
+          }, { quoted: m });
+
+          // Kirim juga file lirik sinkron (.lrc) jika tersedia untuk pemutar musik HP
+          if (lyricsRes?.syncedLyrics || lyricsRes?.lyrics) {
+            try {
+              let lrcContent = lyricsRes.syncedLyrics || lyricsRes.lyrics;
+              if (lrcContent && !lrcContent.includes('[ti:')) {
+                lrcContent = `[ti:${finalTitle}]\n[ar:${finalArtist}]\n[al:${finalAlbum}]\n\n${lrcContent}`;
+              }
+              const lrcBuffer = Buffer.from(lrcContent, 'utf-8');
+              await sock.sendMessage(jid, {
+                document: lrcBuffer,
+                mimetype: 'text/plain',
+                fileName: lrcFileName,
+                caption: `📜 *File Lirik Sinkron (${lrcFileName})*\nSimpan di folder yang sama dengan file MP3 agar lirik berjalan otomatis baris demi baris di Poweramp / Musicolet / Retro Music!`
+              }, { quoted: m });
+            } catch (lrcErr) {
+              console.warn('[LRC_SEND_WARN]', lrcErr.message);
+            }
+          }
+
           await react('✅');
         } else {
           await react('❌');
-          await sock.sendMessage(jid, { text: `❌ ${songRes.message || 'Gagal mencari/mendownload lagu.'}` });
+          await sock.sendMessage(jid, { text: `❌ ${songRes.message || 'Gagal mengunduh berkas audio lagu.'}` }, { quoted: m });
         }
       } catch (err) {
         await react('❌');
         console.error("[SONG_CMD_ERR]", err.message);
-        await sock.sendMessage(jid, { text: "❌ Terjadi kesalahan saat mencari lagu." });
+        await sock.sendMessage(jid, { text: "❌ Terjadi kesalahan saat memproses lagu." }, { quoted: m });
+      }
+      return true;
+    }
+
+    // 22. Cari Lirik Lagu Ala Spotify (.lirik, .lyrics)
+    if (['lirik', 'lyrics'].includes(cleanCmd)) {
+      const query = args.slice(1).join(' ').trim();
+      if (!query) {
+        await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Harap sertakan judul lagu.\n\n_Contoh:_ `.lirik Laskar Pelangi` atau `.lirik Nidji - Laskar Pelangi`" });
+        return true;
+      }
+      try {
+        await react('⏳');
+        const lyricsRes = await mediaHandler.getSongLyrics(query);
+        if (!lyricsRes.success || !lyricsRes.lyrics) {
+          await react('❌');
+          await sock.sendMessage(jid, { text: `❌ ${lyricsRes.message || 'Lirik lagu tidak ditemukan.'}` }, { quoted: m });
+          return true;
+        }
+
+        let cardBuffer = null;
+        try {
+          cardBuffer = await createSpotifyLyricsCard({
+            title: lyricsRes.title,
+            artist: lyricsRes.artist,
+            coverBuffer: lyricsRes.coverBuffer,
+            lyricsLines: lyricsRes.snippetLines,
+            duration: '03:45'
+          });
+        } catch (cardErr) {
+          console.warn('[SPOTIFY_CARD_ERR]', cardErr.message);
+        }
+
+        const captionLyrics = `🟢 *SPOTIFY LYRICS* 🟢\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🎵 *${lyricsRes.title}*\n👤 *${lyricsRes.artist}*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n${lyricsRes.lyrics}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🎧 _Spotify Lyrics Engine • ${botSettings.botName || 'Akbar Store'}_`;
+
+        if (cardBuffer) {
+          await sock.sendMessage(jid, {
+            image: cardBuffer,
+            caption: captionLyrics
+          }, { quoted: m });
+        } else {
+          await sock.sendMessage(jid, { text: captionLyrics }, { quoted: m });
+        }
+        await react('✅');
+      } catch (err) {
+        await react('❌');
+        console.error('[LIRIK_CMD_ERR]', err.message);
+        await sock.sendMessage(jid, { text: "❌ Terjadi kesalahan saat mencari lirik lagu." }, { quoted: m });
       }
       return true;
     }

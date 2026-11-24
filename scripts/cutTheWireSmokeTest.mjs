@@ -68,3 +68,8 @@ activeWireGames.delete(dummyJid);
 console.log('✅ 4. Mekanisme kabel DEFUSAL & Kemenangan instan valid');
 
 console.log('\n🎉 SEMUA SMOKE TESTS CUT THE WIRE (JINAKKAN BOM) 100% SUKSES!');
+
+// Modul game menarik bot.js -> mediaHandler.js, dan mediaHandler menembakkan
+// `pip install -U yt-dlp` saat di-import. Tanpa exit eksplisit, test yang sudah
+// lulus tetap menggantung menunggu proses itu selesai.
+process.exit(0);

@@ -6,7 +6,9 @@ import makeWASocket, {
   fetchLatestBaileysVersion,
   generateWAMessageFromContent,
   prepareWAMessageMedia,
-  proto
+  proto,
+  Browsers,
+  makeCacheableSignalKeyStore
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import P from 'pino';
@@ -32,22 +34,187 @@ import { buildCommandMenu } from './commandRegistry.js';
 import { createWelcomeGoodbyeCard, createLevelUpCard } from './cardGenerator.js';
 import { tickPesanGrup } from './src/games/tcg/drop.js';
 import { adalahJidBot } from './src/utils/botIdentity.js';
-import { formatTunggu } from './src/utils/pembatasLaju.js';
+import { formatTunggu, periksaLaju } from './src/utils/pembatasLaju.js';
 import { createMediaRouter } from './src/commands/mediaRouter.js';
+import { jamWib } from './src/utils/waktu.js';
+import { 
+  injectTextEntropy, 
+  hitungJedaGaussian, 
+  hitungJedaMelihat, 
+  healthSentinel 
+} from './src/utils/antiDeteksi.js';
 
-
-
+export { healthSentinel };
 
 // Setup Logger
 const logger = P({ level: 'info' });
 
 let sock = null;
 let botSettings = {};
+let simpanKredensial = null;
+let onSocketReadyRef = null;
+let isForceAwake = false;
+export function setForceAwake(val) { isForceAwake = Boolean(val); }
+
+// --- JADWAL TIDUR MALAM OTOMATIS (NIGHT SLEEP ENGINE) ---
+export const nightSleepState = {
+  enabled: false,
+  startHour: 23, // 23:00 WIB
+  endHour: 6,    // 06:00 WIB
+  announceGroup: false,
+  timerId: null
+};
+
+export function isNightSleepTime() {
+  if (!nightSleepState.enabled) return false;
+  const nowWib = new Date(Date.now() + 7 * 60 * 60 * 1000);
+  const hour = nowWib.getUTCHours();
+  if (nightSleepState.startHour > nightSleepState.endHour) {
+    return hour >= nightSleepState.startHour || hour < nightSleepState.endHour;
+  } else {
+    return hour >= nightSleepState.startHour && hour < nightSleepState.endHour;
+  }
+}
+
+export function getNextNightSleepTransition() {
+  const now = Date.now();
+  const nowWib = new Date(now + 7 * 60 * 60 * 1000);
+  const hour = nowWib.getUTCHours();
+  const sleeping = isNightSleepTime();
+
+  const targetWib = new Date(nowWib);
+  targetWib.setUTCMinutes(0, 0, 0);
+
+  if (sleeping) {
+    // Sedang dalam jam tidur: target berikutnya adalah waktu bangun (endHour)
+    targetWib.setUTCHours(nightSleepState.endHour);
+    if (hour >= nightSleepState.startHour) {
+      targetWib.setUTCDate(targetWib.getUTCDate() + 1);
+    }
+  } else {
+    // Sedang dalam jam bangun: target berikutnya adalah waktu tidur (startHour)
+    targetWib.setUTCHours(nightSleepState.startHour);
+    if (hour >= nightSleepState.startHour) {
+      targetWib.setUTCDate(targetWib.getUTCDate() + 1);
+    }
+  }
+
+  const targetEpoch = targetWib.getTime() - 7 * 60 * 60 * 1000;
+  return {
+    isSleeping: sleeping,
+    targetEpoch: Math.max(now + 1000, targetEpoch),
+    msUntil: Math.max(1000, targetEpoch - now)
+  };
+}
+
+export function syncNightSleepFromSettings() {
+  const enabledStr = botSettings.nightSleepEnabled ?? config.defaults.nightSleepEnabled ?? 'false';
+  nightSleepState.enabled = enabledStr === 'true' || enabledStr === true;
+  nightSleepState.startHour = parseInt(botSettings.nightSleepStartHour ?? config.defaults.nightSleepStartHour ?? 23, 10) || 23;
+  nightSleepState.endHour = parseInt(botSettings.nightSleepEndHour ?? config.defaults.nightSleepEndHour ?? 6, 10) || 6;
+  const annStr = botSettings.nightSleepAnnounceGroup ?? config.defaults.nightSleepAnnounceGroup ?? 'false';
+  nightSleepState.announceGroup = annStr === 'true' || annStr === true;
+}
+
+export async function masukModeTidurMalam(sockInstance, onSocketReady) {
+  if (nightSleepState.timerId) {
+    clearTimeout(nightSleepState.timerId);
+    nightSleepState.timerId = null;
+  }
+
+  isForceAwake = false;
+  botState.isNightSleeping = true;
+  botState.status = 'NIGHT_SLEEP';
+
+  const { targetEpoch, msUntil } = getNextNightSleepTransition();
+  const wakeTimeStr = `${String(nightSleepState.endHour).padStart(2, '0')}:00`;
+
+  console.log(`[NIGHT_SLEEP] Masuk waktu tidur malam (${nightSleepState.startHour}:00 - ${nightSleepState.endHour}:00 WIB). Menutup koneksi sampai ${wakeTimeStr} WIB.`);
+
+  // Umumkan ke grup pembeli jika diaktifkan
+  const targetGroup = botSettings.buyerGroupId;
+  if (nightSleepState.announceGroup && targetGroup && sockInstance) {
+    try {
+      await sockInstance.sendMessage(targetGroup, {
+        text: `🌙 *PEMBERITAHUAN: MODE TIDUR MALAM BOT (SAFE MODE)* 🌙\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nHalo semuanya! Untuk menjaga keamanan akun WhatsApp dan pemeliharaan sistem harian, bot kini memasuki waktu istirahat malam (pukul ${nightSleepState.startHour}:00 - ${nightSleepState.endHour}:00 WIB).\n\n⏰ Bot akan kembali online dan aktif melayani pada pukul *${wakeTimeStr} WIB* besok pagi.\n\nSelamat beristirahat semuanya! 😴`
+      });
+    } catch (e) {}
+  }
+
+  // Simpan kredensial Baileys dengan aman
+  if (typeof simpanKredensial === 'function') {
+    try { await simpanKredensial(); } catch (e) {}
+  }
+
+  // Tutup soket
+  if (sockInstance) {
+    try {
+      if (sockInstance.ws) sockInstance.ws.close();
+      if (sockInstance.end) sockInstance.end(undefined);
+    } catch (e) {}
+  }
+  sock = null;
+  botState.whatsappConnected = false;
+
+  // Jadwalkan bangun pagi pukul 06:00 WIB
+  nightSleepState.timerId = setTimeout(async () => {
+    await bangunDariTidurMalam(onSocketReady);
+  }, msUntil);
+}
+
+export async function bangunDariTidurMalam(onSocketReady) {
+  if (nightSleepState.timerId) {
+    clearTimeout(nightSleepState.timerId);
+    nightSleepState.timerId = null;
+  }
+  botState.isNightSleeping = false;
+  botState.wasNightSleeping = true;
+  isForceAwake = true;
+  console.log(`[NIGHT_SLEEP] Waktu tidur malam selesai / bot dibangunkan. Menghubungkan kembali bot ke WhatsApp...`);
+  await startBot(onSocketReady || onSocketReadyRef);
+}
+
+export function jadwalkanPemeriksaanTidurMalam(sockInstance, onSocketReady) {
+  if (onSocketReady) onSocketReadyRef = onSocketReady;
+  syncNightSleepFromSettings();
+
+  if (!nightSleepState.enabled) return;
+
+  if (nightSleepState.timerId) {
+    clearTimeout(nightSleepState.timerId);
+    nightSleepState.timerId = null;
+  }
+
+  const { isSleeping, msUntil } = getNextNightSleepTransition();
+  if (isSleeping && !process.env.FORCE_NIGHT_START && !isForceAwake) {
+    masukModeTidurMalam(sockInstance, onSocketReady);
+  } else {
+    // Jika dipaksa bangun atau sedang jam beroperasi, jadwalkan tidur malam pada startHour (23:00 WIB)
+    const now = Date.now();
+    const nowWib = new Date(now + 7 * 60 * 60 * 1000);
+    const targetWib = new Date(nowWib);
+    targetWib.setUTCMinutes(0, 0, 0);
+    targetWib.setUTCHours(nightSleepState.startHour);
+    if (nowWib.getUTCHours() >= nightSleepState.startHour) {
+      targetWib.setUTCDate(targetWib.getUTCDate() + 1);
+    }
+    const targetEpoch = targetWib.getTime() - 7 * 60 * 60 * 1000;
+    const msUntilSleep = Math.max(1000, targetEpoch - now);
+
+    nightSleepState.timerId = setTimeout(() => {
+      isForceAwake = false;
+      masukModeTidurMalam(sockInstance, onSocketReady);
+    }, msUntilSleep);
+  }
+}
 
 // Penanda @lid yang pemetaan nomornya sudah ditulis di proses ini, supaya
 // metadata grup yang dibaca berulang kali tidak menghasilkan tulisan berulang.
 const petaLidTercatat = new Set();
 const userPushNamesMap = new Map();
+const pmNoticeCooldownMap = new Map();
+let cachedInviteLink = '';
+let cachedInviteLinkTarget = '';
 
 // Group Metadata Cache (TTL: 5 Menit)
 const groupMetaCache = new Map();
@@ -636,9 +803,9 @@ export async function triggerRestockBroadcast(productCode) {
   }
 }
 
-// Helper mengecek apakah pelanggan sudah bergabung ke grup resmi toko sebelum beli
+// Helper mengecek apakah pelanggan sudah bergabung ke grup resmi toko sebelum memakai bot / beli
 async function checkIsUserInGroup(senderNumber) {
-  const isRequire = (botSettings.requireGroupJoin || "true") === "true";
+  const isRequire = (botSettings.requireGroupJoin || config.defaults.requireGroupJoin || "true") === "true";
   if (!isRequire) return { isMember: true };
 
   const targetGroupId = botSettings.buyerGroupId || botSettings.transactionGroupId || botSettings.logGroupId || "";
@@ -648,7 +815,10 @@ async function checkIsUserInGroup(senderNumber) {
   }
 
   try {
-    const groupMeta = await sock.groupMetadata(targetGroupId);
+    const groupMeta = (await getCachedGroupMetadata(sock, targetGroupId)) || (await sock.groupMetadata(targetGroupId));
+    if (!groupMeta || !groupMeta.participants) {
+      return { isMember: true };
+    }
     const extractDigits = (s) => (s || '').replace(/[^0-9]/g, '');
     const senderDigits = extractDigits(senderNumber);
 
@@ -661,13 +831,19 @@ async function checkIsUserInGroup(senderNumber) {
 
     let inviteLink = botSettings.groupInviteLink || "";
     if (!inviteLink) {
-      try {
-        const code = await sock.groupInviteCode(targetGroupId);
-        inviteLink = `https://chat.whatsapp.com/${code}`;
-      } catch (e) {}
+      if (cachedInviteLink && cachedInviteLinkTarget === targetGroupId) {
+        inviteLink = cachedInviteLink;
+      } else {
+        try {
+          const code = await sock.groupInviteCode(targetGroupId);
+          inviteLink = `https://chat.whatsapp.com/${code}`;
+          cachedInviteLink = inviteLink;
+          cachedInviteLinkTarget = targetGroupId;
+        } catch (e) {}
+      }
     }
 
-    return { isMember, inviteLink, groupName: groupMeta.subject || "Grup Resmi Toko" };
+    return { isMember, inviteLink, groupName: groupMeta.subject || "Grup Utama Toko" };
   } catch (err) {
     console.error(`[CHECK_GROUP_MEMBER] Gagal cek anggota grup ${targetGroupId}:`, err.message);
     return { isMember: true };
@@ -679,6 +855,7 @@ export async function reloadBotSettings() {
   try {
     const newSettings = await db.getSettings();
     Object.assign(botSettings, newSettings);
+    syncNightSleepFromSettings();
     console.log("Pengaturan bot berhasil diperbarui dari database.");
   } catch (err) {
     console.error("Gagal memuat pengaturan bot dari DB:", err.message);
@@ -705,7 +882,7 @@ export async function logToSystem(type, text) {
   }
 }
 
-// Fungsi untuk mengirim pesan massal notifikasi stok saat produk ready kembali
+// Fungsi untuk mengirim pesan massal notifikasi stok saat produk ready kembali (Drip-Feed Anti-Spam)
 export async function checkAndNotifySubscribers(kode, newStock) {
   try {
     if (newStock > 0) {
@@ -720,26 +897,51 @@ export async function checkAndNotifySubscribers(kode, newStock) {
       const subscribers = (await db.getSubscribers(kode)).map(r => r.customer_nomor);
       if (subscribers.length > 0) {
         const product = await db.getProductByKode(kode);
-        const msg = `🎉 *STOK READY KEMBALI!*
-
-Halo, produk *${product.nama}* (\`${kode.toUpperCase()}\`) yang Anda tunggu-tunggu saat ini sudah tersedia kembali!
-
-Stok ready saat ini: *${newStock}* pcs.
-Segera lakukan pemesanan dengan mengetik:
-👉 \`.beli ${kode.toUpperCase()} 1\`
-
-Jangan sampai kehabisan lagi ya!`;
-
-        // Kirim ke semua pelanggan yang berlangganan, lalu hapus HANYA yang berhasil.
         const terkirim = [];
+        let countInBatch = 0;
+
+        console.log(`[NOTIF_STOK] Memulai pengiriman drip-feed untuk ${subscribers.length} pelanggan (${kode.toUpperCase()})...`);
+
+        // Kirim ke semua pelanggan yang berlangganan secara bertahap (Drip-Feed)
         for (const num of subscribers) {
           if (!sock || !botState.whatsappConnected) break;
+
+          // Periksa Circuit Breaker Health Sentinel sebelum mengirim tiap pesan blast
+          if (!healthSentinel.isSendingSafe()) {
+            console.warn(`[NOTIF_STOK] Circuit Breaker Health Sentinel AKTIF (${healthSentinel.tripReason}). Pengiriman notifikasi dihentikan sementara.`);
+            break;
+          }
+
           try {
-            await sock.sendMessage(num, { text: msg });
+            const userPhone = num.split('@')[0];
+            const msg = `🎉 *STOK READY KEMBALI!*
+
+Halo Kak @${userPhone}! Produk *${product.nama}* (\`${kode.toUpperCase()}\`) yang Anda tunggu-tunggu saat ini sudah tersedia kembali!
+
+📦 *Stok Ready:* ${newStock} pcs
+👉 *Pesan Segera:* Ketik \`.beli ${kode.toUpperCase()} 1\`
+
+_Tips: Balas \`.unsubs ${kode.toUpperCase()}\` jika ingin berhenti berlangganan info stok produk ini._`;
+
+            await sock.sendMessage(num, { 
+              text: msg,
+              mentions: [num]
+            });
             terkirim.push(num);
+            countInBatch++;
             await logToSystem('SYSTEM', `Mengirimkan pemberitahuan stok ready ke ${num} untuk produk ${kode.toUpperCase()}`);
-            // Tambahkan jeda 1 detik untuk menghindari pemblokiran WA
-            await new Promise(resolve => setTimeout(resolve, 1000));
+
+            // Pacing dinamis natural: 6s - 12s antar pelanggan
+            const delayMs = 6000 + Math.floor(Math.random() * 6000);
+            await new Promise(resolve => setTimeout(resolve, delayMs));
+
+            // Batch pause: Tiap 5 pesan terkirim, ambil jeda istirahat 25s - 40s
+            if (countInBatch >= 5 && terkirim.length < subscribers.length) {
+              countInBatch = 0;
+              const batchPauseMs = 25000 + Math.floor(Math.random() * 15000);
+              console.log(`[NOTIF_STOK] Jeda batch (${terkirim.length}/${subscribers.length} selesai), istirahat ${Math.round(batchPauseMs / 1000)} detik...`);
+              await new Promise(resolve => setTimeout(resolve, batchPauseMs));
+            }
           } catch (err) {
             console.error(`Gagal kirim notif stok ke ${num}:`, err.message);
           }
@@ -748,7 +950,7 @@ Jangan sampai kehabisan lagi ya!`;
         await db.hapusLanggananTerkirim(kode, terkirim);
         const gagal = subscribers.length - terkirim.length;
         if (gagal > 0) {
-          console.warn(`[NOTIF_STOK] ${gagal} langganan ${kode} tetap tersimpan karena notifikasinya gagal terkirim.`);
+          console.warn(`[NOTIF_STOK] ${gagal} langganan ${kode} tetap tersimpan karena notifikasinya belum/gagal terkirim.`);
         }
       }
     }
@@ -841,6 +1043,96 @@ export function statistikKirimUlang() {
   return { tersimpan: pesanKeluarCache.size, batas: MAKS_PESAN_KELUAR, meleset: getMessageMeleset };
 }
 
+// --- AUTO-HEALING SESI SIGNAL & MONITOR KEGAGALAN DEKRIPSI ---
+let lastQueueProgress = Date.now();
+const peerCipherFailures = new Map();
+
+/**
+ * Hapus berkas session-<cleanId>.*.json saat terdeteksi Bad MAC atau kegagalan dekripsi berulang.
+ * creds.json dan pre-key-*.json TIDAK disentuh sehingga link bot tidak terputus (AGENTS.md §5a).
+ */
+export function bersihkanSesiPeerRusak(cleanId) {
+  try {
+    const sessionDir = path.resolve('./session');
+    if (!fs.existsSync(sessionDir)) return 0;
+    const files = fs.readdirSync(sessionDir);
+    const targetFiles = files.filter(f => f.startsWith(`session-${cleanId}.`) && f.endsWith('.json'));
+    let deletedCount = 0;
+    for (const f of targetFiles) {
+      try {
+        fs.unlinkSync(path.join(sessionDir, f));
+        deletedCount++;
+        console.log(`[SESSION_AUTO_HEAL] Menghapus file sesi rusak: ${f}`);
+      } catch (err) {
+        console.warn(`[SESSION_AUTO_HEAL] Gagal menghapus file sesi ${f}:`, err.message);
+      }
+    }
+    return deletedCount;
+  } catch (e) {
+    console.error(`[SESSION_AUTO_HEAL] Gagal membaca direktori session:`, e.message);
+    return 0;
+  }
+}
+
+/**
+ * Deteksi dan hitung kegagalan dekripsi per peer.
+ * Jika mencapai 3x berturut-turut, auto-heal membersihkan session rusak agar WhatsApp menegosiasikan prekey baru.
+ */
+export function periksaDanSembuhkanCipherFail(peerJid) {
+  if (!peerJid) return;
+  const cleanId = String(peerJid).replace(/@.*$/, '').replace(/:\d+$/, '').trim();
+  if (!cleanId) return;
+
+  const now = Date.now();
+  const record = peerCipherFailures.get(cleanId) || { count: 0, lastFail: 0 };
+  if (now - record.lastFail > 300000) {
+    record.count = 0;
+  }
+  record.count += 1;
+  record.lastFail = now;
+  peerCipherFailures.set(cleanId, record);
+
+  console.warn(`[CIPHERTEXT_FAIL] Pesan dari peer ${cleanId} gagal didekripsi (Kegagalan ke-${record.count}/3).`);
+
+  if (record.count >= 3) {
+    console.warn(`[SESSION_AUTO_HEAL] Terdeteksi 3x kegagalan dekripsi berturut-turut untuk peer ${cleanId}. Memulihkan sesi dengan mereset ratchet lokal...`);
+    const count = bersihkanSesiPeerRusak(cleanId);
+    if (count > 0) {
+      console.log(`[SESSION_AUTO_HEAL] Berhasil membersihkan ${count} file sesi untuk ${cleanId}. WhatsApp akan menegosiasikan prekey baru pada pesan berikutnya.`);
+    }
+    record.count = 0;
+  }
+}
+
+/**
+ * Bersihkan file session yang kembung (> 25KB) yang mengindikasikan akumulasi ratchet state rusak (AGENTS.md §5a)
+ */
+export function bersihkanSesiKembung() {
+  try {
+    const sessionDir = path.resolve('./session');
+    if (!fs.existsSync(sessionDir)) return 0;
+    const files = fs.readdirSync(sessionDir);
+    let cleaned = 0;
+    for (const f of files) {
+      if (f.startsWith('session-') && f.endsWith('.json')) {
+        const fullPath = path.join(sessionDir, f);
+        try {
+          const stat = fs.statSync(fullPath);
+          if (stat.size > 25000) {
+            console.warn(`[SESSION_HEALTH] Menemukan file sesi kembung: ${f} (${(stat.size / 1024).toFixed(1)} KB). Menghapus untuk mencegah Bad MAC...`);
+            fs.unlinkSync(fullPath);
+            cleaned++;
+          }
+        } catch (_) {}
+      }
+    }
+    return cleaned;
+  } catch (e) {
+    return 0;
+  }
+}
+
+
 // --- PENUTUPAN RAPI ---
 //
 // Kunci Signal ditulis ke ./session lewat saveCreds(), dan saveCreds HANYA
@@ -854,14 +1146,20 @@ export function statistikKirimUlang() {
 // TerminateProcess yang TIDAK BISA ditangkap — penutup ini tidak menolong untuk
 // itu. Yang tertolong adalah Ctrl+C di terminal owner dan penghentian biasa.
 // Karena itu: hentikan bot dengan Ctrl+C, jangan dengan /F, kecuali terpaksa.
-let simpanKredensial = null;
-
 export function daftarkanPenutupRapi(fn) {
   simpanKredensial = fn;
 }
 
 export async function tutupBotDenganRapi(alasan = 'SIGNAL') {
   console.log(`[SHUTDOWN] Menutup bot dengan rapi (${alasan})...`);
+  if (presenceIdleTimer) {
+    clearTimeout(presenceIdleTimer);
+    presenceIdleTimer = null;
+  }
+  if (nightSleepState.timerId) {
+    clearTimeout(nightSleepState.timerId);
+    nightSleepState.timerId = null;
+  }
   try {
     if (typeof simpanKredensial === 'function') {
       await simpanKredensial();
@@ -878,6 +1176,26 @@ export async function tutupBotDenganRapi(alasan = 'SIGNAL') {
   }
 }
 
+// --- MANAJEMEN PRESENCE REALISTIS (IDLE PRESENCE ENGINE) ---
+let presenceIdleTimer = null;
+export function touchPresenceActivity() {
+  if (!sock || !botState.whatsappConnected) return;
+  if (presenceIdleTimer) {
+    clearTimeout(presenceIdleTimer);
+  }
+  sock.sendPresenceUpdate('available').catch(() => {});
+  presenceIdleTimer = setTimeout(() => {
+    if (sock && botState.whatsappConnected) {
+      sock.sendPresenceUpdate('unavailable').catch(() => {});
+    }
+  }, 25000);
+}
+
+// Hubungkan Sentinel auto-reset ke antrean pengiriman
+healthSentinel.onReset = () => {
+  console.log('[HEALTH_SENTINEL] Memeriksa kembali antrean pesan setelah masa pendinginan sirkuit...');
+  processOutgoingQueue();
+};
 
 // Fungsi terpusat aman untuk mengirim pesan WA (Connection Guard & Retries & Queueing)
 export async function safeSendMessage(jid, content, options = {}) {
@@ -908,80 +1226,137 @@ export async function safeSendMessage(jid, content, options = {}) {
 }
 
 export async function processOutgoingQueue() {
-  if (isQueueProcessing) return;
-  isQueueProcessing = true;
-
-  while (outgoingMessageQueue.length > 0) {
-    botState.pendingQueueCount = outgoingMessageQueue.length;
-
-    // Jika koneksi socket belum OPEN, tahan queue dan tunggu reconnect
-    if (!sock || !botState.whatsappConnected) {
-      console.log(`[QUEUE] Socket offline. Menunda pengiriman antrean (${outgoingMessageQueue.length} pesan terpending).`);
-      break;
-    }
-
-    const item = outgoingMessageQueue[0];
-    const logPrefix = `[MSG_SEND][ID: ${item.enqueuedAt}] JID: ${item.jid}`;
-
-    console.log(`${logPrefix} SEND START (Retry: ${item.retries}/${item.maxRetries})`);
-
-    const isReaction = Boolean(item.content && item.content.react);
-    const isAudio = Boolean(item.content && (item.content.audio || item.content.ptt));
-    const isHumanDelayActive = (botSettings.humanDelayEnabled || config.defaults.humanDelayEnabled || 'true') !== 'false';
-
-    // 🛡️ ANTI-BAN & LIGHT TYPING SIMULATION (Ringan & Cepat: 100ms - 250ms)
-    if (!isReaction && isHumanDelayActive && botState.whatsappConnected && sock) {
-      const presenceType = isAudio ? 'recording' : 'composing';
-      sock.sendPresenceUpdate(presenceType, item.jid).catch(() => {});
-
-      // Jeda ringan & responsif (100ms - 250ms) agar cepat namun tetap natural
-      const lightDelay = 100 + Math.floor(Math.random() * 150);
-      await new Promise(r => setTimeout(r, lightDelay));
-    }
-
-    try {
-      const sendFn = sock.rawSendMessage ? sock.rawSendMessage : sock.sendMessage.bind(sock);
-      const result = await sendFn(item.jid, item.content, item.options);
-      console.log(`${logPrefix} SUCCESS (MessageID: ${result?.key?.id || 'N/A'})`);
-
-      // Disimpan SEBELUM apa pun yang bisa melempar. Kalau langkah berikutnya
-      // gagal, pesannya sudah telanjur sampai ke WhatsApp dan tetap bisa
-      // diminta ulang oleh penerima.
-      simpanPesanKeluar(result);
-      
-      // Hentikan status mengetik di background
-      if (!isReaction && isHumanDelayActive && botState.whatsappConnected && sock) {
-        sock.sendPresenceUpdate('paused', item.jid).catch(() => {});
-      }
-
-      outgoingMessageQueue.shift();
-      botState.pendingQueueCount = outgoingMessageQueue.length;
-      item.resolve(result);
-
-      // Jeda mini antar-pesan beruntun (50ms - 100ms)
-      if (outgoingMessageQueue.length > 0) {
-        const interMessageDelay = 50 + Math.floor(Math.random() * 50);
-        await new Promise(r => setTimeout(r, interMessageDelay));
-      }
-    } catch (err) {
-      console.error(`${logPrefix} SEND FAILED (Reason: ${err.message})`);
-      item.retries += 1;
-
-      if (item.retries >= item.maxRetries) {
-        console.error(`${logPrefix} Gagal total setelah ${item.maxRetries}x percobaan.`);
-        outgoingMessageQueue.shift();
-        botState.pendingQueueCount = outgoingMessageQueue.length;
-        item.reject(err);
-      } else {
-        // Retry delay backoff: 1s, 3s, 5s
-        const backoffMs = item.retries === 1 ? 1000 : (item.retries === 2 ? 3000 : 5000);
-        console.log(`${logPrefix} Mencoba ulang dalam ${backoffMs}ms...`);
-        await new Promise(r => setTimeout(r, backoffMs));
-      }
+  if (isQueueProcessing) {
+    // Watchdog: jika antrean terkunci lebih dari 45s tanpa progres, paksa lepas lock
+    if (Date.now() - lastQueueProgress > 45000) {
+      console.warn('[QUEUE_WATCHDOG] Outbound queue tampak macet (>45s). Mereset lock antrean...');
+      isQueueProcessing = false;
+    } else {
+      return;
     }
   }
+  isQueueProcessing = true;
 
-  isQueueProcessing = false;
+  try {
+    while (outgoingMessageQueue.length > 0) {
+      lastQueueProgress = Date.now();
+      botState.pendingQueueCount = outgoingMessageQueue.length;
+
+      // Jika koneksi socket belum OPEN, tahan queue dan tunggu reconnect
+      if (!sock || !botState.whatsappConnected) {
+        console.log(`[QUEUE] Socket offline. Menunda pengiriman antrean (${outgoingMessageQueue.length} pesan terpending).`);
+        break;
+      }
+
+      // 🛡️ CIRCUIT BREAKER: Jika kesehatan akun terancam (403, 429, drop beruntun), bekukan outbound sementara
+      if (!healthSentinel.isSendingSafe()) {
+        console.warn(`[QUEUE] Health Sentinel Circuit Breaker AKTIF (${healthSentinel.tripReason}). Pengiriman antrean dibekukan demi perlindungan akun.`);
+        break;
+      }
+
+      touchPresenceActivity();
+
+      const item = outgoingMessageQueue[0];
+      const logPrefix = `[MSG_SEND][ID: ${item.enqueuedAt}] JID: ${item.jid}`;
+
+      console.log(`${logPrefix} SEND START (Retry: ${item.retries}/${item.maxRetries})`);
+
+      const isReaction = Boolean(item.content && item.content.react);
+      const isAudio = Boolean(item.content && (item.content.audio || item.content.ptt));
+      const isHumanDelayActive = (botSettings.humanDelayEnabled || config.defaults.humanDelayEnabled || 'true') !== 'false';
+
+      // 🛡️ BACA PESAN (Read-Receipt) + Jeda Melirik (Glancing Delay) jika membalas pesan orang lain
+      if (!isReaction && item.options?.quoted?.key?.id && !item.options.quoted.key.fromMe && sock && botState.whatsappConnected) {
+        try {
+          const glanceDelay = hitungJedaMelihat();
+          await new Promise(r => setTimeout(r, glanceDelay));
+          sock.readMessages([item.options.quoted.key]).catch(() => {});
+        } catch (_) {}
+      }
+
+      // 🛡️ DIVERSIFIKASI HASH PESAN (Zero-Width Text Entropy)
+      // Menyisipkan zero-width characters agar nilai SHA-256 tiap pesan unik dan tidak terdeteksi cluster spam oleh Meta
+      if (!item.entropyInjected) {
+        if (item.content && typeof item.content.text === 'string') {
+          item.content.text = injectTextEntropy(item.content.text);
+        }
+        if (item.content && typeof item.content.caption === 'string') {
+          item.content.caption = injectTextEntropy(item.content.caption);
+        }
+        item.entropyInjected = true;
+      }
+
+      // 🛡️ GAUSSIAN TYPING & THINKING SIMULATION (WPM Model)
+      if (!isReaction && isHumanDelayActive && botState.whatsappConnected && sock) {
+        const presenceType = isAudio ? 'recording' : 'composing';
+        sock.sendPresenceUpdate(presenceType, item.jid).catch(() => {});
+
+        const textLen = (item.content?.text?.length || item.content?.caption?.length || 0);
+        const gaussianDelay = hitungJedaGaussian(textLen, isAudio);
+        await new Promise(r => setTimeout(r, gaussianDelay));
+      }
+
+      try {
+        const sendFn = sock.rawSendMessage ? sock.rawSendMessage : sock.sendMessage.bind(sock);
+        
+        // 🛡️ TIMEOUT GUARD (25s): Cegah pengiriman menggantung tanpa batas waktu jika socket WA freeze
+        const sendPromise = sendFn(item.jid, item.content, item.options);
+        let timeoutHandle = null;
+        const timeoutPromise = new Promise((_, reject) => {
+          timeoutHandle = setTimeout(() => reject(new Error('TIMEOUT_OUTBOUND_SEND (25s socket hang)')), 25000);
+        });
+
+        const result = await Promise.race([sendPromise, timeoutPromise]).finally(() => {
+          if (timeoutHandle) clearTimeout(timeoutHandle);
+        });
+
+        console.log(`${logPrefix} SUCCESS (MessageID: ${result?.key?.id || 'N/A'})`);
+
+        healthSentinel.recordOutboundSuccess();
+        touchPresenceActivity();
+
+        // Disimpan SEBELUM apa pun yang bisa melempar. Kalau langkah berikutnya
+        // gagal, pesannya sudah telanjur sampai ke WhatsApp dan tetap bisa
+        // diminta ulang oleh penerima.
+        simpanPesanKeluar(result);
+        
+        // Hentikan status mengetik di background
+        if (!isReaction && isHumanDelayActive && botState.whatsappConnected && sock) {
+          sock.sendPresenceUpdate('paused', item.jid).catch(() => {});
+        }
+
+        outgoingMessageQueue.shift();
+        botState.pendingQueueCount = outgoingMessageQueue.length;
+        lastQueueProgress = Date.now();
+        item.resolve(result);
+
+        // Jeda mini antar-pesan beruntun (Gaussian micro-delay: 100ms - 250ms)
+        if (outgoingMessageQueue.length > 0) {
+          const interMessageDelay = 100 + Math.floor(Math.random() * 150);
+          await new Promise(r => setTimeout(r, interMessageDelay));
+        }
+      } catch (err) {
+        console.error(`${logPrefix} SEND FAILED (Reason: ${err.message})`);
+        healthSentinel.recordOutboundFailure(err);
+        item.retries += 1;
+        lastQueueProgress = Date.now();
+
+        if (item.retries >= item.maxRetries) {
+          console.error(`${logPrefix} Gagal total setelah ${item.maxRetries}x percobaan.`);
+          outgoingMessageQueue.shift();
+          botState.pendingQueueCount = outgoingMessageQueue.length;
+          item.reject(err);
+        } else {
+          // Retry delay backoff: 1.5s, 3.5s, 6s
+          const backoffMs = item.retries === 1 ? 1500 : (item.retries === 2 ? 3500 : 6000);
+          console.log(`${logPrefix} Mencoba ulang dalam ${backoffMs}ms...`);
+          await new Promise(r => setTimeout(r, backoffMs));
+        }
+      }
+    }
+  } finally {
+    isQueueProcessing = false;
+  }
 }
 
 // Inisialisasi koneksi WhatsApp (Diekspor untuk index.js)
@@ -993,8 +1368,35 @@ export async function startBot(onSocketReady) {
   // Muat plugin modular
   await loadPlugins();
 
+  if (onSocketReady) onSocketReadyRef = onSocketReady;
+  syncNightSleepFromSettings();
+
+  // Cek apakah saat ini waktu istirahat malam (Night Sleep)
+  if (isNightSleepTime() && !process.env.FORCE_NIGHT_START && !isForceAwake) {
+    botState.isNightSleeping = true;
+    botState.status = 'NIGHT_SLEEP';
+    const { targetEpoch, msUntil } = getNextNightSleepTransition();
+    const wakeTimeStr = `${String(nightSleepState.endHour).padStart(2, '0')}:00`;
+    console.log(`\n============================================================`);
+    console.log(`🌙 [NIGHT_SLEEP] Saat ini adalah jam istirahat malam (${nightSleepState.startHour}:00 - ${nightSleepState.endHour}:00 WIB).`);
+    console.log(`💤 Bot dalam mode tidur malam dan otomatis aktif kembali pukul ${wakeTimeStr} WIB.`);
+    console.log(`   (Set FORCE_NIGHT_START=true jika ingin memaksa koneksi saat malam)`);
+    console.log(`============================================================\n`);
+
+    if (nightSleepState.timerId) clearTimeout(nightSleepState.timerId);
+    nightSleepState.timerId = setTimeout(async () => {
+      botState.isNightSleeping = false;
+      botState.wasNightSleeping = true;
+      console.log(`☀️ [NIGHT_SLEEP] Waktu bangun tidur tiba (${wakeTimeStr} WIB). Menghubungkan bot ke WhatsApp...`);
+      await startBot(onSocketReady);
+    }, msUntil);
+
+    return;
+  }
+
   // Folder sesi WA
   const sessionFolder = './session';
+  bersihkanSesiKembung();
   const { state, saveCreds } = await useMultiFileAuthState(sessionFolder);
   // Supaya penutup rapi di index.js bisa memaksa flush kunci sebelum keluar.
   daftarkanPenutupRapi(saveCreds);
@@ -1005,7 +1407,9 @@ export async function startBot(onSocketReady) {
     const fetchVersionPromise = fetchLatestBaileysVersion();
     const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout fetch version')), 3500));
     const { version: latestVersion, isLatest } = await Promise.race([fetchVersionPromise, timeoutPromise]);
-    waVersion = latestVersion;
+    if (isLatest && Array.isArray(latestVersion) && latestVersion.length >= 3) {
+      waVersion = latestVersion;
+    }
     console.log(`Menghubungkan menggunakan WA Web v${waVersion.join('.')}, Terkini: ${isLatest}`);
   } catch (err) {
     console.log(`Menghubungkan menggunakan WA Web v${waVersion.join('.')}, Terkini: true`);
@@ -1026,15 +1430,19 @@ export async function startBot(onSocketReady) {
     sock = null;
   }
 
+  const pinoLogger = P({ level: process.env.WA_LOG_LEVEL || 'silent' });
   sock = makeWASocket({
-    auth: state,
+    auth: {
+      creds: state.creds,
+      keys: makeCacheableSignalKeyStore(state.keys, pinoLogger)
+    },
     version: waVersion,
     // Baileys dibungkam secara bawaan supaya log bot tidak tenggelam. Kalau bot
     // tersambung tapi tidak menerima pesan sama sekali, jalankan ulang dengan
     // WA_LOG_LEVEL=warn (atau debug) agar kegagalan dekripsi ikut terlihat.
-    logger: P({ level: process.env.WA_LOG_LEVEL || 'silent' }),
-    browser: ['Windows', 'Chrome', '110.0.5481.177'],
-    markOnlineOnConnect: true,
+    logger: pinoLogger,
+    browser: Browsers.appropriate('Desktop'),
+    markOnlineOnConnect: false,
     syncFullHistory: false,
     // Setiap kali Baileys mengirim pesan ke grup, dia butuh daftar peserta untuk
     // enkripsi. Tanpa opsi ini dia menanyakannya ke server WhatsApp SETIAP kali
@@ -1089,6 +1497,26 @@ export async function startBot(onSocketReady) {
     }
 
     if (connection === 'close') {
+      if (presenceIdleTimer) {
+        clearTimeout(presenceIdleTimer);
+        presenceIdleTimer = null;
+      }
+
+      if (botState.isNightSleeping) {
+        console.log(`[NIGHT_SLEEP] Socket ditutup untuk istirahat malam. Menunggu jadwal bangun pukul ${String(nightSleepState.endHour).padStart(2, '0')}:00 WIB.`);
+        return;
+      }
+
+      // Pastikan kredensial & kunci Signal tersimpan rapi sebelum socket ditutup/reconnect
+      if (typeof simpanKredensial === 'function') {
+        try {
+          await simpanKredensial();
+          console.log('[AUTH] Flush Signal keys tersimpan saat socket tertutup.');
+        } catch (saveErr) {
+          console.warn('[AUTH] Gagal menyimpan keys saat socket tertutup:', saveErr.message);
+        }
+      }
+
       botState.status = 'OFFLINE';
       botState.whatsappConnected = false;
       botState.sock = null;
@@ -1142,6 +1570,8 @@ export async function startBot(onSocketReady) {
       console.log('[SOCKET_STATE] Connection OPEN. Session & Signal Keys synchronized.');
       await logToSystem('SYSTEM', '🟢 Bot WhatsApp Sales ONLINE & Signal Session Synchronized!');
       
+      touchPresenceActivity();
+
       // Flush antrean pesan jika ada pesan terpending selama offline (Phase 4)
       processOutgoingQueue();
 
@@ -1209,6 +1639,26 @@ export async function startBot(onSocketReady) {
         await db.recoverAndRefundStaleGameSessions(sock);
       } catch (recErr) {
         console.warn('[CRASH_RECOVERY] Error pemulihan game:', recErr.message);
+      }
+
+      // Inisialisasi Jadwal Tidur Malam (Night Sleep)
+      try {
+        jadwalkanPemeriksaanTidurMalam(sock, onSocketReady);
+      } catch (nsErr) {
+        console.warn('[NIGHT_SLEEP] Gagal menjadwalkan tidur malam:', nsErr.message);
+      }
+
+      // Jika baru bangun dari tidur malam, umumkan pagi hari ke grup utama
+      if (botState.wasNightSleeping) {
+        botState.wasNightSleeping = false;
+        const targetGroup = botSettings.buyerGroupId;
+        if (nightSleepState.announceGroup && targetGroup && sock) {
+          try {
+            await sock.sendMessage(targetGroup, {
+              text: `☀️ *SELAMAT PAGI! BOT TELAH BANGUN & AKTIF KEMBALI* ☀️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nMasa istirahat malam telah selesai. Bot siap melayani pemesanan produk dan seluruh fitur transaksi seperti biasa.\n\nKetik *.menu* untuk melihat daftar fitur yang tersedia. Selamat beraktivitas! ✨`
+            });
+          } catch (e) {}
+        }
       }
 
       if (onSocketReady) {
@@ -1314,16 +1764,25 @@ export async function startBot(onSocketReady) {
           let avatarUrl = null;
           try { avatarUrl = await sock.profilePictureUrl(p, 'image'); } catch (e) {}
 
-          const cardBuffer = await createWelcomeGoodbyeCard({
-            avatarUrl,
-            username: userTag,
-            groupName,
-            memberCount,
-            type: 'welcome'
-          });
+          let cardBuffer = null;
+          try {
+            cardBuffer = await createWelcomeGoodbyeCard({
+              avatarUrl,
+              username: userTag,
+              groupName,
+              memberCount,
+              type: 'welcome'
+            });
+          } catch (cErr) {
+            console.warn('[WELCOME_CARD_FALLBACK] Gagal buat kartu welcome, kirim teks:', cErr.message);
+          }
 
           const msg = `${welcomeText}\n\nSelamat bergabung ${userTag}! 🙏`;
-          await sock.sendMessage(id, { image: cardBuffer, caption: msg, mentions: [p] });
+          if (cardBuffer) {
+            await sock.sendMessage(id, { image: cardBuffer, caption: msg, mentions: [p] });
+          } else {
+            await sock.sendMessage(id, { text: msg, mentions: [p] });
+          }
           await db.addLog("GROUP", `Member baru ${userTag} bergabung ke grup ${id}`);
         }
       }
@@ -1335,16 +1794,25 @@ export async function startBot(onSocketReady) {
           let avatarUrl = null;
           try { avatarUrl = await sock.profilePictureUrl(p, 'image'); } catch (e) {}
 
-          const cardBuffer = await createWelcomeGoodbyeCard({
-            avatarUrl,
-            username: userTag,
-            groupName,
-            memberCount,
-            type: 'goodbye'
-          });
+          let cardBuffer = null;
+          try {
+            cardBuffer = await createWelcomeGoodbyeCard({
+              avatarUrl,
+              username: userTag,
+              groupName,
+              memberCount,
+              type: 'goodbye'
+            });
+          } catch (cErr) {
+            console.warn('[GOODBYE_CARD_FALLBACK] Gagal buat kartu goodbye, kirim teks:', cErr.message);
+          }
 
           const msg = `${goodbyeText} ${userTag}`;
-          await sock.sendMessage(id, { image: cardBuffer, caption: msg, mentions: [p] });
+          if (cardBuffer) {
+            await sock.sendMessage(id, { image: cardBuffer, caption: msg, mentions: [p] });
+          } else {
+            await sock.sendMessage(id, { text: msg, mentions: [p] });
+          }
           await db.addLog("GROUP", `Member ${userTag} keluar dari grup ${id}`);
         }
       }
@@ -1368,6 +1836,11 @@ export async function startBot(onSocketReady) {
       checkIsUserInGroup,
       sendQris,
       logToSystem,
+      nightSleepState,
+      isNightSleepTime,
+      masukModeTidurMalam,
+      bangunDariTidurMalam,
+      syncNightSleepFromSettings,
       sendInteractiveButtons: (...args) => sendInteractiveButtons(...args),
       react: async (jidOrEmoji, emojiOrKey, maybeKey) => {
         let targetJid = jidOrEmoji;
@@ -1398,7 +1871,10 @@ export async function startBot(onSocketReady) {
     // Sengaja tanpa await: ini tidak boleh menambah jeda pada jalur pesan, dan
     // kegagalannya tidak boleh menjatuhkan penanganan pesan yang sesungguhnya.
     if (isGroup && !isFromMe) {
-      tickPesanGrup(sock, jid).catch(() => {});
+      const isTcgActive = (botSettings.tcgEnabled || config.defaults.tcgEnabled || 'false') === 'true';
+      if (isTcgActive) {
+        tickPesanGrup(sock, jid).catch(() => {});
+      }
     }
 
     const isPdfMergeFile = await checkPdfMergeSession(sock, m, senderNormalized, jid);
@@ -1418,10 +1894,10 @@ export async function startBot(onSocketReady) {
     const isPdfCmd = await handlePdfCommands(sock, m, senderNormalized, jid, routerCleanCmd, routerArgs, isGroup, null, isPrefixCmd, isAdmin, isOwnerSender);
     if (isPdfCmd) return true;
 
-    const isPrem = await handlePremiumCommand({ sock, jid, senderNumber: senderNormalized, messageObj: m, args: routerArgs, cleanCmd: routerCleanCmd, isAdmin, isOwner: isOwnerSender, isStoreAdmin });
+    const isPrem = await handlePremiumCommand({ sock, jid, senderNumber: senderNormalized, messageObj: m, args: routerArgs, cleanCmd: routerCleanCmd, isAdmin, isOwner: isOwnerSender, isStoreAdmin, isPrefixCmd });
     if (isPrem) return true;
 
-    const isFun = await handleFunCommand({ sock, jid, senderNumber: senderNormalized, messageObj: m, text: msgText, args: routerArgs, cleanCmd: routerCleanCmd, isFromGroup: isGroup, isAdmin, isOwner: isOwnerSender, isStoreAdmin });
+    const isFun = await handleFunCommand({ sock, jid, senderNumber: senderNormalized, messageObj: m, text: msgText, args: routerArgs, cleanCmd: routerCleanCmd, isFromGroup: isGroup, isAdmin, isOwner: isOwnerSender, isStoreAdmin, isPrefixCmd });
     if (isFun) return true;
 
     const walletJid = (isFromMe && !isGroup && sock.user?.id) ? jidNormalizedUser(sock.user.id) : senderNormalized;
@@ -1442,10 +1918,28 @@ export async function startBot(onSocketReady) {
             
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     try {
-      if (type !== 'notify') return;
+      // Izinkan 'notify' (pesan langsung) dan 'append' (pesan offline saat bot reconnect)
+      if (type !== 'notify' && type !== 'append') return;
+      healthSentinel.recordInbound();
+      touchPresenceActivity();
 
       for (const m of messages) {
-        if (!m.message) continue;
+        // Jika type 'append', hanya terima pesan segar (< 3 menit). Abaikan sync riwayat obrolan lama.
+        if (type === 'append') {
+          const msgTimestamp = Number(m.messageTimestamp || 0) * 1000;
+          if (!msgTimestamp || (Date.now() - msgTimestamp) > 180000) {
+            continue;
+          }
+        }
+
+        if (!m.message) {
+          // Tangkap pesan yang gagal didekripsi (CIPHERTEXT / StubType 2)
+          if (m.messageStubType === 2 || m.messageStubType === 'CIPHERTEXT' || (m.key && !m.message)) {
+            const senderJid = m.key?.participant || m.key?.remoteJid;
+            periksaDanSembuhkanCipherFail(senderJid);
+          }
+          continue;
+        }
 
         // --- ANTI-DELETE: Simpan pesan ke cache ---
         if (m.key && m.key.id && !m.key.fromMe) {
@@ -1506,8 +2000,21 @@ export async function startBot(onSocketReady) {
           userPushNamesMap.set(senderNormalized, m.pushName);
         }
 
-        // Jika pesan dikirim dari akun bot sendiri (fromMe) tapi BUKAN perintah awalan bot, abaikan
-        if (isFromMe && !isPrefixCmd) continue;
+        // Jika pesan dikirim dari akun bot sendiri (fromMe) tapi BUKAN perintah awalan bot,
+        // izinkan jika itu quick-reply 'done' / 'acc' untuk konfirmasi pesanan
+        const unwrapMsgCandidate = m?.message?.ephemeralMessage?.message ||
+                                   m?.message?.viewOnceMessage?.message ||
+                                   m?.message?.viewOnceMessageV2?.message ||
+                                   m?.message;
+        const isQuotedCandidate = Boolean(
+          unwrapMsgCandidate?.extendedTextMessage?.contextInfo?.quotedMessage ||
+          unwrapMsgCandidate?.imageMessage?.contextInfo?.quotedMessage ||
+          unwrapMsgCandidate?.videoMessage?.contextInfo?.quotedMessage ||
+          unwrapMsgCandidate?.documentMessage?.contextInfo?.quotedMessage
+        );
+        const isQuickDoneCandidate = isQuotedCandidate && /^(done|selesai|acc|paid|terima|konfirmasi|konfirm)\b/i.test(msgText);
+
+        if (isFromMe && !isPrefixCmd && !isQuickDoneCandidate) continue;
 
         // ====================================================================
         // DETEKSI OWNER & ADMIN — Sistem LID-Aware
@@ -1624,6 +2131,37 @@ export async function startBot(onSocketReady) {
         }
 
         // ====================================================================
+        // SAKELAR FITUR PRIVATE MESSAGE (DM) & GRUP SECARA GLOBAL
+        // ====================================================================
+        if (!isAdmin) {
+          const isPmEnabled = (botSettings.privateMsgEnabled || config.defaults.privateMsgEnabled || 'true') !== 'false';
+          const isGrpEnabled = (botSettings.groupMsgEnabled || config.defaults.groupMsgEnabled || 'true') !== 'false';
+
+          if (!isGroup && !isPmEnabled) {
+            // Penggunaan di DM dinonaktifkan untuk user non-admin/owner
+            if (isPrefixCmd) {
+              const now = Date.now();
+              const lastNotice = pmNoticeCooldownMap.get(senderNormalized) || 0;
+              if (now - lastNotice > 5 * 60 * 1000) {
+                pmNoticeCooldownMap.set(senderNormalized, now);
+                const groupCheck = await checkIsUserInGroup(senderNormalized);
+                const targetGroupName = groupCheck.groupName || 'Grup Utama Toko';
+                const inviteLink = groupCheck.inviteLink || botSettings.groupInviteLink || '';
+                await sock.sendMessage(jid, {
+                  text: `⚠️ *LAYANAN BOT DI PRIVATE CHAT (DM) NONAKTIF* ⚠️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nMohon maaf Kak, demi kenyamanan & pemeliharaan sistem, penggunaan bot via Private Chat (DM) saat ini dinonaktifkan oleh Admin.\n\n👉 Silakan gunakan bot di *${targetGroupName}* kami:\n🔗 ${inviteLink || 'Hubungi Admin/Owner untuk link grup.'}\n\nTerima kasih atas pengertiannya! 🙏`
+                }, { quoted: m });
+              }
+            }
+            continue;
+          }
+
+          if (isGroup && !isGrpEnabled) {
+            // Penggunaan di Grup dinonaktifkan secara global untuk user non-admin/owner
+            continue;
+          }
+        }
+
+        // ====================================================================
         // MODE OFF (`.mode off`) — BOT DIBISUKAN DI GRUP INI
         // --------------------------------------------------------------------
         // Nilai bot_mode = 'off' sudah lama bisa disimpan lewat `.mode off`,
@@ -1663,33 +2201,70 @@ export async function startBot(onSocketReady) {
         const argsCheck = msgText.trim().split(/\s+/);
         const rawCmdCheck = argsCheck[0].toLowerCase();
         const cleanCmdCheck = rawCmdCheck.replace(/^[./#]/, '');
-        const knownCmdList = [
-          'daftar', 'register', 'registrasi', 'owner', 'kontakowner', 'menu', 'help', 'bantuan', 
-          'produk', 'list', 'katalog', 'listproduk', 'p', 'detail', 'info', 'lihat', 'beli', 'checkout', 'keranjang', 'cart', 'status', 'riwayat', 'batal', 'cancel',
-          'freegames', 'freegame', 'gamegratis', 'slot', 'slots', 'stiker', 'sticker', 's', 'gif',
-          'tt', 'tiktok', 'ig', 'instagram', 'yt', 'youtube', 'fb', 'facebook', 'quiz', 'trivia',
-          'tebakemoji', 'tebakkata', 'tebakgambar', 'zodiak', 'jodoh', 'khodam', 'truth', 'dare',
-          'torebot', 'tochipmunk', 'todeep', 'toecho', 'ping', 'statusbot', 'daily', 'poin', 'rank',
-          'song', 'play', 'tomp3', 'tovn', 'tr', 'translate', 'jadwalsholat', 'sholat', 'menfess', 'confess',
-          'hd', 'remini', 'upscale', 'afk', 'ww', 'werewolf', 'pay', 'qris', 'pembayaran',
-          'rampok', 'rob', 'steal', 'maling', 'copet', 'hack', 'bank', 'deposito', 'tarik', 'withdraw', 'transfer', 'susunkata', 'tebakangka', 'roulette',
-          'premium', 'upgradepremium', 'cekpremium', 'ai', 'gemini', 'tanyaai', 'lapak', 'jual', 'claimvoucher', 'wishlist',
-          // Perintah owner / admin
+        const isBotCommand = isPrefixCmd;
 
-          'addpoint', 'addpoints', 'tambahpoin', 'setpoin', 'resetpoin', 'resetleaderboard', 'kurangpoin', 'kurangipoin', 'delpoint', 'delpoints', 'deductpoint', 'potongpoin', 'kirimpoin', 'transferpoin',
-          'giveaway', 'setpoints', 'bagipoin', 'kompensasi', 'antidelete',
-          'paid', 'done', 'broadcast', 'addcoupon', 'delcoupon', 'listcoupon',
-          'addfaq', 'delfaq', 'listfaq', 'laporan', 'restock', 'stock', 'price',
-          'out', 'ready', 'addproduct', 'takeover', 'release', 'stats', 'flashsale',
-          'setname', 'setowner', 'setownerid', 'addmod', 'delmod', 'listmod',
-          'ban', 'unban', 'unwarn', 'cekwarn', 'kick', 'add', 'promote', 'demote', 'tagall', 'hidetag',
-          'everyone', 'all', 'semua', 'admins', 'mode', 'setmode', 'botmode', 'antilink',
-          'welcome', 'setwelcome', 'link', 'getjid', 'backup', 'eval', 'join', 'levelup', 'autolevelup', 'globallevelup', 'setlevelup', 'autodl', 'autodownload', 'listfitur', 'fiturgrup', 'groupfeatures', 'tebaklagu', 'tebakbendera', 'tebaknegara', 'bendera', 'negara', 'flag', 'balasmenfess', 'menfessreply', 'stopmenfess', 'closemenfess'
+        // ====================================================================
+        // INBOUND GOVERNOR (PEMBATAS LAJU PERINTAH USER & GRUP)
+        // ====================================================================
+        if (isBotCommand && !isAdmin) {
+          // Batasi laju per pengguna: maksimal 6 perintah per menit
+          const cekUser = periksaLaju(`cmd_user:${senderNormalized}`, 6);
+          if (!cekUser.boleh) {
+            if (cekUser.perluBeriTahu) {
+              await sock.sendMessage(jid, {
+                text: `⏳ *MOHON JANGAN SPAM PERINTAH* ⏳\n\nHalo Kak @${senderNormalized.split('@')[0]}! Untuk menjaga stabilitas sistem dan keamanan akun WhatsApp, mohon beri jeda sekitar *${cekUser.tungguDetik} detik* sebelum mengirim perintah bot lagi ya. 🙏`,
+                mentions: [senderNormalized]
+              }, { quoted: m });
+            }
+            continue;
+          }
+
+          // Batasi laju agregat grup: maksimal 20 perintah per menit dari seluruh member
+          if (isGroup) {
+            const cekGrup = periksaLaju(`cmd_grp:${jid}`, 20);
+            if (!cekGrup.boleh) {
+              if (cekGrup.perluBeriTahu) {
+                await sock.sendMessage(jid, {
+                  text: `⚠️ *LALU LINTAS PERINTAH BOT SEDANG PADAT* ⚠️\n\nPenggunaan perintah bot di grup ini sedang sangat tinggi. Bot beristirahat sejenak selama *${cekGrup.tungguDetik} detik* demi menghindari pembatasan dari sistem WhatsApp. Mohon ditunggu ya! 🙏`
+                });
+              }
+              continue;
+            }
+          }
+        }
+
+        // ====================================================================
+        // WAJIB JOIN GRUP UTAMA SEBELUM MENGGUNAKAN FITUR / PERINTAH BOT
+        // ====================================================================
+        const isRequireGroupJoin = (botSettings.requireGroupJoin || config.defaults.requireGroupJoin || 'true') !== 'false';
+        const exemptGroupJoinCmds = [
+          'owner', 'kontakowner', 'linkgrup', 'linkgroup', 'grup', 'group', 'link', 'help', 'bantuan', 'ping', 'statusbot'
         ];
 
+        if (isBotCommand && isRequireGroupJoin && !isAdmin && !exemptGroupJoinCmds.includes(cleanCmdCheck)) {
+          const mainGroupId = botSettings.buyerGroupId || botSettings.transactionGroupId || botSettings.updateGroupId || '';
+          const isAlreadyInMainGroup = isGroup && mainGroupId && (jid === mainGroupId);
 
-        const isBotCommand = isPrefixCmd;
-        const exemptCommands = ['daftar', 'register', 'registrasi', 'owner', 'kontakowner', 'menu', 'help', 'bantuan', 'ping', 'statusbot'];
+          if (!isAlreadyInMainGroup) {
+            const groupCheck = await checkIsUserInGroup(senderNormalized);
+            if (!groupCheck.isMember) {
+              const groupName = groupCheck.groupName || 'Grup Utama Toko';
+              const inviteLink = groupCheck.inviteLink || botSettings.groupInviteLink || '';
+              const joinNotice = `⚠️ *AKSES DITOLAK: WAJIB GABUNG GRUP UTAMA* ⚠️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nHalo Kak @${senderNormalized.split('@')[0]}!\n\nUntuk dapat menggunakan fitur & perintah bot kami, Anda diwajibkan untuk bergabung terlebih dahulu ke *${groupName}* kami.\n\n🔗 *Link Undangan Grup:*\n${inviteLink || 'Silakan hubungi Admin atau Owner untuk mendapatkan link grup.'}\n\n_Silakan klik link di atas untuk bergabung ke grup. Setelah bergabung, Anda langsung dapat menggunakan bot! Terima kasih._ 🙏`;
+
+              await sendInteractiveButtons(sock, jid, {
+                text: joinNotice,
+                mentions: [senderNormalized],
+                buttons: inviteLink ? [
+                  { type: 'cta_url', text: '🔗 Gabung Grup Utama', url: inviteLink }
+                ] : []
+              });
+              continue;
+            }
+          }
+        }
+
+        const exemptCommands = ['daftar', 'register', 'registrasi', 'owner', 'kontakowner', 'menu', 'help', 'bantuan', 'ping', 'statusbot', 'linkgrup', 'linkgroup', 'grup', 'group'];
 
         if (isBotCommand && !exemptCommands.includes(cleanCmdCheck) && !isAdmin) {
           const isRegistered = await db.isCustomerRegistered(senderNormalized);
@@ -1874,7 +2449,7 @@ _Kuota berganti tengah malam WIB. Ketik *.premium* untuk jatah lebih besar._`,
             }
 
             if (tiktokMatch) {
-              const url = tiktokMatch[0];
+              const url = tiktokMatch[0].replace(/[)\]}>.,!]+$/, '');
               try {
                 await sock.sendMessage(jid, { react: { text: '⏳', key: m.key } });
                 const res = await mediaHandler.downloadTikTok(url);
@@ -1899,9 +2474,12 @@ _Kuota berganti tengah malam WIB. Ketik *.premium* untuk jatah lebih besar._`,
                   }
                   await sock.sendMessage(jid, { react: { text: '✅', key: m.key } });
                   continue;
+                } else {
+                  await sock.sendMessage(jid, { react: { text: '', key: m.key } });
                 }
               } catch (e) {
                 console.error('[AUTO_DL_TT_ERR]', e.message);
+                try { await sock.sendMessage(jid, { react: { text: '', key: m.key } }); } catch (_) {}
               }
             } else if (igMatch) {
               const url = igMatch[0];
@@ -1945,6 +2523,7 @@ _Kuota berganti tengah malam WIB. Ketik *.premium* untuk jatah lebih besar._`,
         // Di grup ber-LID, `contextInfo.participant` untuk pesan bot berisi @lid,
         // bukan nomor HP — perbandingan lama selalu bernilai false di sana.
         const isReplyToBot = adalahJidBot(sock, m.message?.extendedTextMessage?.contextInfo?.participant);
+        const isQuickDoneReply = isReplyToBot && /^(done|selesai|acc|paid|terima|konfirmasi|konfirm)\b/i.test(msgText) && (isAdmin || isStoreAdmin || isOwnerSender);
 
         // 🎮 Cek jika ada game Tebak Gambar aktif di chat/grup ini
         if (ent.activeGames.has(jid)) {
@@ -1973,7 +2552,7 @@ _Kuota berganti tengah malam WIB. Ketik *.premium* untuk jatah lebih besar._`,
             });
             await sock.sendMessage(jid, { react: { text: '🎉', key: m.key } });
             continue;
-          } else if (isReplyToBot && msgText.trim().length > 0) {
+          } else if (isReplyToBot && !isQuickDoneReply && msgText.trim().length > 0) {
             await sock.sendMessage(jid, { text: `❌ Tebakan *${msgText.trim()}* salah!` }, { quoted: m });
           }
         }
@@ -2027,7 +2606,7 @@ _Kuota berganti tengah malam WIB. Ketik *.premium* untuk jatah lebih besar._`,
                 });
                 continue;
               }
-            } else if (isReplyToBot && msgText.trim().length > 0) {
+            } else if (isReplyToBot && !isQuickDoneReply && msgText.trim().length > 0) {
               await sock.sendMessage(jid, { text: `❌ Itu bukan angka yang valid (1-100)!` }, { quoted: m });
             }
           }
@@ -2060,7 +2639,7 @@ _Kuota berganti tengah malam WIB. Ketik *.premium* untuk jatah lebih besar._`,
             });
             await sock.sendMessage(jid, { react: { text: '🎉', key: m.key } });
             continue;
-          } else if (isReplyToBot && msgText.trim().length > 0) {
+          } else if (isReplyToBot && !isQuickDoneReply && msgText.trim().length > 0) {
             await sock.sendMessage(jid, { text: `❌ Tebakan *${msgText.trim()}* salah!` }, { quoted: m });
           }
         }

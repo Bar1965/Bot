@@ -47,3 +47,8 @@ if (validateRaise(40, 10, 20)) throw new Error('Raise di bawah minimum lolos!');
 console.log('✅ 3. Minimum Raise Delta Enforcement OK');
 
 console.log('\n🎉 SEMUA ATURAN RESMI WSOP POKER 100% LOLOS PENGUJIAN!');
+
+// Modul game menarik bot.js -> mediaHandler.js, dan mediaHandler menembakkan
+// `pip install -U yt-dlp` saat di-import. Tanpa exit eksplisit, test yang sudah
+// lulus tetap menggantung menunggu proses itu selesai.
+process.exit(0);

@@ -497,3 +497,93 @@ export async function closeMenfessSession(sessionId) {
     [sessionId]
   );
 }
+
+
+// --- FUNGSI CATATAN KEUANGAN PRIBADI (.catat & .rekap) ---
+
+export async function addFinanceRecord(userJid, type, amount, description) {
+  const cleanAmount = Math.max(0, Math.floor(Number(amount) || 0));
+  if (cleanAmount <= 0) return { success: false, message: 'Nominal harus lebih besar dari 0' };
+  const res = await runQuery(
+    "INSERT INTO finance_records (user_jid, type, amount, description) VALUES (?, ?, ?, ?)",
+    [userJid, type, cleanAmount, description || '-']
+  );
+  return { success: true, id: res.lastID, amount: cleanAmount, type, description };
+}
+
+export async function getMonthlyFinanceSummary(userJid, yearMonthStr) {
+  const filter = yearMonthStr || new Date().toISOString().slice(0, 7);
+  const rows = await allQuery(
+    "SELECT type, SUM(amount) as total FROM finance_records WHERE user_jid = ? AND strftime('%Y-%m', created_at) = ? GROUP BY type",
+    [userJid, filter]
+  );
+  let income = 0;
+  let expense = 0;
+  for (const r of rows) {
+    if (r.type === 'INCOME') income = Number(r.total) || 0;
+    if (r.type === 'EXPENSE') expense = Number(r.total) || 0;
+  }
+  return { income, expense, balance: income - expense, period: filter };
+}
+
+export async function getRecentFinanceRecords(userJid, limit = 5) {
+  const lim = Math.max(1, Math.min(20, Math.floor(Number(limit) || 5)));
+  return await allQuery(
+    "SELECT * FROM finance_records WHERE user_jid = ? ORDER BY id DESC LIMIT ?",
+    [userJid, lim]
+  );
+}
+
+export async function deleteFinanceRecord(userJid, recordId) {
+  const id = Math.floor(Number(recordId) || 0);
+  const res = await runQuery(
+    "DELETE FROM finance_records WHERE id = ? AND user_jid = ?",
+    [id, userJid]
+  );
+  return res.changes > 0;
+}
+
+
+// --- FUNGSI PENGINGAT PRIBADI (.remind / .ingat) ---
+
+export async function createPersonalReminder(userJid, targetJid, message, remindAtMs) {
+  const remindAt = Math.floor(Number(remindAtMs) || 0);
+  if (remindAt <= Date.now()) return { success: false, message: 'Waktu pengingat harus di masa depan' };
+  const res = await runQuery(
+    "INSERT INTO personal_reminders (user_jid, target_jid, message, remind_at, status) VALUES (?, ?, ?, ?, 'PENDING')",
+    [userJid, targetJid, message, remindAt]
+  );
+  return { success: true, id: res.lastID, remindAt };
+}
+
+export async function getDueReminders() {
+  const now = Date.now();
+  return await allQuery(
+    "SELECT * FROM personal_reminders WHERE status = 'PENDING' AND remind_at <= ? ORDER BY remind_at ASC LIMIT 50",
+    [now]
+  );
+}
+
+export async function markReminderSent(id) {
+  return await runQuery(
+    "UPDATE personal_reminders SET status = 'SENT' WHERE id = ?",
+    [id]
+  );
+}
+
+export async function getUserActiveReminders(userJid) {
+  return await allQuery(
+    "SELECT * FROM personal_reminders WHERE user_jid = ? AND status = 'PENDING' ORDER BY remind_at ASC LIMIT 20",
+    [userJid]
+  );
+}
+
+export async function cancelPersonalReminder(userJid, reminderId) {
+  const id = Math.floor(Number(reminderId) || 0);
+  const res = await runQuery(
+    "UPDATE personal_reminders SET status = 'CANCELLED' WHERE id = ? AND user_jid = ? AND status = 'PENDING'",
+    [id, userJid]
+  );
+  return res.changes > 0;
+}
+

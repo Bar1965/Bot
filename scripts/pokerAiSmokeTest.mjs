@@ -98,3 +98,8 @@ for (let r = 0; r < 100; r++) {
 
 console.log(`✅ 4. Simulasi 100 Ronde Selesai: Showdown ${showdownCount}x, Menang Fold ${foldCount}x`);
 console.log('\n🎉 SEMUA POKER AI SMOKE TESTS 100% SUKSES!');
+
+// Modul game menarik bot.js -> mediaHandler.js, dan mediaHandler menembakkan
+// `pip install -U yt-dlp` saat di-import. Tanpa exit eksplisit, test yang sudah
+// lulus tetap menggantung menunggu proses itu selesai.
+process.exit(0);

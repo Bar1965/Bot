@@ -66,8 +66,14 @@ export function reportApiFailure(providerName, errorMessage = '') {
 /**
  * Eksekusi deretan API Providers secara otomatis dengan failover cerdas
  */
-export async function executeWithSelfHealing(providers, fetchFn) {
-  // Sort providers: HEALTHY diprioritaskan di depan
+/**
+ * Eksekusi deretan API Providers secara otomatis dengan failover cerdas & auto-healing
+ * @param {Array<{name: string, fn?: Function}>} providers
+ * @param {Function} fetchFn - (provider) => Promise<any>
+ * @param {number} timeoutMs - Timeout per provider (default 15 detik)
+ */
+export async function executeWithSelfHealing(providers, fetchFn, timeoutMs = 15000) {
+  // Sort providers: HEALTHY diprioritaskan di depan, UNHEALTHY di belakang
   const sortedProviders = [...providers].sort((a, b) => {
     const aHealthy = isApiHealthy(a.name);
     const bHealthy = isApiHealthy(b.name);
@@ -76,19 +82,66 @@ export async function executeWithSelfHealing(providers, fetchFn) {
     return 0;
   });
 
-  for (const provider of sortedProviders) {
+  const errors = [];
+  let lastSpecificError = null;
+
+  for (let i = 0; i < sortedProviders.length; i++) {
+    const provider = sortedProviders[i];
     try {
-      const result = await fetchFn(provider);
-      if (result && result.success && (result.buffer || result.videoUrl || result.audioUrl)) {
+      // Eksekusi fungsi dengan batas timeout per provider
+      const result = await Promise.race([
+        fetchFn(provider),
+        new Promise((_, reject) => setTimeout(() => reject(new Error(`Timeout ${timeoutMs / 1000}s`)), timeoutMs))
+      ]);
+
+      if (result?.terlaluBesar) {
+        return result;
+      }
+
+      if (result?.privateOrRestricted || result?.unavailable) {
+        lastSpecificError = result;
+      }
+
+      const isValidResult = result && result.success && (
+        result.buffer ||
+        result.videoUrl ||
+        result.audioUrl ||
+        result.imageUrl ||
+        (Array.isArray(result.media) && result.media.length > 0)
+      );
+
+      if (isValidResult) {
         reportApiSuccess(provider.name);
         return result;
       } else {
-        reportApiFailure(provider.name, result?.message || 'Empty payload');
+        const errMsg = result?.message || 'Empty payload / media not found';
+        errors.push(`${provider.name}: ${errMsg}`);
+        const isUserContentError = /private|permission|login|restricted|unavailable|tidak ditemukan|author_secret|status_self_see|404|expired/i.test(errMsg);
+        if (!isUserContentError) {
+          reportApiFailure(provider.name, errMsg);
+        }
+        if (i < sortedProviders.length - 1) {
+          console.warn(`[AUTO_HEAL] ⚠️ Engine '${provider.name}' gagal (${errMsg}). Mengalihkan otomatis ke engine '${sortedProviders[i + 1].name}'...`);
+        }
       }
     } catch (err) {
-      reportApiFailure(provider.name, err.message);
+      errors.push(`${provider.name}: ${err.message}`);
+      const is404 = err.response?.status === 404 || /404|not found/i.test(err.message);
+      if (!is404) {
+        reportApiFailure(provider.name, err.message);
+      }
+      if (i < sortedProviders.length - 1) {
+        console.warn(`[AUTO_HEAL] ⚠️ Engine '${provider.name}' eror (${err.message}). Mengalihkan otomatis ke engine '${sortedProviders[i + 1].name}'...`);
+      }
     }
   }
 
-  return { success: false, message: 'Semua API provider downloader sedang tidak dapat dijangkau. Silakan coba beberapa saat lagi.' };
+  if (lastSpecificError) {
+    return lastSpecificError;
+  }
+
+  return {
+    success: false,
+    message: 'Semua engine downloader cadangan sedang tidak dapat dijangkau. Silakan coba beberapa saat lagi.'
+  };
 }

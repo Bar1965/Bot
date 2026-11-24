@@ -1160,7 +1160,7 @@ export async function createDepositOrder(orderId, customerNomor, total) {
 export async function settleDepositOrder(orderId, customerNomor, total, midtransStatus = 'settlement') {
   return withTransaction(async () => {
     const result = await runQuery(
-      "UPDATE orders SET status = 'COMPLETED', midtrans_status = ? WHERE order_id = ? AND customer_nomor = ? AND total = ? AND status = 'WAITING_PAYMENT'",
+      "UPDATE orders SET status = 'COMPLETED', payment_status = 'PAID', midtrans_status = ? WHERE order_id = ? AND customer_nomor = ? AND total = ? AND status IN ('WAITING_PAYMENT', 'WAITING_CONFIRMATION')",
       [midtransStatus, orderId, customerNomor, total]
     );
     if (result.changes === 1) {

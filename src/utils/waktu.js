@@ -56,14 +56,14 @@ export function tanggalJamWib(nilai, fallback = '-') {
 }
 
 /** Tanggal saja dalam WIB, mis. "13/9/2026". */
-export function tanggalWib(nilai, fallback = '-') {
+export function tanggalWib(nilai = Date.now(), fallback = '-') {
   const d = keWaktu(nilai);
   if (!d) return fallback;
   return d.toLocaleDateString('id-ID', { timeZone: ZONA });
 }
 
 /** Tanggal panjang WIB, mis. "Sabtu, 13 September 2026". Dipakai teks garansi. */
-export function tanggalPanjangWib(nilai, fallback = '-') {
+export function tanggalPanjangWib(nilai = Date.now(), fallback = '-') {
   const d = keWaktu(nilai);
   if (!d) return fallback;
   return d.toLocaleDateString('id-ID', { timeZone: ZONA, dateStyle: 'full' });
@@ -80,7 +80,7 @@ export function tanggalPanjangWib(nilai, fallback = '-') {
  * terlanjur tertulis "WIB" — jadi begitu bot pindah ke VPS, tulisan WIB-nya
  * bohong. keWaktu menangani kedua bentuk, dan zona dipaku ke Asia/Jakarta.
  */
-export function jamWib(nilai, fallback = '-') {
+export function jamWib(nilai = Date.now(), fallback = '-') {
   const d = keWaktu(nilai);
   if (!d) return fallback;
   return d.toLocaleTimeString('id-ID', { timeZone: ZONA, hour: '2-digit', minute: '2-digit' });

@@ -10,7 +10,7 @@
  */
 
 import * as db from '../../database.js';
-import { send } from './helpers.js';
+import { send, catatJejak, perbaruiPapan, lepasPapan } from './helpers.js';
 
 export const activeWireGames = new Map();
 
@@ -71,37 +71,39 @@ async function refundWireSession(session) {
 }
 
 /**
- * Render tampilan visual status koper bom
+ * Render koper bom — dipadatkan.
+ *
+ * Papan ini muncul di setiap potongan kabel, jadi bentuk lamanya (10 baris
+ * penuh garis pemisah + pesan narasi terpisah) berarti dua pesan panjang per
+ * giliran. Sekarang satu papan hidup, dan narasi tiap potongan turun jadi satu
+ * baris jejak di dalamnya.
  */
 function renderBombVisual(session) {
-  const wireStatusList = WIRE_COLORS.map(w => {
-    const isCut = session.cutWires.has(w.key);
-    if (isCut) {
-      return `✂️ ~${w.name}~ (Putus)`;
-    }
-    return `${w.emoji} [${w.id}] *${w.name}*`;
-  });
+  const kabel = WIRE_COLORS.map(w => (
+    session.cutWires.has(w.key) ? `~${w.name}~` : `${w.emoji}[${w.id}]${w.name}`
+  )).join(' · ');
 
-  // Susun 2 baris (3 kolom per baris)
-  const row1 = wireStatusList.slice(0, 3).join('  •  ');
-  const row2 = wireStatusList.slice(3, 6).join('  •  ');
+  const multiplierText = session.multiplier > 1.0 ? ` ×${session.multiplier.toFixed(2)}` : '';
+  const sisaKabel = WIRE_COLORS.filter(w => !session.cutWires.has(w.key)).length;
 
-  const aliveTags = session.alivePlayers.map(p => tag(p)).join(', ');
-  const multiplierText = session.multiplier > 1.0 ? ` (Multiplier: *x${session.multiplier.toFixed(2)}*)` : '';
+  const jejak = (session.jejak || []).length
+    ? `\n${session.jejak.map(r => `▸ ${r}`).join('\n')}`
+    : '';
 
   return (
-`💣 ─── *KOPER BOM WAKTU* ─── 💣
-[ ⏱️ *STATUS:* AKTIF | 💰 *POT:* *${session.pot} Poin*${multiplierText} ]
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📦 *Kondisi Kabel Bom:*
-${row1}
-${row2}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-👥 *Pemain Hidup:* ${aliveTags}
-👉 *Giliran Memotong:* ${tag(session.alivePlayers[session.activeTurnIndex])}
-_Ketik: \`.potong <warna/nomor>\` (Contoh: \`.potong merah\` atau \`.potong 1\`)_
-_⏳ Sisa Waktu Giliran: ${TURN_TIMEOUT_MS / 1000} detik_`
+`💣 *KOPER BOM WAKTU* · 💰 *${session.pot} Poin*${multiplierText} · 🧵 ${sisaKabel} kabel utuh
+${kabel}
+👥 ${session.alivePlayers.map(p => tag(p)).join(' · ')}${jejak}
+👉 Giliran ${tag(session.alivePlayers[session.activeTurnIndex])} — ketik \`.potong merah\` _(${TURN_TIMEOUT_MS / 1000}s)_`
   );
+}
+
+/** Papan koper hidup: satu pesan yang diedit, bukan dua pesan tiap potongan. */
+async function perbaruiKoper(sock, jid, session, opsi = {}) {
+  return await perbaruiPapan(sock, jid, session, renderBombVisual, {
+    mentions: session.alivePlayers,
+    ...opsi
+  });
 }
 
 /**
@@ -124,8 +126,8 @@ function armWireTurnTimer(sock, jid) {
       if (remainingWires.length === 0) return;
 
       const randomWire = remainingWires[Math.floor(Math.random() * remainingWires.length)];
-      await send(sock, jid, null, `⏰ *Waktu habis!* ${tag(currentP)} panik dan otomatis memotong kabel *${randomWire.emoji} ${randomWire.name}*!`, { mentions: [currentP] });
-
+      // Cukup satu baris jejak; `executeCutWire` yang menuliskan hasilnya.
+      catatJejak(live, `⏰ Waktu ${tag(currentP)} habis — potong acak ${randomWire.emoji} ${randomWire.name}`);
       await executeCutWire(sock, jid, currentP, randomWire.key);
     } catch (e) {
       console.error('[WIRE_TIMEOUT_ERR]', e);
@@ -357,17 +359,20 @@ async function startWireGame(sock, jid, senderNumber, messageObj) {
   session.wireRoles.set(shuffledKeys[4], 'SAFE');      // ⏳ Aman
   session.wireRoles.set(shuffledKeys[5], 'SAFE');      // ⏳ Aman
 
-  const startAnnouncement =
-`🚨 *PERMAINAN JINAKKAN BOM DIMULAI!* 🚨
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Koper bom telah diaktifkan di tengah meja! Detonator berdetik cepat...
-💰 *Total Pot Taruhan:* *${session.pot} Poin*
-🎯 *Urutan Giliran:*
-${session.alivePlayers.map((p, i) => `  ${i + 1}. ${tag(p)}`).join('\n')}
+  // Pembuka boleh berdering sekali. Sesudah itu seluruh permainan berjalan di
+  // dalam satu papan koper yang diedit di tempat.
+  await send(sock, jid, messageObj,
+`🚨 *JINAKKAN BOM DIMULAI!* 🚨
+Koper bom aktif di tengah meja. Detonator berdetik cepat...
+💰 *Pot Taruhan:* *${session.pot} Poin*
+🎯 *Urutan:* ${session.alivePlayers.map(p => tag(p)).join(' ➔ ')}
 
-${renderBombVisual(session)}`;
+👉 Ketik \`.potong <warna>\` saat giliranmu. Papan koper di bawah diperbarui otomatis — tidak perlu di-scroll ulang.`,
+    { mentions: session.alivePlayers });
 
-  await send(sock, jid, messageObj, startAnnouncement, { mentions: session.alivePlayers });
+  lepasPapan(session);
+  catatJejak(session, '🚩 Koper dibuka — 6 kabel masih utuh');
+  await perbaruiKoper(sock, jid, session);
   armWireTurnTimer(sock, jid);
   return true;
 }
@@ -420,14 +425,13 @@ async function executeCutWire(sock, jid, player, wireKey, messageObj = null) {
   if (role === 'DETONATOR') {
     session.alivePlayers = session.alivePlayers.filter(p => p !== player);
 
-    const boomMsg =
-`💥💥💥 *BOOOOOOOOM! KABEL MELEDAK!* 💥💥💥
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-✂️ ${tag(player)} memotong kabel *${wireInfo.emoji} ${wireInfo.name}*...
-💣 *Kabel tersebut adalah DETONATOR!* Bom meledak di hadapan ${tag(player)}!
-💀 ${tag(player)} tereliminasi dari permainan! Taruhan hangus ke Pot.`;
-
-    await send(sock, jid, messageObj, boomMsg, { mentions: [player] });
+    // Ledakan memang pantas berdering — seseorang baru saja tersingkir dan
+    // kehilangan taruhannya. Ini salah satu dari sedikit momen yang tetap
+    // dikirim sebagai pesan baru, bukan diselipkan ke papan.
+    await send(sock, jid, messageObj,
+`💥 *BOOOOM!* ${tag(player)} memotong *${wireInfo.emoji} ${wireInfo.name}* — itu DETONATOR!
+💀 ${tag(player)} tereliminasi, taruhannya hangus ke Pot.`,
+      { mentions: [player] });
 
     // Cek sisa pemain hidup
     if (session.alivePlayers.length === 1) {
@@ -448,20 +452,18 @@ async function executeCutWire(sock, jid, player, wireKey, messageObj = null) {
       session.activeTurnIndex = 0;
     }
 
-    await send(sock, jid, null, renderBombVisual(session), { mentions: session.alivePlayers });
+    catatJejak(session, `💥 ${tag(player)} meledak di kabel ${wireInfo.emoji} ${wireInfo.name}`);
+    await perbaruiKoper(sock, jid, session);
     armWireTurnTimer(sock, jid);
     return true;
   }
 
   // ✂️ KASUS B: KABEL DEFUSAL (JINAK & MENANG INSTAN)
   if (role === 'DEFUSAL') {
-    const defuseMsg =
-`🎉🎉🎉 *KLIK! BOM BERHASIL DIJINAKKAN!* ✂️🎉
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-✂️ ${tag(player)} dengan berani memotong kabel *${wireInfo.emoji} ${wireInfo.name}*!
-💡 Layar digital bom padam seketika! Bom berhasil dijinakkan dengan sempurna!`;
-
-    await send(sock, jid, messageObj, defuseMsg, { mentions: [player] });
+    await send(sock, jid, messageObj,
+`🎉 *KLIK! BOM BERHASIL DIJINAKKAN!* ✂️
+${tag(player)} memotong *${wireInfo.emoji} ${wireInfo.name}* dan layar bom padam seketika!`,
+      { mentions: [player] });
     await finishWireGame(sock, jid, player, `🏆 *PAHLAWAN PENJINAK BOM!*`);
     return true;
   }
@@ -472,12 +474,7 @@ async function executeCutWire(sock, jid, player, wireKey, messageObj = null) {
   session.pot += addedBonus;
   await db.updateActiveGameSession(db.sesiGameId('cutthewire', jid), { pot: session.pot });
 
-  const safeMsg =
-`✂️ *KREK!* ${tag(player)} memotong kabel *${wireInfo.emoji} ${wireInfo.name}*...
-😮‍💨 *AMAN!* Kabel tersebut tidak memicu ledakan!
-💰 Nilai Pot bertambah bonus +${addedBonus} Poin! Total Pot: *${session.pot} Poin* (x${session.multiplier.toFixed(2)})`;
-
-  await send(sock, jid, messageObj, safeMsg, { mentions: [player] });
+  catatJejak(session, `✂️ ${tag(player)} potong ${wireInfo.emoji} ${wireInfo.name} — *AMAN*, pot +${addedBonus}`);
 
   // Pindah giliran ke pemain berikutnya
   session.activeTurnIndex = (session.activeTurnIndex + 1) % session.alivePlayers.length;
@@ -485,10 +482,10 @@ async function executeCutWire(sock, jid, player, wireKey, messageObj = null) {
   // Cek apakah seluruh kabel aman habis sehingga tersisa 1 detonator & 1 defusal
   const remainingWires = WIRE_COLORS.filter(w => !session.cutWires.has(w.key));
   if (remainingWires.length === 2) {
-    await send(sock, jid, null, `🔥 *KETEGANGAN 50:50!* Hanya tersisa 2 kabel di koper: *1 Kabel Meledak 💥* dan *1 Kabel Jinak ✂️*!`);
+    catatJejak(session, '🔥 *50:50!* Sisa 1 kabel meledak & 1 kabel jinak');
   }
 
-  await send(sock, jid, null, renderBombVisual(session), { mentions: session.alivePlayers });
+  await perbaruiKoper(sock, jid, session);
   armWireTurnTimer(sock, jid);
   return true;
 }
@@ -501,6 +498,10 @@ async function finishWireGame(sock, jid, winner, headerTitle) {
   if (!session) return;
 
   clearSessionTimer(session);
+
+  // Keadaan akhir koper diperbarui sekali lagi sebelum papannya dilepas.
+  await perbaruiKoper(sock, jid, session).catch(() => {});
+  lepasPapan(session);
   activeWireGames.delete(jid);
 
   await db.addGamePoints(winner, session.pot);

@@ -786,6 +786,31 @@ export function startScheduler(sock) {
     }
   }, 60 * 1000);
 
+  // Set interval pengecekan pengingat pribadi (.remind / .ingat) setiap 15 detik
+  setInterval(async () => {
+    try {
+      if (schedulerSock && botState.whatsappConnected) {
+        const due = await db.getDueReminders();
+        if (due && due.length > 0) {
+          for (const item of due) {
+            try {
+              await schedulerSock.sendMessage(item.target_jid, {
+                text: `⏰ *PENGINGAT PRIBADI (REMINDER)* ⏰\n━━━━━━━━━━━━━━━━━━━━\n\nHalo! Waktunya tiba. Kamu minta diingatkan:\n\n📝 *"${item.message}"*\n\n_Pengingat selesai._`
+              });
+              await db.markReminderSent(item.id);
+            } catch (err) {
+              console.error(`[REMINDER] Gagal mengirim reminder #${item.id}:`, err.message);
+              await db.markReminderSent(item.id);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.error('[SCHEDULER] Error processing personal reminders:', e.message);
+    }
+  }, 15 * 1000);
+
+
   // Backup pertama saat scheduler mulai — tapi lewat penjaga tanggal, supaya
   // menyalakan ulang bot sepuluh kali dalam sehari tidak menghasilkan sepuluh
   // file cadangan yang saling mendesak keluar file-file lama.

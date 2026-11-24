@@ -1,8 +1,22 @@
 import sharp from 'sharp';
-import { createCanvas } from '@napi-rs/canvas';
+import { createCanvas, GlobalFonts } from '@napi-rs/canvas';
 import fs from 'fs';
 import path from 'path';
 import * as googleTTS from 'google-tts-api';
+
+// Registrasi font emoji Windows jika tersedia agar Skia/canvas merender emote berwarna
+try {
+  if (process.platform === 'win32') {
+    const emojiFontPath = 'C:\\Windows\\Fonts\\seguiemj.ttf';
+    if (fs.existsSync(emojiFontPath)) {
+      GlobalFonts.registerFromPath(emojiFontPath, 'Segoe UI Emoji');
+    }
+  }
+} catch (e) {
+  console.warn('[INVOICE_EMOJI] Warning registrasi font emoji:', e.message);
+}
+
+const EMOJI_FONT_STACK = '"Segoe UI", "Segoe UI Emoji", "Noto Color Emoji", sans-serif';
 
 // Memory storage untuk game Tebak Gambar di grup: Map<groupJid, { answer: string, hint: string, timeout: any }>()
 export const activeGames = new Map();
@@ -121,14 +135,52 @@ export async function generateTTS(text, lang = 'id') {
  */
 export async function generateAIImage(prompt) {
   try {
-    const cleanPrompt = prompt.trim();
-    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}?width=768&height=768&nologo=true`;
-    const res = await fetch(url);
-    if (res.ok) {
-      const buffer = Buffer.from(await res.arrayBuffer());
-      if (buffer.length > 5000) return { success: true, buffer };
+    const cleanPrompt = (prompt || '').trim();
+    if (!cleanPrompt) {
+      return { success: false, message: 'Harap sertakan deskripsi gambar yang ingin dibuat.' };
     }
-    return { success: false, message: 'Gagal membuat gambar AI. Pastikan prompt jelas.' };
+
+    const randomSeed = Math.floor(Math.random() * 1000000);
+
+    // Engine 1: Pollinations AI Sana Model (Fast, 768x768, High Quality)
+    try {
+      const url1 = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}?model=sana&width=768&height=768&nologo=true&seed=${randomSeed}`;
+      const res1 = await fetch(url1, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+        signal: AbortSignal.timeout(25000)
+      });
+      if (res1.ok) {
+        const buffer = Buffer.from(await res1.arrayBuffer());
+        if (buffer.length > 5000) return { success: true, buffer, provider: 'Pollinations Sana' };
+      }
+    } catch (e1) {
+      console.warn('[AI_IMG_SANA_FAIL]', e1.message);
+    }
+
+    // Engine 2: Pollinations AI Default Engine (Fallback)
+    try {
+      const url2 = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}?width=768&height=768&nologo=true&seed=${randomSeed}`;
+      const res2 = await fetch(url2, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+        signal: AbortSignal.timeout(25000)
+      });
+      if (res2.ok) {
+        const buffer = Buffer.from(await res2.arrayBuffer());
+        if (buffer.length > 5000) return { success: true, buffer, provider: 'Pollinations Default' };
+      } else {
+        const errJson = await res2.json().catch(() => null);
+        if (errJson?.error?.code === 'FREE_LIMIT' || res2.status === 402) {
+          return {
+            success: false,
+            message: '⚠️ Batas kuota gratis server AI gambar tercapai (1 gambar per 45 detik). Silakan tunggu sebentar lalu coba lagi.'
+          };
+        }
+      }
+    } catch (e2) {
+      console.warn('[AI_IMG_DEFAULT_FAIL]', e2.message);
+    }
+
+    return { success: false, message: 'Server gambar AI sedang sibuk. Silakan coba beberapa saat lagi.' };
   } catch (err) {
     console.error('[AI_IMG_ERR]', err.message);
     return { success: false, message: err.message };
@@ -369,19 +421,19 @@ export async function generateInvoiceImage(order) {
     ctx.fillRect(0, 0, width, 100);
 
     ctx.fillStyle = '#00a884';
-    ctx.font = 'bold 28px sans-serif';
+    ctx.font = `bold 28px ${EMOJI_FONT_STACK}`;
     ctx.fillText('AKBAR STORE', 30, 45);
 
     ctx.fillStyle = '#e9edef';
-    ctx.font = '16px sans-serif';
+    ctx.font = `16px ${EMOJI_FONT_STACK}`;
     ctx.fillText('OFFICIAL TRANSACTION INVOICE', 30, 75);
 
     // Order Meta Info
     ctx.fillStyle = '#333333';
-    ctx.font = 'bold 18px sans-serif';
+    ctx.font = `bold 18px ${EMOJI_FONT_STACK}`;
     ctx.fillText(`INVOICE: #${order.id || 'ORDER'}`, 30, 140);
 
-    ctx.font = '15px sans-serif';
+    ctx.font = `15px ${EMOJI_FONT_STACK}`;
     ctx.fillStyle = '#666666';
     ctx.fillText(`Tanggal: ${new Date(order.created_at || Date.now()).toLocaleString('id-ID')}`, 30, 165);
     ctx.fillText(`Pelanggan: ${order.customer_name || 'Pelanggan'} (${order.customer_nomor || '-'})`, 30, 190);
@@ -400,7 +452,7 @@ export async function generateInvoiceImage(order) {
     ctx.fillRect(30, 255, 540, 35);
 
     ctx.fillStyle = '#FFFFFF';
-    ctx.font = 'bold 15px sans-serif';
+    ctx.font = `bold 15px ${EMOJI_FONT_STACK}`;
     ctx.fillText('PRODUK', 45, 278);
     ctx.fillText('QTY', 320, 278);
     ctx.fillText('HARGA', 400, 278);
@@ -411,7 +463,7 @@ export async function generateInvoiceImage(order) {
     
     items.forEach((item) => {
       ctx.fillStyle = '#333333';
-      ctx.font = '15px sans-serif';
+      ctx.font = `15px ${EMOJI_FONT_STACK}`;
       ctx.fillText((item.name || '').slice(0, 25), 45, y);
       ctx.fillText(String(item.qty || 1), 325, y);
       ctx.fillText(`Rp${(item.price || 0).toLocaleString('id-ID')}`, 395, y);
@@ -427,20 +479,20 @@ export async function generateInvoiceImage(order) {
 
     // Total Summary
     y += 40;
-    ctx.font = 'bold 16px sans-serif';
+    ctx.font = `bold 16px ${EMOJI_FONT_STACK}`;
     ctx.fillStyle = '#333333';
     ctx.fillText('Diskon Kupon:', 350, y);
     ctx.fillText(`-Rp${(order.diskon || 0).toLocaleString('id-ID')}`, 480, y);
 
     y += 30;
-    ctx.font = 'bold 20px sans-serif';
+    ctx.font = `bold 20px ${EMOJI_FONT_STACK}`;
     ctx.fillStyle = '#00a884';
     ctx.fillText('TOTAL BAYAR:', 330, y);
     ctx.fillText(`Rp${(order.total_harga || 0).toLocaleString('id-ID')}`, 465, y);
 
     // Footer Note
     ctx.fillStyle = '#888888';
-    ctx.font = 'italic 14px sans-serif';
+    ctx.font = `italic 14px ${EMOJI_FONT_STACK}`;
     ctx.textAlign = 'center';
     ctx.fillText('Terima kasih telah berbelanja di Akbar Store!', width / 2, height - 35);
 
@@ -643,7 +695,7 @@ export async function convertVoiceEffect(audioBuffer, effectType = 'torebot') {
 
     const ffmpeg = (await import('fluent-ffmpeg')).default;
     const ffmpegInstaller = (await import('@ffmpeg-installer/ffmpeg')).default;
-    ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+    ffmpeg.setFfmpegPath(process.env.FFMPEG_PATH || ffmpegInstaller.path);
 
     await new Promise((resolve, reject) => {
       ffmpeg(inputPath)

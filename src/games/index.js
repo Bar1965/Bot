@@ -1,4 +1,5 @@
 import * as db from '../../database.js';
+import { config } from '../../config.js';
 import * as entertainment from '../../entertainmentHandler.js';
 import { sendInteractiveButtons } from '../../bot.js';
 import { getPremiumBenefits } from '../../premiumHandler.js';
@@ -576,6 +577,13 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
   // Arena Kartu Monster (TCG). Semua sub-perintah bersarang di bawah `.tcg`
   // supaya tidak menambah nama baru ke ruang perintah tingkat atas yang sudah padat.
   if (['tcg', 'arena', 'kartumonster'].includes(command)) {
+    const isTcgActive = (config.defaults?.tcgEnabled || 'false') === 'true';
+    if (!isTcgActive && !isOwner) {
+      await send(sock, jid, {
+        text: `⚠️ *ARENA TCG SEDANG DITUTUP SEMENTARA* ⚠️\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nFitur Arena Kartu Monster (TCG) sedang dinonaktifkan sementara untuk pemeliharaan dan optimasi performa sistem bot.\n\n🛡️ *Catatan Penting:*\n• Seluruh kartu, level, dan aset keping Anda tetap *tersimpan 100% aman* di database.\n• Tidak ada progres yang hilang saat Arena kembali dibuka nanti.\n\n💡 _Sementara ini, silakan nikmati minigame seru lainnya seperti_ \`.tebakgambar\`, \`.blackjack\`, \`.mines\`, \`.slot\`, _dan_ \`.suit\`! 🙏`
+      }, { quoted: messageObj });
+      return true;
+    }
     return await handleTcgCommand({
       sock, jid, senderNumber, messageObj, args,
       isFromGroup, isAdmin, isOwner, isStoreAdmin
@@ -1557,7 +1565,8 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
       USER: '👤 Pelanggan'
     }[data.customer.role] || data.customer.role;
 
-    const totalSerpih = Object.values(data.tcg.shards).reduce((a, b) => a + b, 0);
+    const isTcgActive = (config.defaults?.tcgEnabled || 'false') === 'true';
+    const totalSerpih = Object.values(data.tcg?.shards || {}).reduce((a, b) => a + b, 0);
 
     const card = [
       '╔══════════════════════════════╗',
@@ -1565,7 +1574,7 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
       '╚══════════════════════════════╝',
       `👤 Pemilik: ${nameStr}`,
       `🏷️ Role: *${roleBadge}* · Tier: *${tierBadge}*`,
-      data.tcg.activeTitle ? `🏷️ Gelar Arena: *${data.tcg.activeTitle}*` : '',
+      (isTcgActive && data.tcg?.activeTitle) ? `🏷️ Gelar Arena: *${data.tcg.activeTitle}*` : '',
       '',
       '💵 *FINANSIAL & POIN TOKO:*',
       `• 💳 Saldo Rupiah (IDR): *Rp ${Number(data.customer.balance).toLocaleString('id-ID')}*`,
@@ -1574,12 +1583,14 @@ export async function handleFunCommand({ sock, jid, senderNumber, messageObj, te
       data.game.bankPending > 0 ? `• ⏳ Dana Endap: *${Number(data.game.bankPending).toLocaleString('id-ID')} Poin*` : '',
       `• 💎 Total Kekayaan: *${Number(data.game.totalWealth).toLocaleString('id-ID')} Poin*`,
       '',
-      '🎴 *ASET ARENA TCG:*',
-      `• 💠 Keping Arena: *${Number(data.tcg.keping).toLocaleString('id-ID')} Keping*`,
-      `• 📚 Koleksi Monster: *${data.tcg.uniqueCards} Jenis* (Total ${data.tcg.totalCards} Kartu)`,
-      `• ✦ Total Serpihan: *${totalSerpih} Serpihan*`,
-      `  └ ⚪ ${data.tcg.shards.COMMON} C · 🟢 ${data.tcg.shards.RARE} R · 🟣 ${data.tcg.shards.EPIC} E · 🟡 ${data.tcg.shards.LEGENDARY} L`,
-      '',
+      ...(isTcgActive ? [
+        '🎴 *ASET ARENA TCG:*',
+        `• 💠 Keping Arena: *${Number(data.tcg.keping).toLocaleString('id-ID')} Keping*`,
+        `• 📚 Koleksi Monster: *${data.tcg.uniqueCards} Jenis* (Total ${data.tcg.totalCards} Kartu)`,
+        `• ✦ Total Serpihan: *${totalSerpih} Serpihan*`,
+        `  └ ⚪ ${data.tcg.shards.COMMON} C · 🟢 ${data.tcg.shards.RARE} R · 🟣 ${data.tcg.shards.EPIC} E · 🟡 ${data.tcg.shards.LEGENDARY} L`,
+        ''
+      ] : []),
       '⚡ *KUOTA HARIAN & AKTIVITAS:*',
       `• 🤖 Smart AI Chat: *${data.quota.aiUsed} / ${aiLimit >= 9999 ? '∞' : aiLimit}* per hari`,
       `• 📥 Media Downloader: *${data.quota.mediaUsed} / ${mediaLimit}* per hari`,

@@ -12,6 +12,11 @@ import path from 'path';
 import axios from 'axios';
 import https from 'https';
 import { spawn } from 'child_process';
+import * as ab from 'ab-downloader';
+import * as btch from 'btch-downloader';
+import { snapsave } from 'snapsave-media-downloader';
+import ruhend from 'ruhend-scraper';
+import NodeID3 from 'node-id3';
 
 const httpsAgent = new https.Agent({ rejectUnauthorized: false, family: 4 });
 
@@ -21,6 +26,52 @@ import { isApiHealthy, reportApiSuccess, reportApiFailure, executeWithSelfHealin
 process.env.FFMPEG_PATH = ffmpegInstaller.path;
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 process.env.YTDL_NO_UPDATE = 'true';
+
+/**
+ * Ekstraksi shortlink (vt.tiktok.com, vm.tiktok.com, pin.it, youtu.be, fb.watch, dll.)
+ * ke URL kanonikal lengkap.
+ */
+export async function expandCanonicalUrl(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== 'string') return rawUrl;
+  const isShortlink = /vt\.tiktok\.com|vm\.tiktok\.com|v\.tiktok\.com|tiktok\.com\/t\/|pin\.it|fb\.watch|youtu\.be|t\.co|bit\.ly|tinyurl\.com|s\.id|v\.gd|cutt\.ly|shorturl\.at|instagram\.com\/share/i.test(rawUrl);
+  if (!isShortlink) return rawUrl;
+
+  try {
+    const res = await axios.get(rawUrl, {
+      headers: { 'User-Agent': getRandomUserAgent() },
+      maxRedirects: 8,
+      timeout: 7000,
+      validateStatus: () => true
+    });
+    const finalUrl = res.request?.res?.responseUrl || res.config?.url;
+    if (finalUrl && finalUrl.startsWith('http') && finalUrl !== rawUrl) {
+      console.log(`[URL_RESOLVER] 🔗 Berhasil ekspansi shortlink: ${rawUrl} -> ${finalUrl}`);
+      return finalUrl;
+    }
+  } catch (err) {
+    console.log(`[URL_RESOLVER] Gagal ekspansi shortlink ${rawUrl}:`, err.message);
+  }
+  return rawUrl;
+}
+
+/**
+ * Bersihkan URL TikTok dari query parameter pelacak (_r=1, _t=..., utm_source, dll.)
+ * agar scraper pihak ketiga menerima URL murni yang stabil.
+ */
+export function bersihkanUrlTiktok(url) {
+  if (!url || typeof url !== 'string') return url;
+  try {
+    const u = new URL(url);
+    if (u.hostname.includes('tiktok.com')) {
+      if (/\/(?:video|photo)\/\d+/i.test(u.pathname)) {
+        return `${u.origin}${u.pathname}`;
+      }
+    }
+    return url;
+  } catch {
+    return url;
+  }
+}
 
 /**
  * Auto-Update Engine untuk yt-dlp
@@ -722,7 +773,7 @@ async function downloadWithYtdlp(url, isAudio = false) {
 
   // 180 detik: 60 detik tidak cukup untuk berkas mendekati 48 MB, dan timeout
   // yang kepagian membuat unduhan yang sebenarnya sehat dianggap gagal.
-  await runPythonProc(fileArgs, 180000);
+  const procRes = await runPythonProc(fileArgs, 180000);
 
   // Jangan bergantung pada exit code — yt-dlp sering keluar bukan 0 (mis. saat
   // --max-filesize memangkas satu format) padahal berkas akhirnya sudah jadi.
@@ -843,33 +894,109 @@ async function downloadWithYtdlp(url, isAudio = false) {
     }
   }
 
+  const errOutput = `${procRes?.stderr || ''} ${procRes?.stdout || ''} ${procRes2?.stderr || ''}`;
+  if (/permission to view this post|Log into an account|Private video|This video is private|requires login|login required|login_required/i.test(errOutput)) {
+    return {
+      success: false,
+      privateOrRestricted: true,
+      message: 'Konten ini bersifat pribadi (private) atau dibatasi oleh pemilik akun sehingga tidak dapat diunduh tanpa izin.'
+    };
+  }
+  if (/Video unavailable|This video has been removed|post is unavailable/i.test(errOutput)) {
+    return {
+      success: false,
+      unavailable: true,
+      message: 'Media tidak ditemukan atau telah dihapus oleh pemiliknya.'
+    };
+  }
+
   return null;
 }
 
 /**
- * Download TikTok Video & Slide Foto tanpa watermark — Multi-Tier Failover (TikWM -> SSSTik -> Siputzx -> yt-dlp)
+ * Download TikTok Video & Slide Foto tanpa watermark — Self-Healing Multi-Engine
  */
-export async function downloadTikTok(url) {
-  // Method 1: TikWM API (Mendukung Video tanpa watermark & Slide Foto / Images)
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      const res = await axios.post('https://www.tikwm.com/api/', new URLSearchParams({ url, hd: '1' }).toString(), {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': getRandomUserAgent(),
-        },
-        timeout: 10000
-      });
+export async function downloadTikTok(rawUrl) {
+  const url = await expandCanonicalUrl(rawUrl);
+  const cleanUrl = bersihkanUrlTiktok(url);
+  const isPhoto = cleanUrl.includes('/photo/') || url.includes('/photo/');
 
-      if (res.data) {
-        if (res.data.code === 0 && res.data.data) {
-          const d = res.data.data;
-          const title = d.title || 'TikTok Media';
-          const author = d.author?.nickname || 'TikTok Creator';
+  const providers = [
+    {
+      name: 'Tikmate API',
+      fn: async () => {
+        if (isPhoto) return { success: false, message: 'Tikmate dilewati untuk post foto/slide' };
+        const res = await axios.post('https://api.tikmate.app/api/lookup', new URLSearchParams({ url: cleanUrl }).toString(), {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            'User-Agent': getRandomUserAgent()
+          },
+          timeout: 8000
+        });
+        if (res.data?.success && res.data?.token && res.data?.id) {
+          const streamUrl = `https://tikmate.app/download/${res.data.token}/${res.data.id}.mp4`;
+          return {
+            success: true,
+            media: [{ type: 'video', url: streamUrl }],
+            videoUrl: streamUrl,
+            title: res.data.desc || 'TikTok Video',
+            author: res.data.author_name || res.data.author_id || 'TikTok Creator',
+            type: 'video'
+          };
+        }
+        return { success: false, message: 'Tikmate data tidak lengkap' };
+      }
+    },
+    {
+      name: 'Ab TikTokio Engine',
+      fn: async () => {
+        const res = await ab.ttdl(cleanUrl);
+        if (res && (res.video?.length > 0 || res.images?.length > 0)) {
+          const title = res.title || 'TikTok Video';
+          if (Array.isArray(res.images) && res.images.length > 0) {
+            return {
+              success: true,
+              media: res.images.map(img => ({ type: 'image', url: img })),
+              title,
+              type: 'carousel'
+            };
+          }
+          if (Array.isArray(res.video) && res.video.length > 0) {
+            const streamUrl = res.video[0];
+            return {
+              success: true,
+              media: [{ type: 'video', url: streamUrl }],
+              videoUrl: streamUrl,
+              title,
+              type: 'video'
+            };
+          }
+        }
+        return { success: false, message: res?.message || 'Ab TikTokio media kosong' };
+      }
+    },
+    {
+      name: 'SSSTik Scraper',
+      fn: async () => {
+        const res = await axios.post('https://ssstik.io/abc?url=dl', `id=${encodeURIComponent(cleanUrl)}&locale=en&tt=1`, {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            'User-Agent': getRandomUserAgent(),
+            'Origin': 'https://ssstik.io',
+            'Referer': 'https://ssstik.io/en'
+          },
+          timeout: 10000
+        });
+        if (res.data && typeof res.data === 'string') {
+          const html = res.data;
+          const titleMatch = html.match(/<p class="maintext"[^>]*>([\s\S]*?)<\/p>/i);
+          const authorMatch = html.match(/<h2>(.*?)<\/h2>/i);
+          const title = titleMatch ? titleMatch[1].trim() : 'TikTok Media';
+          const author = authorMatch ? authorMatch[1].trim() : 'TikTok Creator';
 
-          // Cek jika postingan berisi slide foto (TikTok Photo Slideshow)
-          if (Array.isArray(d.images) && d.images.length > 0) {
-            const mediaList = d.images.map(imgUrl => ({ type: 'image', url: imgUrl }));
+          const slideMatches = [...html.matchAll(/<a[^>]+href="([^"]+)"[^>]*>\s*(?:Download this slide|Slide \d+|Download slide|slide)\s*<\/a>/gi)];
+          if (slideMatches.length > 0) {
+            const mediaList = slideMatches.map(m => ({ type: 'image', url: m[1] }));
             return {
               success: true,
               media: mediaList,
@@ -879,174 +1006,244 @@ export async function downloadTikTok(url) {
             };
           }
 
-          // Jika video
-          const streamUrl = d.play || d.wmplay || d.hdplay;
-          if (streamUrl) {
-            const buf = await fetchBuffer(streamUrl);
+          const videoMatch = html.match(/<a[^>]+href="([^"]*tikcdn\.io\/ssstik\/[^"]*)"[^>]*>\s*(?:Without watermark|Download)/i) ||
+                             html.match(/href="([^"]*tikcdn\.io\/ssstik\/\d+[^"]*)"/i) ||
+                             html.match(/href="([^"]*tikcdn\.io\/ssstik\/[^"m\/][^"]*)"/i) ||
+                             html.match(/href="([^"]*dl\.tiktokio\.com\/[^"]*)"/i) ||
+                             html.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/i);
+          if (videoMatch) {
+            const streamUrl = videoMatch[1];
             return {
               success: true,
-              media: [{ type: 'video', url: streamUrl, buffer: buf || undefined }],
-              buffer: buf || undefined,
+              media: [{ type: 'video', url: streamUrl }],
               videoUrl: streamUrl,
               title,
               author,
               type: 'video'
             };
           }
-        } else if (res.data.code === -1 && attempt === 1) {
-          await new Promise(r => setTimeout(r, 1200));
-          continue;
         }
+        return { success: false, message: 'SSSTik gagal parse media dari tautan ini' };
       }
-    } catch (err) {
-      console.log(`[MEDIA_HANDLER] TikTok TikWM attempt ${attempt} failed:`, err.message);
-    }
-  }
-
-  // Method 2: Siputzx TikTok API (Mendukung Foto & Video)
-  try {
-    const res = await axios.get(`https://api.siputzx.my.id/api/d/tiktok?url=${encodeURIComponent(url)}`, {
-      headers: { 'User-Agent': getRandomUserAgent() },
-      timeout: 10000
-    });
-    if (res.data && res.data.data) {
-      const d = res.data.data;
-      if (Array.isArray(d.images) && d.images.length > 0) {
-        const mediaList = d.images.map(imgUrl => ({ type: 'image', url: imgUrl }));
+    },
+    {
+      name: 'Ruhend TTDL',
+      fn: async () => {
+        if (isPhoto) return { success: false, message: 'Ruhend dilewati untuk post foto/slide' };
+        const res = await ruhend.ttdl(cleanUrl);
+        if (res && (Array.isArray(res.video) && res.video.length > 0 || Array.isArray(res.images) && res.images.length > 0)) {
+          const title = res.title || 'TikTok Media';
+          if (Array.isArray(res.images) && res.images.length > 0) {
+            return {
+              success: true,
+              media: res.images.map(img => ({ type: 'image', url: img })),
+              title,
+              type: 'carousel'
+            };
+          }
+          if (Array.isArray(res.video) && res.video.length > 0) {
+            const streamUrl = res.video[0];
+            return {
+              success: true,
+              media: [{ type: 'video', url: streamUrl }],
+              videoUrl: streamUrl,
+              title,
+              type: 'video'
+            };
+          }
+        }
+        return { success: false, message: 'Ruhend video tidak ditemukan' };
+      }
+    },
+    {
+      name: 'Btch TTDL',
+      fn: async () => {
+        if (isPhoto) return { success: false, message: 'Btch dilewati untuk post foto/slide' };
+        const res = await btch.ttdl(cleanUrl);
+        if (res?.status && Array.isArray(res.video) && res.video.length > 0) {
+          const streamUrl = res.video[0];
+          if (streamUrl) {
+            return {
+              success: true,
+              media: [{ type: 'video', url: streamUrl }],
+              videoUrl: streamUrl,
+              title: res.title || 'TikTok Video',
+              type: 'video'
+            };
+          }
+        }
+        return { success: false, message: 'Btch video tidak ditemukan' };
+      }
+    },
+    {
+      name: 'Local yt-dlp',
+      fn: async () => {
+        if (isPhoto) return { success: false, message: 'yt-dlp dilewati untuk post foto/slide' };
+        const ytdlpResult = await downloadWithYtdlp(cleanUrl);
+        if (ytdlpResult?.buffer || ytdlpResult?.videoUrl) {
+          return {
+            success: true,
+            media: [{ type: 'video', url: ytdlpResult.videoUrl, buffer: ytdlpResult.buffer }],
+            buffer: ytdlpResult.buffer,
+            videoUrl: ytdlpResult.videoUrl,
+            title: ytdlpResult.title || 'TikTok Video',
+            type: 'video'
+          };
+        }
         return {
-          success: true,
-          media: mediaList,
-          title: d.title || 'TikTok Photos',
-          author: d.author || 'TikTok Creator',
-          type: 'carousel'
-        };
-      }
-
-      const streamUrl = d.urls?.[0] || d.video || d.play;
-      if (streamUrl) {
-        const buf = await fetchBuffer(streamUrl);
-        return {
-          success: true,
-          media: [{ type: 'video', url: streamUrl, buffer: buf || undefined }],
-          buffer: buf || undefined,
-          videoUrl: streamUrl,
-          title: d.title || 'TikTok Video',
-          type: 'video'
+          success: false,
+          privateOrRestricted: ytdlpResult?.privateOrRestricted,
+          unavailable: ytdlpResult?.unavailable,
+          message: ytdlpResult?.message || 'Local yt-dlp gagal mengunduh'
         };
       }
     }
-  } catch (err) {
-    console.log('[MEDIA_HANDLER] TikTok Method 2 (Siputzx) failed:', err.message);
-  }
+  ];
 
-  // Method 3: SSSTik API
-  try {
-    const res = await axios.post('https://ssstik.io/abc?url=dl', `id=${encodeURIComponent(url)}&locale=en&tt=1`, {
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-        'User-Agent': getRandomUserAgent(),
-        'Origin': 'https://ssstik.io',
-        'Referer': 'https://ssstik.io/en'
-      },
-      timeout: 10000
-    });
-    if (res.data) {
-      const match = res.data.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/i) || res.data.match(/href="(https:\/\/[^"]+tik-tok[^"]*)"/i);
-      if (match) {
-        const streamUrl = match[1];
-        const buf = await fetchBuffer(streamUrl);
-        return { 
-          success: true, 
-          media: [{ type: 'video', url: streamUrl, buffer: buf || undefined }],
-          buffer: buf || undefined,
-          videoUrl: streamUrl, 
-          title: 'TikTok Video',
-          type: 'video'
-        };
-      }
+  if (isPhoto) {
+    const ssstikIdx = providers.findIndex(p => p.name === 'SSSTik Scraper');
+    if (ssstikIdx > 0) {
+      const [ssstik] = providers.splice(ssstikIdx, 1);
+      providers.unshift(ssstik);
     }
-  } catch (err) {
-    console.log('[MEDIA_HANDLER] TikTok Method 3 (SSSTik) failed:', err.message);
   }
 
-  // Method 4: yt-dlp CLI fallback
-  const ytdlpResult = await downloadWithYtdlp(url);
-  if (ytdlpResult?.buffer || ytdlpResult?.videoUrl) {
-    return {
-      success: true,
-      media: [{ type: 'video', url: ytdlpResult.videoUrl, buffer: ytdlpResult.buffer }],
-      buffer: ytdlpResult.buffer,
-      videoUrl: ytdlpResult.videoUrl,
-      title: ytdlpResult.title || 'TikTok Video',
-      type: 'video'
-    };
+  const result = await executeWithSelfHealing(providers, (p) => p.fn(), 15000);
+  if (!result || !result.success) {
+    if (url.includes('story_type=1') || url.includes('aweme_type=40') || url.includes('story_uid')) {
+      return {
+        success: false,
+        message: '⚠️ Konten ini merupakan Cerita (TikTok Story) yang telah kedaluwarsa atau bersifat privat, sehingga tidak dapat diunduh.'
+      };
+    }
   }
-
-  return { success: false, message: '❌ Gagal mengunduh foto/video TikTok. Pastikan link valid dan akun bersifat publik.' };
+  return result;
 }
 
 /**
- * Ambil audio / sound TikTok (.ttmp3)
- *
- * Fungsi ini sebelumnya tidak pernah ada padahal bot.js sudah memanggilnya, jadi
- * `.ttmp3` selalu berakhir dengan TypeError "downloadTikTokAudio is not a function".
+ * Ambil audio / sound TikTok (.ttmp3) — Self-Healing Multi-Engine
  */
-export async function downloadTikTokAudio(url) {
-  // Method 1: TikWM — punya URL sound asli (mime audio/mpeg)
-  try {
-    const res = await axios.post('https://www.tikwm.com/api/', new URLSearchParams({ url, hd: '1' }).toString(), {
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': getRandomUserAgent()
-      },
-      timeout: 12000
-    });
+export async function downloadTikTokAudio(rawUrl) {
+  const url = await expandCanonicalUrl(rawUrl);
+  const cleanUrl = bersihkanUrlTiktok(url);
 
-    const d = res.data?.code === 0 ? res.data.data : null;
-    if (d) {
-      const musicUrl = d.music || d.music_info?.play;
-      const title = d.music_info?.title || d.title || 'TikTok Audio';
-      if (musicUrl) {
-        const buf = await fetchBuffer(musicUrl);
-        if (buf) {
-          const wadah = deteksiWadah(buf);
+  const providers = [
+    {
+      name: 'SSSTik Audio',
+      fn: async () => {
+        const res = await axios.post('https://ssstik.io/abc?url=dl', `id=${encodeURIComponent(cleanUrl)}&locale=en&tt=1`, {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            'User-Agent': getRandomUserAgent(),
+            'Origin': 'https://ssstik.io',
+            'Referer': 'https://ssstik.io/en'
+          },
+          timeout: 10000
+        });
+        if (res.data && typeof res.data === 'string') {
+          const html = res.data;
+          const audioMatch = html.match(/href="([^"]*(?:tikcdn\.io\/ssstik\/m\/|download_url)[^"]*)"/i) ||
+                             html.match(/class="[^"]*music[^"]*"[^>]*href="([^"]+)"/i) ||
+                             html.match(/href="([^"]+)"[^>]*class="[^"]*music[^"]*"/i);
+          if (audioMatch) {
+            const titleMatch = html.match(/<p class="maintext"[^>]*>([\s\S]*?)<\/p>/i);
+            const title = titleMatch ? titleMatch[1].trim() : 'TikTok Audio';
+            return {
+              success: true,
+              audioUrl: audioMatch[1],
+              title,
+              mimetype: 'audio/mpeg',
+              ext: 'mp3'
+            };
+          }
+        }
+        return { success: false, message: 'SSSTik audio tidak ditemukan' };
+      }
+    },
+    {
+      name: 'Ab TikTokio Audio',
+      fn: async () => {
+        const res = await ab.ttdl(cleanUrl);
+        if (res && Array.isArray(res.audio) && res.audio.length > 0) {
+          const audioUrl = res.audio[0];
           return {
             success: true,
-            buffer: buf,
-            title,
-            mimetype: wadah === 'mp4' ? 'audio/mp4' : 'audio/mpeg',
-            ext: wadah === 'mp4' ? 'm4a' : 'mp3'
+            audioUrl,
+            title: res.title_audio || res.title || 'TikTok Audio',
+            mimetype: 'audio/mpeg',
+            ext: 'mp3'
           };
         }
-        return { success: true, audioUrl: musicUrl, title, mimetype: 'audio/mpeg', ext: 'mp3' };
+        return { success: false, message: 'Ab audio tidak ditemukan' };
       }
-    }
-  } catch (err) {
-    console.log('[MEDIA_HANDLER] TikTok Audio Method 1 (TikWM) failed:', err.message);
-  }
-
-  // Method 2: unduh videonya lalu ekstrak jalur suaranya
-  try {
-    const videoRes = await downloadTikTok(url);
-    let videoBuffer = videoRes?.buffer;
-    if (!videoBuffer && videoRes?.videoUrl) videoBuffer = await fetchBuffer(videoRes.videoUrl);
-    if (videoBuffer) {
-      const audioBuffer = await convertVideoToAudio(videoBuffer, 'mp3');
-      if (audioBuffer && audioBuffer.length > 5000) {
+    },
+    {
+      name: 'Ruhend Audio',
+      fn: async () => {
+        const res = await ruhend.ttdl(cleanUrl);
+        if (res && Array.isArray(res.audio) && res.audio.length > 0) {
+          const audioUrl = res.audio[0];
+          return {
+            success: true,
+            audioUrl,
+            title: res.title_audio || res.title || 'TikTok Audio',
+            mimetype: 'audio/mpeg',
+            ext: 'mp3'
+          };
+        }
+        return { success: false, message: 'Ruhend audio tidak ditemukan' };
+      }
+    },
+    {
+      name: 'Btch Audio',
+      fn: async () => {
+        const res = await btch.ttdl(cleanUrl);
+        if (res?.status && Array.isArray(res.audio) && res.audio.length > 0) {
+          const audioUrl = res.audio[0];
+          return {
+            success: true,
+            audioUrl,
+            title: res.title_audio || res.title || 'TikTok Audio',
+            mimetype: 'audio/mpeg',
+            ext: 'mp3'
+          };
+        }
+        return { success: false, message: 'Btch audio tidak ditemukan' };
+      }
+    },
+    {
+      name: 'Local yt-dlp Audio',
+      fn: async () => {
+        const ytdlpResult = await downloadWithYtdlp(cleanUrl, true);
+        if (ytdlpResult?.buffer) {
+          return {
+            success: true,
+            buffer: ytdlpResult.buffer,
+            title: ytdlpResult.title || 'TikTok Audio',
+            mimetype: ytdlpResult.mimetype || 'audio/mpeg',
+            ext: ytdlpResult.ext || 'mp3'
+          };
+        }
         return {
-          success: true,
-          buffer: audioBuffer,
-          title: videoRes.title || 'TikTok Audio',
-          mimetype: 'audio/mpeg',
-          ext: 'mp3'
+          success: false,
+          privateOrRestricted: ytdlpResult?.privateOrRestricted,
+          unavailable: ytdlpResult?.unavailable,
+          message: ytdlpResult?.message || 'Local yt-dlp audio gagal'
         };
       }
     }
-  } catch (err) {
-    console.log('[MEDIA_HANDLER] TikTok Audio Method 2 (ekstrak video) failed:', err.message);
-  }
+  ];
 
-  return { success: false, message: '❌ Gagal mengambil audio TikTok. Pastikan link valid dan akun bersifat publik.' };
+  const result = await executeWithSelfHealing(providers, (p) => p.fn(), 15000);
+  if (!result || !result.success) {
+    if (url.includes('story_type=1') || url.includes('aweme_type=40') || url.includes('story_uid')) {
+      return {
+        success: false,
+        message: '⚠️ Audio tidak dapat diunduh karena konten merupakan Cerita (TikTok Story) yang telah kedaluwarsa atau bersifat privat.'
+      };
+    }
+  }
+  return result;
 }
 
 /**
@@ -1143,14 +1340,60 @@ async function downloadInstagramApi(url) {
 /**
  * Download Instagram Reels / Posts / Single Photo / Multiple Photo Carousels — Multi-Tier Failover
  */
-export async function downloadInstagram(url) {
-  // Method 1: Instagram Web API pakai sesi di ig_cookies.txt — satu-satunya
+export async function downloadInstagram(rawUrl) {
+  const url = await expandCanonicalUrl(rawUrl);
+  // Method 1: snapsave-media-downloader (Mendukung Reels, Single Foto, dan Multi-Photo Carousels)
+  try {
+    const snapRes = await snapsave(url);
+    if (snapRes?.success && Array.isArray(snapRes?.data?.media) && snapRes.data.media.length > 0) {
+      const mediaList = snapRes.data.media.map(m => {
+        const isVideo = m.type === 'video' || (m.url && m.url.includes('.mp4'));
+        return { type: isVideo ? 'video' : 'image', url: m.url };
+      }).filter(m => Boolean(m.url));
+
+      if (mediaList.length > 0) {
+        return {
+          success: true,
+          media: mediaList,
+          title: 'Instagram Media',
+          type: mediaList.length > 1 ? 'carousel' : mediaList[0].type
+        };
+      }
+    }
+  } catch (err) {
+    console.log('[MEDIA_HANDLER] IG Method 1 (snapsave) failed:', err.message);
+  }
+
+  // Method 2: ruhend-scraper igdl2
+  try {
+    const ruhendRes = await ruhend.igdl2(url);
+    if (ruhendRes?.status && Array.isArray(ruhendRes?.data) && ruhendRes.data.length > 0) {
+      const mediaList = ruhendRes.data.map(item => {
+        const itemUrl = item.url || item.thumbnail;
+        const isVideo = Boolean(itemUrl && (itemUrl.includes('.mp4') || itemUrl.includes('/v/')));
+        return { type: isVideo ? 'video' : 'image', url: itemUrl };
+      }).filter(m => Boolean(m.url));
+
+      if (mediaList.length > 0) {
+        return {
+          success: true,
+          media: mediaList,
+          title: 'Instagram Media',
+          type: mediaList.length > 1 ? 'carousel' : mediaList[0].type
+        };
+      }
+    }
+  } catch (err) {
+    console.log('[MEDIA_HANDLER] IG Method 2 (ruhend) failed:', err.message);
+  }
+
+  // Method 3: Instagram Web API pakai sesi di ig_cookies.txt — satu-satunya
   // jalur yang mengembalikan carousel FOTO secara utuh.
   try {
     const hasil = await downloadInstagramApi(url);
     if (hasil) return hasil;
   } catch (err) {
-    console.log('[MEDIA_HANDLER] IG Method 1 (Web API) failed:', err.message);
+    console.log('[MEDIA_HANDLER] IG Method 3 (Web API) failed:', err.message);
   }
 
   // Method 2: yt-dlp dump-json (video Reels & carousel yang berisi video)
@@ -1439,8 +1682,28 @@ export async function downloadYouTubeAudio(url) {
 /**
  * Download Facebook Video / Reels / Photos — Multi-Tier Failover
  */
-export async function downloadFacebook(url) {
-  // Method 1: yt-dlp dump-json
+export async function downloadFacebook(rawUrl) {
+  const url = await expandCanonicalUrl(rawUrl);
+  // Method 1: ruhend-scraper fbdl (Video HD & SD)
+  try {
+    const fbRes = await ruhend.fbdl(url);
+    const stream = fbRes?.video_hd || fbRes?.video_sd || (Array.isArray(fbRes?.data) ? fbRes.data[0]?.url : null);
+    if (stream) {
+      const buf = await fetchBuffer(stream);
+      return {
+        success: true,
+        media: [{ type: 'video', url: stream, buffer: buf || undefined }],
+        videoUrl: stream,
+        buffer: buf || undefined,
+        title: fbRes?.title || 'Facebook Video',
+        type: 'video'
+      };
+    }
+  } catch (err) {
+    console.log('[MEDIA_HANDLER] FB Method 1 (ruhend) failed:', err.message);
+  }
+
+  // Method 2: yt-dlp dump-json
   try {
     const data = await extractWithYtdlpJson(url);
     if (data) {
@@ -1589,7 +1852,8 @@ export async function downloadFacebook(url) {
 /**
  * Download Twitter / X Video & Media (Photos & Videos)
  */
-export async function downloadTwitter(url) {
+export async function downloadTwitter(rawUrl) {
+  const url = await expandCanonicalUrl(rawUrl);
   // Method 1: yt-dlp CLI
   try {
     const data = await extractWithYtdlpJson(url);
@@ -1829,10 +2093,11 @@ export async function createSticker(imageOrVideoBuffer, pack = 'Akbar Store Bot'
  */
 export async function stickerToImage(webpBuffer) {
   try {
-    const pngBuffer = await sharp(webpBuffer)
-      .toFormat('jpg')
+    const jpgBuffer = await sharp(webpBuffer)
+      .flatten({ background: '#ffffff' })
+      .jpeg({ quality: 95 })
       .toBuffer();
-    return { success: true, buffer: pngBuffer };
+    return { success: true, buffer: jpgBuffer };
   } catch (err) {
     console.error('[MEDIA_HANDLER] ToImg Error:', err.message);
     return { success: false, message: err.message };
@@ -1901,7 +2166,7 @@ function drawRoundedRect(ctx, x, y, width, height, radius, fillStyle) {
 /**
  * Buat Stiker Quote Chat WhatsApp (QC)
  */
-export async function generateQuoteSticker(name, text) {
+export async function generateQuoteSticker(name, text, avatarUrl = null) {
   try {
     const canvasWidth = 600;
     const canvasHeight = 600;
@@ -1938,17 +2203,34 @@ export async function generateQuoteSticker(name, text) {
     const startY = Math.floor((canvasHeight - bubbleHeight) / 2);
 
     ctx.save();
-    ctx.fillStyle = '#00a884';
-    ctx.beginPath();
-    ctx.arc(startX - 30, startY + 35, 22, 0, Math.PI * 2);
-    ctx.fill();
+    let avatarDrawn = false;
+    if (avatarUrl) {
+      try {
+        const avRes = await axios.get(avatarUrl, { responseType: 'arraybuffer', timeout: 3500 });
+        if (avRes.status === 200 && avRes.data) {
+          const avImg = await loadImage(Buffer.from(avRes.data));
+          ctx.beginPath();
+          ctx.arc(startX - 30, startY + 35, 22, 0, Math.PI * 2);
+          ctx.clip();
+          ctx.drawImage(avImg, startX - 52, startY + 13, 44, 44);
+          avatarDrawn = true;
+        }
+      } catch (_) {}
+    }
 
-    const initial = ((name || 'P').charAt(0)).toUpperCase();
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 20px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(initial, startX - 30, startY + 35);
+    if (!avatarDrawn) {
+      ctx.fillStyle = '#00a884';
+      ctx.beginPath();
+      ctx.arc(startX - 30, startY + 35, 22, 0, Math.PI * 2);
+      ctx.fill();
+
+      const initial = ((name || 'P').charAt(0)).toUpperCase();
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 20px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(initial, startX - 30, startY + 35);
+    }
     ctx.restore();
 
     drawRoundedRect(ctx, startX, startY, bubbleWidth, bubbleHeight, 20, '#202c33');
@@ -2238,6 +2520,292 @@ export async function convertVideoToAudio(inputBuffer, outputFormat = 'mp3') {
 }
 
 /**
+ * Dapatkan Informasi Lagu dari YouTube / Query Pencarian
+ */
+export async function getSongInfo(query) {
+  try {
+    const isUrl = /^https?:\/\/(www\.)?(youtube\.com|youtu\.be)\//i.test(query);
+    if (!isUrl) {
+      try {
+        const ytRes = await ruhend.ytsearch(query);
+        const item = ytRes?.video?.[0];
+        if (item) {
+          const thumbBuf = item.thumbnail ? await fetchBuffer(item.thumbnail) : null;
+          let artist = item.authorName || 'Artis';
+          let title = item.title;
+          if (title.includes(' - ')) {
+            const parts = title.split(' - ');
+            artist = parts[0].trim();
+            title = parts.slice(1).join(' - ').trim();
+          }
+          title = title.replace(/\s*[([].*?(official|video|audio|lyric|lirik|remix|hd|4k|mv|music).*?[)\]]/gi, '').trim();
+          return {
+            success: true,
+            title: title || item.title,
+            artist,
+            duration: item.duration || '03:30',
+            url: item.url,
+            thumbnailBuffer: thumbBuf
+          };
+        }
+      } catch (e) {
+        console.warn('[GET_SONG_INFO_RUHEND_WARN]', e.message);
+      }
+    }
+
+    const ytdlpData = await extractWithYtdlpJson(query.startsWith('http') ? query : `ytsearch1:${query}`);
+    if (ytdlpData) {
+      const entry = (Array.isArray(ytdlpData.entries) && ytdlpData.entries[0]) || ytdlpData;
+      let title = entry.title || query;
+      let artist = entry.uploader || entry.channel || 'Artis';
+      if (title.includes(' - ')) {
+        const parts = title.split(' - ');
+        artist = parts[0].trim();
+        title = parts.slice(1).join(' - ').trim();
+      }
+      title = title.replace(/\s*[([].*?(official|video|audio|lyric|lirik|remix|hd|4k|mv|music).*?[)\]]/gi, '').trim();
+      const thumbUrl = entry.thumbnail || entry.thumbnails?.[entry.thumbnails.length - 1]?.url;
+      const thumbBuf = thumbUrl ? await fetchBuffer(thumbUrl) : null;
+      const durSec = entry.duration || 210;
+      const mins = Math.floor(durSec / 60);
+      const secs = Math.floor(durSec % 60).toString().padStart(2, '0');
+      return {
+        success: true,
+        title: title || entry.title,
+        artist,
+        duration: `${mins}:${secs}`,
+        url: entry.webpage_url || entry.url || (entry.id ? `https://youtube.com/watch?v=${entry.id}` : query),
+        thumbnailBuffer: thumbBuf
+      };
+    }
+  } catch (err) {
+    console.error('[GET_SONG_INFO_ERR]', err.message);
+  }
+  return { success: false, title: query, artist: 'Artis', duration: '03:30', url: '' };
+}
+
+/**
+ * Cari Lirik Lagu Spotify (LRCLIB API) & Cover Album HD (iTunes Search API)
+ */
+export async function getSongLyrics(query, artist = '') {
+  try {
+    const cleanQ = query.replace(/\s*[([].*?[)\]]/g, '').trim();
+    const lrcUrl = `https://lrclib.net/api/search?q=${encodeURIComponent(cleanQ)}`;
+    const lrcRes = await axios.get(lrcUrl, {
+      timeout: 7000,
+      headers: { 'User-Agent': getRandomUserAgent() }
+    }).catch(() => null);
+
+    let match = null;
+    if (Array.isArray(lrcRes?.data) && lrcRes.data.length > 0) {
+      match = lrcRes.data[0];
+      if (artist && artist !== 'Artis') {
+        const found = lrcRes.data.find(d => (d.artistName || '').toLowerCase().includes(artist.toLowerCase()));
+        if (found) match = found;
+      }
+    }
+
+    const title = match?.trackName || query;
+    const songArtist = match?.artistName || (artist && artist !== 'Artis' ? artist : 'Artis');
+    const album = match?.albumName || title;
+    const lyrics = match?.plainLyrics || match?.syncedLyrics || '';
+    const syncedLyrics = match?.syncedLyrics || '';
+
+    const rawLines = (lyrics || '').split('\n')
+      .map(l => l.replace(/\[\d+:\d+\.\d+\]/, '').trim())
+      .filter(l => l && !l.startsWith('['));
+    const snippetLines = rawLines.slice(0, 4);
+
+    let coverBuffer = null;
+    try {
+      const itunesUrl = `https://itunes.apple.com/search?term=${encodeURIComponent(`${songArtist} ${title}`)}&entity=song&limit=1`;
+      const itunesRes = await axios.get(itunesUrl, { timeout: 5000 }).catch(() => null);
+      const itunesItem = itunesRes?.data?.results?.[0];
+      if (itunesItem?.artworkUrl100) {
+        const hdArtworkUrl = itunesItem.artworkUrl100.replace('100x100bb', '800x800bb');
+        coverBuffer = await fetchBuffer(hdArtworkUrl);
+      }
+    } catch {}
+
+    if (lyrics) {
+      return {
+        success: true,
+        title,
+        artist: songArtist,
+        album,
+        lyrics,
+        syncedLyrics,
+        snippetLines,
+        coverBuffer
+      };
+    }
+  } catch (err) {
+    console.warn('[GET_SONG_LYRICS_WARN]', err.message);
+  }
+  return { success: false, message: 'Lirik lagu tidak ditemukan.' };
+}
+
+/**
+ * Sematkan Tag ID3 (Cover, Lirik, Artis, Judul, Album) ke Berkas MP3
+ */
+export async function embedMetadataAndLyricsToMp3({
+  audioBuffer,
+  coverBuffer = null,
+  lyrics = '',
+  syncedLyrics = '',
+  title = 'Lagu',
+  artist = 'Artis',
+  album = 'Album'
+}) {
+  if (!audioBuffer || !Buffer.isBuffer(audioBuffer)) return audioBuffer;
+  try {
+    let mp3Buf = audioBuffer;
+    const wadah = deteksiWadah(audioBuffer);
+    if (wadah !== 'mp3') {
+      const converted = await convertVideoToAudio(audioBuffer, 'mp3').catch(() => null);
+      if (converted && converted.length > 5000) {
+        mp3Buf = converted;
+      }
+    }
+
+    const tags = {
+      title,
+      artist,
+      album
+    };
+
+    if (lyrics) {
+      tags.unsynchronisedLyrics = {
+        language: 'ind',
+        text: lyrics
+      };
+    }
+
+    if (coverBuffer && Buffer.isBuffer(coverBuffer)) {
+      tags.image = {
+        mime: 'image/jpeg',
+        type: { id: 3, name: 'front cover' },
+        description: 'Cover Art',
+        imageBuffer: coverBuffer
+      };
+    }
+
+    const id3 = NodeID3.default || NodeID3;
+    const tagged = id3.write(tags, mp3Buf);
+    return tagged || mp3Buf;
+  } catch (err) {
+    console.warn('[EMBED_ID3_WARN]', err.message);
+    return audioBuffer;
+  }
+}
+
+/**
+ * Buat Arsip Paket Lengkap ZIP (.mp3 + .lrc + Cover HD)
+ */
+export async function createSongBundleZip({
+  mp3Buffer,
+  lrcText = '',
+  coverBuffer = null,
+  title = 'Lagu',
+  artist = 'Artis'
+}) {
+  const tmpDir = path.join(process.cwd(), 'tmp');
+  if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+
+  const cleanBaseName = `${artist} - ${title}`.replace(/[/\\?%*:|"<>]/g, '').trim() || 'Spotify_Offline';
+  const bundleDir = path.join(tmpDir, `bundle_${Date.now()}_${Math.floor(Math.random() * 1000)}`);
+  fs.mkdirSync(bundleDir, { recursive: true });
+
+  const filesToAdd = [];
+
+  const mp3Path = path.join(bundleDir, `${cleanBaseName}.mp3`);
+  fs.writeFileSync(mp3Path, mp3Buffer);
+  filesToAdd.push(mp3Path);
+
+  if (lrcText) {
+    const lrcPath = path.join(bundleDir, `${cleanBaseName}.lrc`);
+    fs.writeFileSync(lrcPath, lrcText, 'utf8');
+    filesToAdd.push(lrcPath);
+  }
+
+  if (coverBuffer && Buffer.isBuffer(coverBuffer)) {
+    const coverPath = path.join(bundleDir, `${cleanBaseName}_Cover.jpg`);
+    fs.writeFileSync(coverPath, coverBuffer);
+    filesToAdd.push(coverPath);
+  }
+
+  const zipPath = path.join(tmpDir, `zip_${Date.now()}_${Math.floor(Math.random() * 1000)}.zip`);
+
+  try {
+    await runPythonProc(['-m', 'zipfile', '-c', zipPath, ...filesToAdd], 30000);
+    if (fs.existsSync(zipPath) && fs.statSync(zipPath).size > 100) {
+      const buffer = fs.readFileSync(zipPath);
+      return {
+        buffer,
+        fileName: `${cleanBaseName}.zip`
+      };
+    }
+  } catch (err) {
+    console.error('[CREATE_ZIP_ERR]', err.message);
+  } finally {
+    try { fs.rmSync(bundleDir, { recursive: true, force: true }); } catch {}
+    try { if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath); } catch {}
+  }
+  return null;
+}
+
+/**
+ * Generate Video Vertikal 9:16 Spotify Canvas MP4
+ */
+export async function generateSpotifyCanvasVideo({
+  imageBuffer,
+  audioBuffer,
+  duration = 25
+}) {
+  const tmpDir = path.join(process.cwd(), 'tmp');
+  if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+
+  const prefix = `canvas_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+  const inImgPath = path.join(tmpDir, `${prefix}_img.jpg`);
+  const inAudPath = path.join(tmpDir, `${prefix}_aud.mp3`);
+  const outVidPath = path.join(tmpDir, `${prefix}_out.mp4`);
+
+  try {
+    fs.writeFileSync(inImgPath, imageBuffer);
+    fs.writeFileSync(inAudPath, audioBuffer);
+
+    const args = [
+      '-y',
+      '-loop', '1',
+      '-i', inImgPath,
+      '-i', inAudPath,
+      '-c:v', 'libx264',
+      '-tune', 'stillimage',
+      '-c:a', 'aac',
+      '-b:a', '192k',
+      '-pix_fmt', 'yuv420p',
+      '-t', String(duration || 25),
+      '-shortest',
+      '-movflags', '+faststart',
+      outVidPath
+    ];
+
+    const ok = await jalankanFfmpeg(args, 60000);
+    if (ok && fs.existsSync(outVidPath) && fs.statSync(outVidPath).size > 5000) {
+      const buffer = fs.readFileSync(outVidPath);
+      return buffer;
+    }
+  } catch (err) {
+    console.error('[CANVAS_VIDEO_ERR]', err.message);
+  } finally {
+    try { if (fs.existsSync(inImgPath)) fs.unlinkSync(inImgPath); } catch {}
+    try { if (fs.existsSync(inAudPath)) fs.unlinkSync(inAudPath); } catch {}
+    try { if (fs.existsSync(outVidPath)) fs.unlinkSync(outVidPath); } catch {}
+  }
+  return null;
+}
+
+/**
  * Terjemah Teks via Google Translate
  */
 export async function translateText(text, targetLang = 'id') {
@@ -2287,15 +2855,15 @@ export async function enhanceImageHd(imageBuffer) {
       const base64Str = imageBuffer.toString('base64');
       const apiRes = await axios.post('https://api.siputzx.my.id/api/tools/remini', {
         image: `data:image/jpeg;base64,${base64Str}`
-      }, { timeout: 12000 });
+      }, { timeout: 3000 });
 
       if (apiRes.data && apiRes.data.status && apiRes.data.data) {
         const imgUrl = apiRes.data.data;
-        const downloaded = await axios.get(imgUrl, { responseType: 'arraybuffer' });
-        return { success: true, buffer: Buffer.from(downloaded.data), provider: 'AI Remini' };
+        const downloaded = await axios.get(imgUrl, { responseType: 'arraybuffer', timeout: 5000 });
+        return { success: true, buffer: Buffer.from(downloaded.data), provider: 'AI Remini Online' };
       }
-    } catch (e) {
-      console.warn('[REMINI_API] Primary online API bypass to local sharp pipeline:', e.message);
+    } catch (_) {
+      // Siputzx remini API offline, proceed instantly to local Sharp HD engine
     }
 
     const meta = await sharp(imageBuffer).metadata();
@@ -2313,7 +2881,7 @@ export async function enhanceImageHd(imageBuffer) {
       .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
       .toBuffer();
 
-    return { success: true, buffer: processedBuffer, provider: 'Sharp HD Engine' };
+    return { success: true, buffer: processedBuffer, provider: 'Sharp HD Ultra' };
   } catch (err) {
     console.error('[ENHANCE_HD_ERR]', err.message);
     return { success: false, message: 'Gagal memproses peningkatan kualitas gambar: ' + err.message };

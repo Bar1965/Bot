@@ -21,6 +21,87 @@
  * penanda di sini cuma penunjuk sekilas, bukan catatan rilis kedua.
  */
 
+// Sakelar tampilan menu game berat (TCG)
+// Diset ke false selama pemeliharaan agar menu game tetap bersih dan cepat dibaca
+const TCG_ENABLED = false;
+
+const TCG_GROUPS = [
+  {
+    title: '🎴 ARENA KARTU MONSTER — DASAR',
+    items: [
+      ['.tcg', 'Menu utama Arena Kartu Monster'],
+      ['.tcg mulai', 'Ambil paket pemula (satu kali seumur hidup)'],
+      ['.tcg banner', 'Kartu unggulan & rate on/off saat ini'],
+      ['.tcg batas', 'Lihat batas tarikan harian hari ini'],
+      ['.tcg gacha', 'Tarikan kartu: 1 kartu acak'],
+      ['.tcg gacha10', 'Tarikan ×10: bonus rate rarity tinggi'],
+      ['.tcg koleksi [rarity/elemen]', 'Semua kartu milikmu'],
+      ['.tcg kartu <id>', 'Detail stat & tangga level kartu'],
+      ['.tcg dek', 'Lihat susunan dek aktif 3v3'],
+      ['.tcg pasang <1-3> <id>', 'Pasang kartu ke slot dek'],
+      ['.tcg lepas <1-3>', 'Kosongkan slot dek'],
+      ['.tcg tukar <slot> <slot>', 'Tukar posisi dua kartu di dek'],
+      ['.tcg autodek / .tcg bestdek', 'Pasang 3 kartu terkuat otomatis'],
+      ['.tcg autodek <elemen>', 'Dek yang unggul melawan elemen itu'],
+      ['.tcg autodek abadi', 'Dek yang lolos syarat lantai Abadi']
+    ]
+  },
+  {
+    title: '⚔️ TCG — PERTARUNGAN',
+    items: [
+      ['.tcg spar <@member>', 'Sparring latihan (tanpa energi)'],
+      ['.tcg duel @member [taruhan]', 'Duel PvP di grup'],
+      ['.tcg gas / .tcg tolak', 'Terima atau tolak tantangan duel'],
+      ['.tcg menara / .tcg menara lawan', 'Menara PvE 30 lantai'],
+      ['.tcg gerbang [elemen]', 'Gerbang elemen harian: serpihan + Picis'],
+      ['.tcg abadi', 'Menara Abadi tanpa ujung (post-lantai 30)'],
+      ['.tcg rank / .tcg rank top', 'Peringkat & papan 10 besar musim ini'],
+      ['.tcg gauntlet', '3 lawan pekanan, kartu tak boleh diulang'],
+      ['.tcg gauntlet dek / lawan', 'Susun dek bebas kunci & bertarung'],
+      ['.tcg bos', 'Bos Arena grup: HP bersama, hadiah dibagi'],
+      ['.tcg bos serang', 'Pukul bos, 3x sehari (bawa counter!)']
+    ]
+  },
+  {
+    title: '⚙️ TCG — NAIK LEVEL & SERPIH',
+    items: [
+      ['.tcg naik', 'Daftar kartu yang siap naik level'],
+      ['.tcg refine <id>', 'Sisipkan duplikat: naikkan R kartu'],
+      ['.tcg naik <id>', 'Naik level: serpihan + Picis (maks Lv.5)'],
+      ['.tcg serpih <id> [n]', 'Pecah duplikat kartu jadi serpihan'],
+      ['.tcg serpihsemua [rarity]', 'Pecah SEMUA duplikat sekaligus'],
+      ['.tcg lebur <rarity>', 'Lebur serpihan ke tingkat lebih tinggi'],
+      ['.tcg jual <id> [n]', 'Jual kartu duplikat dapat Keping'],
+      ['.tcg jualsemua [rarity]', 'Jual SEMUA duplikat sekaligus'],
+      ['.tcg serpihan', 'Cek stok serpihan per rarity'],
+      ['.tcg keping', 'Dompet: Keping + Picis']
+    ]
+  },
+  {
+    title: '🌾 TCG — FARMING & HARIAN',
+    items: [
+      ['.tcg daily', 'Hadiah harian + beruntun & tonggak'],
+      ['.tcg misi', 'Misi harian Arena & klaim hadiah'],
+      ['.tcg mingguan', 'Misi mingguan, reset tiap Senin'],
+      ['.tcg ekspedisi <id> <jam>', 'Kirim kartu cari Keping, Picis & serpihan'],
+      ['.tcg ekspedisi klaim', 'Ambil hasil ekspedisi yang sudah pulang'],
+      ['.tcg ransum', 'Gunakan ransum pemulih energi'],
+      ['.tcg ambil <1-3>', 'Sambar kartu dari drop acak grup']
+    ]
+  },
+  {
+    title: '🏅 TCG — JANGKA PANJANG',
+    items: [
+      ['.tcg barter @member <idku> <idmu>', 'Tukar kartu duplikat antar pemain'],
+      ['.tcg gelar / .tcg gelar <id>', 'Koleksi & pasang gelar Arena'],
+      ['.tcg tonggak / .tcg tonggak klaim', 'Hadiah tonggak koleksi kartu'],
+      ['.tcg rate', 'Peluang gacha & rate per rarity'],
+      ['.tcg sinergi', 'Tabel bonus sinergi elemen & peran'],
+      ['.tcg bantuan [topik]', 'Panduan lengkap per topik']
+    ]
+  }
+];
+
 const categories = {
   jualan: {
     id: 'jualan',
@@ -34,6 +115,7 @@ const categories = {
         items: [
           ['.list / .produk', 'Katalog bernomor — balas angkanya untuk buka'],
           ['.p / .detail <kode>', 'Deskripsi & semua pilihan paketnya'],
+          ['.canva', 'Lihat paket Canva Pro Premium & harga'],
           ['.cari <kata kunci>', 'Cari produk per nama/kategori'],
           ['.testi / .bukti', 'Bukti pengiriman & ulasan pembeli'],
           ['.carapake <kode>', 'Cara pakai & info garansi produk'],
@@ -66,16 +148,19 @@ const categories = {
         items: [
           ['.keranjang', 'Isi keranjang belanja saat ini'],
           ['.checkout', 'Buat invoice & tagihan pembayaran'],
-          ['.pay / .qris', 'Tampilkan QRIS pembayaran']
+          ['.pay / .qris', 'Tampilkan QRIS pembayaran'],
+          ['.linkgrup', 'Link undangan resmi grup toko']
         ]
       },
       {
         title: '💰 SALDO & DOMPET',
         items: [
           ['.me', 'Kartu singkat: saldo, tier & pesanan aktif'],
-          ['.dompet / .wallet / .aset', 'Semua aset: IDR, poin, TCG terpadu'],
+          ['.dompet / .wallet / .aset', 'Semua aset: IDR & poin finansial'],
           ['.saldo', 'Cek sisa saldo deposit rupiah'],
-          ['.deposit <nominal>', 'Top up saldo via QRIS — bisa `50rb`']
+          ['.deposit <nominal>', 'Top up saldo via QRIS — bisa `50rb`'],
+          ['.catat -/+<nominal> <ket>', 'Pencatat pengeluaran & pemasukan'],
+          ['.rekap', 'Rekapitulasi keuangan bulanan & saldo']
         ]
       },
       {
@@ -161,8 +246,6 @@ const categories = {
           ['.buckshot @lawan [taruhan]', 'Shotgun roulette taktis 1v1 + item'],
           ['.uno [taruhan]', 'UNO 2-6 pemain, kartu via DM + bot AI'],
           ['.liarsdice [taruhan]', 'Dadu bajak laut perudo 2-6 pemain'],
-          ['.mancing [spot]', 'Mancing ikan langka & harta karun'],
-          ['.topmancing', 'Papan rekor ikan terberat pemancing'],
           ['.capsa / .capsasusun [taruhan]', 'Capsa Susun 13 kartu adu tingkat'],
           ['.fastpoker / .poker3 [taruhan]', 'Fast 3-Card Poker kilat'],
           ['.bj / .blackjack [taruhan]', 'Kartu 21 lawan Dealer (10-5.000)'],
@@ -174,80 +257,7 @@ const categories = {
         ],
         inGame: ['.hit', '.stand', '.double', '.buka', '.cashout', '.infomines', '.pasangkuda', '.check', '.call', '.raise', '.allin', '.fold', '.kartu', '.capsa ready', '.potong <warna>', '.tembak <koordinat>', '.pakai <item>', '.tebak <jumlah> <angka>', '.dudo', '.nyerahliar']
       },
-      {
-        title: '🎴 ARENA KARTU MONSTER — DASAR',
-        items: [
-          ['.tcg', 'Menu utama Arena Kartu Monster'],
-          ['.tcg mulai', 'Ambil paket pemula (satu kali seumur hidup)'],
-          ['.tcg banner', 'Kartu unggulan & rate on/off saat ini'],
-          ['.tcg batas', 'Lihat batas tarikan harian hari ini'],
-          ['.tcg gacha', 'Tarikan kartu: 1 kartu acak'],
-          ['.tcg gacha10', 'Tarikan ×10: bonus rate rarity tinggi'],
-          ['.tcg koleksi [rarity/elemen]', 'Semua kartu milikmu'],
-          ['.tcg kartu <id>', 'Detail stat & tangga level kartu'],
-          ['.tcg dek', 'Lihat susunan dek aktif 3v3'],
-          ['.tcg pasang <1-3> <id>', 'Pasang kartu ke slot dek'],
-          ['.tcg lepas <1-3>', 'Kosongkan slot dek'],
-          ['.tcg tukar <slot> <slot>', 'Tukar posisi dua kartu di dek'],
-          ['.tcg autodek / .tcg bestdek', 'Pasang 3 kartu terkuat otomatis'],
-          ['.tcg autodek <elemen>', 'Dek yang unggul melawan elemen itu'],
-          ['.tcg autodek abadi', 'Dek yang lolos syarat lantai Abadi']
-        ]
-      },
-      {
-        title: '⚔️ TCG — PERTARUNGAN',
-        items: [
-          ['.tcg spar <@member>', 'Sparring latihan (tanpa energi)'],
-          ['.tcg duel @member [taruhan]', 'Duel PvP di grup'],
-          ['.tcg gas / .tcg tolak', 'Terima atau tolak tantangan duel'],
-          ['.tcg menara / .tcg menara lawan', 'Menara PvE 30 lantai'],
-          ['.tcg gerbang [elemen]', 'Gerbang elemen harian: serpihan + Picis'],
-          ['.tcg abadi', 'Menara Abadi tanpa ujung (post-lantai 30)'],
-          ['.tcg rank / .tcg rank top', 'Peringkat & papan 10 besar musim ini'],
-          ['.tcg gauntlet', '3 lawan pekanan, kartu tak boleh diulang'],
-          ['.tcg gauntlet dek / lawan', 'Susun dek bebas kunci & bertarung'],
-          ['.tcg bos', 'Bos Arena grup: HP bersama, hadiah dibagi'],
-          ['.tcg bos serang', 'Pukul bos, 3x sehari (bawa counter!)']
-        ]
-      },
-      {
-        title: '⚙️ TCG — NAIK LEVEL & SERPIH',
-        items: [
-          ['.tcg naik', 'Daftar kartu yang siap naik level'],
-          ['.tcg refine <id>', 'Sisipkan duplikat: naikkan R kartu'],
-          ['.tcg naik <id>', 'Naik level: serpihan + Picis (maks Lv.5)'],
-          ['.tcg serpih <id> [n]', 'Pecah duplikat kartu jadi serpihan'],
-          ['.tcg serpihsemua [rarity]', 'Pecah SEMUA duplikat sekaligus'],
-          ['.tcg lebur <rarity>', 'Lebur serpihan ke tingkat lebih tinggi'],
-          ['.tcg jual <id> [n]', 'Jual kartu duplikat dapat Keping'],
-          ['.tcg jualsemua [rarity]', 'Jual SEMUA duplikat sekaligus'],
-          ['.tcg serpihan', 'Cek stok serpihan per rarity'],
-          ['.tcg keping', 'Dompet: Keping + Picis']
-        ]
-      },
-      {
-        title: '🌾 TCG — FARMING & HARIAN',
-        items: [
-          ['.tcg daily', 'Hadiah harian + beruntun & tonggak'],
-          ['.tcg misi', 'Misi harian Arena & klaim hadiah'],
-          ['.tcg mingguan', 'Misi mingguan, reset tiap Senin'],
-          ['.tcg ekspedisi <id> <jam>', 'Kirim kartu cari Keping, Picis & serpihan'],
-          ['.tcg ekspedisi klaim', 'Ambil hasil ekspedisi yang sudah pulang'],
-          ['.tcg ransum', 'Gunakan ransum pemulih energi'],
-          ['.tcg ambil <1-3>', 'Sambar kartu dari drop acak grup']
-        ]
-      },
-      {
-        title: '🏅 TCG — JANGKA PANJANG',
-        items: [
-          ['.tcg barter @member <idku> <idmu>', 'Tukar kartu duplikat antar pemain'],
-          ['.tcg gelar / .tcg gelar <id>', 'Koleksi & pasang gelar Arena'],
-          ['.tcg tonggak / .tcg tonggak klaim', 'Hadiah tonggak koleksi kartu'],
-          ['.tcg rate', 'Peluang gacha & rate per rarity'],
-          ['.tcg sinergi', 'Tabel bonus sinergi elemen & peran'],
-          ['.tcg bantuan [topik]', 'Panduan lengkap per topik']
-        ]
-      },
+      ...(TCG_ENABLED ? TCG_GROUPS : []),
       {
         title: '🦹 AKSI EKONOMI',
         items: [
@@ -257,6 +267,7 @@ const categories = {
           ['.tebus @napi', 'Bayar jaminan bebaskan teman'],
           ['.mancing [danau/laut/palung]', 'Mancing ikan langka & peti karun'],
           ['.ikan / .tangkapan', 'Isi ember & rekor tangkapanmu'],
+          ['.topmancing', 'Papan rekor ikan terberat pemancing'],
           ['.jualikan', 'Jual seluruh ikan ke Pasar Ikan'],
           ['.bukapeti', 'Buka peti karun, jackpot poin'],
           ['.tokopancing', 'Panduan spot & sisa jatah harian']
@@ -279,7 +290,10 @@ const categories = {
         items: [
           ['.tt / .ig / .fb / .yt / .pin <link>', 'Unduh video, reels & slide'],
           ['.ytmp3 <link>', 'Ambil audionya saja dari link YouTube'],
-          ['.song / .play <judul>', 'Cari & kirim lagu dari YouTube']
+          ['.play / .song <judul>', 'MP3 Offline Player + Cover & Lirik'],
+          ['.canvas <judul>', 'Video vertikal 9:16 Spotify Canvas'],
+          ['.play zip <judul>', 'Paket ZIP lagu, lirik & cover HD'],
+          ['.lirik <judul>', 'Kartu lirik lagu Spotify & teks']
         ]
       },
       {
@@ -319,11 +333,10 @@ const categories = {
         title: '💰 POIN & LEVEL',
         items: [
           ['.poin / .level', 'Level, XP, ranking & Akbar Poin'],
-          ['.dompet / .wallet / .aset', 'Semua aset: IDR, poin, TCG terpadu'],
+          ['.dompet / .wallet / .aset', 'Semua aset: IDR & poin finansial'],
           ['.daily', 'Klaim poin & XP gratis harian'],
-          ['.lb / .rank', 'Papan peringkat — 13 kategori'],
-          ['.lb lvl / raid / lelang / tcg', 'Peringkat per kategori + posisimu'],
-          ['.lb peringkat / abadi / tcgstreak', 'Arena: duel, Menara Abadi, beruntun'],
+          ['.lb / .rank', 'Papan peringkat — kategori utama'],
+          ['.lb lvl / raid / lelang', 'Peringkat level, raid bos & lelang'],
           ['.lb kaya / menang / streak / chat', 'Sultan, juara, streak & paling aktif'],
           ['.misi', 'Misi & tantangan harian'],
           ['.badge', 'Koleksi badge pencapaian']
@@ -367,7 +380,9 @@ const categories = {
       {
         title: '🤖 FITUR VIP',
         items: [
-          ['.ai <pertanyaan>', 'Tanya AI Gemini (bisa reply foto)'],
+          ['.ai / .tanya <teks>', 'Tanya AI Gemini (bisa reply foto)'],
+          ['.transkrip', 'Ubah VN/audio jadi teks otomatis (AI)'],
+          ['.remind <waktu> <pesan>', 'Asisten pengingat tugas via DM'],
           ['.wishlist add <kode>', 'Notif DM saat produk restock']
         ]
       }
@@ -460,7 +475,7 @@ const categories = {
           ['.sinkronstok', 'Betulkan angka stok yang melenceng 🆕'],
           ['.setdelivery <kode> <auto/manual>', 'Ubah mode kirim produk'],
           ['.stock <kode> <qty>', 'Ubah stok — produk MANUAL saja'],
-          ['.paid <orderId>', 'Konfirmasi manual order lunas'],
+          ['.paid / .done <id>', 'ACC & konfirmasi pesanan (atau reply done)'],
           ['.kirimulang <orderId>', 'Antre ulang pengiriman yang gagal'],
           ['.isisaldo <nomor> <nominal>', 'Tambah saldo deposit pelanggan (Owner)'],
           ['.tariksaldo <nomor> <nominal> <alasan>', 'Koreksi saldo pelanggan (Owner)'],
@@ -489,6 +504,10 @@ const categories = {
         items: [
           ['.fiturgrup / .listfitur', 'Status & toggle fitur grup'],
           ['.mode <jualan/all>', 'Mode grup: khusus jualan / semua'],
+          ['.setdm [on/off]', 'Sakelar bot di Private Chat (DM)'],
+          ['.setgroup [on/off]', 'Sakelar bot di Grup secara global'],
+          ['.setwajibgrup [on/off]', 'Wajib join grup utama untuk pakai bot'],
+          ['.siklus [malam/status]', 'Jadwal tidur malam & kesehatan bot'],
           ['.autodl <on/off>', 'Auto-download TikTok & IG'],
           ['.levelup <on/off>', 'Notifikasi kartu level-up'],
           ['.tagall <pesan>', 'Mention seluruh anggota grup'],

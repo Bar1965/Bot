@@ -1904,7 +1904,7 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
                 <input type="text" id="setOwnerNumber" required placeholder="628xxx@s.whatsapp.net" class="form-input">
               </div>
               <div>
-                <label class="form-label">ID Grup Transaksi WhatsApp</label>
+                <label class="form-label">ID Grup Testimoni / Transaksi WhatsApp (Forward Bukti Transfer & Konfirmasi 'done')</label>
                 <input type="text" id="setTransactionGroupId" placeholder="1203630xxxx@g.us" class="form-input">
               </div>
               <div>
@@ -2018,10 +2018,26 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
               </div>
 
               <div>
-                <label class="form-label">Wajib Join Grup Sebelum Beli</label>
+                <label class="form-label">Layanan Bot di Private Chat (DM)</label>
+                <select id="setPrivateMsgEnabled" class="form-select">
+                  <option value="true">🟢 Aktif (Bisa Dipakai di DM)</option>
+                  <option value="false">🔴 Nonaktif (Arahkan ke Grup)</option>
+                </select>
+              </div>
+
+              <div>
+                <label class="form-label">Layanan Bot di Grup (Global)</label>
+                <select id="setGroupMsgEnabled" class="form-select">
+                  <option value="true">🟢 Aktif (Bisa Dipakai di Grup)</option>
+                  <option value="false">🔴 Nonaktif (Hanya Admin)</option>
+                </select>
+              </div>
+
+              <div>
+                <label class="form-label">Wajib Join Grup Utama Sebelum Pakai Bot</label>
                 <select id="setRequireGroupJoin" class="form-select">
-                  <option value="true">🟢 Ya (Wajib Join Grup)</option>
-                  <option value="false">🔴 Tidak (Bisa Beli Langsung)</option>
+                  <option value="true">🟢 Ya (Wajib Gabung Grup)</option>
+                  <option value="false">🔴 Tidak (Bebas Pakai)</option>
                 </select>
               </div>
 
@@ -3341,7 +3357,9 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
         document.getElementById('setWelcomeMessage').value = s.welcomeMessage || '👋 Selamat datang di grup! Ketik list untuk melihat produk kami.';
         document.getElementById('setGoodbyeMessage').value = s.goodbyeMessage || '👋 Sampai jumpa!';
 
-        // Validasi Wajib Join Grup
+        // Validasi Sakelar DM, Grup & Wajib Join Grup
+        document.getElementById('setPrivateMsgEnabled').value = s.privateMsgEnabled || 'true';
+        document.getElementById('setGroupMsgEnabled').value = s.groupMsgEnabled || 'true';
         document.getElementById('setRequireGroupJoin').value = s.requireGroupJoin || 'true';
         document.getElementById('setGroupInviteLink').value = s.groupInviteLink || '';
 
@@ -3435,7 +3453,9 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
         welcomeMessage: document.getElementById('setWelcomeMessage').value,
         goodbyeMessage: document.getElementById('setGoodbyeMessage').value,
 
-        // Validasi Wajib Join Grup
+        // Validasi Sakelar DM, Grup & Wajib Join Grup
+        privateMsgEnabled: document.getElementById('setPrivateMsgEnabled').value,
+        groupMsgEnabled: document.getElementById('setGroupMsgEnabled').value,
         requireGroupJoin: document.getElementById('setRequireGroupJoin').value,
         groupInviteLink: document.getElementById('setGroupInviteLink').value
       };
@@ -3775,10 +3795,24 @@ Tulis pesan di sebelah kiri untuk melihat pratinjau...</div>
 
       if (!confirm(`PERINGATAN KETAT: Apakah Anda yakin ingin menghapus ${labels[filter] || 'riwayat transaksi'} dari database? Tindakan ini tidak dapat dibatalkan!`)) return;
 
+      // Filter ALL menghapus SELURUH riwayat penjualan tanpa jalur pulih. Server
+      // menolaknya kecuali kalimat ini dikirim persis, supaya klik tidak sengaja
+      // atau permintaan tanpa body tidak pernah bisa memicunya.
+      const body = { filter };
+      if (filter === 'ALL') {
+        const KALIMAT = 'HAPUS SEMUA RIWAYAT';
+        const ketikan = prompt(`Ini menghapus SELURUH riwayat transaksi secara permanen.\n\nKetik persis kalimat berikut untuk melanjutkan:\n${KALIMAT}`);
+        if (String(ketikan || '').trim() !== KALIMAT) {
+          showToast('Dibatalkan — kalimat konfirmasi tidak cocok.', 'error');
+          return;
+        }
+        body.confirm = KALIMAT;
+      }
+
       const data = await apiRequest('/api/orders/clear', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filter })
+        body: JSON.stringify(body)
       });
 
       if (data && data.success) {

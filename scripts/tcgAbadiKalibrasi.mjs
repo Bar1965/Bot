@@ -150,3 +150,8 @@ for (const l of LANTAI) {
 }
 console.log('');
 console.log('_Angka ini mengandaikan counter-pick sempurna tiap lantai — batas atas, bukan rata-rata._');
+
+// Modul game menarik bot.js -> mediaHandler.js, dan mediaHandler menembakkan
+// `pip install -U yt-dlp` saat di-import. Tanpa exit eksplisit, test yang sudah
+// lulus tetap menggantung menunggu proses itu selesai.
+process.exit(0);

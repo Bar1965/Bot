@@ -17,7 +17,7 @@
  */
 
 import * as db from '../../database.js';
-import { send } from './helpers.js';
+import { send, catatJejak, perbaruiPapan, lepasPapan } from './helpers.js';
 
 export const activeBuckshots = new Map();
 export const pendingBuckshots = new Map();
@@ -176,36 +176,37 @@ function renderBuckshotVisual(session) {
   const p1HpBar = '💖'.repeat(session.p1Hp) + '🖤'.repeat(MAX_HP - session.p1Hp);
   const p2HpBar = '💖'.repeat(session.p2Hp) + '🖤'.repeat(MAX_HP - session.p2Hp);
 
-  const p1ItemsStr = session.p1Items.map(k => {
-    const it = ITEMS.find(item => item.key === k);
-    return `${it.icon} ${it.name}`;
-  }).join(', ') || '_Tidak ada item_';
+  // Item cukup ikonnya saja. Nama panjang ("🚬 Rokok, 🔍 Kaca Pembesar")
+  // membuat papan ini dua baris lebih tinggi, padahal papannya muncul di setiap
+  // tembakan. Daftar nama lengkap tetap ada di `.pakai` tanpa argumen.
+  const ikonItem = (daftar) => daftar
+    .map(k => ITEMS.find(item => item.key === k)?.icon || '')
+    .join('') || '—';
 
-  const p2ItemsStr = session.p2Items.map(k => {
-    const it = ITEMS.find(item => item.key === k);
-    return `${it.icon} ${it.name}`;
-  }).join(', ') || '_Tidak ada item_';
+  const p1ItemsStr = ikonItem(session.p1Items);
+  const p2ItemsStr = ikonItem(session.p2Items);
 
-  const sawStatus = session.sawActive ? '🪚 *GERGAJI AKTIF (2x DAMAGE)!*' : 'Normal (1x Damage)';
-  const handcuffsStatus = session.handcuffedPlayer ? `🔗 ${tag(session.handcuffedPlayer)} sedang terborgol!` : '';
+  const saw = session.sawActive ? ' 🪚*×2*' : '';
+  const borgol = session.handcuffedPlayer ? ` 🔗${tag(session.handcuffedPlayer)}` : '';
+
+  const jejak = (session.jejak || []).length
+    ? `\n${session.jejak.map(r => `▸ ${r}`).join('\n')}`
+    : '';
 
   return (
-`💥 ─── *BUCKSHOT ROULETTE (SHOTGUN 1V1)* ─── 💥
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-👤 *Pemain 1:* ${p1Tag}
-   HP: [ ${p1HpBar} ] (${session.p1Hp}/${MAX_HP})
-   🎒 Item: ${p1ItemsStr}
-
-👤 *Pemain 2:* ${p2Tag}
-   HP: [ ${p2HpBar} ] (${session.p2Hp}/${MAX_HP})
-   🎒 Item: ${p2ItemsStr}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🔫 *Status Shotgun:* Sisa *${session.shells.length} Peluru* di Laras
-⚙️ *Mode Laras:* ${sawStatus}
-${handcuffsStatus ? `${handcuffsStatus}\n` : ''}👉 *Giliran Bertindak:* ${tag(session.activeTurn)}
-_Ketik: \`.tembak diri\` | \`.tembak lawan\` | \`.pakai <item>\`_
-_⏳ Waktu Giliran: ${TURN_TIMEOUT_MS / 1000} detik_`
+`💥 *BUCKSHOT ROULETTE* · 🔫 ${session.shells.length} peluru di laras${saw}${borgol}
+${p1Tag} [${p1HpBar}] 🎒${p1ItemsStr}
+${p2Tag} [${p2HpBar}] 🎒${p2ItemsStr}${jejak}
+👉 Giliran ${tag(session.activeTurn)} — \`.tembak diri\` / \`.tembak lawan\` / \`.pakai <item>\` _(${TURN_TIMEOUT_MS / 1000}s)_`
   );
+}
+
+/** Papan meja hidup: satu pesan yang diedit, bukan dua pesan tiap tembakan. */
+async function perbaruiMeja(sock, jid, session, opsi = {}) {
+  return await perbaruiPapan(sock, jid, session, renderBuckshotVisual, {
+    mentions: [session.player1, session.player2],
+    ...opsi
+  });
 }
 
 /**
@@ -223,7 +224,8 @@ function armBuckshotTurnTimer(sock, jid) {
       if (!live || live.status !== 'PLAYING') return;
 
       const currentP = live.activeTurn;
-      await kirimAman(sock, jid, null, `⏰ *Waktu giliran habis!* ${tag(currentP)} otomatis menembak ke lawan!`, { mentions: [currentP] });
+      // Satu baris jejak sudah cukup; `executeShootAction` yang menulis hasilnya.
+      catatJejak(live, `⏰ Waktu ${tag(currentP)} habis — otomatis menembak lawan`);
       await executeShootAction(sock, jid, currentP, 'lawan');
     } catch (e) {
       console.error('[BUCKSHOT_TIMEOUT_ERR]', e);
@@ -441,14 +443,16 @@ async function acceptBuckshotChallenge(sock, jid, senderNumber, messageObj) {
 
   const startAnnouncement =
 `🚨 *DUEL BUCKSHOT ROULETTE DIMULAI!* 🚨
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Dealer memasukkan *${mag.total} Peluru* ke dalam senapan:
-🔴 *${mag.liveCount} Peluru Asli (Live)* & ⚪ *${mag.blankCount} Peluru Kosong (Blank)*!
-_Peluru telah dikocok secara acak di dalam laras._
+${tag(session.player1)} vs ${tag(session.player2)} — 💰 Pot *${session.pot} Poin*
+Dealer mengisi *${mag.total} peluru*: 🔴 *${mag.liveCount} live* & ⚪ *${mag.blankCount} blank*, dikocok acak.
 
-${renderBuckshotVisual(session)}`;
+👉 Papan duel di bawah diperbarui otomatis — tidak perlu di-scroll ulang.`;
 
   await kirimAman(sock, jid, messageObj, startAnnouncement, { mentions: [session.player1, session.player2] });
+
+  lepasPapan(session);
+  catatJejak(session, `🚩 Duel dimulai — ${mag.total} peluru di laras`);
+  await perbaruiMeja(sock, jid, session);
   armBuckshotTurnTimer(sock, jid);
   return true;
 }
@@ -563,7 +567,7 @@ async function useItemAction(sock, jid, senderNumber, messageObj, itemInput) {
       if (isP1) session.p1Hp = Math.min(MAX_HP, session.p1Hp + 1);
       else session.p2Hp = Math.min(MAX_HP, session.p2Hp + 1);
 
-      await kirimAman(sock, jid, messageObj, `🚬 ${tag(actorJid)} menyalakan rokok dan bersantai... *+1 HP dipulihkan!*`, { mentions: [actorJid] });
+      catatJejak(session, `🚬 ${tag(actorJid)} pakai Rokok — *+1 HP*`);
     } else if (targetItem.key === 'kaca') {
       const nextShell = session.shells[0];
       const shellText = nextShell === 'LIVE' ? '🔴 *PELURU ASLI (LIVE)*' : '⚪ *PELURU KOSONG (BLANK)*';
@@ -580,11 +584,16 @@ async function useItemAction(sock, jid, senderNumber, messageObj, itemInput) {
         } catch (_) { /* coba tujuan berikutnya */ }
       }
 
-      await kirimAman(sock, jid, messageObj,
-        dmTerkirim
-          ? `🔍 ${tag(actorJid)} mengintip ke dalam laras senapan menggunakan *Kaca Pembesar*! (Informasi dikirim via DM)`
-          : `🔍 ${tag(actorJid)} mengintip ke dalam laras senapan menggunakan *Kaca Pembesar*!\n⚠️ _DM gagal terkirim — pastikan chat pribadi dengan bot sudah pernah dibuka._`,
-        { mentions: [actorJid] });
+      // Kalau DM-nya masuk, cukup satu baris jejak. Kalau gagal, pemain WAJIB
+      // tahu kenapa hasil intipannya tidak pernah sampai — itu tetap pesan
+      // sungguhan, bukan edit diam-diam yang takkan pernah dia sadari.
+      if (dmTerkirim) {
+        catatJejak(session, `🔍 ${tag(actorJid)} pakai Kaca Pembesar — hasilnya masuk DM`);
+      } else {
+        await kirimAman(sock, jid, messageObj,
+          `🔍 ${tag(actorJid)} memakai *Kaca Pembesar*.\n⚠️ _DM gagal terkirim — pastikan chat pribadi dengan bot sudah pernah dibuka._`,
+          { mentions: [actorJid] });
+      }
     } else if (targetItem.key === 'gergaji') {
       if (session.sawActive) {
         // Item sudah terlanjur diambil dari ransel, kembalikan supaya tidak hangus.
@@ -594,12 +603,12 @@ async function useItemAction(sock, jid, senderNumber, messageObj, itemInput) {
         return true;
       }
       session.sawActive = true;
-      await kirimAman(sock, jid, messageObj, `🪚 *KREKKK!* ${tag(actorJid)} memotong laras senapan! *Tembakan berikutnya bernilai 2x DAMAGE!*`, { mentions: [actorJid] });
+      catatJejak(session, `🪚 ${tag(actorJid)} gergaji laras — *tembakan berikutnya ×2 damage*`);
     } else if (targetItem.key === 'bir') {
       const ejected = session.shells.shift();
       const ejectedText = ejected === 'LIVE' ? '🔴 *PELURU ASLI (LIVE)*' : '⚪ *PELURU KOSONG (BLANK)*';
 
-      await kirimAman(sock, jid, messageObj, `🍺 *KLANG!* ${tag(actorJid)} menenggak kaleng bir dan membuang 1 peluru: ${ejectedText} terlontar keluar dari laras!`, { mentions: [actorJid] });
+      catatJejak(session, `🍺 ${tag(actorJid)} pakai Bir — membuang ${ejectedText} dari laras`);
 
       if (session.shells.length === 0) {
         // Membuang peluru bukan menembak: giliran memang tetap milik pemakai.
@@ -614,10 +623,10 @@ async function useItemAction(sock, jid, senderNumber, messageObj, itemInput) {
         return true;
       }
       session.handcuffedPlayer = enemyJid;
-      await kirimAman(sock, jid, messageObj, `🔗 *KLIK!* ${tag(actorJid)} memasangkan borgol ke tangan ${tag(enemyJid)}! Lawan akan kehilangan 1x giliran berikutnya!`, { mentions: [actorJid, enemyJid] });
+      catatJejak(session, `🔗 ${tag(actorJid)} memborgol ${tag(enemyJid)} — lawan kehilangan 1 giliran`);
     }
 
-    await kirimAman(sock, jid, null, renderBuckshotVisual(session), { mentions: [session.player1, session.player2] });
+    await perbaruiMeja(sock, jid, session);
     armBuckshotTurnTimer(sock, jid);
     return true;
   } finally {
@@ -697,26 +706,13 @@ async function jalankanTembakan(sock, jid, session, shooterJid, targetType, mess
       // ⚪ Blank pada diri sendiri: GILIRAN TETAP MILIKNYA!
       pertahankanGiliran = true;
 
-      const blankSelfMsg =
-`⚪ *KLIK! PELURU KOSONG (BLANK)!* ⚪
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-😮‍💨 ${tag(actorJid)} mengarahkan senapan ke kepala sendiri dan menarik pelatuk...
-Hanya terdengar bunyi *KLIK!* Peluru tersebut kosong!
-🎁 *Keberanian Berbuah Manis:* Giliran tetap milik ${tag(actorJid)}!`;
-
-      await kirimAman(sock, jid, messageObj, blankSelfMsg, { mentions: [actorJid] });
+      catatJejak(session, `⚪ ${tag(actorJid)} tembak diri — *KLIK*, kosong! Giliran tetap miliknya`);
     } else {
       // 🔴 Live pada diri sendiri: Kena Damage!
       if (isP1) session.p1Hp = Math.max(0, session.p1Hp - damage);
       else session.p2Hp = Math.max(0, session.p2Hp - damage);
 
-      const liveSelfMsg =
-`🔴💥 *DORRRR! PELURU ASLI (LIVE)!* 💥🔴
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💀 ${tag(actorJid)} menembak diri sendiri dengan *Peluru Asli*!
-💔 Terkena *${damage} Damage*! Sisa HP: *${isP1 ? session.p1Hp : session.p2Hp}/${MAX_HP}*`;
-
-      await kirimAman(sock, jid, messageObj, liveSelfMsg, { mentions: [actorJid] });
+      catatJejak(session, `🔴 ${tag(actorJid)} tembak diri — *LIVE!* −${damage} HP (sisa ${isP1 ? session.p1Hp : session.p2Hp})`);
 
       if (session.p1Hp <= 0 || session.p2Hp <= 0) {
         const winner = session.p1Hp > 0 ? session.player1 : session.player2;
@@ -728,25 +724,13 @@ Hanya terdengar bunyi *KLIK!* Peluru tersebut kosong!
   } else {
     // 🎯 TEMBAK LAWAN
     if (shell === 'BLANK') {
-      const blankEnemyMsg =
-`⚪ *KLIK! PELURU KOSONG (BLANK)!* ⚪
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💨 ${tag(actorJid)} menembak ke arah ${tag(enemyJid)}...
-*KLIK!* Peluru kosong! ${tag(enemyJid)} selamat dari maut!`;
-
-      await kirimAman(sock, jid, messageObj, blankEnemyMsg, { mentions: [actorJid, enemyJid] });
+      catatJejak(session, `⚪ ${tag(actorJid)} tembak ${tag(enemyJid)} — *KLIK*, kosong!`);
     } else {
       // 🔴 Live pada lawan: Kena Damage!
       if (isP1) session.p2Hp = Math.max(0, session.p2Hp - damage);
       else session.p1Hp = Math.max(0, session.p1Hp - damage);
 
-      const liveEnemyMsg =
-`🔴💥 *BOOMMMM! PELURU ASLI (LIVE)!* 💥🔴
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🎯 Tembakan telak ${tag(actorJid)} menghantam ${tag(enemyJid)}!
-💔 ${tag(enemyJid)} menderita *${damage} Damage*! Sisa HP: *${isP1 ? session.p2Hp : session.p1Hp}/${MAX_HP}*`;
-
-      await kirimAman(sock, jid, messageObj, liveEnemyMsg, { mentions: [actorJid, enemyJid] });
+      catatJejak(session, `🔴 ${tag(actorJid)} tembak ${tag(enemyJid)} — *LIVE!* −${damage} HP (sisa ${isP1 ? session.p2Hp : session.p1Hp})`);
 
       if (session.p1Hp <= 0 || session.p2Hp <= 0) {
         const winner = session.p1Hp > 0 ? session.player1 : session.player2;
@@ -763,7 +747,7 @@ Hanya terdengar bunyi *KLIK!* Peluru tersebut kosong!
   const hasilGiliran = resolveTurnAfterShot(session, actorJid, enemyJid, pertahankanGiliran);
 
   if (hasilGiliran.handcuffConsumed) {
-    await kirimAman(sock, jid, null, `🔗 ${tag(enemyJid)} terborgol dan kehilangan gilirannya! Giliran kembali ke ${tag(actorJid)}!`, { mentions: [actorJid, enemyJid] });
+    catatJejak(session, `🔗 ${tag(enemyJid)} terborgol — gilirannya hangus, balik ke ${tag(actorJid)}`);
   }
 
   // Cek apakah peluru di laras habis
@@ -772,7 +756,7 @@ Hanya terdengar bunyi *KLIK!* Peluru tersebut kosong!
     return true;
   }
 
-  await kirimAman(sock, jid, null, renderBuckshotVisual(session), { mentions: [session.player1, session.player2] });
+  await perbaruiMeja(sock, jid, session);
   armBuckshotTurnTimer(sock, jid);
   return true;
 }
@@ -792,16 +776,18 @@ async function reloadNewRound(sock, jid, session) {
   session.p1Items = giveRandomItems(session.p1Items);
   session.p2Items = giveRandomItems(session.p2Items);
 
-  const reloadAnnouncement =
-`🔄 *SHOTGUN DIISI ULANG & ITEM BARU DIBAGIKAN!* 🔄
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Dealer memasukkan *${mag.total} Peluru Baru*:
-🔴 *${mag.liveCount} Peluru Asli (Live)* & ⚪ *${mag.blankCount} Peluru Kosong (Blank)*!
-🎁 Masing-masing pemain mendapatkan 2 item baru di ransel!
+  // Isi ulang magazen pantas berdering: komposisi peluru berubah total dan itu
+  // mengubah seluruh perhitungan pemain. Papan lama dilepas supaya ronde baru
+  // mendapat papannya sendiri.
+  await kirimAman(sock, jid, null,
+`🔄 *SHOTGUN DIISI ULANG!* 🔄
+Magazen baru: 🔴 *${mag.liveCount} live* & ⚪ *${mag.blankCount} blank* (${mag.total} peluru).
+🎁 Kedua pemain menerima 2 item baru.`,
+    { mentions: [session.player1, session.player2] });
 
-${renderBuckshotVisual(session)}`;
-
-  await kirimAman(sock, jid, null, reloadAnnouncement, { mentions: [session.player1, session.player2] });
+  lepasPapan(session);
+  catatJejak(session, `🔄 Magazen baru — ${mag.liveCount} live / ${mag.blankCount} blank`);
+  await perbaruiMeja(sock, jid, session);
   armBuckshotTurnTimer(sock, jid);
 }
 
@@ -816,6 +802,9 @@ async function finishBuckshotGame(sock, jid, winnerJid, loserJid, opsi = {}) {
   // Dihapus sebelum `await` pertama supaya pemanggilan ganda (mis. tembakan &
   // menyerah beradu) tidak pernah membayar pot dua kali.
   activeBuckshots.delete(jid);
+  // Keadaan akhir meja diperbarui sekali lagi sebelum papannya dilepas.
+  await perbaruiMeja(sock, jid, session).catch(() => {});
+  lepasPapan(session);
 
   await db.addGamePoints(winnerJid, session.pot);
   await db.finishActiveGameSession(db.sesiGameId('buckshot', jid), 'FINISHED');

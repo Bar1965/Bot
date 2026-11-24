@@ -32,7 +32,8 @@ export const botState = {
   lastCredUpdate: null,
   lastSentTimestamp: null,
   pendingQueueCount: 0,
-  signalKeysOk: true
+  signalKeysOk: true,
+  isNightSleeping: false
 };
 
 // ====================================================================

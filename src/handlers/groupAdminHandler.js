@@ -7,9 +7,7 @@ import { jidNormalizedUser } from '@whiskeysockets/baileys';
 import { createMidtransTransaction, botState } from '../../server.js';
 import { buildCommandMenu } from '../../commandRegistry.js';
 import * as mediaHandler from '../../mediaHandler.js';
-import * as ent from '../../entertainmentHandler.js';
-import { sendInteractiveButtons, extractTargetJid, parseDuration, logToSystem, broadcastTagAll, triggerRestockBroadcast, checkAndNotifySubscribers, getCachedGroupMetadata } from '../../bot.js';
-import { backupDatabase } from '../../scheduler.js';
+import { sendInteractiveButtons, extractTargetJid, parseDuration, logToSystem, broadcastTagAll, triggerRestockBroadcast, checkAndNotifySubscribers, getCachedGroupMetadata, nightSleepState, isNightSleepTime, masukModeTidurMalam, bangunDariTidurMalam, syncNightSleepFromSettings } from '../../bot.js';
 import { adalahJidBot } from '../utils/botIdentity.js';
 import { perisaiTarget } from '../utils/perisaiTarget.js';
 import { mulaiWizardProduk, simpanGambarProduk } from './storeWizard.js';
@@ -19,23 +17,105 @@ import { antrekanRestok, antrekanTurunHarga, antrekanProdukBaru, antrekanSorotan
 import { PERSEN_BAWAAN, MINIMAL_BAWAAN } from '../utils/lantaiHarga.js';
 import { penutupGaransi } from '../utils/pesanGaransi.js';
 import { tanggalWib, jamWib } from '../utils/waktu.js';
+import { healthSentinel } from '../utils/antiDeteksi.js';
+import { samarkanNomor } from './testimoni.js';
+import { createTransactionReceiptCard } from '../../cardGenerator.js';
+
+// Helper universal mengekstrak Order ID baik diketik langsung maupun dari membalas/reply pesan
+export function extractOrderIdFromMessage(args, m) {
+  if (args && args[1]) {
+    return args[1].trim().toUpperCase();
+  }
+
+  const unwrapM = m?.message?.ephemeralMessage?.message ||
+                  m?.message?.viewOnceMessage?.message ||
+                  m?.message?.viewOnceMessageV2?.message ||
+                  m?.message;
+
+  const contextInfo = unwrapM?.extendedTextMessage?.contextInfo || 
+                      unwrapM?.conversation?.contextInfo ||
+                      unwrapM?.imageMessage?.contextInfo ||
+                      unwrapM?.videoMessage?.contextInfo ||
+                      unwrapM?.documentMessage?.contextInfo ||
+                      unwrapM?.buttonsResponseMessage?.contextInfo ||
+                      unwrapM?.templateButtonReplyMessage?.contextInfo;
+
+  if (contextInfo && contextInfo.quotedMessage) {
+    let qMsg = contextInfo.quotedMessage;
+    if (qMsg?.ephemeralMessage?.message) qMsg = qMsg.ephemeralMessage.message;
+    if (qMsg?.viewOnceMessage?.message) qMsg = qMsg.viewOnceMessage.message;
+    if (qMsg?.viewOnceMessageV2?.message) qMsg = qMsg.viewOnceMessageV2.message;
+
+    const quotedText = 
+      qMsg.conversation ||
+      qMsg.extendedTextMessage?.text ||
+      qMsg.imageMessage?.caption ||
+      qMsg.videoMessage?.caption ||
+      qMsg.documentMessage?.caption ||
+      '';
+
+    if (quotedText) {
+      // 1. Format Order ID / Deposit ID fleksibel (dengan/tanpa tanda markdown * atau _)
+      const m1 = quotedText.match(/(?:Order\s*ID|Deposit\s*ID)[:\s*_`]+([A-Za-z0-9_-]+)/i);
+      if (m1 && m1[1]) return m1[1].replace(/[*_`]/g, '').trim().toUpperCase();
+
+      // 2. Format ORD-xxxx atau DEP-xxxx
+      const m2 = quotedText.match(/\b((?:ORD|DEP)[-_]?[A-Za-z0-9]+)\b/i);
+      if (m2 && m2[1]) return m2[1].replace(/[*_`]/g, '').trim().toUpperCase();
+
+      // 3. Fallback kata kunci eksplisit (harus didahului Order/Pesanan/Struk/Invoice atau tanda pagar #)
+      const m3 = quotedText.match(/(?:Order|Pesanan|Struk|Invoice)\s*(?:ID)?\s*[:#\s]+\*?([A-Za-z0-9_-]{4,25})\*?/i);
+      if (m3 && m3[1]) return m3[1].replace(/[*_`]/g, '').trim().toUpperCase();
+
+      const m4 = quotedText.match(/#([A-Za-z0-9_-]{4,25})\b/);
+      if (m4 && m4[1]) return m4[1].replace(/[*_`]/g, '').trim().toUpperCase();
+    }
+  }
+
+  return null;
+}
 
 export function createGroupAdminHandler(ctx) {
     const { sock, userPushNamesMap, messageCache, formatPhoneNumber, react, sendInteractiveButtons } = ctx;
     let botSettings = ctx.botSettings || {};
 
     return async function handleGroupMessage(jid, senderNumber, messageObj, text, isGroupAdminParam, isPrefixCmd, actor = {}) {
-  // STRICT RULE: Semua perintah WAJIB diawali prefix . / # (TIDAK ADA perintah tanpa prefix)
-  const isPrefix = isPrefixCmd !== undefined 
-    ? isPrefixCmd 
-    : (text?.trim().startsWith('.') || text?.trim().startsWith('/') || text?.trim().startsWith('#'));
-  if (!isPrefix) return false;
+      const trimmedText = (text || '').trim();
+      const m = messageObj;
+      const unwrapM = m?.message?.ephemeralMessage?.message ||
+                      m?.message?.viewOnceMessage?.message ||
+                      m?.message?.viewOnceMessageV2?.message ||
+                      m?.message;
 
-  const isGroup = jid.endsWith('@g.us');
-  const m = messageObj;
-  const senderCleanJid = jidNormalizedUser(senderNumber);
-  const senderNormalized = senderCleanJid;
-  const args = (text || '').trim().split(/\s+/);
+      const isQuoted = Boolean(
+        unwrapM?.extendedTextMessage?.contextInfo?.quotedMessage ||
+        unwrapM?.imageMessage?.contextInfo?.quotedMessage ||
+        unwrapM?.videoMessage?.contextInfo?.quotedMessage ||
+        unwrapM?.documentMessage?.contextInfo?.quotedMessage
+      );
+
+      const isPrefix = isPrefixCmd !== undefined 
+        ? isPrefixCmd 
+        : (trimmedText.startsWith('.') || trimmedText.startsWith('/') || trimmedText.startsWith('#'));
+
+      // Quick reply konfirmasi pesanan (contoh reply: "done", "Done", "acc", "paid", "selesai", "konfirm", "konfirmasi")
+      const isQuickDoneReply = isQuoted && /^(done|selesai|acc|paid|terima|konfirmasi|konfirm)\b/i.test(trimmedText);
+
+      if (!isPrefix) {
+        if (!isQuickDoneReply) return false;
+        // Untuk balasan tanpa prefix, wajib ada Order ID di pesan yang dikutip
+        const quotedOrderId = extractOrderIdFromMessage(trimmedText.split(/\s+/), m);
+        if (!quotedOrderId) return false;
+        // Dan wajib dikirim oleh Admin Toko atau Owner
+        const isOwnerSender = actor?.isOwner;
+        const isStoreAdminResolved = actor?.isStoreAdmin || isOwnerSender;
+        if (!isStoreAdminResolved) return false;
+      }
+
+      const isGroup = jid.endsWith('@g.us');
+      const senderCleanJid = jidNormalizedUser(senderNumber);
+      const senderNormalized = senderCleanJid;
+      const args = (text || '').trim().split(/\s+/);
   const rawCmd = (args[0] || '').toLowerCase();
   const cleanCmd = rawCmd.replace(/^[./#]/, '');
 
@@ -48,13 +128,15 @@ export function createGroupAdminHandler(ctx) {
     // `batal` SENGAJA tidak ditambahkan: itu perintah pelanggan untuk
     // membatalkan pesanannya sendiri, dan memasukkannya ke sini akan membajak
     // `.batal` milik owner saat ia berbelanja sebagai pelanggan biasa.
-    'paid', 'acc', 'terima', 'konfirmasi', 'done', 'selesai', 'cancel', 'kirimulang', 'ulangkirim', 'retry', 'flashsale', 'stats', 'broadcast', 'addcoupon', 
+    'paid', 'acc', 'terima', 'konfirmasi', 'konfirm', 'done', 'selesai', 'cancel', 'kirimulang', 'ulangkirim', 'retry', 'flashsale', 'stats', 'broadcast', 'addcoupon', 
     'delcoupon', 'listcoupon', 'addfaq', 'delfaq', 'listfaq', 'laporan', 
     'restock', 'stock', 'price', 'out', 'ready', 'addproduct', 'takeover', 
     'release', 'setname', 'setowner', 'eval', 'exec', 'backup', 'resetleaderboard',
     'addstock', 'tambahstok', 'cekstok', 'liststock', 'delstock', 'setdelivery', 'listproduk', 'katalogadmin', 'stokyatim',
     'sinkronstok', 'syncstok', 'perbaikistok', 'umumkan', 'siaran', 'lantaiharga', 'batasdiskon',
     'addproduk', 'editproduk', 'ubahproduk', 'delproduk', 'hapusproduk', 'setgambar', 'tokobaru', 'produkbaru',
+    // Sakelar Mode Global DM, Grup & Wajib Join Grup Utama
+    'setdm', 'modedm', 'botdm', 'setpm', 'pm', 'setgroup', 'modegroup', 'botgroup', 'grupbot', 'setwajibgrup', 'wajibgrup', 'requiregroup', 'linkgrup', 'linkgroup', 'siklus', 'dutycycle',
     // Saldo deposit — gerbang sesungguhnya ada di saldoAdmin.js dan HANYA owner
     // yang lolos. Didaftarkan di sini supaya perintahnya sampai ke handler;
     // kalau bukan owner, saldoAdmin yang menolaknya.
@@ -987,11 +1069,20 @@ Berikut adalah daftar fitur bot yang dapat diaktifkan / dimatikan oleh Admin gru
       };
       const labelGame = gameAktif ? '🟢 AKTIF (ON)' : '🔴 MATI (OFF)';
 
+      const currentDmStatus = (botSettings.privateMsgEnabled || config.defaults.privateMsgEnabled || 'true') !== 'false';
+      const currentGrpStatus = (botSettings.groupMsgEnabled || config.defaults.groupMsgEnabled || 'true') !== 'false';
+      const currentReqStatus = (botSettings.requireGroupJoin || config.defaults.requireGroupJoin || 'true') !== 'false';
+
       const panduanMode =
 `💡 *Cara Mengubah Mode Respon Bot:*
-• \`.mode all\` — Respon seluruh fitur & media
-• \`.mode sales\` — Khusus jualan & transaksi
+• \`.mode all\` — Respon seluruh fitur & media di grup ini
+• \`.mode sales\` — Khusus jualan & transaksi di grup ini
 • \`.mode off\` — Bisukan bot sepenuhnya di grup ini
+
+🔒 *Sakelar Global Bot (Owner / Admin Toko):*
+• \`.mode dm on/off\` — Sakelar bot di Private Chat (DM)
+• \`.mode group on/off\` — Sakelar bot di Grup secara global
+• \`.mode wajibgrup on/off\` — Wajib join grup utama untuk pakai bot
 
 🎮 *Sakelar Game/Hiburan (fitur lain tetap jalan):*
 • \`.mode game off\` — Matikan semua game di grup ini
@@ -1000,13 +1091,94 @@ _(alias cepat: \`.mode nogame\`)_`;
 
       if (!newMode) {
         await sock.sendMessage(jid, {
-          text: `⚙️ *STATUS MODE BOT GRUP INI*
+          text: `⚙️ *STATUS MODE & SAKELAR BOT*
 ━━━━━━━━━━━━━━━━━━━━
-📡 Mode Respon  : *${labelMode(currentSettings.bot_mode)}*
-🎮 Game/Hiburan : *${labelGame}*
+📡 Mode Grup Ini     : *${labelMode(currentSettings.bot_mode)}*
+🎮 Game/Hiburan      : *${labelGame}*
+💬 Bot di DM (Global): *${currentDmStatus ? '🟢 AKTIF (ON)' : '🔴 NONAKTIF (OFF)'}*
+👥 Bot di Grup (Global): *${currentGrpStatus ? '🟢 AKTIF (ON)' : '🔴 NONAKTIF (OFF)'}*
+🛡️ Wajib Join Grup   : *${currentReqStatus ? '🟢 YA (WAJIB)' : '🔴 BEBAS (OFF)'}*
 
 ${panduanMode}`
         });
+        return true;
+      }
+
+      // Sakelar khusus DM (Private Message) global
+      if (['dm', 'pm', 'private', 'japri'].includes(newMode)) {
+        if (!isOwner && !isAdminStore) {
+          await sock.sendMessage(jid, { text: "❌ Perintah pengaturan DM global hanya dapat diubah oleh Owner atau Admin Toko." });
+          return true;
+        }
+        const aksi = args[2]?.toLowerCase() || '';
+        if (!['on', 'nyala', 'aktif', 'off', 'mati', 'nonaktif'].includes(aksi)) {
+          await sock.sendMessage(jid, {
+            text: `💬 *STATUS MODE PRIVATE MESSAGE (DM)*\n━━━━━━━━━━━━━━━━━━━━\n📊 Status: *${currentDmStatus ? '🟢 AKTIF (ON)' : '🔴 NONAKTIF (OFF)'}*\n\n• \`.mode dm on\` atau \`.setdm on\` — Aktifkan bot di DM\n• \`.mode dm off\` atau \`.setdm off\` — Matikan respon bot di DM untuk user biasa\n\n_Saat DM dimatikan, user biasa yang chat di DM akan diarahkan ke grup utama toko._`
+          });
+          return true;
+        }
+        const nyalakanDm = ['on', 'nyala', 'aktif'].includes(aksi);
+        const valStr = nyalakanDm ? 'true' : 'false';
+        await db.updateSettings({ privateMsgEnabled: valStr });
+        botSettings.privateMsgEnabled = valStr;
+        await sock.sendMessage(jid, {
+          text: nyalakanDm
+            ? "💬 *LAYANAN BOT DI PRIVATE MESSAGE (DM) DIAKTIFKAN!* 🟢\n\nUser biasa sekarang dapat berinteraksi dengan bot melalui DM."
+            : "🔕 *LAYANAN BOT DI PRIVATE MESSAGE (DM) DINONAKTIFKAN!* 🔴\n\nUser biasa yang chat di DM akan otomatis diarahkan ke grup utama toko demi keamanan akun bot."
+        });
+        await db.addLog("ADMIN", `Private Message bot di-${nyalakanDm ? 'ON' : 'OFF'}-kan oleh ${senderNormalized}`);
+        return true;
+      }
+
+      // Sakelar khusus GRUP global
+      if (['group', 'grup', 'groups'].includes(newMode)) {
+        if (!isOwner && !isAdminStore) {
+          await sock.sendMessage(jid, { text: "❌ Perintah pengaturan Grup global hanya dapat diubah oleh Owner atau Admin Toko." });
+          return true;
+        }
+        const aksi = args[2]?.toLowerCase() || '';
+        if (!['on', 'nyala', 'aktif', 'off', 'mati', 'nonaktif'].includes(aksi)) {
+          await sock.sendMessage(jid, {
+            text: `👥 *STATUS MODE GRUP GLOBAL*\n━━━━━━━━━━━━━━━━━━━━\n📊 Status: *${currentGrpStatus ? '🟢 AKTIF (ON)' : '🔴 NONAKTIF (OFF)'}*\n\n• \`.mode group on\` atau \`.setgroup on\` — Aktifkan bot di grup\n• \`.mode group off\` atau \`.setgroup off\` — Nonaktifkan respon bot di semua grup untuk user biasa\n\n_Owner dan Admin tetap dapat menggunakan bot kapan pun._`
+          });
+          return true;
+        }
+        const nyalakanGrp = ['on', 'nyala', 'aktif'].includes(aksi);
+        const valStr = nyalakanGrp ? 'true' : 'false';
+        await db.updateSettings({ groupMsgEnabled: valStr });
+        botSettings.groupMsgEnabled = valStr;
+        await sock.sendMessage(jid, {
+          text: nyalakanGrp
+            ? "👥 *LAYANAN BOT DI GRUP SECARA GLOBAL DIAKTIFKAN!* 🟢\n\nBot kembali merespons perintah user biasa di grup."
+            : "🔕 *LAYANAN BOT DI GRUP SECARA GLOBAL DINONAKTIFKAN!* 🔴\n\nBot tidak akan merespons user biasa di grup (hanya Owner & Admin yang bisa memakai bot)."
+        });
+        await db.addLog("ADMIN", `Layanan grup bot di-${nyalakanGrp ? 'ON' : 'OFF'}-kan oleh ${senderNormalized}`);
+        return true;
+      }
+
+      // Sakelar WAJIB JOIN GRUP UTAMA
+      if (['wajibgrup', 'requiregroup', 'join'].includes(newMode)) {
+        if (!isOwner && !isAdminStore) {
+          await sock.sendMessage(jid, { text: "❌ Perintah pengaturan Wajib Join Grup hanya dapat diubah oleh Owner atau Admin Toko." });
+          return true;
+        }
+        const aksi = args[2]?.toLowerCase() || '';
+        if (!['on', 'nyala', 'aktif', 'off', 'mati', 'nonaktif'].includes(aksi)) {
+          await sock.sendMessage(jid, {
+            text: `🛡️ *STATUS WAJIB JOIN GRUP UTAMA*\n━━━━━━━━━━━━━━━━━━━━\n📊 Status: *${currentReqStatus ? '🟢 WAJIB (ON)' : '🔴 BEBAS (OFF)'}*\n\n• \`.mode wajibgrup on\` atau \`.setwajibgrup on\` — Wajib join grup utama untuk pakai bot\n• \`.mode wajibgrup off\` atau \`.setwajibgrup off\` — Siapa pun bisa pakai bot tanpa join grup`
+          });
+          return true;
+        }
+        const nyalakanReq = ['on', 'nyala', 'aktif'].includes(aksi);
+        const valStr = nyalakanReq ? 'true' : 'false';
+        await db.updateSettings({ requireGroupJoin: valStr });
+        botSettings.requireGroupJoin = valStr;
+        await sock.sendMessage(jid, {
+          text: nyalakanReq
+            ? "🛡️ *PERSYARATAN WAJIB JOIN GRUP UTAMA DIAKTIFKAN!* 🟢\n\nSiapa pun yang ingin memakai perintah bot wajib menjadi anggota di grup utama toko."
+            : "🔓 *PERSYARATAN WAJIB JOIN GRUP UTAMA DINONAKTIFKAN!* 🔴\n\nPengguna bisa memakai perintah bot tanpa harus masuk ke grup utama toko."
+        });
+        await db.addLog("ADMIN", `Wajib join grup bot di-${nyalakanReq ? 'ON' : 'OFF'}-kan oleh ${senderNormalized}`);
         return true;
       }
 
@@ -1105,6 +1277,229 @@ ${panduanMode}`
       botSettings.antiLinkEnabled = isEnable ? "true" : "false";
       await db.updateSettings({ antiLinkEnabled: botSettings.antiLinkEnabled });
       await sock.sendMessage(jid, { text: `🛡️ Sakelar Global Anti-Link berhasil *${isEnable ? 'DIAKTIFKAN 🟢' : 'DINONAKTIFKAN 🔴'}* untuk seluruh bot!` });
+      return true;
+    }
+
+    // ====================================================================
+    // SAKELAR BOT PRIVATE MESSAGE (.setdm, .setpm, .modedm)
+    // ====================================================================
+    if (['setdm', 'modedm', 'botdm', 'setpm', 'pm'].includes(cleanCmd)) {
+      if (!isOwner && !isAdminStore) {
+        await sock.sendMessage(jid, { text: "❌ Perintah ini khusus untuk Pemilik (Owner) atau Admin Toko." });
+        return true;
+      }
+      const param = args[1]?.toLowerCase();
+      const currentDm = (botSettings.privateMsgEnabled || config.defaults.privateMsgEnabled || 'true') !== 'false';
+      if (!['on', 'off', '1', '0', 'aktif', 'mati', 'nonaktif'].includes(param)) {
+        await sock.sendMessage(jid, {
+          text: `💬 *SAKELAR BOT PRIVATE CHAT (DM)*\n━━━━━━━━━━━━━━━━━━━━\n📊 Status Saat Ini: *${currentDm ? '🟢 AKTIF (ON)' : '🔴 NONAKTIF (OFF)'}*\n\n📌 *Cara Mengubah:*\n• Ketik \`.setdm on\` untuk Mengaktifkan\n• Ketik \`.setdm off\` untuk Mematikan\n\n_Saat dimatikan, pengguna biasa yang chat di DM akan diarahkan ke grup utama toko demi keamanan akun bot._`
+        });
+        return true;
+      }
+      const isEnable = ['on', '1', 'aktif'].includes(param);
+      const valStr = isEnable ? 'true' : 'false';
+      botSettings.privateMsgEnabled = valStr;
+      await db.updateSettings({ privateMsgEnabled: valStr });
+      await sock.sendMessage(jid, {
+        text: `💬 Layanan bot di Private Chat (DM) berhasil *${isEnable ? 'DIAKTIFKAN 🟢' : 'DINONAKTIFKAN 🔴'}* untuk pengguna biasa!`
+      });
+      await db.addLog("ADMIN", `Private Message bot di-${isEnable ? 'ON' : 'OFF'}-kan oleh ${senderNormalized}`);
+      return true;
+    }
+
+    // ====================================================================
+    // SAKELAR BOT GRUP GLOBAL (.setgroup, .modegroup, .botgroup)
+    // ====================================================================
+    if (['setgroup', 'modegroup', 'botgroup', 'grupbot'].includes(cleanCmd)) {
+      if (!isOwner && !isAdminStore) {
+        await sock.sendMessage(jid, { text: "❌ Perintah ini khusus untuk Pemilik (Owner) atau Admin Toko." });
+        return true;
+      }
+      const param = args[1]?.toLowerCase();
+      const currentGrp = (botSettings.groupMsgEnabled || config.defaults.groupMsgEnabled || 'true') !== 'false';
+      if (!['on', 'off', '1', '0', 'aktif', 'mati', 'nonaktif'].includes(param)) {
+        await sock.sendMessage(jid, {
+          text: `👥 *SAKELAR BOT GRUP (GLOBAL)*\n━━━━━━━━━━━━━━━━━━━━\n📊 Status Saat Ini: *${currentGrp ? '🟢 AKTIF (ON)' : '🔴 NONAKTIF (OFF)'}*\n\n📌 *Cara Mengubah:*\n• Ketik \`.setgroup on\` untuk Mengaktifkan\n• Ketik \`.setgroup off\` untuk Mematikan\n\n_Catatan: Owner dan Admin tetap dapat menggunakan bot di grup kapan pun._`
+        });
+        return true;
+      }
+      const isEnable = ['on', '1', 'aktif'].includes(param);
+      const valStr = isEnable ? 'true' : 'false';
+      botSettings.groupMsgEnabled = valStr;
+      await db.updateSettings({ groupMsgEnabled: valStr });
+      await sock.sendMessage(jid, {
+        text: `👥 Layanan bot di Grup secara global berhasil *${isEnable ? 'DIAKTIFKAN 🟢' : 'DINONAKTIFKAN 🔴'}* untuk pengguna biasa!`
+      });
+      await db.addLog("ADMIN", `Layanan grup bot di-${isEnable ? 'ON' : 'OFF'}-kan oleh ${senderNormalized}`);
+      return true;
+    }
+
+    // ====================================================================
+    // SAKELAR WAJIB JOIN GRUP UTAMA (.setwajibgrup, .requiregroup)
+    // ====================================================================
+    if (['setwajibgrup', 'wajibgrup', 'requiregroup'].includes(cleanCmd)) {
+      if (!isOwner && !isAdminStore) {
+        await sock.sendMessage(jid, { text: "❌ Perintah ini khusus untuk Pemilik (Owner) atau Admin Toko." });
+        return true;
+      }
+      const param = args[1]?.toLowerCase();
+      const currentReq = (botSettings.requireGroupJoin || config.defaults.requireGroupJoin || 'true') !== 'false';
+      if (!['on', 'off', '1', '0', 'aktif', 'mati', 'nonaktif'].includes(param)) {
+        await sock.sendMessage(jid, {
+          text: `🛡️ *SAKELAR WAJIB JOIN GRUP UTAMA*\n━━━━━━━━━━━━━━━━━━━━\n📊 Status Saat Ini: *${currentReq ? '🟢 YA (WAJIB)' : '🔴 BEBAS (OFF)'}*\n\n📌 *Cara Mengubah:*\n• Ketik \`.setwajibgrup on\` untuk Mengaktifkan (Wajib join grup)\n• Ketik \`.setwajibgrup off\` untuk Mematikan (Bebas tanpa join)`
+        });
+        return true;
+      }
+      const isEnable = ['on', '1', 'aktif'].includes(param);
+      const valStr = isEnable ? 'true' : 'false';
+      botSettings.requireGroupJoin = valStr;
+      await db.updateSettings({ requireGroupJoin: valStr });
+      await sock.sendMessage(jid, {
+        text: `🛡️ Persyaratan wajib join grup utama toko berhasil *${isEnable ? 'DIAKTIFKAN 🟢' : 'DINONAKTIFKAN 🔴'}*!`
+      });
+      await db.addLog("ADMIN", `Wajib join grup bot di-${isEnable ? 'ON' : 'OFF'}-kan oleh ${senderNormalized}`);
+      return true;
+    }
+
+    // ====================================================================
+    // LIHAT LINK GRUP RESMI TOKO (.linkgrup, .linkgroup)
+    // ====================================================================
+    if (['linkgrup', 'linkgroup'].includes(cleanCmd)) {
+      const targetGroupId = botSettings.buyerGroupId || botSettings.transactionGroupId || botSettings.logGroupId || '';
+      let inviteLink = botSettings.groupInviteLink || '';
+      let groupName = 'Grup Resmi Toko';
+
+      if (targetGroupId) {
+        try {
+          const meta = (typeof getCachedGroupMetadata === 'function' ? await getCachedGroupMetadata(sock, targetGroupId) : null) || await sock.groupMetadata(targetGroupId);
+          if (meta?.subject) groupName = meta.subject;
+          if (!inviteLink) {
+            const code = await sock.groupInviteCode(targetGroupId);
+            inviteLink = `https://chat.whatsapp.com/${code}`;
+          }
+        } catch (e) {}
+      }
+
+      await sock.sendMessage(jid, {
+        text: `📢 *INFORMASI GRUP UTAMA TOKO* 📢\n━━━━━━━━━━━━━━━━━━━━\n📌 *Nama Grup:* ${groupName}\n🔗 *Link Undangan:*\n${inviteLink || 'Belum ada link undangan grup yang disetel. Hubungi Owner.'}\n\n_Gunakan link di atas untuk bergabung ke komunitas resmi pembeli toko kami!_ 🙏`
+      });
+      return true;
+    }
+
+    // ====================================================================
+    // JADWAL TIDUR MALAM & KESEHATAN BOT (.siklus, .statusbot)
+    // ====================================================================
+    if (['siklus', 'statusbot'].includes(cleanCmd)) {
+      if (!isOwner && !isAdminStore) {
+        await sock.sendMessage(jid, { text: "❌ Perintah ini khusus untuk Pemilik (Owner) atau Admin Toko." });
+        return true;
+      }
+
+      const sub = (args[1] || '').toLowerCase();
+      const sub2 = (args[2] || '').toLowerCase();
+
+      // 1. Status / Info
+      if (!sub || sub === 'status' || sub === 'info') {
+        const isNightEn = nightSleepState.enabled;
+        const isNightSleep = isNightSleepTime();
+
+        const sentinelStat = healthSentinel.getStatus();
+        const remCooldownMin = Math.ceil(sentinelStat.remainingCooldownMs / 60000);
+
+        const txt = `⚙️ *PENGATURAN JADWAL AMAN & KESEHATAN BOT*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🌙 *1. Jadwal Tidur Malam (Night Sleep):*
+• Status: *${isNightEn ? '🟢 AKTIF (ON)' : '🔴 NONAKTIF (OFF)'}*
+• Jam Tidur: *Pukul ${nightSleepState.startHour}:00 - ${nightSleepState.endHour}:00 WIB*
+• Kondisi: *${isNightSleep ? '😴 SEDANG TIDUR MALAM' : '☀️ AKTIF BEROPERASI'}*
+
+🛡️ *2. Telemetri Kesehatan Akun (Anti-Deteksi Permanen):*
+• Sirkuit Pengaman: *${sentinelStat.isTripped ? `🚨 TERPUTUS (${sentinelStat.reason}) - Tunggu ~${remCooldownMin}m` : '🟢 NORMAL (Aman)'}*
+• Total Masuk / Keluar: *${sentinelStat.inboundCount}* / *${sentinelStat.outboundCount}* pesan
+• Rasio Lalu Lintas: *${sentinelStat.ratio}* (Ideal < 1.5)
+• Entropi Zero-Width: *🟢 AKTIF (Divergensi Hash SHA-256)*
+• Emulasi Ketik Manusia: *🟢 AKTIF (Gaussian WPM Curve)*
+• Tanda Baca Alami: *🟢 AKTIF (Glancing Delay + Read Receipts)*
+
+📌 *Perintah Tidur Malam (Night Safe Mode):*
+• \`.siklus malam on / off\` — Nyalakan/matikan tidur malam otomatis
+• \`.siklus malam <jamTidur> <jamBangun>\` — Atur jam (contoh: \`.siklus malam 23 6\`)
+• \`.siklus tidur\` — Paksa bot tidur malam sekarang
+• \`.siklus bangun\` — Bangunkan bot dari tidur malam sekarang`;
+
+        await sock.sendMessage(jid, { text: txt });
+        return true;
+      }
+
+      // Perintah Tidur Malam: .siklus malam on / off / <start> <end>
+      if (sub === 'malam') {
+        if (['on', 'aktif', '1'].includes(sub2)) {
+          botSettings.nightSleepEnabled = 'true';
+          await db.updateSettings({ nightSleepEnabled: 'true' });
+          syncNightSleepFromSettings();
+          await sock.sendMessage(jid, {
+            text: `🌙 *Jadwal Tidur Malam Bot Berhasil Diaktifkan!*\n\nBot akan otomatis istirahat/mati setiap malam pada pukul *${nightSleepState.startHour}:00 - ${nightSleepState.endHour}:00 WIB*, dan otomatis menyambung kembali setiap pagi.`
+          });
+          await db.addLog("ADMIN", `Jadwal tidur malam di-ON-kan oleh ${senderNormalized}`);
+          return true;
+        }
+        if (['off', 'mati', 'nonaktif', '0'].includes(sub2)) {
+          botSettings.nightSleepEnabled = 'false';
+          await db.updateSettings({ nightSleepEnabled: 'false' });
+          syncNightSleepFromSettings();
+          await sock.sendMessage(jid, {
+            text: `☀️ *Jadwal Tidur Malam Bot Dinonaktifkan!*\n\nBot tidak akan tidur otomatis di malam hari.`
+          });
+          await db.addLog("ADMIN", `Jadwal tidur malam di-OFF-kan oleh ${senderNormalized}`);
+          return true;
+        }
+        const sub3 = (args[3] || '').toLowerCase();
+        const startH = parseInt(sub2, 10);
+        const endH = parseInt(sub3, 10);
+        if (!isNaN(startH) && !isNaN(endH) && startH >= 0 && startH <= 23 && endH >= 0 && endH <= 23) {
+          botSettings.nightSleepStartHour = startH;
+          botSettings.nightSleepEndHour = endH;
+          await db.updateSettings({
+            nightSleepStartHour: startH,
+            nightSleepEndHour: endH
+          });
+          syncNightSleepFromSettings();
+          await sock.sendMessage(jid, {
+            text: `🌙 *Jam Tidur Malam Berhasil Diperbarui!*\n\nBot akan tidur pada pukul *${startH}:00 WIB* dan bangun pada pukul *${endH}:00 WIB*.`
+          });
+          await db.addLog("ADMIN", `Jam tidur malam diubah jadi ${startH}:00 - ${endH}:00 WIB oleh ${senderNormalized}`);
+          return true;
+        }
+
+        await sock.sendMessage(jid, {
+          text: `⚠️ Format salah. Gunakan: \`.siklus malam on\`, \`.siklus malam off\`, atau \`.siklus malam 23 6\` (tidur jam 23, bangun jam 6).`
+        });
+        return true;
+      }
+
+      // Paksa Tidur Malam Sekarang: .siklus tidur
+      if (['tidur', 'sleep'].includes(sub)) {
+        await sock.sendMessage(jid, {
+          text: `🌙 *Memulai Mode Tidur Malam Sekarang...*\n\nBot akan menutup koneksi dan otomatis online kembali pada pukul *${String(nightSleepState.endHour).padStart(2, '0')}:00 WIB*.`
+        });
+        await db.addLog("ADMIN", `Mode tidur malam dipaksa oleh ${senderNormalized}`);
+        await masukModeTidurMalam(sock);
+        return true;
+      }
+
+      // Paksa Bangun Sekarang: .siklus bangun
+      if (['bangun', 'wake', 'wakeup'].includes(sub)) {
+        await sock.sendMessage(jid, {
+          text: `☀️ *Membangunkan Bot Sekarang...*\n\nBot akan segera menyambung kembali ke WhatsApp.`
+        });
+        await db.addLog("ADMIN", `Bot dibangunkan dari tidur malam oleh ${senderNormalized}`);
+        await bangunDariTidurMalam();
+        return true;
+      }
+
+      await sock.sendMessage(jid, {
+        text: `⚠️ Format salah. Ketik \`.siklus\` untuk melihat panduan atau \`.siklus malam 23 6\` untuk mengatur jadwal tidur malam.`
+      });
       return true;
     }
 
@@ -1865,42 +2260,6 @@ ${panduanMode}`
       return true;
     }
 
-// Helper universal mengekstrak Order ID baik diketik langsung maupun dari membalas/reply pesan
-function extractOrderIdFromMessage(args, m) {
-  if (args && args[1]) {
-    return args[1].trim().toUpperCase();
-  }
-
-  const contextInfo = m?.message?.extendedTextMessage?.contextInfo || 
-                      m?.message?.conversation?.contextInfo ||
-                      m?.message?.imageMessage?.contextInfo ||
-                      m?.message?.videoMessage?.contextInfo;
-
-  if (contextInfo && contextInfo.quotedMessage) {
-    const qMsg = contextInfo.quotedMessage;
-    const quotedText = 
-      qMsg.conversation ||
-      qMsg.extendedTextMessage?.text ||
-      qMsg.imageMessage?.caption ||
-      qMsg.videoMessage?.caption ||
-      qMsg.documentMessage?.caption ||
-      '';
-
-    if (quotedText) {
-      const m1 = quotedText.match(/Order\s*ID\s*:\s*\*?([A-Za-z0-9_-]+)\*?/i);
-      if (m1 && m1[1]) return m1[1].toUpperCase();
-
-      const m2 = quotedText.match(/\b(ORD[-_]?[A-Za-z0-9]+)\b/i);
-      if (m2 && m2[1]) return m2[1].toUpperCase();
-
-      const m3 = quotedText.match(/(?:Order|ID|Pesanan|Struk)?\s*:?\s*#?([A-Za-z0-9]{3,20})\b/i);
-      if (m3 && m3[1]) return m3[1].toUpperCase();
-    }
-  }
-
-  return null;
-}
-
     // Satu-satunya jalan keluar dari MANUAL_REVIEW.
     //
     // Worker menyerah setelah 6 percobaan dan menandai job MANUAL_REVIEW; sejak
@@ -1942,11 +2301,17 @@ function extractOrderIdFromMessage(args, m) {
       return true;
     }
 
-    if (['paid', 'acc', 'terima', 'konfirmasi'].includes(cleanCmd)) {
+    if (['paid', 'acc', 'terima', 'konfirmasi', 'konfirm', 'done', 'selesai'].includes(cleanCmd)) {
+      const isStoreAdminResolved = isAdminStore || !!(actor && actor.isStoreAdmin) || isOwner;
+      if (!isStoreAdminResolved && !isOwner) {
+        await sock.sendMessage(jid, { text: "❌ Perintah ini hanya dapat dijalankan oleh Admin Toko atau Owner." });
+        return true;
+      }
+
       const orderId = extractOrderIdFromMessage(args, m);
       if (!orderId) {
         await sock.sendMessage(jid, { 
-          text: "⚠️ *Gagal Deteksi Order ID:*\n\nSilakan **balas (reply)** pesan notifikasi pesanan dengan `.paid` atau `.acc`, atau ketik: `.paid <ORDER_ID>`" 
+          text: "⚠️ *Gagal Deteksi Order ID:*\n\nSilakan **balas (reply)** foto bukti pembayaran / testimoni dengan `done` atau `.done`, atau ketik: `.done <ORDER_ID>`" 
         });
         return true;
       }
@@ -1957,25 +2322,112 @@ function extractOrderIdFromMessage(args, m) {
         return true;
       }
 
-      // Penjaga idempoten. updateOrderStatus tidak menolak PAID -> PAID, dan
-      // awardPurchasePoints tidak mengenali order yang sudah pernah diberi poin,
-      // jadi `.paid` yang diketik dua kali — kebiasaan admin yang sangat wajar —
-      // mencetak Akbar Poin dan Poin Loyalty berulang kali, sekaligus menurunkan
-      // kembali status order dari COMPLETED ke PAID. markTransactionPaid punya
-      // `WHERE payment_status = 'PENDING'` justru untuk alasan ini; jalur `.paid`
-      // tidak punya padanannya.
-      if (det.payment_status === 'PAID' || ['PAID', 'COMPLETED'].includes(det.status)) {
-        await sock.sendMessage(jid, {
-          text: `ℹ️ Order *${orderId}* sudah berstatus *${det.status}* — tidak ada yang diubah.\n\n_Kalau produknya belum terkirim, pakai_ \`.done ${orderId}\` _setelah mengirim manual._`
-        });
+      // Helper react centang hijau ke pesan bukti tf yang di-reply & pesan admin
+      const reactSuccess = async () => {
+        try {
+          const unwrapM = m?.message?.ephemeralMessage?.message ||
+                          m?.message?.viewOnceMessage?.message ||
+                          m?.message?.viewOnceMessageV2?.message ||
+                          m?.message;
+          const quotedContext = unwrapM?.extendedTextMessage?.contextInfo ||
+                                unwrapM?.imageMessage?.contextInfo ||
+                                unwrapM?.videoMessage?.contextInfo ||
+                                unwrapM?.documentMessage?.contextInfo;
+          if (quotedContext?.stanzaId) {
+            const isQuotedFromMe = Boolean(quotedContext.participant ? adalahJidBot(sock, quotedContext.participant) : false);
+            await sock.sendMessage(jid, {
+              react: {
+                text: '✅',
+                key: {
+                  remoteJid: jid,
+                  id: quotedContext.stanzaId,
+                  participant: isGroup ? quotedContext.participant : undefined,
+                  fromMe: isQuotedFromMe
+                }
+              }
+            });
+          }
+          if (m?.key) {
+            await sock.sendMessage(jid, { react: { text: '✅', key: m.key } });
+          }
+        } catch (e) {}
+      };
+
+      // Helper kirim kartu struk testimoni (gambar canvas) dengan fallback teks biasa
+      const kirimTestimoniGrup = async (targetJid, captionTeks, cardOptions) => {
+        try {
+          const cardBuf = await createTransactionReceiptCard({
+            storeName: botSettings.botName || 'Akbar Store',
+            dateStr: tanggalWib(Date.now()),
+            timeStr: jamWib(Date.now()),
+            ...cardOptions
+          });
+          if (cardBuf && Buffer.isBuffer(cardBuf)) {
+            await sock.sendMessage(targetJid, {
+              image: cardBuf,
+              caption: captionTeks
+            });
+            return;
+          }
+        } catch (cardErr) {
+          console.warn('[TESTIMONI_CARD] Gagal membuat kartu canvas, fallback ke teks:', cardErr.message);
+        }
+        await sock.sendMessage(targetJid, { text: captionTeks });
+      };
+
+      // 0. Penjaga status tidak valid
+      if (det.status === 'CART') {
+        await sock.sendMessage(jid, { text: `⚠️ Order ID *${orderId}* masih berstatus keranjang (CART) dan belum di-checkout oleh pelanggan.` });
+        return true;
+      }
+      if (det.status === 'CANCELLED') {
+        await sock.sendMessage(jid, { text: `⚠️ Order ID *${orderId}* sudah dibatalkan (CANCELLED). Tidak dapat dikonfirmasi.` });
         return true;
       }
 
-      // Top up saldo BUKAN pembelian. Dua jalur otomatis punya cabang `DEP-`
-      // (markTransactionPaid dan fulfillmentWorker); `.paid` tidak punya, jadi
-      // konfirmasi manual sebuah top-up memberi Akbar Poin, Poin Loyalty dan
-      // hadiah referral — lalu TIDAK PERNAH menambah saldonya. Pelanggan dibilangi
-      // "Pembayaran Anda telah DITERIMA" dengan saldo tetap nol.
+      // 1. Jika order sudah berstatus COMPLETED
+      if (det.status === 'COMPLETED') {
+        await sock.sendMessage(jid, {
+          text: `ℹ️ Order ID *${orderId}* sudah berstatus *COMPLETED* (Selesai). Tidak ada perubahan dilakukan.`
+        });
+        await reactSuccess();
+        return true;
+      }
+
+      // 2. Jika order sudah berstatus PAID (misal produk MANUAL yang sebelumnya lunas dan kini selesai dikirim)
+      if (det.status === 'PAID') {
+        const resComp = await db.updateOrderStatus(orderId, 'COMPLETED');
+        if (!resComp.success) {
+          await sock.sendMessage(jid, { text: `❌ Gagal menyelesaikan pesanan: ${resComp.message}` });
+          return true;
+        }
+
+        const notifCustomer = `🔔 *INFO PESANAN (Order: ${orderId})* 🎉\n\nPesanan Anda telah *SELESAI* diproses dan dikirimkan oleh admin!\nSilakan cek detail pesanan Anda. Terima kasih telah berbelanja di toko kami! 🙏`;
+        await sock.sendMessage(det.customer_nomor, { text: notifCustomer });
+
+        const groupDoneMsg = `✅ *TRANSAKSI SELESAI / COMPLETED* 🎉
+━━━━━━━━━━━━━━━━━━
+🧾 *Order ID:* ${orderId}
+👤 *Pelanggan:* ${det.customer_nama || 'Pelanggan'}
+📦 *Status:* Berhasil Diselesaikan oleh Admin
+━━━━━━━━━━━━━━━━━━
+✨ _Terima kasih atas kepercayaannya berbelanja di toko kami!_ 🙏`;
+        const maskedPhone = samarkanNomor(det.customer_nomor);
+        await kirimTestimoniGrup(jid, groupDoneMsg, {
+          orderId,
+          customerName: det.customer_nama || 'Pelanggan',
+          customerNumber: maskedPhone,
+          totalAmount: det.total || 0,
+          items: det.items,
+          paymentStatus: 'COMPLETED',
+          paymentMethod: 'Transfer / QRIS'
+        });
+        await reactSuccess();
+        await logToSystem('ORDER', `✅ Order ID *${orderId}* ditandai COMPLETED oleh admin (wa.me/${senderNumber.split('@')[0]})`);
+        return true;
+      }
+
+      // 3. Pesanan Deposit / Top-up Saldo (DEP-xxx)
       if (String(orderId).startsWith('DEP-')) {
         const nominal = det.total || 0;
         const berhasil = await db.settleDepositOrder(orderId, det.customer_nomor, nominal, 'manual_admin');
@@ -1984,144 +2436,222 @@ function extractOrderIdFromMessage(args, m) {
           return true;
         }
         const profil = await db.getCustomerMembershipProfile(det.customer_nomor);
-        await sock.sendMessage(jid, { text: `✅ Top up *${orderId}* dikonfirmasi. Saldo pelanggan sekarang *Rp${(profil?.balance || 0).toLocaleString('id-ID')}*.` });
-        await sock.sendMessage(det.customer_nomor, {
-          text: `🎉 *TOP UP SALDO DEPOSIT BERHASIL!* 🎉\n\n🆔 *Deposit ID:* ${orderId}\n💰 *Nominal:* Rp${nominal.toLocaleString('id-ID')}\n💳 *Total Saldo Sekarang:* Rp${(profil?.balance || 0).toLocaleString('id-ID')}\n\n_Saldo sudah bisa dipakai berbelanja. Terima kasih! 🙏_`
+        const totalSaldoStr = (profil?.balance || 0).toLocaleString('id-ID');
+
+        const testimoniDepMsg = `✅ *TOP UP SALDO BERHASIL / DONE* 🎉
+━━━━━━━━━━━━━━━━━━
+🆔 *Deposit ID:* ${orderId}
+👤 *Pelanggan:* ${det.customer_nama || 'Pelanggan'}
+💰 *Nominal:* Rp${nominal.toLocaleString('id-ID')}
+💳 *Status:* Saldo Berhasil Masuk (Total: Rp${totalSaldoStr})
+━━━━━━━━━━━━━━━━━━
+✨ _Terima kasih telah melakukan top up saldo di toko kami!_ 🙏`;
+        const maskedPhone = samarkanNomor(det.customer_nomor);
+        await kirimTestimoniGrup(jid, testimoniDepMsg, {
+          orderId,
+          customerName: det.customer_nama || 'Pelanggan',
+          customerNumber: maskedPhone,
+          totalAmount: nominal,
+          items: [`Top Up Saldo Akun (Total: Rp${totalSaldoStr})`],
+          paymentStatus: 'BERHASIL',
+          paymentMethod: 'Deposit Saldo',
+          isDeposit: true
         });
-        await logToSystem('PAYMENT', `💰 Top up ${orderId} dikonfirmasi manual oleh admin (wa.me/${senderNumber.split('@')[0]})`);
+
+        await sock.sendMessage(det.customer_nomor, {
+          text: `🎉 *TOP UP SALDO DEPOSIT BERHASIL!* 🎉\n\n🆔 *Deposit ID:* ${orderId}\n💰 *Nominal:* Rp${nominal.toLocaleString('id-ID')}\n💳 *Total Saldo Sekarang:* Rp${totalSaldoStr}\n\n_Saldo sudah bisa dipakai berbelanja. Terima kasih! 🙏_`
+        });
+
+        await reactSuccess();
+        await logToSystem('PAYMENT', `💰 Top up ${orderId} dikonfirmasi oleh admin via reply done (wa.me/${senderNumber.split('@')[0]})`);
         return true;
       }
 
+      // 4. Pesanan Produk Belum Lunas (WAITING_CONFIRMATION / WAITING_PAYMENT / PENDING)
       const res = await db.updateOrderStatus(orderId, 'PAID');
       if (!res.success) {
-        await sock.sendMessage(jid, { text: `❌ Gagal: ${res.message}` });
+        await sock.sendMessage(jid, { text: `❌ Gagal mengubah status ke PAID: ${res.message}` });
         return true;
       }
-
-      await sock.sendMessage(jid, { text: `✅ Order ID *${orderId}* berhasil diubah ke status *PAID*. Memproses pengiriman otomatis...` });
 
       if (res.kuponHabis) {
         await sock.sendMessage(jid, { text: `⚠️ Catatan: kupon pada order ini ternyata sudah habis kuotanya, tetapi diskonnya sudah menempel pada total. Pesanan tetap dilunaskan.` });
       }
 
-      // Pembeli jalur `.paid` dulu tidak menerima Akbar Poin sama sekali, dan
-      // pengajaknya tidak pernah menerima hadiah referral, karena keduanya hanya
-      // diberikan di markTransactionPaid (jalur QRIS). Padahal pembeli transfer
-      // manual justru yang paling lama menunggu.
-      //
-      // sertakanLoyalty: false karena updateOrderStatus di atas SUDAH menambah
-      // Poin Loyalty lewat transisi BELUM BAYAR -> SUDAH BAYAR.
+      // Bonus Poin Belanja & Loyalty (hanya jika belum pernah PAID)
       let poinBelanja = 0;
-      try {
-        poinBelanja = await db.awardPurchasePoints(
-          res.customerNomor,
-          det.payment_amount || det.total || 0,
-          orderId,
-          { sertakanLoyalty: false }
-        );
-      } catch (poinErr) {
-        console.error('[PAID] Gagal memberi poin belanja:', poinErr.message);
-      }
-
-      // Notifikasi awal ke customer
-      let notifCustomer = `🔔 *INFO PESANAN (Order: ${orderId})*
-
-`;
-      notifCustomer += `Pembayaran Anda telah *DITERIMA* dan diverifikasi oleh admin kami. Terima kasih!`;
-      if (poinBelanja > 0) notifCustomer += `
-
-🪙 *Bonus Poin:* +${poinBelanja} Akbar Poin`;
-      await sock.sendMessage(res.customerNomor, { text: notifCustomer });
-      await logToSystem('PAYMENT', `💸 Order ID *${orderId}* dikonfirmasi PAID oleh admin (wa.me/${senderNumber.split('@')[0]})`);
-
-      // ══════════════════════════════════════════════════════════
-      // AUTO-DELIVERY: Local Stock
-      // ══════════════════════════════════════════════════════════
-      try {
-        // claimAndDeliverItems mengembalikan PEMBUNGKUS
-        // { success, deliveredData, itemsText, manualItems, warrantyUntil } sejak
-        // commit 0847227 (19 Agu). Baris ini tidak ikut disesuaikan, sehingga
-        // Object.keys() menghasilkan 5 kunci meta dan iterasi pertama menabrak
-        // `true.credentials.length` -> TypeError. Transaksi di dalam
-        // claimAndDeliverItems sudah commit saat itu, jadi lisensinya SUDAH
-        // ditandai USED dan stok sudah turun — pelanggan bayar penuh lalu tidak
-        // menerima apa pun. Jalur Midtrans di server.js:223 sudah benar sejak awal.
-        const claimRes = await db.claimAndDeliverItems(orderId);
-        const deliveredData = claimRes?.deliveredData || {};
-        const localKeys = Object.keys(deliveredData);
-
-        if (localKeys.length > 0) {
-          let credMsg = `━━━━━━━━━━━━━━━━━━\n📦 *PENGIRIMAN PRODUK DIGITAL*\n━━━━━━━━━━━━━━━━━━\nOrder ID: *${orderId}*\n\nBerikut adalah detail akun/voucher Anda:\n\n`;
-
-          // Local stock items
-          for (const [kode, info] of Object.entries(deliveredData)) {
-            credMsg += `🔑 *${info.produk_nama}* (\`${kode}\`):\n`;
-            if (info.credentials.length > 0) {
-              info.credentials.forEach((cred, i) => { credMsg += `   ${i + 1}. ${cred}\n`; });
-            } else {
-              credMsg += `   ⚠️ Stok habis, admin akan mengirim secara manual.\n`;
-            }
-            if (info.petunjuk) credMsg += `\n${info.petunjuk}\n`;
-            credMsg += `\n`;
-          }
-
-          // Dulu penutupnya cuma "Jika ada masalah, silakan hubungi admin" —
-          // padahal claimAndDeliverItems sudah menulis orders.warranty_until dan
-          // `.garansi` sudah ada. Akibatnya setiap klaim dari pembeli jalur
-          // `.paid` kembali jadi pekerjaan tangan, sementara pembeli jalur
-          // otomatis diberi tahu cara mengurusnya sendiri. Teksnya sekarang
-          // diambil dari sumber yang sama dengan fulfillmentWorker.
-          credMsg += `━━━━━━━━━━━━━━━━━━\n`;
-          credMsg += `⚠️ _Harap simpan data ini dengan baik._\n`;
-          credMsg += penutupGaransi(orderId, claimRes?.warrantyUntil);
-          credMsg += `━━━━━━━━━━━━━━━━━━`;
-          await sock.sendMessage(res.customerNomor, { text: credMsg });
-
-          // Cek apakah semua terkirim sempurna
-          const localAllOk = localKeys.every(k => deliveredData[k].credentials.length > 0);
-
-          if (localAllOk) {
-            await db.updateOrderStatus(orderId, 'COMPLETED');
-            await sock.sendMessage(res.customerNomor, { text: `✅ Pesanan *${orderId}* telah *SELESAI*. Terima kasih telah berbelanja! 🙏` });
-            await sock.sendMessage(jid, { text: `✅ Order *${orderId}* otomatis *COMPLETED* — semua item berhasil dikirim ke pelanggan.` });
-            await logToSystem('ORDER', `✅ Order *${orderId}* auto-completed (Local: ${localKeys.length}).`);
-          } else {
-            await sock.sendMessage(jid, { text: `⚠️ Order *${orderId}*: Stok habis untuk sebagian item. Silakan kirim sisa item secara manual.` });
-          }
-        } else {
-          // Tidak ada item AUTO — semua MANUAL
-          await sock.sendMessage(jid, { text: `ℹ️ Order *${orderId}* tidak memiliki item bertipe AUTO. Silakan kirimkan produk secara manual ke pelanggan, lalu ketik \`.done\` setelah selesai.` });
+      if (det.payment_status !== 'PAID') {
+        try {
+          poinBelanja = await db.awardPurchasePoints(
+            res.customerNomor,
+            det.payment_amount || det.total || 0,
+            orderId,
+            { sertakanLoyalty: false }
+          );
+        } catch (poinErr) {
+          console.error('[DONE/ACC] Gagal memberi poin belanja:', poinErr.message);
         }
+      }
+
+      // Auto-delivery: Klaim Kredensial Stok Otomatis (AUTO)
+      let claimRes = null;
+      let deliveredData = {};
+      let localKeys = [];
+
+      try {
+        claimRes = await db.claimAndDeliverItems(orderId);
+        deliveredData = claimRes?.deliveredData || {};
+        localKeys = Object.keys(deliveredData);
       } catch (deliveryErr) {
-        console.error(`[AUTO_DELIVERY] Gagal mengirim kredensial untuk ${orderId}:`, deliveryErr.message);
-        await sock.sendMessage(jid, { text: `⚠️ Error saat auto-delivery untuk Order *${orderId}*: ${deliveryErr.message}. Silakan kirim kredensial secara manual.` });
+        console.error(`[AUTO_DELIVERY] Gagal mengklaim kredensial untuk ${orderId}:`, deliveryErr.message);
       }
-      return true;
-    }
 
-    if (['done', 'selesai'].includes(cleanCmd)) {
-      const orderId = extractOrderIdFromMessage(args, m);
-      if (!orderId) {
-        await sock.sendMessage(jid, { 
-          text: "⚠️ *Gagal Deteksi Order ID:*\n\nSilakan **balas (reply)** pesan notifikasi pesanan dengan `.done` atau `.selesai`, atau ketik: `.done <ORDER_ID>`" 
+      // Cek apakah ada produk digital AUTO yang stoknya habis di database
+      if (claimRes?.outOfStock) {
+        const outInfo = claimRes.outOfStockDetails || {};
+        let notifCustomer = `🔔 *INFO PESANAN (Order: ${orderId})*\n\nPembayaran Anda telah *DITERIMA* dan diverifikasi oleh admin kami! Pesanan Anda sedang disiapkan. Mohon tunggu pengiriman secara manual dari admin di chat ini. Terima kasih! 🙏`;
+        if (poinBelanja > 0) notifCustomer += `\n\n🪙 *Bonus Poin:* +${poinBelanja} Akbar Poin`;
+        await sock.sendMessage(res.customerNomor, { text: notifCustomer });
+
+        const oosMsg = `⚠️ *PEMBAYARAN DIVERIFIKASI — STOK DIGITAL HABIS!*
+━━━━━━━━━━━━━━━━━━
+🧾 *Order ID:* ${orderId}
+👤 *Pelanggan:* ${det.customer_nama || 'Pelanggan'}
+💰 *Total:* Rp${Number(det.total || 0).toLocaleString('id-ID')}
+📦 *Item:* ${outInfo.nama || 'Produk'} (\`${outInfo.kode || '-'}\`)
+⚠️ *Kondisi:* Butuh ${outInfo.needed || 1}, Tersedia ${outInfo.found || 0}
+━━━━━━━━━━━━━━━━━━
+_Silakan isi stok dengan \`.addstock\` atau kirimkan kredensial secara manual ke pelanggan via DM, lalu ketik \`.done ${orderId}\` setelah selesai._`;
+        await sock.sendMessage(jid, { text: oosMsg });
+        await reactSuccess();
+        await logToSystem('ORDER', `⚠️ Order *${orderId}*: Stok AUTO habis saat konfirmasi pembayaran.`);
+        return true;
+      }
+
+      const itemSummary = det.items && det.items.length > 0
+        ? det.items.map(it => `• ${it.produk_nama} x${it.qty}`).join('\n')
+        : `• Produk Digital`;
+
+      if (localKeys.length > 0) {
+        // Terdapat produk bertipe AUTO yang berhasil diklaim
+        let credMsg = `━━━━━━━━━━━━━━━━━━\n📦 *PENGIRIMAN PRODUK DIGITAL*\n━━━━━━━━━━━━━━━━━━\nOrder ID: *${orderId}*\n\nBerikut adalah detail akun/voucher Anda:\n\n`;
+
+        for (const [kode, info] of Object.entries(deliveredData)) {
+          credMsg += `🔑 *${info.produk_nama}* (\`${kode}\`):\n`;
+          if (info.credentials && info.credentials.length > 0) {
+            info.credentials.forEach((cred, i) => { credMsg += `   ${i + 1}. ${cred}\n`; });
+          } else {
+            credMsg += `   ⚠️ Stok habis, admin akan mengirim secara manual.\n`;
+          }
+          if (info.petunjuk) credMsg += `\n${info.petunjuk}\n`;
+          credMsg += `\n`;
+        }
+
+        credMsg += `━━━━━━━━━━━━━━━━━━\n`;
+        credMsg += `⚠️ _Harap simpan data ini dengan baik._\n`;
+        credMsg += penutupGaransi(orderId, claimRes?.warrantyUntil);
+        credMsg += `\n━━━━━━━━━━━━━━━━━━`;
+        if (poinBelanja > 0) credMsg += `\n🪙 *Bonus Poin:* +${poinBelanja} Akbar Poin`;
+
+        await sock.sendMessage(res.customerNomor, { text: credMsg });
+
+        const localAllOk = localKeys.every(k => deliveredData[k].credentials && deliveredData[k].credentials.length > 0);
+
+        if (localAllOk) {
+          await db.updateOrderStatus(orderId, 'COMPLETED');
+          await sock.sendMessage(res.customerNomor, { text: `✅ Pesanan *${orderId}* telah *SELESAI*. Terima kasih telah berbelanja! 🙏` });
+
+          const testimoniDoneMsg = `✅ *TRANSAKSI BERHASIL / DONE* 🎉
+━━━━━━━━━━━━━━━━━━
+🧾 *Order ID:* ${orderId}
+👤 *Pelanggan:* ${det.customer_nama || 'Pelanggan'}
+💰 *Total:* Rp${Number(det.total || 0).toLocaleString('id-ID')}
+📦 *Item:*
+${itemSummary}
+
+🚀 *Status:* LUNAS & Kredensial Terkirim Otomatis!
+━━━━━━━━━━━━━━━━━━
+✨ _Terima kasih atas kepercayaannya berbelanja di toko kami!_ 🙏`;
+
+          const maskedPhone = samarkanNomor(det.customer_nomor);
+          await kirimTestimoniGrup(jid, testimoniDoneMsg, {
+            orderId,
+            customerName: det.customer_nama || 'Pelanggan',
+            customerNumber: maskedPhone,
+            totalAmount: det.total || 0,
+            items: det.items,
+            paymentStatus: 'LUNAS (AUTO)',
+            paymentMethod: 'Transfer / QRIS'
+          });
+
+          // Kirim kartu struk visual resmi ke DM pelanggan
+          try {
+            const custReceiptBuf = await createTransactionReceiptCard({
+              orderId,
+              customerName: det.customer_nama || 'Pelanggan',
+              customerNumber: maskedPhone,
+              totalAmount: det.total || 0,
+              items: det.items,
+              paymentStatus: 'LUNAS (AUTO)',
+              paymentMethod: 'Transfer / QRIS',
+              storeName: botSettings.botName || 'Akbar Store',
+              dateStr: tanggalWib(Date.now()),
+              timeStr: jamWib(Date.now())
+            });
+            if (custReceiptBuf) {
+              await sock.sendMessage(res.customerNomor, {
+                image: custReceiptBuf,
+                caption: `🧾 *BUKTI RESMI TRANSAKSI (${orderId})*\n\nSimpan kartu struk ini sebagai bukti pembayaran dan rujukan garansi Anda.`
+              });
+            }
+          } catch (_) {}
+
+          await reactSuccess();
+          await logToSystem('ORDER', `✅ Order *${orderId}* auto-completed via reply done (Local: ${localKeys.length}).`);
+        } else {
+          const partialMsg = `✅ *PEMBAYARAN DIVERIFIKASI / DONE* 🎉
+━━━━━━━━━━━━━━━━━━
+🧾 *Order ID:* ${orderId}
+👤 *Pelanggan:* ${det.customer_nama || 'Pelanggan'}
+💰 *Total:* Rp${Number(det.total || 0).toLocaleString('id-ID')}
+⚠️ *Status:* Lunas, namun stok habis untuk sebagian item. Admin akan mengirimkan sisa item secara manual.
+━━━━━━━━━━━━━━━━━━`;
+          await sock.sendMessage(jid, { text: partialMsg });
+          await reactSuccess();
+          await logToSystem('ORDER', `⚠️ Order *${orderId}*: Sebagian item stok habis saat klaim.`);
+        }
+      } else {
+        // Semua produk MANUAL
+        let notifCustomer = `🔔 *INFO PESANAN (Order: ${orderId})*\n\nPembayaran Anda telah *DITERIMA* dan diverifikasi oleh admin kami! Pesanan Anda sedang diproses dan produk akan segera dikirimkan manual via chat ini oleh admin. Terima kasih! 🙏`;
+        if (poinBelanja > 0) notifCustomer += `\n\n🪙 *Bonus Poin:* +${poinBelanja} Akbar Poin`;
+        await sock.sendMessage(res.customerNomor, { text: notifCustomer });
+
+        const manualDoneMsg = `✅ *PEMBAYARAN DIVERIFIKASI / DONE* 🎉
+━━━━━━━━━━━━━━━━━━
+🧾 *Order ID:* ${orderId}
+👤 *Pelanggan:* ${det.customer_nama || 'Pelanggan'}
+💰 *Total:* Rp${Number(det.total || 0).toLocaleString('id-ID')}
+📦 *Item:*
+${itemSummary}
+
+📝 *Tipe:* Produk Manual (Kirim ke DM pelanggan lalu ketik \`.done\` jika selesai)
+━━━━━━━━━━━━━━━━━━
+✨ _Terima kasih atas kepercayaannya berbelanja di toko kami!_ 🙏`;
+
+        const maskedPhone = samarkanNomor(det.customer_nomor);
+        await kirimTestimoniGrup(jid, manualDoneMsg, {
+          orderId,
+          customerName: det.customer_nama || 'Pelanggan',
+          customerNumber: maskedPhone,
+          totalAmount: det.total || 0,
+          items: det.items,
+          paymentStatus: 'DIVERIFIKASI (MANUAL)',
+          paymentMethod: 'Transfer / QRIS'
         });
-        return true;
+        await reactSuccess();
+        await logToSystem('PAYMENT', `💸 Order ID *${orderId}* dikonfirmasi PAID oleh admin via reply done (wa.me/${senderNumber.split('@')[0]})`);
       }
 
-      const res = await db.updateOrderStatus(orderId, 'COMPLETED');
-      if (!res.success) {
-        await sock.sendMessage(jid, { text: `❌ Gagal: ${res.message}` });
-        return true;
-      }
-
-      await sock.sendMessage(jid, { text: `✅ Order ID *${orderId}* ditandai *COMPLETED*. Pelanggan telah dinotifikasi.` });
-
-      const notifCustomer = `🔔 *INFO PESANAN (Order: ${orderId})*
-      
-Pesanan Anda telah *SELESAI* diproses / dikirimkan oleh admin!
-Silakan cek akun/detail pesanan Anda. Jika ada kendala, hubungi admin. Terima kasih telah berbelanja! 🙏`;
-      await sock.sendMessage(res.customerNomor, { text: notifCustomer });
-      await logToSystem('ORDER', `✅ Order ID *${orderId}* ditandai COMPLETED oleh admin.`);
       return true;
     }
 
