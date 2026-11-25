@@ -92,7 +92,7 @@ export function createMediaRouter(ctx) {
   // sengaja dibiarkan bebas supaya obrolan grup tidak ikut tersendat.
   const PERINTAH_MEDIA_BERAT = [
     // pengunduh
-    'tt', 'tiktok', 'ttmp3', 'ttaudio', 'ig', 'instagram',
+    'tt', 'tiktok', 'ttmp3', 'ttaudio', 'ig', 'instagram', 'igmp3', 'igaudio',
     'yt', 'youtube', 'ytmp3', 'ytmp4', 'fb', 'facebook',
     'pin', 'pinterest', 'tw', 'twitter', 'x', 'play', 'song',
     // pekerjaan berat lain
@@ -237,10 +237,10 @@ export function createMediaRouter(ctx) {
       'addsound', 'simpansound', 'savesound', 'listsound', 'soundlist', 'delsound', 'hapussound',
       'getpp', 'colongpp', 'curipp', 'pp', 'ambilpp', 'stikerpp', 'stickerpp', 'spp',
       'qc', 'quote', 'brat', 'meme', 'smeme', 'draw', 'aiimg',
-      'ssweb', 'ss', 'khodam', 'tts', 'shortlink', 'short', 'cuaca', 'invoice', 'struk',
+      'ssweb', 'ss', 'khodam', 'tts', 'shortlink', 'short', 'cuaca', 'qr', 'qrcode', 'qrstiker', 'qrstick', 'calc', 'hitung', 'kalkulator', 'invoice', 'struk',
       'tebakgambar', 'susunkata', 'roulette',
       'ping', 'statusbot', 'speed', 'owner', 'kontakowner',
-      'tt', 'tiktok', 'ttmp3', 'ttaudio', 'ig', 'instagram', 'yt', 'youtube', 'ytmp3', 'ytmp4',
+      'tt', 'tiktok', 'ttmp3', 'ttaudio', 'ig', 'instagram', 'igmp3', 'igaudio', 'yt', 'youtube', 'ytmp3', 'ytmp4',
       'fb', 'facebook', 'pin', 'pinterest', 'tw', 'twitter', 'x', 'play', 'song', 'canvas', 'lirik', 'lyrics', 'tomp3', 'tovn',
       'tr', 'translate', 'jadwalsholat', 'sholat', 'menfess', 'confess', 'balasmenfess', 'menfessreply', 'replymenfess', 'stopmenfess', 'closemenfess', 'endmenfess'
     ];
@@ -273,93 +273,36 @@ export function createMediaRouter(ctx) {
     };
 
     /**
-     * Helper universal pengirim media (Mendukung Foto Tunggal, Slide Foto/Carousel, dan Video)
+     * Helper universal pengirim media (Foto Tunggal, Slide Foto + Audio Terpisah, Video)
      */
-    const sendDownloadedMedia = async (res, defaultTitle = 'Media') => {
+    const sendDownloadedMedia = async (res, defaultTitle = 'Media', { kirimAudioTerpisah = true } = {}) => {
       if (!res || !res.success) {
         await react('❌');
         await sock.sendMessage(jid, { text: `❌ ${res?.message || 'Gagal mengunduh media dari link tersebut.'}` }, { quoted: m });
         return false;
       }
 
-      let mediaList = [];
-      if (Array.isArray(res.media) && res.media.length > 0) {
-        mediaList = res.media;
-      } else if (res.buffer || res.videoUrl || res.imageUrl || res.audioUrl) {
-        const isAudio = Boolean(res.audioUrl);
-        const isVideo = Boolean(res.videoUrl) || res.type === 'video';
-        mediaList = [{
-          type: isAudio ? 'audio' : (isVideo ? 'video' : 'image'),
-          buffer: res.buffer,
-          url: res.videoUrl || res.imageUrl || res.audioUrl
-        }];
-      }
+      const kirim = await mediaHandler.kirimHasilUnduhanWA({
+        sock,
+        jid,
+        m,
+        res,
+        defaultTitle,
+        kirimAudioTerpisah
+      });
 
-      if (mediaList.length === 0) {
+      if (!kirim.ok) {
         await react('❌');
-        await sock.sendMessage(jid, { text: `❌ Media tidak ditemukan pada postingan ini.` }, { quoted: m });
+        const pesanGagal = kirim.gagal.length > 0
+          ? mediaHandler.pesanGagalMedia(kirim.gagal[0], defaultTitle)
+          : `❌ ${kirim.pesanError || 'Media tidak ditemukan pada postingan ini.'}`;
+        await sock.sendMessage(jid, { text: pesanGagal }, { quoted: m });
         return false;
       }
 
-      // Batasi maksimal 10 file per permintaan agar tidak membanjiri antrean WA
-      const itemsToSend = mediaList.slice(0, 10);
-      const totalItems = itemsToSend.length;
-
-      let terkirim = 0;
-      const gagal = [];
-
-      for (let i = 0; i < totalItems; i++) {
-        const item = itemsToSend[i];
-        const isFirst = terkirim === 0;
-        const countInfo = totalItems > 1 ? ` 📸 [${i + 1}/${totalItems}]` : '';
-        
-        let caption = undefined;
-        if (isFirst) {
-          const title = res.title ? `📌 *${res.title}*\n` : '';
-          const author = res.author ? `👤 *Creator:* ${res.author}\n` : '';
-          caption = `${title}${author}✅ *Berhasil diunduh via Akbar Store Bot*${countInfo}`;
-        } else if (totalItems > 1) {
-          caption = `📸 *${defaultTitle}*${countInfo}`;
-        }
-
-        // Semua media disaring lewat gerbang siapkanMediaWA: isi berkas yang
-        // menentukan cara kirim, bukan tebakan dari ekstensi URL, dan halaman
-        // galat CDN tidak pernah lolos jadi "video" yang tidak bisa dibuka.
-        const siap = await mediaHandler.siapkanMediaWA(item);
-        if (!siap || !siap.ok) {
-          gagal.push(siap);
-          continue;
-        }
-
-        const kutip = terkirim === 0 ? { quoted: m } : {};
-        if (siap.kategori === 'image') {
-          await sock.sendMessage(jid, { image: siap.buffer, mimetype: siap.mimetype, caption }, kutip);
-        } else if (siap.kategori === 'audio') {
-          await sock.sendMessage(jid, { audio: siap.buffer, mimetype: siap.mimetype, fileName: `${defaultTitle}.${siap.ext}` }, kutip);
-        } else {
-          await sock.sendMessage(jid, {
-            video: siap.buffer,
-            mimetype: 'video/mp4',
-            gifPlayback: siap.gifPlayback || undefined,
-            caption
-          }, kutip);
-        }
-        terkirim++;
-      }
-
-      // Dulu bot selalu bereaksi ✅ walau tidak satu pun berkas benar-benar
-      // terkirim — pengguna mengira berhasil lalu menerima berkas rusak.
-      if (terkirim === 0) {
-        await react('❌');
+      if (kirim.gagal.length > 0) {
         await sock.sendMessage(jid, {
-          text: mediaHandler.pesanGagalMedia(gagal[0], defaultTitle)
-        }, { quoted: m });
-        return false;
-      }
-
-      if (gagal.length > 0) {
-        await sock.sendMessage(jid, {
-          text: `⚠️ ${gagal.length} dari ${totalItems} berkas dilewati karena tidak valid / gagal disiapkan.`
+          text: `⚠️ ${kirim.gagal.length} dari ${kirim.totalDipilih} berkas dilewati karena tidak valid / gagal disiapkan.`
         });
       }
 
@@ -416,52 +359,89 @@ export function createMediaRouter(ctx) {
       return true;
     }
     
+    const ekstrakLinkUnduh = () => {
+      const cariLink = (teks) => String(teks || '').match(/https?:\/\/[^\s]+/i)?.[0]?.replace(/[)\]}>.,!]+$/, '') || '';
+      const langsung = cariLink(msgText);
+      if (langsung) return langsung;
+      const { quotedMessage } = ambilKonteksQuoted(m);
+      const qUnboxed = quotedMessage ? unboxPesanMedia(quotedMessage) : null;
+      return cariLink(qUnboxed?.conversation || qUnboxed?.extendedTextMessage?.text || qUnboxed?.imageMessage?.caption || qUnboxed?.videoMessage?.caption || '');
+    };
+
+    const kirimAudioUnduhan = async (res, namaDefault, labelKonteks) => {
+      const siap = res?.success ? await mediaHandler.siapkanMediaWA({ buffer: res.buffer, url: res.audioUrl, type: 'audio' }) : null;
+      if (siap?.ok) {
+        const namaBersih = String(res.title || namaDefault)
+          .replace(/[^a-zA-Z0-9 _.-]/g, '')
+          .trim()
+          .slice(0, 48) || namaDefault;
+        await sock.sendMessage(jid, {
+          audio: siap.buffer,
+          mimetype: siap.mimetype,
+          fileName: `${namaBersih}.${siap.ext}`
+        }, { quoted: m });
+        await react('✅');
+      } else {
+        await react('❌');
+        await sock.sendMessage(jid, {
+          text: res?.success ? mediaHandler.pesanGagalMedia(siap, labelKonteks) : `❌ ${res?.message || `Gagal mengambil ${labelKonteks}.`}`
+        }, { quoted: m });
+      }
+    };
+
     // 1. TikTok Downloader (.tt, .tiktok, .ttmp3, .ttaudio)
     if (['tt', 'tiktok', 'ttmp3', 'ttaudio'].includes(cleanCmd)) {
-      const isAudio = ['ttmp3', 'ttaudio'].includes(cleanCmd);
-      let rawUrl = args[1] || (msgText.match(/https?:\/\/[^\s]+/i)?.[0]);
-      if (rawUrl) rawUrl = rawUrl.replace(/[)\]}>.,!]+$/, '');
+      const modeArg = (args[1] || '').toLowerCase();
+      const hanyaFoto = ['foto', 'photo', 'gambar', 'noaudio'].includes(modeArg);
+      const isAudio = ['ttmp3', 'ttaudio'].includes(cleanCmd) || ['audio', 'mp3', 'sound'].includes(modeArg);
+      const rawUrl = ekstrakLinkUnduh();
       const url = await mediaHandler.expandCanonicalUrl(rawUrl);
       if (!url || (!url.includes('tiktok.com') && !url.includes('douyin.com'))) {
-        await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Harap sertakan link TikTok yang valid.\n\n_Contoh:_ `.tt https://vt.tiktok.com/xxxx`" });
+        await sock.sendMessage(jid, {
+          text:
+            '⚠️ *Format Salah:* Harap sertakan (atau reply) link TikTok yang valid.\n\n' +
+            '• `.tt <link>` — unduh video atau slide foto + audio terpisah\n' +
+            '• `.tt foto <link>` — unduh slide foto saja\n' +
+            '• `.ttmp3 <link>` — unduh audionya saja'
+        }, { quoted: m });
         return true;
       }
       await react('⏳');
       if (isAudio) {
         const res = await mediaHandler.downloadTikTokAudio(url);
-        // Mimetype mengikuti ISI berkas, bukan tebakan: menandai data MP3 sebagai
-        // `audio/mp4` membuat WhatsApp (terutama iOS) menolak memutarnya.
-        const siap = res.success ? await mediaHandler.siapkanMediaWA({ buffer: res.buffer, url: res.audioUrl, type: 'audio' }) : null;
-        if (siap?.ok) {
-          await sock.sendMessage(jid, {
-            audio: siap.buffer,
-            mimetype: siap.mimetype,
-            fileName: `TikTok_Audio.${siap.ext}`
-          });
-          await react('✅');
-        } else {
-          await react('❌');
-          await sock.sendMessage(jid, { text: res.success ? mediaHandler.pesanGagalMedia(siap, 'Audio TikTok') : `❌ ${res.message || 'Gagal mengambil audio TikTok.'}` });
-        }
+        await kirimAudioUnduhan(res, 'TikTok_Audio', 'Audio TikTok');
       } else {
         const res = await mediaHandler.downloadTikTok(url);
-        await sendDownloadedMedia(res, 'TikTok Media');
+        await sendDownloadedMedia(res, 'TikTok Media', { kirimAudioTerpisah: !hanyaFoto });
       }
       return true;
     }
 
-    // 2. Instagram Downloader (.ig, .instagram) — Mendukung Foto Tunggal, Slide/Carousel & Video Reels
-    if (['ig', 'instagram'].includes(cleanCmd)) {
-      let rawUrl = args[1] || (msgText.match(/https?:\/\/[^\s]+/i)?.[0]);
-      if (rawUrl) rawUrl = rawUrl.replace(/[)\]}>.,!]+$/, '');
+    // 2. Instagram Downloader (.ig, .instagram, .igmp3, .igaudio) — Foto Tunggal, Slide/Carousel + Audio Terpisah & Reels
+    if (['ig', 'instagram', 'igmp3', 'igaudio'].includes(cleanCmd)) {
+      const modeArg = (args[1] || '').toLowerCase();
+      const hanyaFoto = ['foto', 'photo', 'gambar', 'noaudio'].includes(modeArg);
+      const isAudio = ['igmp3', 'igaudio'].includes(cleanCmd) || ['audio', 'mp3', 'sound'].includes(modeArg);
+      const rawUrl = ekstrakLinkUnduh();
       const url = await mediaHandler.expandCanonicalUrl(rawUrl);
       if (!url || !url.includes('instagram.com')) {
-        await sock.sendMessage(jid, { text: "⚠️ *Format Salah:* Harap sertakan link Instagram Reels/Post/Foto yang valid.\n\n_Contoh:_ `.ig https://www.instagram.com/p/xxxx`" });
+        await sock.sendMessage(jid, {
+          text:
+            '⚠️ *Format Salah:* Harap sertakan (atau reply) link Instagram yang valid.\n\n' +
+            '• `.ig <link>` — unduh Reels atau slide foto + audio terpisah\n' +
+            '• `.ig foto <link>` — unduh slide foto saja\n' +
+            '• `.igmp3 <link>` — ambil audio/musik Reels atau slide IG'
+        }, { quoted: m });
         return true;
       }
       await react('⏳');
-      const res = await mediaHandler.downloadInstagram(url);
-      await sendDownloadedMedia(res, 'Instagram Media');
+      if (isAudio) {
+        const res = await mediaHandler.downloadInstagramAudio(url);
+        await kirimAudioUnduhan(res, 'Instagram_Audio', 'Audio Instagram');
+      } else {
+        const res = await mediaHandler.downloadInstagram(url);
+        await sendDownloadedMedia(res, 'Instagram Media', { kirimAudioTerpisah: !hanyaFoto });
+      }
       return true;
     }
 
@@ -1236,6 +1216,109 @@ _${khodamRes.desc}_`;
         console.error("[WEATHER_ERR]", err.message);
         await sock.sendMessage(jid, { text: `❌ Gagal mengambil informasi cuaca.` });
       }
+      return true;
+    }
+
+    // 15b. QR Code Generator (.qr, .qrcode, .qrstiker)
+    if (['qr', 'qrcode', 'qrstiker', 'qrstick'].includes(cleanCmd)) {
+      const { quotedMessage } = ambilKonteksQuoted(m);
+      const qUnboxed = quotedMessage ? unboxPesanMedia(quotedMessage) : null;
+      const teksReply = (
+        qUnboxed?.conversation ||
+        qUnboxed?.extendedTextMessage?.text ||
+        qUnboxed?.imageMessage?.caption ||
+        qUnboxed?.videoMessage?.caption ||
+        ''
+      ).trim();
+
+      let jadiStiker = ['qrstiker', 'qrstick'].includes(cleanCmd);
+      let argBagian = args.slice(1);
+      if (!jadiStiker && argBagian[0]?.toLowerCase() === 'stiker' && (argBagian.length > 1 || teksReply)) {
+        jadiStiker = true;
+        argBagian = argBagian.slice(1);
+      }
+      const isiQr = (argBagian.join(' ').trim() || teksReply).trim();
+
+      if (!isiQr) {
+        await sock.sendMessage(jid, {
+          text:
+            '📱 *QR CODE GENERATOR*\n\n' +
+            '*Cara Pakai:*\n' +
+            '• `.qr <teks atau link>` → kirim gambar QR\n' +
+            '• `.qrstiker <teks atau link>` → kirim stiker QR\n' +
+            '• Balas pesan berisi teks/link lalu ketik `.qr`\n\n' +
+            '_Contoh:_ `.qr https://instagram.com/akbarstore`'
+        }, { quoted: m });
+        return true;
+      }
+
+      try {
+        await react('⏳');
+        const qrRes = await ent.buatKodeQr(isiQr);
+        if (!qrRes.success || !qrRes.buffer) {
+          await react('❌');
+          await sock.sendMessage(jid, { text: `❌ ${qrRes.message || 'Gagal membuat QR Code.'}` }, { quoted: m });
+          return true;
+        }
+        if (jadiStiker) {
+          const stikerBuf = await mediaHandler.createSticker(qrRes.buffer, {
+            pack: botSettings?.storeName || 'AKBAR BOT',
+            author: 'QR Code',
+            isAnimated: false
+          });
+          await sock.sendMessage(jid, { sticker: stikerBuf }, { quoted: m });
+        } else {
+          const preview = isiQr.length > 120 ? isiQr.slice(0, 120) + '…' : isiQr;
+          await sock.sendMessage(jid, {
+            image: qrRes.buffer,
+            caption: `📱 *QR Code Berhasil Dibuat*\n\nIsi: \`${preview}\``
+          }, { quoted: m });
+        }
+        await react('✅');
+      } catch (err) {
+        await react('❌');
+        console.error('[QR_CMD_ERR]', err.message);
+        await sock.sendMessage(jid, { text: '❌ Terjadi kesalahan saat membuat QR Code.' }, { quoted: m });
+      }
+      return true;
+    }
+
+    // 15c. Kalkulator Matematika (.calc, .hitung, .kalkulator)
+    if (['calc', 'hitung', 'kalkulator'].includes(cleanCmd)) {
+      const { quotedMessage } = ambilKonteksQuoted(m);
+      const qUnboxed = quotedMessage ? unboxPesanMedia(quotedMessage) : null;
+      const teksReply = (qUnboxed?.conversation || qUnboxed?.extendedTextMessage?.text || '').trim();
+      const ekspresi = (args.slice(1).join(' ').trim() || teksReply).trim();
+
+      if (!ekspresi) {
+        await sock.sendMessage(jid, {
+          text:
+            '🧮 *KALKULATOR CEPAT*\n\n' +
+            '*Cara Pakai:*\n' +
+            '• `.calc <ekspresi>` atau `.hitung <ekspresi>`\n\n' +
+            '*Contoh:*\n' +
+            '• `.calc 150000 * 12 / 100`\n' +
+            '• `.calc (25 + 15) * 3 - sqrt(144)`\n' +
+            '• `.calc 2^10`\n' +
+            '• `.calc sin(45 deg)`'
+        }, { quoted: m });
+        return true;
+      }
+
+      const calcRes = await ent.hitungEkspresiMatematika(ekspresi);
+      if (!calcRes.success) {
+        await react('❌');
+        await sock.sendMessage(jid, { text: `❌ ${calcRes.message}` }, { quoted: m });
+        return true;
+      }
+
+      const barisHasil = calcRes.formatIndo && calcRes.formatIndo !== calcRes.hasilTeks
+        ? `*${calcRes.hasilTeks}* (_${calcRes.formatIndo}_)`
+        : `*${calcRes.hasilTeks}*`;
+      await sock.sendMessage(jid, {
+        text: `🧮 *HASIL PERHITUNGAN*\n\n\`${calcRes.ekspresi}\`\n= ${barisHasil}`
+      }, { quoted: m });
+      await react('✅');
       return true;
     }
 

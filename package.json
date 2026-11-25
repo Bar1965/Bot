@@ -44,6 +44,7 @@
     "google-tts-api": "^2.0.2",
     "instagram-url-direct": "^2.0.7",
     "jsonwebtoken": "^9.0.3",
+    "mathjs": "^15.3.0",
     "multer": "^2.2.0",
     "nayan-media-downloader": "^0.0.1-security",
     "node-id3": "^0.2.9",

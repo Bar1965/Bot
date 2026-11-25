@@ -945,17 +945,229 @@ async function downloadWithYtdlp(url, isAudio = false) {
   return null;
 }
 
+/** Ekstrak judul & teks polos dari potongan HTML scraper. */
+function bersihkanTeksHtml(teks) {
+  return String(teks || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/** Bentuk payload standar hasil TikTok dari `ab.ttdl` / `ruhend.ttdl` / `btch.ttdl`. */
+function bentukHasilTikTokPaket(res, defaultTitle = 'TikTok Media', engine = 'online', isPhotoHint = false) {
+  if (!res) return null;
+  const title = bersihkanTeksHtml(res.title) || defaultTitle;
+  const audioUrl = Array.isArray(res.audio) && res.audio.length > 0 ? res.audio[0] : (typeof res.audio === 'string' ? res.audio : undefined);
+  const audioTitle = bersihkanTeksHtml(res.title_audio) || undefined;
+
+  if (Array.isArray(res.images) && res.images.length > 0) {
+    return {
+      success: true,
+      media: res.images.map(img => ({ type: 'image', url: img })),
+      audioUrl,
+      audioTitle,
+      title,
+      type: 'carousel',
+      engine
+    };
+  }
+  if (Array.isArray(res.video) && res.video.length > 0 && res.video[0]) {
+    const semuaFoto = isPhotoHint || res.video.every(u => /photomode|tplv-photomode|\.jpe?g\b|\.png\b|\.webp\b/i.test(String(u)));
+    if (semuaFoto) {
+      return {
+        success: true,
+        media: res.video.filter(Boolean).map(u => ({ type: 'image', url: u })),
+        audioUrl,
+        audioTitle,
+        title,
+        type: 'carousel',
+        engine
+      };
+    }
+    const streamUrl = res.video[0];
+    return {
+      success: true,
+      media: [{ type: 'video', url: streamUrl }],
+      videoUrl: streamUrl,
+      audioUrl,
+      audioTitle,
+      title,
+      type: 'video',
+      engine
+    };
+  }
+  return null;
+}
+
 /**
- * Download TikTok Video & Slide Foto tanpa watermark — Self-Healing Multi-Engine
+ * Download TikTok Video & Slide Foto tanpa watermark — Offline Utama + Online Backup
+ * Untuk slide foto (`/photo/` / carousel), menyertakan `audioUrl` agar foto & audio bisa dikirim terpisah.
  */
 export async function downloadTikTok(rawUrl) {
   const url = await expandCanonicalUrl(rawUrl);
   const cleanUrl = bersihkanUrlTiktok(url);
   const isPhoto = cleanUrl.includes('/photo/') || url.includes('/photo/');
 
-  const providers = [
+  const offlineYtdlpProvider = {
+    name: 'Offline TikTok yt-dlp',
+    fn: async () => {
+      if (isPhoto) return { success: false, message: 'yt-dlp dilewati untuk post foto/slide' };
+      const ytdlpResult = await downloadWithYtdlp(cleanUrl, false);
+      if (ytdlpResult?.terlaluBesar) return ytdlpResult;
+      if (ytdlpResult?.buffer || ytdlpResult?.videoUrl) {
+        return {
+          success: true,
+          media: [{ type: 'video', url: ytdlpResult.videoUrl, buffer: ytdlpResult.buffer }],
+          buffer: ytdlpResult.buffer,
+          videoUrl: ytdlpResult.videoUrl,
+          title: ytdlpResult.title || 'TikTok Video',
+          type: 'video',
+          engine: 'offline:yt-dlp'
+        };
+      }
+      return {
+        success: false,
+        privateOrRestricted: ytdlpResult?.privateOrRestricted,
+        unavailable: ytdlpResult?.unavailable,
+        message: ytdlpResult?.message || 'Offline yt-dlp gagal mengunduh TikTok'
+      };
+    }
+  };
+
+  const tikwmProvider = {
+    name: 'Online TikWM API',
+    fn: async () => {
+      const res = await axios.get(`https://www.tikwm.com/api/?url=${encodeURIComponent(cleanUrl)}&hd=1`, {
+        headers: { 'User-Agent': getRandomUserAgent() },
+        timeout: 12000
+      });
+      const d = res.data?.data;
+      if (res.data?.code === 0 && d) {
+        const title = d.title || 'TikTok Media';
+        const author = d.author?.nickname || d.author?.unique_id || 'TikTok Creator';
+        const audioUrl = d.music || d.music_info?.play || undefined;
+        const audioTitle = d.music_info?.title
+          ? (d.music_info?.author ? `${d.music_info.title} - ${d.music_info.author}` : d.music_info.title)
+          : undefined;
+
+        if (Array.isArray(d.images) && d.images.length > 0) {
+          return {
+            success: true,
+            media: d.images.map(img => ({ type: 'image', url: img })),
+            audioUrl,
+            audioTitle,
+            title,
+            author,
+            type: 'carousel',
+            engine: 'online:tikwm'
+          };
+        }
+        const streamUrl = d.hdplay || d.play || d.wmplay;
+        if (streamUrl) {
+          return {
+            success: true,
+            media: [{ type: 'video', url: streamUrl }],
+            videoUrl: streamUrl,
+            audioUrl,
+            audioTitle,
+            title,
+            author,
+            type: 'video',
+            engine: 'online:tikwm'
+          };
+        }
+      }
+      return { success: false, message: res.data?.msg || 'TikWM tidak menemukan media' };
+    }
+  };
+
+  const ssstikProvider = {
+    name: 'Online SSSTik Scraper',
+    fn: async () => {
+      const res = await axios.post('https://ssstik.io/abc?url=dl', `id=${encodeURIComponent(cleanUrl)}&locale=en&tt=1`, {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'User-Agent': getRandomUserAgent(),
+          'Origin': 'https://ssstik.io',
+          'Referer': 'https://ssstik.io/en'
+        },
+        timeout: 10000
+      });
+      if (res.data && typeof res.data === 'string') {
+        const html = res.data;
+        const titleMatch = html.match(/<p class="maintext"[^>]*>([\s\S]*?)<\/p>/i);
+        const authorMatch = html.match(/<h2>([\s\S]*?)<\/h2>/i);
+        const title = bersihkanTeksHtml(titleMatch?.[1]) || 'TikTok Media';
+        const author = bersihkanTeksHtml(authorMatch?.[1]) || 'TikTok Creator';
+        const audioMatch = html.match(/href="([^"]*(?:tikcdn\.io\/ssstik\/m\/|download_url)[^"]*)"/i) ||
+                           html.match(/class="[^"]*music[^"]*"[^>]*href="([^"]+)"/i) ||
+                           html.match(/href="([^"]+)"[^>]*class="[^"]*music[^"]*"/i);
+        const audioUrl = audioMatch?.[1];
+
+        const slideLinks = [];
+        for (const match of html.matchAll(/<a\b[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)) {
+          const href = match[1];
+          const label = bersihkanTeksHtml(match[2]).toLowerCase();
+          if (/^(?:download this slide|slide\s*\d+|download slide|slide)$/i.test(label)) {
+            slideLinks.push(href);
+          }
+        }
+        if (slideLinks.length > 0) {
+          const mediaList = slideLinks.map(u => ({ type: 'image', url: u }));
+          return {
+            success: true,
+            media: mediaList,
+            audioUrl,
+            title,
+            author,
+            type: 'carousel',
+            engine: 'online:ssstik'
+          };
+        }
+
+        const videoMatch = html.match(/<a[^>]+href="([^"]*tikcdn\.io\/ssstik\/[^"]*)"[^>]*>\s*(?:Without watermark|Download)/i) ||
+                           html.match(/href="([^"]*tikcdn\.io\/ssstik\/\d+[^"]*)"/i) ||
+                           html.match(/href="([^"]*tikcdn\.io\/ssstik\/[^"m\/][^"]*)"/i) ||
+                           html.match(/href="([^"]*dl\.tiktokio\.com\/[^"]*)"/i) ||
+                           html.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/i);
+        if (videoMatch) {
+          const streamUrl = videoMatch[1];
+          if (isPhoto) {
+            return {
+              success: true,
+              media: [{ type: 'image', url: streamUrl }],
+              audioUrl,
+              title,
+              author,
+              type: 'carousel',
+              engine: 'online:ssstik'
+            };
+          }
+          return {
+            success: true,
+            media: [{ type: 'video', url: streamUrl }],
+            videoUrl: streamUrl,
+            audioUrl,
+            title,
+            author,
+            type: 'video',
+            engine: 'online:ssstik'
+          };
+        }
+      }
+      return { success: false, message: 'SSSTik gagal parse media dari tautan ini' };
+    }
+  };
+
+  const onlineBackups = [
+    ssstikProvider,
     {
-      name: 'Tikmate API',
+      name: 'Online Ab TikTokio',
+      fn: async () => {
+        const res = await ab.ttdl(cleanUrl);
+        return bentukHasilTikTokPaket(res, 'TikTok Media', 'online:ab', isPhoto) || { success: false, message: res?.message || 'Ab TikTokio media kosong' };
+      }
+    },
+    tikwmProvider,
+    {
+      name: 'Online Tikmate API',
       fn: async () => {
         if (isPhoto) return { success: false, message: 'Tikmate dilewati untuk post foto/slide' };
         const res = await axios.post('https://api.tikmate.app/api/lookup', new URLSearchParams({ url: cleanUrl }).toString(), {
@@ -973,174 +1185,38 @@ export async function downloadTikTok(rawUrl) {
             videoUrl: streamUrl,
             title: res.data.desc || 'TikTok Video',
             author: res.data.author_name || res.data.author_id || 'TikTok Creator',
-            type: 'video'
+            type: 'video',
+            engine: 'online:tikmate'
           };
         }
         return { success: false, message: 'Tikmate data tidak lengkap' };
       }
     },
     {
-      name: 'Ab TikTokio Engine',
+      name: 'Online Ruhend TTDL',
       fn: async () => {
-        const res = await ab.ttdl(cleanUrl);
-        if (res && (res.video?.length > 0 || res.images?.length > 0)) {
-          const title = res.title || 'TikTok Video';
-          if (Array.isArray(res.images) && res.images.length > 0) {
-            return {
-              success: true,
-              media: res.images.map(img => ({ type: 'image', url: img })),
-              title,
-              type: 'carousel'
-            };
-          }
-          if (Array.isArray(res.video) && res.video.length > 0) {
-            const streamUrl = res.video[0];
-            return {
-              success: true,
-              media: [{ type: 'video', url: streamUrl }],
-              videoUrl: streamUrl,
-              title,
-              type: 'video'
-            };
-          }
-        }
-        return { success: false, message: res?.message || 'Ab TikTokio media kosong' };
-      }
-    },
-    {
-      name: 'SSSTik Scraper',
-      fn: async () => {
-        const res = await axios.post('https://ssstik.io/abc?url=dl', `id=${encodeURIComponent(cleanUrl)}&locale=en&tt=1`, {
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-            'User-Agent': getRandomUserAgent(),
-            'Origin': 'https://ssstik.io',
-            'Referer': 'https://ssstik.io/en'
-          },
-          timeout: 10000
-        });
-        if (res.data && typeof res.data === 'string') {
-          const html = res.data;
-          const titleMatch = html.match(/<p class="maintext"[^>]*>([\s\S]*?)<\/p>/i);
-          const authorMatch = html.match(/<h2>(.*?)<\/h2>/i);
-          const title = titleMatch ? titleMatch[1].trim() : 'TikTok Media';
-          const author = authorMatch ? authorMatch[1].trim() : 'TikTok Creator';
-
-          const slideMatches = [...html.matchAll(/<a[^>]+href="([^"]+)"[^>]*>\s*(?:Download this slide|Slide \d+|Download slide|slide)\s*<\/a>/gi)];
-          if (slideMatches.length > 0) {
-            const mediaList = slideMatches.map(m => ({ type: 'image', url: m[1] }));
-            return {
-              success: true,
-              media: mediaList,
-              title,
-              author,
-              type: 'carousel'
-            };
-          }
-
-          const videoMatch = html.match(/<a[^>]+href="([^"]*tikcdn\.io\/ssstik\/[^"]*)"[^>]*>\s*(?:Without watermark|Download)/i) ||
-                             html.match(/href="([^"]*tikcdn\.io\/ssstik\/\d+[^"]*)"/i) ||
-                             html.match(/href="([^"]*tikcdn\.io\/ssstik\/[^"m\/][^"]*)"/i) ||
-                             html.match(/href="([^"]*dl\.tiktokio\.com\/[^"]*)"/i) ||
-                             html.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/i);
-          if (videoMatch) {
-            const streamUrl = videoMatch[1];
-            return {
-              success: true,
-              media: [{ type: 'video', url: streamUrl }],
-              videoUrl: streamUrl,
-              title,
-              author,
-              type: 'video'
-            };
-          }
-        }
-        return { success: false, message: 'SSSTik gagal parse media dari tautan ini' };
-      }
-    },
-    {
-      name: 'Ruhend TTDL',
-      fn: async () => {
-        if (isPhoto) return { success: false, message: 'Ruhend dilewati untuk post foto/slide' };
         const res = await ruhend.ttdl(cleanUrl);
-        if (res && (Array.isArray(res.video) && res.video.length > 0 || Array.isArray(res.images) && res.images.length > 0)) {
-          const title = res.title || 'TikTok Media';
-          if (Array.isArray(res.images) && res.images.length > 0) {
-            return {
-              success: true,
-              media: res.images.map(img => ({ type: 'image', url: img })),
-              title,
-              type: 'carousel'
-            };
-          }
-          if (Array.isArray(res.video) && res.video.length > 0) {
-            const streamUrl = res.video[0];
-            return {
-              success: true,
-              media: [{ type: 'video', url: streamUrl }],
-              videoUrl: streamUrl,
-              title,
-              type: 'video'
-            };
-          }
-        }
-        return { success: false, message: 'Ruhend video tidak ditemukan' };
+        return bentukHasilTikTokPaket(res, 'TikTok Media', 'online:ruhend', isPhoto) || { success: false, message: 'Ruhend media tidak ditemukan' };
       }
     },
     {
-      name: 'Btch TTDL',
+      name: 'Online Btch TTDL',
       fn: async () => {
         if (isPhoto) return { success: false, message: 'Btch dilewati untuk post foto/slide' };
         const res = await btch.ttdl(cleanUrl);
-        if (res?.status && Array.isArray(res.video) && res.video.length > 0) {
-          const streamUrl = res.video[0];
-          if (streamUrl) {
-            return {
-              success: true,
-              media: [{ type: 'video', url: streamUrl }],
-              videoUrl: streamUrl,
-              title: res.title || 'TikTok Video',
-              type: 'video'
-            };
-          }
+        if (res?.status) {
+          return bentukHasilTikTokPaket(res, 'TikTok Video', 'online:btch', false) || { success: false, message: 'Btch video tidak ditemukan' };
         }
         return { success: false, message: 'Btch video tidak ditemukan' };
-      }
-    },
-    {
-      name: 'Local yt-dlp',
-      fn: async () => {
-        if (isPhoto) return { success: false, message: 'yt-dlp dilewati untuk post foto/slide' };
-        const ytdlpResult = await downloadWithYtdlp(cleanUrl);
-        if (ytdlpResult?.buffer || ytdlpResult?.videoUrl) {
-          return {
-            success: true,
-            media: [{ type: 'video', url: ytdlpResult.videoUrl, buffer: ytdlpResult.buffer }],
-            buffer: ytdlpResult.buffer,
-            videoUrl: ytdlpResult.videoUrl,
-            title: ytdlpResult.title || 'TikTok Video',
-            type: 'video'
-          };
-        }
-        return {
-          success: false,
-          privateOrRestricted: ytdlpResult?.privateOrRestricted,
-          unavailable: ytdlpResult?.unavailable,
-          message: ytdlpResult?.message || 'Local yt-dlp gagal mengunduh'
-        };
       }
     }
   ];
 
-  if (isPhoto) {
-    const ssstikIdx = providers.findIndex(p => p.name === 'SSSTik Scraper');
-    if (ssstikIdx > 0) {
-      const [ssstik] = providers.splice(ssstikIdx, 1);
-      providers.unshift(ssstik);
-    }
-  }
+  // Offline (yt-dlp) jadi prioritas untuk video; khusus slide foto (`/photo/`)
+  // yt-dlp belum mendukung galeri foto, jadi langsung pakai engine slide online.
+  const providers = isPhoto ? onlineBackups : [offlineYtdlpProvider, ...onlineBackups];
 
-  const result = await executeWithSelfHealing(providers, (p) => p.fn(), 15000);
+  const result = await executeWithSelfHealing(providers, (p) => p.fn(), 30000);
   if (!result || !result.success) {
     if (url.includes('story_type=1') || url.includes('aweme_type=40') || url.includes('story_uid')) {
       return {
@@ -1148,12 +1224,27 @@ export async function downloadTikTok(rawUrl) {
         message: '⚠️ Konten ini merupakan Cerita (TikTok Story) yang telah kedaluwarsa atau bersifat privat, sehingga tidak dapat diunduh.'
       };
     }
+    return result;
   }
+
+  // Pastikan slide foto selalu berusaha mengambil audio latar secara terpisah
+  const isSlideFoto = result.type === 'carousel' || (Array.isArray(result.media) && result.media.some(m => m.type === 'image'));
+  if (isSlideFoto && !result.audioUrl && !result.audioBuffer) {
+    try {
+      const audioRes = await downloadTikTokAudio(cleanUrl);
+      if (audioRes?.success && (audioRes.audioUrl || audioRes.buffer)) {
+        result.audioUrl = audioRes.audioUrl;
+        result.audioBuffer = audioRes.buffer;
+        result.audioTitle = result.audioTitle || audioRes.title;
+      }
+    } catch (_) {}
+  }
+
   return result;
 }
 
 /**
- * Ambil audio / sound TikTok (.ttmp3) — Self-Healing Multi-Engine
+ * Ambil audio / sound TikTok (.ttmp3) — Offline Utama + Online Backup
  */
 export async function downloadTikTokAudio(rawUrl) {
   const url = await expandCanonicalUrl(rawUrl);
@@ -1161,7 +1252,52 @@ export async function downloadTikTokAudio(rawUrl) {
 
   const providers = [
     {
-      name: 'SSSTik Audio',
+      name: 'Offline TikTok yt-dlp Audio',
+      fn: async () => {
+        const ytdlpResult = await downloadWithYtdlp(cleanUrl, true);
+        if (ytdlpResult?.terlaluBesar) return ytdlpResult;
+        if (ytdlpResult?.buffer) {
+          return {
+            success: true,
+            buffer: ytdlpResult.buffer,
+            title: ytdlpResult.title || 'TikTok Audio',
+            mimetype: ytdlpResult.mimetype || 'audio/mpeg',
+            ext: ytdlpResult.ext || 'mp3',
+            engine: 'offline:yt-dlp'
+          };
+        }
+        return {
+          success: false,
+          privateOrRestricted: ytdlpResult?.privateOrRestricted,
+          unavailable: ytdlpResult?.unavailable,
+          message: ytdlpResult?.message || 'Offline yt-dlp audio gagal'
+        };
+      }
+    },
+    {
+      name: 'Online TikWM Audio',
+      fn: async () => {
+        const res = await axios.get(`https://www.tikwm.com/api/?url=${encodeURIComponent(cleanUrl)}`, {
+          headers: { 'User-Agent': getRandomUserAgent() },
+          timeout: 12000
+        });
+        const d = res.data?.data;
+        const audioUrl = d?.music || d?.music_info?.play;
+        if (res.data?.code === 0 && audioUrl) {
+          return {
+            success: true,
+            audioUrl,
+            title: d.music_info?.title || d.title || 'TikTok Audio',
+            mimetype: 'audio/mpeg',
+            ext: 'mp3',
+            engine: 'online:tikwm'
+          };
+        }
+        return { success: false, message: 'TikWM audio tidak ditemukan' };
+      }
+    },
+    {
+      name: 'Online SSSTik Audio',
       fn: async () => {
         const res = await axios.post('https://ssstik.io/abc?url=dl', `id=${encodeURIComponent(cleanUrl)}&locale=en&tt=1`, {
           headers: {
@@ -1179,13 +1315,14 @@ export async function downloadTikTokAudio(rawUrl) {
                              html.match(/href="([^"]+)"[^>]*class="[^"]*music[^"]*"/i);
           if (audioMatch) {
             const titleMatch = html.match(/<p class="maintext"[^>]*>([\s\S]*?)<\/p>/i);
-            const title = titleMatch ? titleMatch[1].trim() : 'TikTok Audio';
+            const title = bersihkanTeksHtml(titleMatch?.[1]) || 'TikTok Audio';
             return {
               success: true,
               audioUrl: audioMatch[1],
               title,
               mimetype: 'audio/mpeg',
-              ext: 'mp3'
+              ext: 'mp3',
+              engine: 'online:ssstik'
             };
           }
         }
@@ -1193,80 +1330,59 @@ export async function downloadTikTokAudio(rawUrl) {
       }
     },
     {
-      name: 'Ab TikTokio Audio',
+      name: 'Online Ab TikTokio Audio',
       fn: async () => {
         const res = await ab.ttdl(cleanUrl);
         if (res && Array.isArray(res.audio) && res.audio.length > 0) {
-          const audioUrl = res.audio[0];
           return {
             success: true,
-            audioUrl,
+            audioUrl: res.audio[0],
             title: res.title_audio || res.title || 'TikTok Audio',
             mimetype: 'audio/mpeg',
-            ext: 'mp3'
+            ext: 'mp3',
+            engine: 'online:ab'
           };
         }
         return { success: false, message: 'Ab audio tidak ditemukan' };
       }
     },
     {
-      name: 'Ruhend Audio',
+      name: 'Online Ruhend Audio',
       fn: async () => {
         const res = await ruhend.ttdl(cleanUrl);
         if (res && Array.isArray(res.audio) && res.audio.length > 0) {
-          const audioUrl = res.audio[0];
           return {
             success: true,
-            audioUrl,
+            audioUrl: res.audio[0],
             title: res.title_audio || res.title || 'TikTok Audio',
             mimetype: 'audio/mpeg',
-            ext: 'mp3'
+            ext: 'mp3',
+            engine: 'online:ruhend'
           };
         }
         return { success: false, message: 'Ruhend audio tidak ditemukan' };
       }
     },
     {
-      name: 'Btch Audio',
+      name: 'Online Btch Audio',
       fn: async () => {
         const res = await btch.ttdl(cleanUrl);
         if (res?.status && Array.isArray(res.audio) && res.audio.length > 0) {
-          const audioUrl = res.audio[0];
           return {
             success: true,
-            audioUrl,
+            audioUrl: res.audio[0],
             title: res.title_audio || res.title || 'TikTok Audio',
             mimetype: 'audio/mpeg',
-            ext: 'mp3'
+            ext: 'mp3',
+            engine: 'online:btch'
           };
         }
         return { success: false, message: 'Btch audio tidak ditemukan' };
       }
-    },
-    {
-      name: 'Local yt-dlp Audio',
-      fn: async () => {
-        const ytdlpResult = await downloadWithYtdlp(cleanUrl, true);
-        if (ytdlpResult?.buffer) {
-          return {
-            success: true,
-            buffer: ytdlpResult.buffer,
-            title: ytdlpResult.title || 'TikTok Audio',
-            mimetype: ytdlpResult.mimetype || 'audio/mpeg',
-            ext: ytdlpResult.ext || 'mp3'
-          };
-        }
-        return {
-          success: false,
-          privateOrRestricted: ytdlpResult?.privateOrRestricted,
-          unavailable: ytdlpResult?.unavailable,
-          message: ytdlpResult?.message || 'Local yt-dlp audio gagal'
-        };
-      }
     }
   ];
 
-  const result = await executeWithSelfHealing(providers, (p) => p.fn(), 15000);
+  const result = await executeWithSelfHealing(providers, (p) => p.fn(), 25000);
   if (!result || !result.success) {
     if (url.includes('story_type=1') || url.includes('aweme_type=40') || url.includes('story_uid')) {
       return {
@@ -1316,13 +1432,57 @@ function shortcodeKeMediaId(shortcode) {
   return id.toString();
 }
 
+/** Ekstrak musik latar dari respons `/api/v1/media/{id}/info/` Instagram (carousel foto / reels). */
+function ekstrakAudioInstagramItem(item) {
+  const musicAsset = item?.music_metadata?.music_info?.music_asset_info || item?.clips_metadata?.music_info?.music_asset_info;
+  const origSound = item?.music_metadata?.original_sound_info || item?.clips_metadata?.original_sound_info;
+  const audioUrl =
+    musicAsset?.progressive_download_url ||
+    musicAsset?.fast_start_progressive_download_url ||
+    origSound?.progressive_download_url ||
+    undefined;
+  const audioTitle = musicAsset?.title
+    ? (musicAsset.display_artist ? `${musicAsset.title} - ${musicAsset.display_artist}` : musicAsset.title)
+    : (origSound?.original_audio_title || undefined);
+  return { audioUrl, audioTitle };
+}
+
+/** Bentuk payload standar hasil yt-dlp dump-json untuk IG / FB. */
+function bentukHasilYtdlpDump(data, defaultTitle = 'Media') {
+  if (!data) return null;
+  const title = data.title || data.description || defaultTitle;
+  if (Array.isArray(data.entries) && data.entries.length > 0) {
+    const mediaList = [];
+    for (const e of data.entries) {
+      if (!e) continue;
+      const isVideo = e.ext === 'mp4' || (e.vcodec && e.vcodec !== 'none');
+      const itemUrl = pilihUrlLangsung(e) || e.thumbnails?.[e.thumbnails.length - 1]?.url;
+      if (itemUrl) mediaList.push({ type: isVideo ? 'video' : 'image', url: itemUrl });
+    }
+    if (mediaList.length > 0) {
+      return { success: true, media: mediaList, title, type: mediaList.length > 1 ? 'carousel' : mediaList[0].type, engine: 'offline:yt-dlp-json' };
+    }
+  } else if (data.url || data.thumbnails?.length > 0) {
+    const isVideo = data.ext === 'mp4' || (data.vcodec && data.vcodec !== 'none') || Boolean(data.duration && data.duration > 0);
+    const itemUrl = isVideo ? pilihUrlLangsung(data) : (data.url || data.thumbnails?.[data.thumbnails.length - 1]?.url);
+    if (itemUrl) {
+      return {
+        success: true,
+        media: [{ type: isVideo ? 'video' : 'image', url: itemUrl }],
+        type: isVideo ? 'video' : 'image',
+        videoUrl: isVideo ? itemUrl : undefined,
+        imageUrl: !isVideo ? itemUrl : undefined,
+        title,
+        engine: 'offline:yt-dlp-json'
+      };
+    }
+  }
+  return null;
+}
+
 /**
  * Instagram Web API resmi (memakai sesi login di ig_cookies.txt).
- *
- * yt-dlp TIDAK bisa mengambil postingan foto: untuk carousel foto ia
- * mengembalikan `entries` berisi null semua ("No video formats found"), dan
- * seluruh API pihak ketiga yang dipakai sebagai cadangan sudah mati (401/404).
- * Jalur inilah yang mengembalikan isi carousel secara utuh — foto maupun video.
+ * Mengembalikan isi carousel secara utuh (foto + video) DAN musik latar (`audioUrl`) bila ada.
  */
 async function downloadInstagramApi(url) {
   const cocok = url.match(/instagram\.com\/(?:[^/?#]+\/)?(?:p|reel|reels|tv)\/([A-Za-z0-9_-]+)/i);
@@ -1330,11 +1490,11 @@ async function downloadInstagramApi(url) {
   const mediaId = shortcodeKeMediaId(cocok[1]);
   if (!mediaId) return null;
   const cookie = bacaCookieHeader('instagram.com');
-  if (!cookie) return null;
+  if (!cookie || !/\bsessionid=/.test(cookie)) return null;
 
   const res = await axios.get(`https://www.instagram.com/api/v1/media/${mediaId}/info/`, {
     httpsAgent,
-    timeout: 15000,
+    timeout: 12000,
     headers: {
       'User-Agent': getRandomUserAgent(),
       'X-IG-App-ID': '936619743392459',
@@ -1360,679 +1520,985 @@ async function downloadInstagramApi(url) {
   }
   if (mediaList.length === 0) return null;
 
+  const { audioUrl, audioTitle } = ekstrakAudioInstagramItem(item);
+
   return {
     success: true,
     media: mediaList,
+    audioUrl,
+    audioTitle,
     title: item.caption?.text || 'Instagram Media',
     author: item.user?.username,
-    type: mediaList.length > 1 ? 'carousel' : mediaList[0].type
+    type: mediaList.length > 1 ? 'carousel' : mediaList[0].type,
+    engine: 'offline:ig-api'
   };
 }
 
 /**
- * Download Instagram Reels / Posts / Single Photo / Multiple Photo Carousels — Multi-Tier Failover
+ * Direct / Offline Instagram Embed Scraper (`embed/captioned/?cr=1&v=14`).
+ * Mengambil carousel foto & video langsung dari Instagram CDN tanpa cookie login.
+ */
+async function downloadInstagramEmbed(url) {
+  const cocok = url.match(/instagram\.com\/(?:[^/?#]+\/)?(?:p|reel|reels|tv)\/([A-Za-z0-9_-]+)/i);
+  if (!cocok) return null;
+  const shortcode = cocok[1];
+
+  const res = await axios.get(`https://www.instagram.com/p/${shortcode}/embed/captioned/?cr=1&v=14`, {
+    httpsAgent,
+    timeout: 10000,
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      'Accept-Language': 'en-US,en;q=0.9'
+    }
+  });
+  const html = typeof res.data === 'string' ? res.data : '';
+  const idx = html.indexOf('"contextJSON":');
+  if (idx < 0) return null;
+
+  const strMatch = html.slice(idx + 14).match(/^"((?:\\.|[^"\\])*)"/);
+  if (!strMatch) return null;
+
+  const data = JSON.parse(JSON.parse(strMatch[0]));
+  const sm = data?.gql_data?.shortcode_media;
+  if (!sm) return null;
+
+  const edges = sm.edge_sidecar_to_children?.edges;
+  const nodes = Array.isArray(edges) && edges.length > 0 ? edges.map(e => e.node).filter(Boolean) : [sm];
+
+  const mediaList = [];
+  for (const node of nodes) {
+    if (node.is_video && node.video_url) {
+      mediaList.push({ type: 'video', url: node.video_url });
+    } else if (node.display_url) {
+      mediaList.push({ type: 'image', url: node.display_url });
+    }
+  }
+  if (mediaList.length === 0) return null;
+
+  return {
+    success: true,
+    media: mediaList,
+    title: sm.edge_media_to_caption?.edges?.[0]?.node?.text || 'Instagram Media',
+    author: sm.owner?.username,
+    type: mediaList.length > 1 ? 'carousel' : mediaList[0].type,
+    engine: 'offline:ig-embed'
+  };
+}
+
+/**
+ * Download Instagram Reels / Posts / Single Photo / Multiple Photo Carousels
+ * Offline / Lokal Utama + Online Backup, serta pemisahan foto & musik latar pada slide.
  */
 export async function downloadInstagram(rawUrl) {
   const url = await expandCanonicalUrl(rawUrl);
-  // Method 1: snapsave-media-downloader (Mendukung Reels, Single Foto, dan Multi-Photo Carousels)
-  try {
-    const snapRes = await snapsave(url);
-    if (snapRes?.success && Array.isArray(snapRes?.data?.media) && snapRes.data.media.length > 0) {
-      const mediaList = snapRes.data.media.map(m => {
-        const isVideo = m.type === 'video' || (m.url && m.url.includes('.mp4'));
-        return { type: isVideo ? 'video' : 'image', url: m.url };
-      }).filter(m => Boolean(m.url));
+  const igCookie = bacaCookieHeader('instagram.com') || '';
+  const punyaSessionId = /\bsessionid=/.test(igCookie);
 
-      if (mediaList.length > 0) {
-        return {
-          success: true,
-          media: mediaList,
-          title: 'Instagram Media',
-          type: mediaList.length > 1 ? 'carousel' : mediaList[0].type
-        };
+  const providers = [
+    // --- OFFLINE / LOKAL UTAMA ---
+    ...(punyaSessionId ? [{
+      name: 'Offline IG Web API (Cookies)',
+      fn: async () => (await downloadInstagramApi(url)) || { success: false, message: 'IG Web API tidak tersedia' }
+    }] : []),
+    {
+      name: 'Offline IG Embed Direct',
+      fn: async () => (await downloadInstagramEmbed(url)) || { success: false, message: 'IG Embed tidak menemukan media' }
+    },
+    {
+      name: 'Offline IG yt-dlp JSON',
+      fn: async () => {
+        const data = await extractWithYtdlpJson(url);
+        return bentukHasilYtdlpDump(data, 'Instagram Media') || { success: false, message: 'yt-dlp JSON IG kosong' };
       }
-    }
-  } catch (err) {
-    console.log('[MEDIA_HANDLER] IG Method 1 (snapsave) failed:', err.message);
-  }
-
-  // Method 2: ruhend-scraper igdl2
-  try {
-    const ruhendRes = await ruhend.igdl2(url);
-    if (ruhendRes?.status && Array.isArray(ruhendRes?.data) && ruhendRes.data.length > 0) {
-      const mediaList = ruhendRes.data.map(item => {
-        const itemUrl = item.url || item.thumbnail;
-        const isVideo = Boolean(itemUrl && (itemUrl.includes('.mp4') || itemUrl.includes('/v/')));
-        return { type: isVideo ? 'video' : 'image', url: itemUrl };
-      }).filter(m => Boolean(m.url));
-
-      if (mediaList.length > 0) {
-        return {
-          success: true,
-          media: mediaList,
-          title: 'Instagram Media',
-          type: mediaList.length > 1 ? 'carousel' : mediaList[0].type
-        };
-      }
-    }
-  } catch (err) {
-    console.log('[MEDIA_HANDLER] IG Method 2 (ruhend) failed:', err.message);
-  }
-
-  // Method 3: Instagram Web API pakai sesi di ig_cookies.txt — satu-satunya
-  // jalur yang mengembalikan carousel FOTO secara utuh.
-  try {
-    const hasil = await downloadInstagramApi(url);
-    if (hasil) return hasil;
-  } catch (err) {
-    console.log('[MEDIA_HANDLER] IG Method 3 (Web API) failed:', err.message);
-  }
-
-  // Method 2: yt-dlp dump-json (video Reels & carousel yang berisi video)
-  try {
-    const data = await extractWithYtdlpJson(url);
-    if (data) {
-      const title = data.title || data.description || 'Instagram Media';
-      if (Array.isArray(data.entries) && data.entries.length > 0) {
-        const mediaList = [];
-        for (const e of data.entries) {
-          // yt-dlp menaruh null untuk entri yang gagal diekstrak (mis. foto di
-          // dalam carousel Instagram). Tanpa penjaga ini `e.ext` melempar
-          // TypeError dan SATU entri null membatalkan seluruh postingan —
-          // termasuk video-video di dalamnya yang sebenarnya berhasil.
-          if (!e) continue;
-          const isVideo = e.ext === 'mp4' || (e.vcodec && e.vcodec !== 'none');
-          const itemUrl = pilihUrlLangsung(e) || e.thumbnails?.[e.thumbnails.length - 1]?.url;
-          if (itemUrl) {
-            mediaList.push({ type: isVideo ? 'video' : 'image', url: itemUrl });
-          }
-        }
-        if (mediaList.length > 0) {
-          return { success: true, media: mediaList, title, type: 'carousel' };
-        }
-      } else if (data.url || data.thumbnails?.length > 0) {
-        const isVideo = data.ext === 'mp4' || (data.vcodec && data.vcodec !== 'none') || (data.duration && data.duration > 0);
-        const itemUrl = isVideo ? pilihUrlLangsung(data) : (data.url || data.thumbnails?.[data.thumbnails.length - 1]?.url);
-        if (itemUrl) {
+    },
+    {
+      name: 'Offline IG yt-dlp Video',
+      fn: async () => {
+        const ytdlpResult = await downloadWithYtdlp(url, false);
+        if (ytdlpResult?.terlaluBesar) return ytdlpResult;
+        if (ytdlpResult?.buffer || ytdlpResult?.videoUrl) {
           return {
             success: true,
-            media: [{ type: isVideo ? 'video' : 'image', url: itemUrl }],
+            media: [{ type: 'video', url: ytdlpResult.videoUrl, buffer: ytdlpResult.buffer }],
+            buffer: ytdlpResult.buffer,
+            videoUrl: ytdlpResult.videoUrl,
+            title: ytdlpResult.title || 'Instagram Video',
+            type: 'video',
+            engine: 'offline:yt-dlp'
+          };
+        }
+        return {
+          success: false,
+          privateOrRestricted: ytdlpResult?.privateOrRestricted,
+          unavailable: ytdlpResult?.unavailable,
+          message: ytdlpResult?.message || 'Offline yt-dlp IG gagal'
+        };
+      }
+    },
+    // --- ONLINE BACKUP ---
+    {
+      name: 'Online Snapsave IG',
+      fn: async () => {
+        const snapRes = await snapsave(url);
+        if (snapRes?.success && Array.isArray(snapRes?.data?.media) && snapRes.data.media.length > 0) {
+          const mediaList = snapRes.data.media.map(m => {
+            const isVideo = m.type === 'video' || (m.url && m.url.includes('.mp4'));
+            return { type: isVideo ? 'video' : 'image', url: m.url };
+          }).filter(m => Boolean(m.url));
+          if (mediaList.length > 0) {
+            return {
+              success: true,
+              media: mediaList,
+              title: 'Instagram Media',
+              type: mediaList.length > 1 ? 'carousel' : mediaList[0].type,
+              engine: 'online:snapsave'
+            };
+          }
+        }
+        return { success: false, message: 'Snapsave IG kosong' };
+      }
+    },
+    {
+      name: 'Online Ruhend IGDL2',
+      fn: async () => {
+        const ruhendRes = await ruhend.igdl2(url);
+        if (ruhendRes?.status && Array.isArray(ruhendRes?.data) && ruhendRes.data.length > 0) {
+          const mediaList = ruhendRes.data.map(item => {
+            const itemUrl = item.url || item.thumbnail;
+            const isVideo = Boolean(itemUrl && (itemUrl.includes('.mp4') || itemUrl.includes('/v/')));
+            return { type: isVideo ? 'video' : 'image', url: itemUrl };
+          }).filter(m => Boolean(m.url));
+          if (mediaList.length > 0) {
+            return {
+              success: true,
+              media: mediaList,
+              title: 'Instagram Media',
+              type: mediaList.length > 1 ? 'carousel' : mediaList[0].type,
+              engine: 'online:ruhend'
+            };
+          }
+        }
+        return { success: false, message: 'Ruhend IGDL2 kosong' };
+      }
+    },
+    {
+      name: 'Online SSSInstagram API',
+      fn: async () => {
+        const res = await axios.post('https://sssinstagram.com/api/convert', JSON.stringify({ url }), {
+          httpsAgent, timeout: 12000,
+          headers: {
+            'Content-Type': 'application/json',
+            'User-Agent': getRandomUserAgent(),
+            'Referer': 'https://sssinstagram.com/',
+            'Origin': 'https://sssinstagram.com'
+          }
+        });
+        if (res.data) {
+          if (Array.isArray(res.data.data) && res.data.data.length > 0) {
+            const mediaList = res.data.data.map(item => ({
+              type: (item.type === 'video' || item.url?.includes('.mp4')) ? 'video' : 'image',
+              url: item.url
+            })).filter(item => Boolean(item.url));
+            if (mediaList.length > 0) {
+              return { success: true, media: mediaList, title: 'Instagram Media', type: mediaList.length > 1 ? 'carousel' : mediaList[0].type, engine: 'online:sssinstagram' };
+            }
+          } else if (res.data.url) {
+            const isVideo = res.data.url.includes('.mp4') || res.data.type === 'video';
+            return {
+              success: true,
+              media: [{ type: isVideo ? 'video' : 'image', url: res.data.url }],
+              videoUrl: isVideo ? res.data.url : undefined,
+              imageUrl: !isVideo ? res.data.url : undefined,
+              title: 'Instagram Media',
+              type: isVideo ? 'video' : 'image',
+              engine: 'online:sssinstagram'
+            };
+          }
+        }
+        return { success: false, message: 'SSSInstagram kosong' };
+      }
+    },
+    {
+      name: 'Online Siputzx IG',
+      fn: async () => {
+        const res = await axios.get(`https://api.siputzx.my.id/api/d/igdl?url=${encodeURIComponent(url)}`, {
+          headers: { 'User-Agent': getRandomUserAgent() },
+          timeout: 12000
+        });
+        const data = res.data?.data;
+        if (Array.isArray(data) && data.length > 0) {
+          const mediaList = data.map(item => {
+            const itemUrl = typeof item === 'string' ? item : (item.url || item.thumbnail);
+            const isVideo = (typeof item === 'object' && item.type === 'video') || Boolean(itemUrl && itemUrl.includes('.mp4'));
+            return { type: isVideo ? 'video' : 'image', url: itemUrl };
+          }).filter(item => Boolean(item.url));
+          if (mediaList.length > 0) {
+            return { success: true, media: mediaList, title: 'Instagram Media', type: mediaList.length > 1 ? 'carousel' : mediaList[0].type, engine: 'online:siputzx' };
+          }
+        } else if (data && typeof data === 'object' && data.url) {
+          const isVideo = data.url.includes('.mp4') || data.type === 'video';
+          return {
+            success: true,
+            media: [{ type: isVideo ? 'video' : 'image', url: data.url }],
+            videoUrl: isVideo ? data.url : undefined,
+            imageUrl: !isVideo ? data.url : undefined,
+            title: 'Instagram Media',
             type: isVideo ? 'video' : 'image',
-            videoUrl: isVideo ? itemUrl : undefined,
-            imageUrl: !isVideo ? itemUrl : undefined,
-            title
+            engine: 'online:siputzx'
+          };
+        }
+        return { success: false, message: 'Siputzx IG kosong' };
+      }
+    },
+    {
+      name: 'Online Ab IGDL',
+      fn: async () => {
+        const arr = await ab.igdl(url);
+        if (Array.isArray(arr) && arr.length > 0) {
+          const mediaList = arr.map(item => ({
+            type: (item.url && item.url.includes('.mp4')) ? 'video' : 'image',
+            url: item.url
+          })).filter(m => Boolean(m.url));
+          if (mediaList.length > 0) {
+            return { success: true, media: mediaList, title: 'Instagram Media', type: mediaList.length > 1 ? 'carousel' : mediaList[0].type, engine: 'online:ab' };
+          }
+        }
+        return { success: false, message: 'Ab IGDL kosong' };
+      }
+    },
+    {
+      name: 'Online Btch IGDL',
+      fn: async () => {
+        const res = await btch.igdl(url);
+        if (res?.status && Array.isArray(res.result) && res.result.length > 0) {
+          const mediaList = res.result.map(item => ({
+            type: (item.url && item.url.includes('.mp4')) ? 'video' : 'image',
+            url: item.url
+          })).filter(m => Boolean(m.url));
+          if (mediaList.length > 0) {
+            return { success: true, media: mediaList, title: 'Instagram Media', type: mediaList.length > 1 ? 'carousel' : mediaList[0].type, engine: 'online:btch' };
+          }
+        }
+        return { success: false, message: 'Btch IGDL kosong' };
+      }
+    },
+    {
+      name: 'Online Direct IGDL',
+      fn: async () => {
+        const fn = igdl.instagramGetUrl || igdl.default || igdl;
+        const res = await fn(url);
+        if (res?.url_list?.length > 0) {
+          const mediaList = res.url_list.map(u => ({
+            type: (u.includes('.mp4') || u.includes('/v/') || u.includes('video')) ? 'video' : 'image',
+            url: u
+          })).filter(item => Boolean(item.url));
+          if (mediaList.length > 0) {
+            return { success: true, media: mediaList, title: 'Instagram Media', type: mediaList.length > 1 ? 'carousel' : mediaList[0].type, engine: 'online:igdl' };
+          }
+        }
+        return { success: false, message: 'igdl kosong' };
+      }
+    },
+    {
+      name: 'Online SnapSave Action',
+      fn: async () => {
+        const res = await axios.post('https://snapsave.app/action.php', `url=${encodeURIComponent(url)}`, {
+          httpsAgent, timeout: 10000,
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            'User-Agent': getRandomUserAgent(),
+            'Referer': 'https://snapsave.app/',
+            'Origin': 'https://snapsave.app'
+          }
+        });
+        const raw = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
+        const urlMatches = raw.match(/https?:\\?\/\\?\/[^\s"'\\]+\.(?:mp4|jpg|jpeg|png|webp)[^\s"'\\]*/gi) ||
+                           raw.match(/https?:\\?\/\\?\/[^\s"'\\]+cdninstagram[^\s"'\\]*/gi);
+        if (urlMatches && urlMatches.length > 0) {
+          const mediaList = [];
+          const seen = new Set();
+          for (const rawMatch of urlMatches) {
+            const cleanU = rawMatch.replace(/\\+\//g, '/').replace(/\\u0026/g, '&').replace(/\\/g, '');
+            if (!seen.has(cleanU)) {
+              seen.add(cleanU);
+              mediaList.push({ type: cleanU.includes('.mp4') ? 'video' : 'image', url: cleanU });
+            }
+          }
+          if (mediaList.length > 0) {
+            return { success: true, media: mediaList, title: 'Instagram Media', type: mediaList.length > 1 ? 'carousel' : mediaList[0].type, engine: 'online:snapsave-action' };
+          }
+        }
+        return { success: false, message: 'SnapSave action kosong' };
+      }
+    }
+  ];
+
+  const result = await executeWithSelfHealing(providers, (p) => p.fn(), 25000);
+  if (result?.success) {
+    return result;
+  }
+
+  return {
+    success: false,
+    message: result?.message || '❌ Gagal mengunduh postingan/foto dari Instagram. Pastikan akun/postingan bersifat publik dan link valid.'
+  };
+}
+
+/**
+ * Ambil audio Instagram (.igmp3, .igaudio) — musik latar slide foto atau audio Reels/video.
+ * Offline Utama (IG Web API + yt-dlp + ffmpeg) + Online Backup.
+ */
+export async function downloadInstagramAudio(rawUrl) {
+  const url = await expandCanonicalUrl(rawUrl);
+
+  // 1. Offline / Lokal: IG Web API (musik slide foto atau original audio Reels)
+  try {
+    const apiRes = await downloadInstagramApi(url);
+    if (apiRes?.audioUrl) {
+      return {
+        success: true,
+        audioUrl: apiRes.audioUrl,
+        title: apiRes.audioTitle || apiRes.title || 'Instagram Audio',
+        mimetype: 'audio/mp4',
+        ext: 'm4a',
+        engine: 'offline:ig-api'
+      };
+    }
+  } catch (_) {}
+
+  // 2. Offline: yt-dlp audio langsung
+  try {
+    const ytdlpRes = await downloadWithYtdlp(url, true);
+    if (ytdlpRes?.terlaluBesar) return ytdlpRes;
+    if (ytdlpRes?.buffer || ytdlpRes?.audioUrl) {
+      return {
+        success: true,
+        buffer: ytdlpRes.buffer,
+        audioUrl: ytdlpRes.audioUrl,
+        title: ytdlpRes.title || 'Instagram Audio',
+        mimetype: ytdlpRes.mimetype || 'audio/mp4',
+        ext: ytdlpRes.ext || 'm4a',
+        engine: 'offline:yt-dlp'
+      };
+    }
+  } catch (_) {}
+
+  // 3. Online backup: unduh post lalu ambil audioUrl (bila ada) atau ekstrak MP3 dari video
+  const igRes = await downloadInstagram(url);
+  if (igRes?.success) {
+    if (igRes.audioUrl || igRes.audioBuffer) {
+      return {
+        success: true,
+        buffer: igRes.audioBuffer,
+        audioUrl: igRes.audioUrl,
+        title: igRes.audioTitle || igRes.title || 'Instagram Audio',
+        mimetype: 'audio/mp4',
+        ext: 'm4a',
+        engine: igRes.engine
+      };
+    }
+    const videoItem = (igRes.media || []).find(m => m.type === 'video');
+    if (videoItem) {
+      const siapVideo = await siapkanMediaWA({ buffer: videoItem.buffer, url: videoItem.url, type: 'video' });
+      if (siapVideo?.ok && siapVideo.buffer) {
+        const mp3Buffer = await convertVideoToAudio(siapVideo.buffer, 'mp3').catch(() => null);
+        if (mp3Buffer && mp3Buffer.length > 5000) {
+          return {
+            success: true,
+            buffer: mp3Buffer,
+            title: igRes.title || 'Instagram Audio',
+            mimetype: 'audio/mpeg',
+            ext: 'mp3',
+            engine: `${igRes.engine || 'online'}+ffmpeg`
           };
         }
       }
     }
-  } catch (err) {
-    console.log('[MEDIA_HANDLER] IG Method 2 (yt-dlp JSON) failed:', err.message);
   }
 
-  // Method 3: SSSInstagram API (Mendukung multiple photo & video)
-  try {
-    const res = await axios.post('https://sssinstagram.com/api/convert',
-      JSON.stringify({ url }),
-      {
-        httpsAgent, timeout: 12000,
-        headers: {
-          'Content-Type': 'application/json',
-          'User-Agent': getRandomUserAgent(),
-          'Referer': 'https://sssinstagram.com/',
-          'Origin': 'https://sssinstagram.com'
-        }
-      }
-    );
-    if (res.data) {
-      if (Array.isArray(res.data.data) && res.data.data.length > 0) {
-        const mediaList = res.data.data.map(item => {
-          const isVideo = item.type === 'video' || item.url?.includes('.mp4');
-          return { type: isVideo ? 'video' : 'image', url: item.url };
-        }).filter(item => Boolean(item.url));
-
-        if (mediaList.length > 0) {
-          return { success: true, media: mediaList, title: 'Instagram Media', type: mediaList.length > 1 ? 'carousel' : mediaList[0].type };
-        }
-      } else if (res.data.url) {
-        const isVideo = res.data.url.includes('.mp4') || res.data.type === 'video';
-        return {
-          success: true,
-          media: [{ type: isVideo ? 'video' : 'image', url: res.data.url }],
-          videoUrl: isVideo ? res.data.url : undefined,
-          imageUrl: !isVideo ? res.data.url : undefined,
-          title: 'Instagram Media',
-          type: isVideo ? 'video' : 'image'
-        };
-      }
-    }
-  } catch (err) {
-    console.log('[MEDIA_HANDLER] IG Method 3 (SSSInstagram) failed:', err.message);
-  }
-
-  // Method 4: Siputzx IG Downloader API (Mendukung foto slide & video)
-  try {
-    const res = await axios.get(`https://api.siputzx.my.id/api/d/igdl?url=${encodeURIComponent(url)}`, {
-      headers: { 'User-Agent': getRandomUserAgent() },
-      timeout: 12000
-    });
-    if (res.data && res.data.data) {
-      const data = res.data.data;
-      if (Array.isArray(data) && data.length > 0) {
-        const mediaList = data.map(item => {
-          const itemUrl = typeof item === 'string' ? item : (item.url || item.thumbnail);
-          const isVideo = (typeof item === 'object' && item.type === 'video') || (itemUrl && itemUrl.includes('.mp4'));
-          return { type: isVideo ? 'video' : 'image', url: itemUrl };
-        }).filter(item => Boolean(item.url));
-
-        if (mediaList.length > 0) {
-          return { success: true, media: mediaList, title: 'Instagram Media', type: mediaList.length > 1 ? 'carousel' : mediaList[0].type };
-        }
-      } else if (typeof data === 'object' && data.url) {
-        const isVideo = data.url.includes('.mp4') || data.type === 'video';
-        return {
-          success: true,
-          media: [{ type: isVideo ? 'video' : 'image', url: data.url }],
-          videoUrl: isVideo ? data.url : undefined,
-          imageUrl: !isVideo ? data.url : undefined,
-          title: 'Instagram Media',
-          type: isVideo ? 'video' : 'image'
-        };
-      }
-    }
-  } catch (err) {
-    console.log('[MEDIA_HANDLER] IG Method 4 (Siputzx) failed:', err.message);
-  }
-
-  // Method 5: direct igdl package (Mengembalikan seluruh url_list foto & video)
-  try {
-    const fn = igdl.instagramGetUrl || igdl.default || igdl;
-    const res = await fn(url);
-    if (res && res.url_list && res.url_list.length > 0) {
-      const mediaList = res.url_list.map(u => {
-        const isVideo = u.includes('.mp4') || u.includes('/v/') || u.includes('video');
-        return { type: isVideo ? 'video' : 'image', url: u };
-      }).filter(item => Boolean(item.url));
-
-      if (mediaList.length > 0) {
-        return { success: true, media: mediaList, title: 'Instagram Media', type: mediaList.length > 1 ? 'carousel' : mediaList[0].type };
-      }
-    }
-  } catch (err) {
-    console.log('[MEDIA_HANDLER] IG Method 5 (igdl) failed:', err.message);
-  }
-
-  // Method 6: SnapSave API
-  try {
-    const res = await axios.post('https://snapsave.app/action.php', `url=${encodeURIComponent(url)}`, {
-      httpsAgent,
-      timeout: 10000,
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-        'User-Agent': getRandomUserAgent(),
-        'Referer': 'https://snapsave.app/',
-        'Origin': 'https://snapsave.app'
-      }
-    });
-    const raw = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
-    const urlMatches = raw.match(/https?:\\?\/\\?\/[^\s"'\\]+\.(?:mp4|jpg|jpeg|png|webp)[^\s"'\\]*/gi) || 
-                       raw.match(/https?:\\?\/\\?\/[^\s"'\\]+cdninstagram[^\s"'\\]*/gi);
-    if (urlMatches && urlMatches.length > 0) {
-      const mediaList = [];
-      const seen = new Set();
-      for (const rawMatch of urlMatches) {
-        const cleanU = rawMatch.replace(/\\+\//g, '/').replace(/\\u0026/g, '&').replace(/\\/g, '');
-        if (!seen.has(cleanU)) {
-          seen.add(cleanU);
-          const isVideo = cleanU.includes('.mp4');
-          mediaList.push({ type: isVideo ? 'video' : 'image', url: cleanU });
-        }
-      }
-      if (mediaList.length > 0) {
-        return { success: true, media: mediaList, title: 'Instagram Media', type: mediaList.length > 1 ? 'carousel' : mediaList[0].type };
-      }
-    }
-  } catch (err) {
-    console.log('[MEDIA_HANDLER] IG Method 6 (SnapSave) failed:', err.message);
-  }
-
-  return { 
-    success: false, 
-    message: '❌ Gagal mengunduh postingan/foto dari Instagram. Pastikan akun/postingan bersifat publik dan link valid.' 
+  return {
+    success: false,
+    message: '❌ Audio tidak ditemukan pada postingan Instagram ini (postingan foto tanpa musik atau link privat).'
   };
 }
 
 /**
- * Download YouTube Videos / Shorts — Multi-Tier Failover
+ * Download YouTube Videos / Shorts — Offline Utama + Online Backup
  */
 export async function downloadYouTube(url) {
-  // Method 1: yt-dlp CLI Video
-  const ytdlpResult = await downloadWithYtdlp(url, false);
-  if (ytdlpResult?.terlaluBesar) {
-    return { success: false, message: ytdlpResult.message };
-  }
-  if (ytdlpResult?.buffer) {
-    return { success: true, buffer: ytdlpResult.buffer, title: ytdlpResult.title || 'YouTube Video', mimetype: 'video/mp4' };
-  }
-  if (ytdlpResult?.videoUrl) {
-    const buf = await fetchBuffer(ytdlpResult.videoUrl);
-    return { success: true, buffer: buf || undefined, videoUrl: ytdlpResult.videoUrl, title: ytdlpResult.title || 'YouTube Video', mimetype: 'video/mp4' };
-  }
-
-  // Method 2: @distube/ytdl-core
-  // Hanya format gabungan (punya video DAN audio) yang boleh dipakai. Cadangan lama
-  // jatuh ke `quality: 'highest'` yang di YouTube modern hampir selalu video-only —
-  // hasilnya video bisu, atau berkas yang tidak bisa dibuka sama sekali.
-  try {
-    const info = await ytdl.getInfo(url);
-    const muxed = (info.formats || [])
-      .filter(f => f.hasVideo && f.hasAudio && f.url)
-      .filter(f => f.container === 'mp4' || String(f.mimeType || '').includes('mp4'))
-      .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
-    const format = muxed[0];
-    if (format) {
-      const buf = await fetchBuffer(format.url);
-      return {
-        success: true,
-        buffer: buf || undefined,
-        videoUrl: format.url,
-        title: info.videoDetails?.title || 'YouTube Video',
-        mimetype: 'video/mp4'
-      };
+  const providers = [
+    // --- OFFLINE UTAMA ---
+    {
+      name: 'Offline YT yt-dlp',
+      fn: async () => {
+        const ytdlpResult = await downloadWithYtdlp(url, false);
+        if (ytdlpResult?.terlaluBesar) return ytdlpResult;
+        if (ytdlpResult?.buffer) {
+          return { success: true, buffer: ytdlpResult.buffer, title: ytdlpResult.title || 'YouTube Video', mimetype: 'video/mp4', engine: 'offline:yt-dlp' };
+        }
+        if (ytdlpResult?.videoUrl) {
+          const buf = await fetchBuffer(ytdlpResult.videoUrl);
+          if (buf || ytdlpResult.videoUrl) {
+            return { success: true, buffer: buf || undefined, videoUrl: ytdlpResult.videoUrl, title: ytdlpResult.title || 'YouTube Video', mimetype: 'video/mp4', engine: 'offline:yt-dlp' };
+          }
+        }
+        return {
+          success: false,
+          privateOrRestricted: ytdlpResult?.privateOrRestricted,
+          unavailable: ytdlpResult?.unavailable,
+          message: ytdlpResult?.message || 'Offline yt-dlp YouTube gagal'
+        };
+      }
+    },
+    {
+      name: 'Offline YT ytdl-core',
+      fn: async () => {
+        const info = await ytdl.getInfo(url);
+        const muxed = (info.formats || [])
+          .filter(f => f.hasVideo && f.hasAudio && f.url)
+          .filter(f => f.container === 'mp4' || String(f.mimeType || '').includes('mp4'))
+          .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+        const format = muxed[0];
+        if (format) {
+          const buf = await fetchBuffer(format.url);
+          return {
+            success: true,
+            buffer: buf || undefined,
+            videoUrl: format.url,
+            title: info.videoDetails?.title || 'YouTube Video',
+            mimetype: 'video/mp4',
+            engine: 'offline:ytdl-core'
+          };
+        }
+        return { success: false, message: 'ytdl-core format gabungan kosong' };
+      }
+    },
+    // --- ONLINE BACKUP ---
+    {
+      name: 'Online Siputzx YTMP4',
+      fn: async () => {
+        const res = await axios.get(`https://api.siputzx.my.id/api/d/ytmp4?url=${encodeURIComponent(url)}`, {
+          headers: { 'User-Agent': getRandomUserAgent() },
+          timeout: 20000
+        });
+        const d = res.data?.data;
+        const streamUrl = d?.dl || d?.url || (typeof d === 'string' ? d : null);
+        if (streamUrl) {
+          return { success: true, videoUrl: streamUrl, title: d?.title || 'YouTube Video', mimetype: 'video/mp4', engine: 'online:siputzx' };
+        }
+        return { success: false, message: 'Siputzx YTMP4 kosong' };
+      }
+    },
+    {
+      name: 'Online Btch YouTube',
+      fn: async () => {
+        const res = await btch.youtube(url);
+        if (res?.status && res?.mp4) {
+          return { success: true, videoUrl: res.mp4, title: res.title || 'YouTube Video', author: res.author, mimetype: 'video/mp4', engine: 'online:btch' };
+        }
+        return { success: false, message: 'Btch YouTube MP4 kosong' };
+      }
+    },
+    {
+      name: 'Online Ab YouTube',
+      fn: async () => {
+        const res = await ab.youtube(url);
+        if (res?.mp4) {
+          return { success: true, videoUrl: res.mp4, title: res.title || 'YouTube Video', author: res.author, mimetype: 'video/mp4', engine: 'online:ab' };
+        }
+        return { success: false, message: 'Ab YouTube MP4 kosong' };
+      }
     }
-  } catch (err) {
-    console.log('[MEDIA_HANDLER] YT Method 2 (ytdl-core) failed:', err.message);
-  }
+  ];
 
-  return {
+  const result = await executeWithSelfHealing(providers, (p) => p.fn(), 60000);
+  return result?.success ? result : {
     success: false,
-    message: '❌ Gagal mengunduh video YouTube. Pastikan link publik dan dapat diakses.'
+    message: result?.message || '❌ Gagal mengunduh video YouTube. Pastikan link publik dan dapat diakses.'
   };
 }
 
 /**
- * Download YouTube Audio / MP3 — Multi-Tier Failover
+ * Download YouTube Audio / MP3 — Offline Utama + Online Backup
  */
 export async function downloadYouTubeAudio(url) {
-  // Method 1: yt-dlp CLI Audio
-  const ytdlpResult = await downloadWithYtdlp(url, true);
-  if (ytdlpResult?.terlaluBesar) {
-    return { success: false, message: ytdlpResult.message };
-  }
-  if (ytdlpResult?.buffer) {
-    return {
-      success: true,
-      buffer: ytdlpResult.buffer,
-      title: ytdlpResult.title || 'YouTube Audio',
-      mimetype: ytdlpResult.mimetype || 'audio/mpeg',
-      ext: ytdlpResult.ext || 'mp3'
-    };
-  }
-  if (ytdlpResult?.audioUrl) {
-    const buf = await fetchBuffer(ytdlpResult.audioUrl);
-    return {
-      success: true,
-      buffer: buf || undefined,
-      audioUrl: ytdlpResult.audioUrl,
-      title: ytdlpResult.title || 'YouTube Audio',
-      mimetype: ytdlpResult.mimetype || 'audio/mp4',
-      ext: ytdlpResult.ext || 'm4a'
-    };
-  }
-
-  // Method 2: @distube/ytdl-core Audio
-  // Utamakan trek m4a/AAC. `highestaudio` biasanya mengembalikan Opus/WebM yang
-  // tidak bisa diputar WhatsApp sebagai pesan suara.
-  try {
-    const info = await ytdl.getInfo(url);
-    const audioOnly = (info.formats || []).filter(f => f.hasAudio && !f.hasVideo && f.url);
-    const m4a = audioOnly
-      .filter(f => f.container === 'mp4' || String(f.audioCodec || '').includes('mp4a'))
-      .sort((a, b) => (b.audioBitrate || 0) - (a.audioBitrate || 0))[0];
-    const format = m4a || audioOnly.sort((a, b) => (b.audioBitrate || 0) - (a.audioBitrate || 0))[0];
-    if (format) {
-      const isM4a = format === m4a;
-      const buf = await fetchBuffer(format.url);
-      return {
-        success: true,
-        buffer: buf || undefined,
-        audioUrl: format.url,
-        title: info.videoDetails?.title || 'YouTube Audio',
-        mimetype: isM4a ? 'audio/mp4' : 'audio/ogg; codecs=opus',
-        ext: isM4a ? 'm4a' : 'ogg'
-      };
+  const providers = [
+    // --- OFFLINE UTAMA ---
+    {
+      name: 'Offline YT yt-dlp Audio',
+      fn: async () => {
+        const ytdlpResult = await downloadWithYtdlp(url, true);
+        if (ytdlpResult?.terlaluBesar) return ytdlpResult;
+        if (ytdlpResult?.buffer) {
+          return {
+            success: true,
+            buffer: ytdlpResult.buffer,
+            title: ytdlpResult.title || 'YouTube Audio',
+            mimetype: ytdlpResult.mimetype || 'audio/mpeg',
+            ext: ytdlpResult.ext || 'mp3',
+            engine: 'offline:yt-dlp'
+          };
+        }
+        if (ytdlpResult?.audioUrl) {
+          const buf = await fetchBuffer(ytdlpResult.audioUrl);
+          return {
+            success: true,
+            buffer: buf || undefined,
+            audioUrl: ytdlpResult.audioUrl,
+            title: ytdlpResult.title || 'YouTube Audio',
+            mimetype: ytdlpResult.mimetype || 'audio/mp4',
+            ext: ytdlpResult.ext || 'm4a',
+            engine: 'offline:yt-dlp'
+          };
+        }
+        return {
+          success: false,
+          privateOrRestricted: ytdlpResult?.privateOrRestricted,
+          unavailable: ytdlpResult?.unavailable,
+          message: ytdlpResult?.message || 'Offline yt-dlp audio gagal'
+        };
+      }
+    },
+    {
+      name: 'Offline YT ytdl-core Audio',
+      fn: async () => {
+        const info = await ytdl.getInfo(url);
+        const audioOnly = (info.formats || []).filter(f => f.hasAudio && !f.hasVideo && f.url);
+        const m4a = audioOnly
+          .filter(f => f.container === 'mp4' || String(f.audioCodec || '').includes('mp4a'))
+          .sort((a, b) => (b.audioBitrate || 0) - (a.audioBitrate || 0))[0];
+        const format = m4a || audioOnly.sort((a, b) => (b.audioBitrate || 0) - (a.audioBitrate || 0))[0];
+        if (format) {
+          const isM4a = format === m4a;
+          const buf = await fetchBuffer(format.url);
+          return {
+            success: true,
+            buffer: buf || undefined,
+            audioUrl: format.url,
+            title: info.videoDetails?.title || 'YouTube Audio',
+            mimetype: isM4a ? 'audio/mp4' : 'audio/ogg; codecs=opus',
+            ext: isM4a ? 'm4a' : 'ogg',
+            engine: 'offline:ytdl-core'
+          };
+        }
+        return { success: false, message: 'ytdl-core audio kosong' };
+      }
+    },
+    // --- ONLINE BACKUP ---
+    {
+      name: 'Online Siputzx YTMP3',
+      fn: async () => {
+        const res = await axios.get(`https://api.siputzx.my.id/api/d/ytmp3?url=${encodeURIComponent(url)}`, {
+          headers: { 'User-Agent': getRandomUserAgent() },
+          timeout: 20000
+        });
+        const d = res.data?.data;
+        const audioUrl = d?.dl || d?.url || (typeof d === 'string' ? d : null);
+        if (audioUrl) {
+          return { success: true, audioUrl, title: d?.title || 'YouTube Audio', mimetype: 'audio/mpeg', ext: 'mp3', engine: 'online:siputzx' };
+        }
+        return { success: false, message: 'Siputzx YTMP3 kosong' };
+      }
+    },
+    {
+      name: 'Online Btch YouTube MP3',
+      fn: async () => {
+        const res = await btch.youtube(url);
+        if (res?.status && res?.mp3) {
+          return { success: true, audioUrl: res.mp3, title: res.title || 'YouTube Audio', mimetype: 'audio/mpeg', ext: 'mp3', engine: 'online:btch' };
+        }
+        return { success: false, message: 'Btch YouTube MP3 kosong' };
+      }
+    },
+    {
+      name: 'Online Ab YouTube MP3',
+      fn: async () => {
+        const res = await ab.youtube(url);
+        if (res?.mp3) {
+          return { success: true, audioUrl: res.mp3, title: res.title || 'YouTube Audio', mimetype: 'audio/mpeg', ext: 'mp3', engine: 'online:ab' };
+        }
+        return { success: false, message: 'Ab YouTube MP3 kosong' };
+      }
     }
-  } catch (err) {
-    console.log('[MEDIA_HANDLER] YT Audio Method 2 failed:', err.message);
-  }
+  ];
 
-  return {
+  const result = await executeWithSelfHealing(providers, (p) => p.fn(), 60000);
+  return result?.success ? result : {
     success: false,
-    message: '❌ Gagal mengunduh audio YouTube. Pastikan link publik dan dapat diakses.'
+    message: result?.message || '❌ Gagal mengunduh audio YouTube. Pastikan link publik dan dapat diakses.'
   };
 }
 
 /**
- * Download Facebook Video / Reels / Photos — Multi-Tier Failover
+ * Download Facebook Video / Reels / Photos — Offline Utama + Online Backup
  */
 export async function downloadFacebook(rawUrl) {
   const url = await expandCanonicalUrl(rawUrl);
-  // Method 1: ruhend-scraper fbdl (Video HD & SD)
-  try {
-    const fbRes = await ruhend.fbdl(url);
-    const stream = fbRes?.video_hd || fbRes?.video_sd || (Array.isArray(fbRes?.data) ? fbRes.data[0]?.url : null);
-    if (stream) {
-      const buf = await fetchBuffer(stream);
-      return {
-        success: true,
-        media: [{ type: 'video', url: stream, buffer: buf || undefined }],
-        videoUrl: stream,
-        buffer: buf || undefined,
-        title: fbRes?.title || 'Facebook Video',
-        type: 'video'
-      };
-    }
-  } catch (err) {
-    console.log('[MEDIA_HANDLER] FB Method 1 (ruhend) failed:', err.message);
-  }
 
-  // Method 2: yt-dlp dump-json
-  try {
-    const data = await extractWithYtdlpJson(url);
-    if (data) {
-      const title = data.title || data.description || 'Facebook Media';
-      if (Array.isArray(data.entries) && data.entries.length > 0) {
-        const mediaList = [];
-        for (const e of data.entries) {
-          // yt-dlp menaruh null untuk entri yang gagal diekstrak (mis. foto di
-          // dalam carousel Instagram). Tanpa penjaga ini `e.ext` melempar
-          // TypeError dan SATU entri null membatalkan seluruh postingan —
-          // termasuk video-video di dalamnya yang sebenarnya berhasil.
-          if (!e) continue;
-          const isVideo = e.ext === 'mp4' || (e.vcodec && e.vcodec !== 'none');
-          const itemUrl = pilihUrlLangsung(e) || e.thumbnails?.[e.thumbnails.length - 1]?.url;
-          if (itemUrl) mediaList.push({ type: isVideo ? 'video' : 'image', url: itemUrl });
-        }
-        if (mediaList.length > 0) {
-          return { success: true, media: mediaList, title, type: 'carousel' };
-        }
-      } else if (data.url || data.thumbnails?.length > 0) {
-        const isVideo = data.ext === 'mp4' || (data.vcodec && data.vcodec !== 'none');
-        const itemUrl = isVideo ? pilihUrlLangsung(data) : (data.url || data.thumbnails?.[data.thumbnails.length - 1]?.url);
-        if (itemUrl) {
+  const providers = [
+    // --- OFFLINE UTAMA ---
+    {
+      name: 'Offline FB yt-dlp JSON',
+      fn: async () => {
+        const data = await extractWithYtdlpJson(url);
+        return bentukHasilYtdlpDump(data, 'Facebook Media') || { success: false, message: 'yt-dlp JSON FB kosong' };
+      }
+    },
+    {
+      name: 'Offline FB yt-dlp Video',
+      fn: async () => {
+        const hasil = await downloadWithYtdlp(url, false);
+        if (hasil?.terlaluBesar) return hasil;
+        if (hasil?.buffer || hasil?.videoUrl) {
           return {
             success: true,
-            media: [{ type: isVideo ? 'video' : 'image', url: itemUrl }],
+            media: [{ type: 'video', url: hasil.videoUrl, buffer: hasil.buffer }],
+            buffer: hasil.buffer,
+            videoUrl: hasil.videoUrl,
+            title: hasil.title || 'Facebook Video',
+            type: 'video',
+            engine: 'offline:yt-dlp'
+          };
+        }
+        return { success: false, message: hasil?.message || 'Offline yt-dlp FB gagal' };
+      }
+    },
+    {
+      name: 'Offline FB HTML Scraper',
+      fn: async () => {
+        const res = await axios.get(url, {
+          headers: {
+            'User-Agent': getRandomUserAgent(),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9,id;q=0.8'
+          },
+          timeout: 12000,
+          maxRedirects: 5
+        });
+        if (res.data) {
+          const html = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
+          const cleanU = (raw) => raw ? raw.replace(/\\/g, '').replace(/&amp;/g, '&') : null;
+
+          const hdMatch = html.match(/"playable_url_quality_hd"\s*:\s*"([^"]+)"/) || html.match(/hd_src\s*:\s*"([^"]+)"/);
+          const sdMatch = html.match(/"playable_url"\s*:\s*"([^"]+)"/) || html.match(/sd_src\s*:\s*"([^"]+)"/);
+          const ogVidMatch = html.match(/<meta\s+property="og:video"\s+content="([^"]+)"/i) || html.match(/<meta\s+property="og:video:secure_url"\s+content="([^"]+)"/i);
+          const videoStream = cleanU(hdMatch?.[1]) || cleanU(sdMatch?.[1]) || cleanU(ogVidMatch?.[1]);
+
+          if (videoStream) {
+            const buf = await fetchBuffer(videoStream);
+            return {
+              success: true,
+              media: [{ type: 'video', url: videoStream, buffer: buf || undefined }],
+              videoUrl: videoStream,
+              buffer: buf || undefined,
+              title: 'Facebook Video',
+              type: 'video',
+              engine: 'offline:html'
+            };
+          }
+
+          const ogImgMatch = html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i) ||
+                             html.match(/<meta\s+property="og:image:secure_url"\s+content="([^"]+)"/i);
+          const scontentMatch = html.match(/https?:\/\/[^\s"'\\]*scontent[^\s"'\\]*\.fbcdn\.net[^\s"'\\]*/gi);
+
+          const photoUrl = cleanU(ogImgMatch?.[1]) || cleanU(scontentMatch?.[0]);
+          if (photoUrl && !photoUrl.includes('static.xx.fbcdn.net') && !photoUrl.includes('fb_icon_325x325')) {
+            const buf = await fetchBuffer(photoUrl);
+            if (buf && buf.length > 5000) {
+              return {
+                success: true,
+                media: [{ type: 'image', url: photoUrl, buffer: buf }],
+                imageUrl: photoUrl,
+                buffer: buf,
+                title: 'Facebook Photo',
+                type: 'image',
+                engine: 'offline:html'
+              };
+            }
+          }
+        }
+        return { success: false, message: 'FB HTML scraper kosong' };
+      }
+    },
+    // --- ONLINE BACKUP ---
+    {
+      name: 'Online Ruhend FBDL',
+      fn: async () => {
+        const fbRes = await ruhend.fbdl(url);
+        const stream = fbRes?.video_hd || fbRes?.video_sd || (Array.isArray(fbRes?.data) ? fbRes.data[0]?.url : null);
+        if (stream) {
+          const buf = await fetchBuffer(stream);
+          return {
+            success: true,
+            media: [{ type: 'video', url: stream, buffer: buf || undefined }],
+            videoUrl: stream,
+            buffer: buf || undefined,
+            title: fbRes?.title || 'Facebook Video',
+            type: 'video',
+            engine: 'online:ruhend'
+          };
+        }
+        return { success: false, message: 'Ruhend FBDL kosong' };
+      }
+    },
+    {
+      name: 'Online Siputzx FB',
+      fn: async () => {
+        const res = await axios.get(`https://api.siputzx.my.id/api/d/facebook?url=${encodeURIComponent(url)}`, {
+          headers: { 'User-Agent': getRandomUserAgent() },
+          timeout: 12000
+        });
+        const d = res.data?.data;
+        const mediaUrl = d?.video_hd || d?.video_sd || d?.url || (Array.isArray(d) ? d[0]?.url : d?.image);
+        if (mediaUrl) {
+          const isVideo = mediaUrl.includes('.mp4') || Boolean(d.video_hd || d.video_sd);
+          const buf = await fetchBuffer(mediaUrl);
+          return {
+            success: true,
+            media: [{ type: isVideo ? 'video' : 'image', url: mediaUrl, buffer: buf || undefined }],
+            videoUrl: isVideo ? mediaUrl : undefined,
+            imageUrl: !isVideo ? mediaUrl : undefined,
+            buffer: buf || undefined,
+            title: d.title || 'Facebook Media',
             type: isVideo ? 'video' : 'image',
-            videoUrl: isVideo ? itemUrl : undefined,
-            imageUrl: !isVideo ? itemUrl : undefined,
-            title
+            engine: 'online:siputzx'
           };
         }
+        return { success: false, message: 'Siputzx FB kosong' };
       }
-    }
-  } catch (err) {
-    console.log('[MEDIA_HANDLER] FB Method 1 (yt-dlp JSON) failed:', err.message);
-  }
-
-  // Method 2: Direct Open Graph & HTML Photo / Video Metadata Scraper
-  try {
-    const headers = {
-      'User-Agent': getRandomUserAgent(),
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.9,id;q=0.8'
-    };
-    const res = await axios.get(url, { headers, timeout: 12000, maxRedirects: 5 });
-    if (res.data) {
-      const html = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
-      const cleanU = (raw) => raw ? raw.replace(/\\/g, '').replace(/&amp;/g, '&') : null;
-
-      // Cek Video
-      const hdMatch = html.match(/"playable_url_quality_hd"\s*:\s*"([^"]+)"/) || html.match(/hd_src\s*:\s*"([^"]+)"/);
-      const sdMatch = html.match(/"playable_url"\s*:\s*"([^"]+)"/) || html.match(/sd_src\s*:\s*"([^"]+)"/);
-      const ogVidMatch = html.match(/<meta\s+property="og:video"\s+content="([^"]+)"/i) || html.match(/<meta\s+property="og:video:secure_url"\s+content="([^"]+)"/i);
-      const videoStream = cleanU(hdMatch?.[1]) || cleanU(sdMatch?.[1]) || cleanU(ogVidMatch?.[1]);
-
-      if (videoStream) {
-        const buf = await fetchBuffer(videoStream);
-        return {
-          success: true,
-          media: [{ type: 'video', url: videoStream, buffer: buf || undefined }],
-          videoUrl: videoStream,
-          buffer: buf || undefined,
-          title: 'Facebook Video',
-          type: 'video'
-        };
-      }
-
-      // Cek Foto / Gambar Postingan
-      const ogImgMatch = html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i) ||
-                         html.match(/<meta\s+property="og:image:secure_url"\s+content="([^"]+)"/i);
-      const scontentMatch = html.match(/https?:\/\/[^\s"'\\]*scontent[^\s"'\\]*\.fbcdn\.net[^\s"'\\]*/gi);
-
-      const photoUrl = cleanU(ogImgMatch?.[1]) || cleanU(scontentMatch?.[0]);
-      if (photoUrl && !photoUrl.includes('static.xx.fbcdn.net') && !photoUrl.includes('fb_icon_325x325')) {
-        const buf = await fetchBuffer(photoUrl);
-        if (buf && buf.length > 5000) {
+    },
+    {
+      name: 'Online FBDownloader',
+      fn: async () => {
+        const fn = fbDownloader.default || fbDownloader;
+        const res = await fn(url);
+        const streamUrl = res?.hd || res?.sd || res?.url || res?.stream;
+        if (streamUrl) {
+          const buf = await fetchBuffer(streamUrl);
           return {
             success: true,
-            media: [{ type: 'image', url: photoUrl, buffer: buf }],
-            imageUrl: photoUrl,
-            buffer: buf,
-            title: 'Facebook Photo',
-            type: 'image'
+            media: [{ type: 'video', url: streamUrl, buffer: buf || undefined }],
+            buffer: buf || undefined,
+            videoUrl: streamUrl,
+            title: res?.title || 'Facebook Video',
+            type: 'video',
+            engine: 'online:fbdownloader'
           };
         }
+        return { success: false, message: 'fbDownloader kosong' };
+      }
+    },
+    {
+      name: 'Online Ab FBDown',
+      fn: async () => {
+        const res = await ab.fbdown(url);
+        const streamUrl = res?.HD || res?.Normal_video;
+        if (streamUrl) {
+          const buf = await fetchBuffer(streamUrl);
+          return {
+            success: true,
+            media: [{ type: 'video', url: streamUrl, buffer: buf || undefined }],
+            buffer: buf || undefined,
+            videoUrl: streamUrl,
+            title: 'Facebook Video',
+            type: 'video',
+            engine: 'online:ab'
+          };
+        }
+        return { success: false, message: 'Ab FBDown kosong' };
       }
     }
-  } catch (err) {
-    console.log('[MEDIA_HANDLER] FB Method 2 (HTML Scraper) failed:', err.message);
-  }
+  ];
 
-  // Method 3: Siputzx Facebook API (Foto & Video)
-  try {
-    const res = await axios.get(`https://api.siputzx.my.id/api/d/facebook?url=${encodeURIComponent(url)}`, {
-      headers: { 'User-Agent': getRandomUserAgent() },
-      timeout: 12000
-    });
-    if (res.data && res.data.data) {
-      const d = res.data.data;
-      const mediaUrl = d.video_hd || d.video_sd || d.url || (Array.isArray(d) ? d[0]?.url : d.image);
-      if (mediaUrl) {
-        const isVideo = mediaUrl.includes('.mp4') || Boolean(d.video_hd || d.video_sd);
-        const buf = await fetchBuffer(mediaUrl);
-        return {
-          success: true,
-          media: [{ type: isVideo ? 'video' : 'image', url: mediaUrl, buffer: buf || undefined }],
-          videoUrl: isVideo ? mediaUrl : undefined,
-          imageUrl: !isVideo ? mediaUrl : undefined,
-          buffer: buf || undefined,
-          title: d.title || 'Facebook Media',
-          type: isVideo ? 'video' : 'image'
-        };
-      }
-    }
-  } catch (err) {
-    console.log('[MEDIA_HANDLER] FB Method 3 (Siputzx) failed:', err.message);
-  }
-
-  // Method 4: @renpwn/fb-downloader library
-  try {
-    const fn = fbDownloader.default || fbDownloader;
-    const res = await fn(url);
-    const streamUrl = res?.hd || res?.sd || res?.url || res?.stream;
-    if (streamUrl) {
-      const buf = await fetchBuffer(streamUrl);
-      return { 
-        success: true, 
-        media: [{ type: 'video', url: streamUrl, buffer: buf || undefined }],
-        buffer: buf || undefined,
-        videoUrl: streamUrl, 
-        title: res?.title || 'Facebook Video',
-        type: 'video'
-      };
-    }
-  } catch (err) {
-    console.log('[MEDIA_HANDLER] FB Method 4 (fbDownloader) failed:', err.message);
-  }
-
-  return { 
-    success: false, 
-    message: '❌ Gagal mengunduh foto/video dari Facebook. Pastikan postingan bersifat publik dan link valid.' 
+  const result = await executeWithSelfHealing(providers, (p) => p.fn(), 30000);
+  return result?.success ? result : {
+    success: false,
+    message: result?.message || '❌ Gagal mengunduh foto/video dari Facebook. Pastikan postingan bersifat publik dan link valid.'
   };
 }
 
 /**
- * Download Twitter / X Video & Media (Photos & Videos)
+ * Download Twitter / X Video & Media — Offline Utama + Online Backup
  */
 export async function downloadTwitter(rawUrl) {
   const url = await expandCanonicalUrl(rawUrl);
-  // Method 1: yt-dlp CLI
-  try {
-    const data = await extractWithYtdlpJson(url);
-    if (data) {
-      const isVideo = data.ext === 'mp4' || (data.vcodec && data.vcodec !== 'none');
-      const itemUrl = isVideo ? pilihUrlLangsung(data) : (data.url || data.thumbnails?.[data.thumbnails.length - 1]?.url);
-      if (itemUrl) {
-        const buf = await fetchBuffer(itemUrl);
-        return {
-          success: true,
-          media: [{ type: isVideo ? 'video' : 'image', url: itemUrl, buffer: buf || undefined }],
-          buffer: buf || undefined,
-          videoUrl: isVideo ? itemUrl : undefined,
-          imageUrl: !isVideo ? itemUrl : undefined,
-          title: data.title || data.description || 'Twitter / X Media',
-          type: isVideo ? 'video' : 'image'
-        };
+
+  const providers = [
+    {
+      name: 'Offline Twitter yt-dlp JSON',
+      fn: async () => {
+        const data = await extractWithYtdlpJson(url);
+        return bentukHasilYtdlpDump(data, 'Twitter / X Media') || { success: false, message: 'yt-dlp JSON Twitter kosong' };
+      }
+    },
+    {
+      name: 'Offline Twitter yt-dlp Video',
+      fn: async () => {
+        const hasil = await downloadWithYtdlp(url, false);
+        if (hasil?.terlaluBesar) return hasil;
+        if (hasil?.buffer) {
+          return {
+            success: true,
+            media: [{ type: 'video', buffer: hasil.buffer }],
+            buffer: hasil.buffer,
+            title: hasil.title || 'Twitter / X Media',
+            type: 'video',
+            engine: 'offline:yt-dlp'
+          };
+        }
+        return { success: false, message: hasil?.message || 'Offline yt-dlp Twitter gagal' };
+      }
+    },
+    {
+      name: 'Online Siputzx Twitter',
+      fn: async () => {
+        const apiRes = await axios.get(`https://api.siputzx.my.id/api/d/twitter?url=${encodeURIComponent(url)}`, { timeout: 15000 });
+        if (apiRes.data?.status && apiRes.data?.data) {
+          const mediaData = apiRes.data.data;
+          const downloadUrl = mediaData.video_sd || mediaData.video_hd || mediaData.url || (Array.isArray(mediaData) ? mediaData[0]?.url : null);
+          if (downloadUrl) {
+            const isVideo = downloadUrl.includes('.mp4');
+            const buf = await fetchBuffer(downloadUrl);
+            return {
+              success: true,
+              media: [{ type: isVideo ? 'video' : 'image', url: downloadUrl, buffer: buf || undefined }],
+              buffer: buf || undefined,
+              videoUrl: isVideo ? downloadUrl : undefined,
+              imageUrl: !isVideo ? downloadUrl : undefined,
+              title: mediaData.title || 'Twitter / X Media',
+              type: isVideo ? 'video' : 'image',
+              engine: 'online:siputzx'
+            };
+          }
+        }
+        return { success: false, message: 'Siputzx Twitter kosong' };
+      }
+    },
+    {
+      name: 'Online Btch Twitter',
+      fn: async () => {
+        const res = await btch.twitter(url);
+        const downloadUrl = res?.url?.[0]?.hd || res?.url?.[0]?.sd || (typeof res?.url === 'string' ? res.url : null);
+        if (res?.status && downloadUrl) {
+          const buf = await fetchBuffer(downloadUrl);
+          return {
+            success: true,
+            media: [{ type: 'video', url: downloadUrl, buffer: buf || undefined }],
+            buffer: buf || undefined,
+            videoUrl: downloadUrl,
+            title: res.title || 'Twitter / X Media',
+            type: 'video',
+            engine: 'online:btch'
+          };
+        }
+        return { success: false, message: 'Btch Twitter kosong' };
       }
     }
-  } catch (e) {}
+  ];
 
-  // Method 2: unduh sungguhan lewat yt-dlp.
-  // Sebagian tweet hanya menyediakan HLS; yt-dlp yang menggabungkan segmennya
-  // jadi satu MP4 utuh. Tanpa langkah ini playlist-nya yang terkirim.
-  try {
-    const hasil = await downloadWithYtdlp(url, false);
-    if (hasil?.terlaluBesar) return { success: false, message: hasil.message };
-    if (hasil?.buffer) {
-      return {
-        success: true,
-        media: [{ type: 'video', buffer: hasil.buffer }],
-        buffer: hasil.buffer,
-        title: hasil.title || 'Twitter / X Media',
-        type: 'video'
-      };
-    }
-  } catch (err) {
-    console.log('[MEDIA_HANDLER] Twitter yt-dlp download failed:', err.message);
-  }
-
-  // Method 3: Third-party API fallback
-  try {
-    const apiRes = await axios.get(`https://api.siputzx.my.id/api/d/twitter?url=${encodeURIComponent(url)}`, { timeout: 15000 });
-    if (apiRes.data && apiRes.data.status && apiRes.data.data) {
-      const mediaData = apiRes.data.data;
-      const downloadUrl = mediaData.video_sd || mediaData.video_hd || mediaData.url || (Array.isArray(mediaData) ? mediaData[0]?.url : null);
-      if (downloadUrl) {
-        const isVideo = downloadUrl.includes('.mp4');
-        const buf = await fetchBuffer(downloadUrl);
-        return {
-          success: true,
-          media: [{ type: isVideo ? 'video' : 'image', url: downloadUrl, buffer: buf || undefined }],
-          buffer: buf || undefined,
-          videoUrl: isVideo ? downloadUrl : undefined,
-          imageUrl: !isVideo ? downloadUrl : undefined,
-          title: mediaData.title || 'Twitter / X Media',
-          type: isVideo ? 'video' : 'image'
-        };
-      }
-    }
-  } catch (apiErr) {
-    console.log('[MEDIA_HANDLER] Twitter API fallback failed:', apiErr.message);
-  }
-
-  return {
+  const result = await executeWithSelfHealing(providers, (p) => p.fn(), 30000);
+  return result?.success ? result : {
     success: false,
-    message: '❌ Gagal mengunduh media dari Twitter/X. Pastikan link publik dan tweet tidak dilindungi.'
+    message: result?.message || '❌ Gagal mengunduh media dari Twitter/X. Pastikan link publik dan tweet tidak dilindungi.'
   };
 }
 
 /**
- * Download Pinterest Photos & Videos
+ * Download Pinterest Photos & Videos — Offline Utama + Online Backup
  */
 export async function downloadPinterest(url) {
-  // Method 1: yt-dlp
-  try {
-    const data = await extractWithYtdlpJson(url);
-    if (data) {
-      const isVideo = data.ext === 'mp4' || (data.vcodec && data.vcodec !== 'none');
-      const itemUrl = isVideo ? pilihUrlLangsung(data) : (data.url || data.thumbnails?.[data.thumbnails.length - 1]?.url);
-      if (itemUrl) {
-        const buf = await fetchBuffer(itemUrl);
-        return {
-          success: true,
-          media: [{ type: isVideo ? 'video' : 'image', url: itemUrl, buffer: buf || undefined }],
-          buffer: buf || undefined,
-          videoUrl: isVideo ? itemUrl : undefined,
-          imageUrl: !isVideo ? itemUrl : undefined,
-          title: data.title || 'Pinterest Media',
-          type: isVideo ? 'video' : 'image'
-        };
+  const providers = [
+    {
+      name: 'Offline Pinterest yt-dlp',
+      fn: async () => {
+        const data = await extractWithYtdlpJson(url);
+        return bentukHasilYtdlpDump(data, 'Pinterest Media') || { success: false, message: 'yt-dlp Pinterest kosong' };
       }
-    }
-  } catch (e) {}
-
-  // Method 2: Siputzx Pinterest API
-  try {
-    const res = await axios.get(`https://api.siputzx.my.id/api/d/pinterest?url=${encodeURIComponent(url)}`, {
-      headers: { 'User-Agent': getRandomUserAgent() },
-      timeout: 10000
-    });
-    if (res.data && res.data.data) {
-      const d = res.data.data;
-      const mediaUrl = d.url || d.image || d.video || (Array.isArray(d) ? d[0] : null);
-      if (mediaUrl) {
-        const isVideo = mediaUrl.includes('.mp4');
-        const buf = await fetchBuffer(mediaUrl);
-        return {
-          success: true,
-          media: [{ type: isVideo ? 'video' : 'image', url: mediaUrl, buffer: buf || undefined }],
-          buffer: buf || undefined,
-          videoUrl: isVideo ? mediaUrl : undefined,
-          imageUrl: !isVideo ? mediaUrl : undefined,
-          title: 'Pinterest Media',
-          type: isVideo ? 'video' : 'image'
-        };
+    },
+    {
+      name: 'Offline Pinterest HTML Scraper',
+      fn: async () => {
+        const res = await axios.get(url, { headers: { 'User-Agent': getRandomUserAgent() }, timeout: 10000 });
+        if (res.data) {
+          const html = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
+          const ogImg = html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i) ||
+                        html.match(/<meta\s+name="og:image"\s+content="([^"]+)"/i) ||
+                        html.match(/https?:\/\/i\.pinimg\.com\/originals\/[^\s"']+/i) ||
+                        html.match(/https?:\/\/i\.pinimg\.com\/736x\/[^\s"']+/i);
+          if (ogImg) {
+            const imgUrl = (ogImg[1] || ogImg[0]).replace(/\\/g, '');
+            const buf = await fetchBuffer(imgUrl);
+            if (buf) {
+              return {
+                success: true,
+                media: [{ type: 'image', url: imgUrl, buffer: buf }],
+                buffer: buf,
+                imageUrl: imgUrl,
+                title: 'Pinterest Photo',
+                type: 'image',
+                engine: 'offline:html'
+              };
+            }
+          }
+        }
+        return { success: false, message: 'HTML Pinterest kosong' };
       }
-    }
-  } catch (e) {}
-
-  // Method 3: Direct HTML Open Graph Scraper
-  try {
-    const res = await axios.get(url, { headers: { 'User-Agent': getRandomUserAgent() }, timeout: 10000 });
-    if (res.data) {
-      const html = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
-      const ogImg = html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i) ||
-                    html.match(/<meta\s+name="og:image"\s+content="([^"]+)"/i) ||
-                    html.match(/https?:\/\/i\.pinimg\.com\/originals\/[^\s"']+/i) ||
-                    html.match(/https?:\/\/i\.pinimg\.com\/736x\/[^\s"']+/i);
-      if (ogImg) {
-        const imgUrl = (ogImg[1] || ogImg[0]).replace(/\\/g, '');
-        const buf = await fetchBuffer(imgUrl);
-        if (buf) {
+    },
+    {
+      name: 'Online Siputzx Pinterest',
+      fn: async () => {
+        const res = await axios.get(`https://api.siputzx.my.id/api/d/pinterest?url=${encodeURIComponent(url)}`, {
+          headers: { 'User-Agent': getRandomUserAgent() },
+          timeout: 10000
+        });
+        const d = res.data?.data;
+        const mediaUrl = d?.url || d?.image || d?.video || (Array.isArray(d) ? d[0] : null);
+        if (mediaUrl) {
+          const isVideo = mediaUrl.includes('.mp4');
+          const buf = await fetchBuffer(mediaUrl);
           return {
             success: true,
-            media: [{ type: 'image', url: imgUrl, buffer: buf }],
-            buffer: buf,
-            imageUrl: imgUrl,
-            title: 'Pinterest Photo',
-            type: 'image'
+            media: [{ type: isVideo ? 'video' : 'image', url: mediaUrl, buffer: buf || undefined }],
+            buffer: buf || undefined,
+            videoUrl: isVideo ? mediaUrl : undefined,
+            imageUrl: !isVideo ? mediaUrl : undefined,
+            title: 'Pinterest Media',
+            type: isVideo ? 'video' : 'image',
+            engine: 'online:siputzx'
           };
         }
+        return { success: false, message: 'Siputzx Pinterest kosong' };
+      }
+    },
+    {
+      name: 'Online Ab Pinterest',
+      fn: async () => {
+        const res = await ab.pinterest(url);
+        const mediaUrl = res?.result?.url || res?.url;
+        if (mediaUrl) {
+          const isVideo = String(mediaUrl).includes('.mp4');
+          const buf = await fetchBuffer(mediaUrl);
+          return {
+            success: true,
+            media: [{ type: isVideo ? 'video' : 'image', url: mediaUrl, buffer: buf || undefined }],
+            buffer: buf || undefined,
+            videoUrl: isVideo ? mediaUrl : undefined,
+            imageUrl: !isVideo ? mediaUrl : undefined,
+            title: 'Pinterest Media',
+            type: isVideo ? 'video' : 'image',
+            engine: 'online:ab'
+          };
+        }
+        return { success: false, message: 'Ab Pinterest kosong' };
       }
     }
-  } catch (e) {}
+  ];
 
-  return { success: false, message: '❌ Gagal mengunduh foto/video dari Pinterest.' };
+  const result = await executeWithSelfHealing(providers, (p) => p.fn(), 25000);
+  return result?.success ? result : {
+    success: false,
+    message: result?.message || '❌ Gagal mengunduh foto/video dari Pinterest.'
+  };
 }
 
 /**
@@ -2047,6 +2513,128 @@ export async function downloadUniversalMedia(url) {
   if (url.includes('pinterest.com') || url.includes('pin.it')) return await downloadPinterest(url);
   
   return { success: false, message: 'Platform media sosial ini belum didukung.' };
+}
+
+/**
+ * Helper bersama pengirim hasil unduhan ke WhatsApp (dipakai mediaRouter.js & auto-download bot.js).
+ * Mendukung foto tunggal, carousel/slide foto, video, dan otomatis mengirim audio latar terpisah
+ * untuk slide foto TikTok / IG agar pengguna dapat menyimpan foto dan audionya masing-masing.
+ */
+export async function kirimHasilUnduhanWA({
+  sock,
+  jid,
+  m,
+  res,
+  defaultTitle = 'Media',
+  headerCaption = null,
+  kirimAudioTerpisah = true,
+  maxItems = 15
+}) {
+  if (!res || !res.success) {
+    return { ok: false, terkirim: 0, gagal: [], pesanError: res?.message || 'Gagal mengunduh media dari link tersebut.' };
+  }
+
+  let mediaList = [];
+  if (Array.isArray(res.media) && res.media.length > 0) {
+    mediaList = res.media;
+  } else if (res.buffer || res.videoUrl || res.imageUrl || res.audioUrl) {
+    const isAudio = Boolean(res.audioUrl) && !res.videoUrl && !res.imageUrl;
+    const isVideo = Boolean(res.videoUrl) || res.type === 'video';
+    mediaList = [{
+      type: isAudio ? 'audio' : (isVideo ? 'video' : 'image'),
+      buffer: res.buffer,
+      url: res.videoUrl || res.imageUrl || res.audioUrl
+    }];
+  }
+
+  if (mediaList.length === 0) {
+    return { ok: false, terkirim: 0, gagal: [], pesanError: 'Media tidak ditemukan pada postingan ini.' };
+  }
+
+  const itemsToSend = mediaList.slice(0, maxItems);
+  const totalItems = itemsToSend.length;
+  const punyaFotoSlide = itemsToSend.some(it => it.type === 'image') || res.type === 'carousel';
+  const adaAudioSumber = Boolean(kirimAudioTerpisah && punyaFotoSlide && (res.audioUrl || res.audioBuffer));
+
+  let terkirim = 0;
+  let adaFotoTerkirim = false;
+  const gagal = [];
+
+  for (let i = 0; i < totalItems; i++) {
+    const item = itemsToSend[i];
+    const isFirst = terkirim === 0;
+    const countInfo = totalItems > 1 ? ` 📸 [${i + 1}/${totalItems}]` : '';
+
+    let caption;
+    if (isFirst) {
+      const barisJudul = res.title ? `📌 *${String(res.title).slice(0, 140)}*\n` : '';
+      const barisAuthor = res.author ? `👤 *Creator:* ${res.author}\n` : '';
+      const header = headerCaption ? `${headerCaption}\n\n` : '';
+      const catatanAudio = adaAudioSumber ? '\n🎵 _Audio latar slide dikirim terpisah di bawah._' : '';
+      caption = `${header}${barisJudul}${barisAuthor}✅ *Berhasil diunduh via Akbar Store Bot*${countInfo}${catatanAudio}`;
+    } else if (totalItems > 1) {
+      caption = `📸 *${defaultTitle}*${countInfo}`;
+    }
+
+    const siap = await siapkanMediaWA(item);
+    if (!siap || !siap.ok) {
+      gagal.push(siap);
+      continue;
+    }
+
+    const kutip = terkirim === 0 ? { quoted: m } : {};
+    if (siap.kategori === 'image') {
+      adaFotoTerkirim = true;
+      await sock.sendMessage(jid, { image: siap.buffer, mimetype: siap.mimetype, caption }, kutip);
+    } else if (siap.kategori === 'audio') {
+      await sock.sendMessage(jid, { audio: siap.buffer, mimetype: siap.mimetype, fileName: `${defaultTitle}.${siap.ext}` }, kutip);
+    } else {
+      await sock.sendMessage(jid, {
+        video: siap.buffer,
+        mimetype: 'video/mp4',
+        gifPlayback: siap.gifPlayback || undefined,
+        caption
+      }, kutip);
+    }
+    terkirim++;
+  }
+
+  let audioTerkirim = false;
+  const harusKirimAudioPisah = Boolean(kirimAudioTerpisah && (adaFotoTerkirim || punyaFotoSlide) && (res.audioUrl || res.audioBuffer));
+  if (terkirim > 0 && harusKirimAudioPisah) {
+    const siapAudio = await siapkanMediaWA({
+      buffer: res.audioBuffer,
+      url: res.audioUrl,
+      type: 'audio'
+    }).catch(() => null);
+
+    if (siapAudio?.ok) {
+      const namaDasar = String(res.audioTitle || res.title || `${defaultTitle}_Audio`)
+        .replace(/[^a-zA-Z0-9 _.-]/g, '')
+        .trim()
+        .slice(0, 48) || 'Slide_Audio';
+      await sock.sendMessage(jid, {
+        audio: siapAudio.buffer,
+        mimetype: siapAudio.mimetype,
+        fileName: `${namaDasar}.${siapAudio.ext}`
+      });
+      audioTerkirim = true;
+    }
+  }
+
+  if (terkirim > 0 && mediaList.length > maxItems) {
+    await sock.sendMessage(jid, {
+      text: `ℹ️ Menampilkan ${maxItems} dari ${mediaList.length} item slide agar tidak melebihi batas kirim sekaligus.`
+    });
+  }
+
+  return {
+    ok: terkirim > 0,
+    terkirim,
+    audioTerkirim,
+    gagal,
+    totalDipilih: totalItems
+  };
 }
 
 /**

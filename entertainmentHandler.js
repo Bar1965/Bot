@@ -227,41 +227,60 @@ export async function createShortLink(url) {
 export async function getWeather(city) {
   try {
     const geoUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=id`;
-    const resGeo = await fetch(geoUrl);
+    const resGeo = await fetch(geoUrl, { signal: AbortSignal.timeout(8000) });
     const geoData = await resGeo.json();
 
     if (!geoData.results || geoData.results.length === 0) {
       return { success: false, message: `Kota *${city}* tidak ditemukan. Coba ketik nama kota lain.` };
     }
 
-    const { name, country, latitude, longitude } = geoData.results[0];
-    const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current_weather=true`;
-    const resW = await fetch(weatherUrl);
+    const { name, admin1, country, latitude, longitude } = geoData.results[0];
+    const weatherUrl =
+      `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}` +
+      `&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m` +
+      `&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto&forecast_days=1`;
+    const resW = await fetch(weatherUrl, { signal: AbortSignal.timeout(8000) });
     const wData = await resW.json();
 
-    const curr = wData.current_weather;
-    const temp = curr.temperature;
-    const wind = curr.windspeed;
-    const code = curr.weathercode;
+    const curr = wData.current || {};
+    const temp = curr.temperature_2m ?? '-';
+    const feels = curr.apparent_temperature;
+    const humidity = curr.relative_humidity_2m;
+    const wind = curr.wind_speed_10m ?? '-';
+    const code = curr.weather_code;
+    const maxT = wData.daily?.temperature_2m_max?.[0];
+    const minT = wData.daily?.temperature_2m_min?.[0];
+    const rainProb = wData.daily?.precipitation_probability_max?.[0];
 
-    // Interpretation weather code
-    let desc = 'Cerah / Berawan';
-    if (code === 0) desc = '☀️ Cerah';
-    else if ([1, 2, 3].includes(code)) desc = 'Partially Cloudy ⛅';
-    else if ([45, 48].includes(code)) desc = 'Berabut / Fog 🌫️';
-    else if ([51, 53, 55, 61, 63, 65].includes(code)) desc = 'Hujan Gerimis 🌧️';
-    else if ([80, 81, 82, 95, 96, 99].includes(code)) desc = 'Hujan Deras / Badai ⛈️';
+    const deskripsiKode = (c) => {
+      if (c === 0) return '☀️ Cerah';
+      if ([1, 2].includes(c)) return '⛅ Cerah Berawan';
+      if (c === 3) return '☁️ Mendung / Berawan';
+      if ([45, 48].includes(c)) return '🌫️ Berkabut';
+      if ([51, 53, 55, 56, 57].includes(c)) return '🌦️ Gerimis';
+      if ([61, 63, 65, 66, 67].includes(c)) return '🌧️ Hujan';
+      if ([71, 73, 75, 77].includes(c)) return '❄️ Salju';
+      if ([80, 81, 82].includes(c)) return '🌧️ Hujan Lebat';
+      if ([95, 96, 99].includes(c)) return '⛈️ Hujan Petir / Badai';
+      return '🌤️ Berawan';
+    };
 
-    const info = `🌤️ *Prakiraan Cuaca Terkini*
-📍 *Lokasi:* ${name}, ${country || 'ID'}
-🌡️ *Suhu:* ${temp}°C
-💧 *Kondisi:* ${desc}
-💨 *Kecepatan Angin:* ${wind} km/j`;
+    const lokasiParts = [name, (admin1 && admin1 !== name) ? admin1 : null, country].filter(Boolean);
+    const infoLines = [
+      '🌤️ *PRAKIRAAN CUACA TERKINI*',
+      `📍 *Lokasi:* ${lokasiParts.join(', ')}`,
+      `🌡️ *Suhu:* ${temp}°C${feels !== undefined ? ` (terasa ${feels}°C)` : ''}`,
+      `💧 *Kondisi:* ${deskripsiKode(code)}`,
+      humidity !== undefined ? `💦 *Kelembapan:* ${humidity}%` : null,
+      `💨 *Angin:* ${wind} km/j`,
+      (minT !== undefined && maxT !== undefined) ? `📊 *Hari ini:* ${minT}°C – ${maxT}°C` : null,
+      rainProb !== undefined ? `☔ *Peluang hujan:* ${rainProb}%` : null
+    ].filter(Boolean);
 
-    return { success: true, text: info };
+    return { success: true, text: infoLines.join('\n') };
   } catch (err) {
     console.error('[WEATHER_ERR]', err.message);
-    return { success: false, message: err.message };
+    return { success: false, message: 'Gagal menghubungi layanan cuaca. Coba lagi sebentar.' };
   }
 }
 
@@ -717,6 +736,89 @@ export async function convertVoiceEffect(audioBuffer, effectType = 'torebot') {
   } catch (err) {
     console.error('[VOICE_EFFECT_ERR]', err.message);
     return { success: false, message: err.message };
+  }
+}
+
+/**
+ * 12. QR Code Generator (.qr, .qrstiker)
+ */
+export async function buatKodeQr(teks) {
+  const isi = String(teks || '').trim();
+  if (!isi) {
+    return { success: false, message: 'Teks atau link QR tidak boleh kosong.' };
+  }
+  if (isi.length > 1500) {
+    return { success: false, message: 'Teks terlalu panjang untuk QR Code (maksimal 1.500 karakter).' };
+  }
+  try {
+    const QRCode = (await import('qrcode')).default;
+    const buffer = await QRCode.toBuffer(isi, {
+      type: 'png',
+      width: 512,
+      margin: 2,
+      errorCorrectionLevel: 'M',
+      color: { dark: '#000000', light: '#FFFFFF' }
+    });
+    return { success: true, buffer, isi };
+  } catch (err) {
+    console.error('[QR_GEN_ERR]', err.message);
+    return { success: false, message: 'Gagal membuat QR Code.' };
+  }
+}
+
+const FUNGSI_CALC_TERLARANG = /\b(range|ones|zeros|identity|diag|sparse|createUnit|import|evaluate|parse|compile|simplify|derivative|resolve)\b/i;
+
+/**
+ * 13. Kalkulator Matematika (.calc, .hitung)
+ */
+export async function hitungEkspresiMatematika(ekspresiRaw) {
+  const mentah = String(ekspresiRaw || '').trim();
+  if (!mentah) {
+    return { success: false, message: 'Ekspresi matematika tidak boleh kosong.' };
+  }
+  if (mentah.length > 200) {
+    return { success: false, message: 'Ekspresi terlalu panjang (maksimal 200 karakter).' };
+  }
+  if (FUNGSI_CALC_TERLARANG.test(mentah)) {
+    return { success: false, message: 'Ekspresi memuat fungsi yang tidak diizinkan.' };
+  }
+  // Cegah notasi range `1:1000000`
+  if (/\d\s*:\s*\d/.test(mentah)) {
+    return { success: false, message: 'Notasi rentang `:` tidak didukung. Gunakan `/` untuk pembagian.' };
+  }
+
+  const dinormalisasi = mentah
+    .replace(/×/g, '*')
+    .replace(/÷/g, '/')
+    .replace(/−/g, '-');
+
+  try {
+    const { evaluate, format } = await import('mathjs');
+    const hasil = evaluate(dinormalisasi);
+
+    if (hasil === undefined || typeof hasil === 'function') {
+      return { success: false, message: 'Ekspresi tidak menghasilkan nilai.' };
+    }
+    if (Array.isArray(hasil) || hasil?.isMatrix) {
+      const str = String(hasil);
+      if (str.length > 300) {
+        return { success: false, message: 'Hasil matriks terlalu besar untuk ditampilkan.' };
+      }
+      return { success: true, ekspresi: mentah, hasilTeks: str, formatIndo: null };
+    }
+    if (typeof hasil === 'number') {
+      if (!Number.isFinite(hasil)) {
+        return { success: false, message: 'Hasil tak terhingga (Infinity / pembagian dengan nol).' };
+      }
+      const tepat = format(hasil, { precision: 14 });
+      const formatIndo = Math.abs(hasil) >= 1000 && Math.abs(hasil) < 1e15
+        ? hasil.toLocaleString('id-ID', { maximumFractionDigits: 6 })
+        : null;
+      return { success: true, ekspresi: mentah, hasilTeks: tepat, formatIndo };
+    }
+    return { success: true, ekspresi: mentah, hasilTeks: String(hasil), formatIndo: null };
+  } catch (err) {
+    return { success: false, message: `Ekspresi tidak valid: ${err.message}` };
   }
 }
 

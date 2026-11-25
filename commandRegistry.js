@@ -288,8 +288,8 @@ const categories = {
       {
         title: '📥 UNDUH MEDIA',
         items: [
-          ['.tt / .ig / .fb / .yt / .pin <link>', 'Unduh video, reels & slide'],
-          ['.ytmp3 <link>', 'Ambil audionya saja dari link YouTube'],
+          ['.tt / .ig / .fb / .yt / .pin <link>', 'Unduh video, slide foto & audio pisah'],
+          ['.ttmp3 / .igmp3 / .ytmp3 <link>', 'Ambil audionya saja (TikTok/IG/YT)'],
           ['.play / .song <judul>', 'MP3 Offline Player + Cover & Lirik'],
           ['.canvas <judul>', 'Video vertikal 9:16 Spotify Canvas'],
           ['.play zip <judul>', 'Paket ZIP lagu, lirik & cover HD'],
@@ -308,16 +308,20 @@ const categories = {
           ['.brat <teks>', 'Stiker teks gaya Brat'],
           ['.hd / .remini', 'Perjelas foto buram jadi HD'],
           ['.draw <prompt>', 'Gambar AI dari deskripsi teks'],
+          ['.qr / .qrstiker <teks>', 'Buat QR Code (gambar atau stiker)'],
           ['.meme atas | bawah', 'Buat meme dari foto'],
           ['.getpp / .colongpp', 'Ambil foto profil kualitas HD']
         ]
       },
       {
-        title: '🔊 AUDIO & TEKS',
+        title: '🔊 AUDIO, TEKS & UTILITAS',
         items: [
           ['.tts <teks>', 'Ubah teks jadi voice note'],
           ['.tomp3 / .tovn', 'Ekstrak audio dari video'],
           ['.tr <bahasa> <teks>', 'Terjemahkan teks'],
+          ['.cuaca <kota>', 'Prakiraan cuaca kota hari ini'],
+          ['.short <link>', 'Perpendek URL panjang jadi singkat'],
+          ['.calc / .hitung <rumus>', 'Kalkulator cepat & fungsi sains'],
           ['.sholat <kota>', 'Jadwal sholat wilayahmu'],
           ['.menfess <nomor> | <teks>', 'Kirim pesan anonim']
         ]
@@ -384,6 +388,7 @@ const categories = {
         title: '🤖 FITUR VIP',
         items: [
           ['.ai / .tanya <teks>', 'Tanya AI Gemini (bisa reply foto)'],
+          ['.ringkas [teks/reply]', 'Ringkas teks panjang atau PDF (AI)'],
           ['.transkrip', 'Ubah VN/audio jadi teks otomatis (AI)'],
           ['.remind <waktu> <pesan>', 'Asisten pengingat tugas via DM'],
           ['.wishlist add <kode>', 'Notif DM saat produk restock']

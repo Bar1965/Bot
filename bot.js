@@ -2480,68 +2480,32 @@ _Kuota berganti tengah malam WIB. Ketik *.premium* untuk jatah lebih besar._`,
               await db.setCooldown(jid, 'AUTODL', 30 * 1000);
             }
 
-            if (tiktokMatch) {
-              const url = tiktokMatch[0].replace(/[)\]}>.,!]+$/, '');
+            if (tiktokMatch || igMatch) {
+              const isTiktokAuto = Boolean(tiktokMatch);
+              const url = (tiktokMatch ? tiktokMatch[0] : igMatch[0]).replace(/[)\]}>.,!]+$/, '');
+              const labelPlatform = isTiktokAuto ? 'TikTok' : 'Instagram';
               try {
                 await sock.sendMessage(jid, { react: { text: '⏳', key: m.key } });
-                const res = await mediaHandler.downloadTikTok(url);
-                if (res && res.success) {
-                  const mediaList = (Array.isArray(res.media) && res.media.length > 0) ? res.media : [
-                    { type: res.type || (res.videoUrl ? 'video' : 'image'), buffer: res.buffer, url: res.videoUrl || res.imageUrl }
-                  ];
-                  const items = mediaList.slice(0, 10);
-                  for (let i = 0; i < items.length; i++) {
-                    const it = items[i];
-                    const countInfo = items.length > 1 ? ` [${i + 1}/${items.length}]` : '';
-                    const caption = i === 0 ? `✨ *AUTO-DOWNLOAD TIKTOK* ⚡\n\n📌 *Judul:* ${res.title || 'TikTok Media'}${res.author ? `\n👤 *Creator:* ${res.author}` : ''}\n✅ *Diproses via Akbar Store Bot*${countInfo}` : `📸 *TikTok Media*${countInfo}`;
-                    const siap = await mediaHandler.siapkanMediaWA(it);
-                    if (!siap?.ok) continue;
-                    if (siap.kategori === 'image') {
-                      await sock.sendMessage(jid, { image: siap.buffer, mimetype: siap.mimetype, caption }, { quoted: i === 0 ? m : undefined });
-                    } else if (siap.kategori === 'audio') {
-                      await sock.sendMessage(jid, { audio: siap.buffer, mimetype: siap.mimetype }, { quoted: i === 0 ? m : undefined });
-                    } else {
-                      await sock.sendMessage(jid, { video: siap.buffer, mimetype: 'video/mp4', gifPlayback: siap.gifPlayback || undefined, caption }, { quoted: i === 0 ? m : undefined });
-                    }
-                  }
+                const res = isTiktokAuto
+                  ? await mediaHandler.downloadTikTok(url)
+                  : await mediaHandler.downloadInstagram(url);
+                const kirim = await mediaHandler.kirimHasilUnduhanWA({
+                  sock,
+                  jid,
+                  m,
+                  res,
+                  defaultTitle: `${labelPlatform} Media`,
+                  headerCaption: `✨ *AUTO-DOWNLOAD ${labelPlatform.toUpperCase()}* ⚡`,
+                  kirimAudioTerpisah: true
+                });
+                if (kirim.ok) {
                   await sock.sendMessage(jid, { react: { text: '✅', key: m.key } });
                   continue;
-                } else {
-                  await sock.sendMessage(jid, { react: { text: '', key: m.key } });
                 }
-              } catch (e) {
-                console.error('[AUTO_DL_TT_ERR]', e.message);
                 try { await sock.sendMessage(jid, { react: { text: '', key: m.key } }); } catch (_) {}
-              }
-            } else if (igMatch) {
-              const url = igMatch[0];
-              try {
-                await sock.sendMessage(jid, { react: { text: '⏳', key: m.key } });
-                const res = await mediaHandler.downloadInstagram(url);
-                if (res && res.success) {
-                  const mediaList = (Array.isArray(res.media) && res.media.length > 0) ? res.media : [
-                    { type: res.type || (res.videoUrl ? 'video' : 'image'), buffer: res.buffer, url: res.videoUrl || res.imageUrl }
-                  ];
-                  const items = mediaList.slice(0, 10);
-                  for (let i = 0; i < items.length; i++) {
-                    const it = items[i];
-                    const countInfo = items.length > 1 ? ` [${i + 1}/${items.length}]` : '';
-                    const caption = i === 0 ? `✨ *AUTO-DOWNLOAD INSTAGRAM* ⚡\n\n📌 *Judul:* ${res.title || 'Instagram Media'}\n✅ *Diproses via Akbar Store Bot*${countInfo}` : `📸 *Instagram Media*${countInfo}`;
-                    const siap = await mediaHandler.siapkanMediaWA(it);
-                    if (!siap?.ok) continue;
-                    if (siap.kategori === 'image') {
-                      await sock.sendMessage(jid, { image: siap.buffer, mimetype: siap.mimetype, caption }, { quoted: i === 0 ? m : undefined });
-                    } else if (siap.kategori === 'audio') {
-                      await sock.sendMessage(jid, { audio: siap.buffer, mimetype: siap.mimetype }, { quoted: i === 0 ? m : undefined });
-                    } else {
-                      await sock.sendMessage(jid, { video: siap.buffer, mimetype: 'video/mp4', gifPlayback: siap.gifPlayback || undefined, caption }, { quoted: i === 0 ? m : undefined });
-                    }
-                  }
-                  await sock.sendMessage(jid, { react: { text: '✅', key: m.key } });
-                  continue;
-                }
               } catch (e) {
-                console.error('[AUTO_DL_IG_ERR]', e.message);
+                console.error(`[AUTO_DL_${isTiktokAuto ? 'TT' : 'IG'}_ERR]`, e.message);
+                try { await sock.sendMessage(jid, { react: { text: '', key: m.key } }); } catch (_) {}
               }
             }
           }

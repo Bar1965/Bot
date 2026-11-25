@@ -195,6 +195,7 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
 
   const knownPremCmds = [
     'ocr', 'ai', 'gemini', 'tanya', 'tanyaai', 'askai', 'resetai',
+    'ringkas', 'rangkum', 'summarize',
     'transkrip', 'stt', 'voicetotext', 'audiototext',
     'remind', 'ingat', 'reminder',
     'lapak', 'jual', 'claimvoucher', 'klaimvoucher', 'vouchergobay',
@@ -223,12 +224,22 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
     const isFromGroup = jid.endsWith('@g.us');
     const groupSettings = isFromGroup ? await db.getGroupSettings(jid) : {};
     if (isFromGroup && groupSettings.features_config && groupSettings.features_config.ai === false) return false;
-    if (['ocr', 'ai', 'gemini', 'tanya', 'tanyaai', 'askai'].includes(cmd)) {
+    if (['ocr', 'ai', 'gemini', 'tanya', 'tanyaai', 'askai', 'ringkas', 'rangkum', 'summarize'].includes(cmd)) {
 
     const isOcr = cmd === 'ocr';
+    const isRingkas = ['ringkas', 'rangkum', 'summarize'].includes(cmd);
     const promptText = args.slice(1).join(' ').trim();
-    const quotedMedia = messageObj?.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage || messageObj?.message?.extendedTextMessage?.contextInfo?.quotedMessage?.documentMessage;
-    const directMedia = messageObj?.message?.imageMessage || messageObj?.message?.documentMessage;
+    const quotedRaw = messageObj?.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+    const quotedText = (
+      quotedRaw?.conversation ||
+      quotedRaw?.extendedTextMessage?.text ||
+      quotedRaw?.imageMessage?.caption ||
+      quotedRaw?.videoMessage?.caption ||
+      quotedRaw?.documentWithCaptionMessage?.message?.documentMessage?.caption ||
+      ''
+    ).trim();
+    const quotedMedia = quotedRaw?.imageMessage || quotedRaw?.documentMessage || quotedRaw?.documentWithCaptionMessage?.message?.documentMessage;
+    const directMedia = messageObj?.message?.imageMessage || messageObj?.message?.documentMessage || messageObj?.message?.documentWithCaptionMessage?.message?.documentMessage;
     const hasImage = !!(quotedMedia || directMedia);
 
     if (isOcr) {
@@ -248,7 +259,19 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
       }
     }
 
-    if (!isOcr && !promptText && !hasImage) {
+    if (isRingkas && !hasImage && !quotedText && promptText.length < 40) {
+      await sock.sendMessage(jid, {
+        text:
+          '📝 *RINGKAS TEKS & DOKUMEN (AI)*\n\n' +
+          '💡 *Cara Pakai:*\n' +
+          '• Balas (reply) pesan panjang / foto catatan / PDF dengan `.ringkas`\n' +
+          '• Atau ketik `.ringkas <teks panjang minimal 40 karakter>`\n' +
+          '• Bisa tambah fokus saat reply: `.ringkas buat jadi 3 poin utama`'
+      }, { quoted: messageObj });
+      return true;
+    }
+
+    if (!isOcr && !isRingkas && !promptText && !hasImage) {
       await sock.sendMessage(jid, {
         text: '🤖 *AI ASSISTANT GEMINI* 🤖\n\n💡 *Cara Pakai:*\n• Ketik `.ai [pertanyaan]` untuk tanya AI.\n• Reply foto/PDF dengan `.ai [instruksi]` untuk analisis.\n\n*Contoh:* `.ai jelaskan hukum newton secara ringkas`'
       }, { quoted: messageObj });
@@ -267,7 +290,10 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
       return true;
     }
 
-    await sock.sendMessage(jid, { text: isOcr ? '💡 _Sedang mengekstrak teks (OCR)..._' : '🤖 _Sedang berpikir..._' }, { quoted: messageObj });
+    const pesanProses = isOcr
+      ? '💡 _Sedang mengekstrak teks (OCR)..._'
+      : (isRingkas ? '📝 _Sedang meringkas dengan AI..._' : '🤖 _Sedang berpikir..._');
+    await sock.sendMessage(jid, { text: pesanProses }, { quoted: messageObj });
 
     try {
       const { askGeminiText, askGeminiVision, askGeminiOCR } = await import('./src/ai/geminiService.js');
@@ -340,6 +366,33 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
                 aiResponse = await askGeminiOCR({ imageBuffer: imgBuffer, mimeType });
               }
            }
+        } else if (isRingkas) {
+           const isPdf = mimeType.includes('pdf') || imgBuffer.toString('utf8', 0, 4) === '%PDF';
+           const instruksiTambahan = promptText ? `\nInstruksi khusus pengguna: ${promptText}` : '';
+           const promptRingkas =
+             'Ringkas isi dokumen/gambar berikut dalam Bahasa Indonesia yang jelas, padat, dan terstruktur ' +
+             'menggunakan poin-poin inti khas WhatsApp (maksimal 5–7 poin, jangan mengarang fakta di luar isi).' +
+             instruksiTambahan;
+
+           if (isPdf) {
+             let extractedText = '';
+             try {
+               const { createRequire } = await import('module');
+               const require = createRequire(import.meta.url);
+               const pdfParse = require('pdf-parse');
+               const res = await pdfParse(imgBuffer);
+               extractedText = (res.text || '').replace(/-- \d+ of \d+ --/g, '').trim();
+             } catch (_) {}
+
+             if (extractedText.length > 20) {
+               const bahan = extractedText.slice(0, 15000);
+               aiResponse = await askGeminiText({ prompt: `${promptRingkas}\n\n---\n${bahan}` });
+             } else {
+               aiResponse = await askGeminiVision({ prompt: promptRingkas, imageBuffer: imgBuffer, mimeType: 'application/pdf' });
+             }
+           } else {
+             aiResponse = await askGeminiVision({ prompt: promptRingkas, imageBuffer: imgBuffer, mimeType });
+           }
         } else {
            aiResponse = await askGeminiVision({
              prompt: promptText || 'Analisis dan jelaskan isi dokumen/gambar ini dengan jelas dan ringkas.',
@@ -347,6 +400,15 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
              mimeType
            });
         }
+      } else if (isRingkas) {
+        const sumberTeks = (quotedText || promptText).slice(0, 15000);
+        const fokus = quotedText && promptText ? `\nInstruksi khusus pengguna: ${promptText}` : '';
+        const promptRingkasTeks =
+          'Ringkas teks berikut dalam Bahasa Indonesia yang jelas, padat, dan terstruktur ' +
+          'dalam bentuk poin-poin inti khas WhatsApp (maksimal 5–7 poin, hanya berdasarkan teks yang diberikan).' +
+          fokus +
+          `\n\nTeks:\n${sumberTeks}`;
+        aiResponse = await askGeminiText({ prompt: promptRingkasTeks });
       } else {
         // Conversational AI context
         const session = aiContextMap.get(senderNumber) || { messages: [], lastActive: Date.now() };
@@ -376,7 +438,9 @@ export async function handlePremiumCommand({ sock, jid, senderNumber, messageObj
       await db.incrementAiUsage(senderNumber);
       const remaining = benefits.aiDailyLimit - (usedCount + 1);
 
-      const header = isOcr ? '📄 *HASIL EKSTRAK TEKS (OCR)*' : '🤖 *AI ASSISTANT RESPONSE*';
+      const header = isOcr
+        ? '📄 *HASIL EKSTRAK TEKS (OCR)*'
+        : (isRingkas ? '📝 *RINGKASAN AI*' : '🤖 *AI ASSISTANT RESPONSE*');
       const formattedReply = `${header}\n━━━━━━━━━━━━━━━━━━━━\n\n${aiResponse}\n\n━━━━━━━━━━━━━━━━━━━━\n💡 _Sisa kuota AI hari ini: ${remaining}/${benefits.aiDailyLimit}_`;
       await sock.sendMessage(jid, { text: formattedReply }, { quoted: messageObj });
     } catch (err) {
