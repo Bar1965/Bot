@@ -25,6 +25,20 @@ import * as ent from '../../entertainmentHandler.js';
 import { getPremiumBenefits } from '../../premiumHandler.js';
 import { formatTunggu } from '../utils/pembatasLaju.js';
 import { createSpotifyLyricsCard, createSpotifyCanvasImage } from '../../cardGenerator.js';
+import {
+  pasangDukunganStikerSuaraProto,
+  deteksiWebpAnimasi,
+  hitungDurasiWebpMs,
+  buatStikerVideoCepat,
+  mediaPunyaTrekAudio,
+  ambilInfoAudioProbe,
+  siapkanAudioOpusStiker,
+  kirimStikerBersuara,
+  unboxPesanMedia,
+  ambilKonteksQuoted,
+  selesaikanAudioCustom,
+  bukaSesiStikerSuara
+} from '../utils/soundSticker.js';
 
 /**
  * Bongkar pembungkus pesan WhatsApp (ephemeral, viewOnce, viewOnceV2, documentWithCaption)
@@ -50,6 +64,8 @@ function unboxMessage(rawMsg) {
 }
 
 export function createMediaRouter(ctx) {
+  pasangDukunganStikerSuaraProto();
+
   const {
     sock,
     botSettings,
@@ -160,14 +176,14 @@ export function createMediaRouter(ctx) {
    * Pembungkus tipis di depan handler media yang sebenarnya: memeriksa jatah,
    * lalu memegang satu slot unduhan sampai perintahnya benar-benar selesai.
    */
-  async function handleMediaCommands(jid, senderNumber, m, msgText, isAdmin = false, isOwner = false, isStoreAdmin = false) {
+  async function handleMediaCommands(jid, senderNumber, m, msgText, isAdmin = false, isOwner = false, isStoreAdmin = false, senderNormalizedArg = null) {
     const teks = (msgText || '').trim();
     const isPrefixMedia = teks.startsWith('.') || teks.startsWith('/') || teks.startsWith('#');
     if (!isPrefixMedia) return false;
 
     const bagian = teks.split(/\s+/);
     const perintah = bagian[0].toLowerCase().replace(/^[./#]/, '');
-    const teruskan = () => handleMediaCommandsInti(jid, senderNumber, m, msgText, isAdmin, isOwner, isStoreAdmin);
+    const teruskan = () => handleMediaCommandsInti(jid, senderNumber, m, msgText, isAdmin, isOwner, isStoreAdmin, senderNormalizedArg);
 
     // Owner & Admin Toko tidak dijatah — merekalah yang membayar internetnya.
     if (!PERINTAH_MEDIA_BERAT.includes(perintah) || isOwner || isStoreAdmin) return teruskan();
@@ -189,7 +205,8 @@ export function createMediaRouter(ctx) {
     }
   }
 
-  async function handleMediaCommandsInti(jid, senderNumber, m, msgText, isAdmin = false, isOwner = false, isStoreAdmin = false) {
+  async function handleMediaCommandsInti(jid, senderNumber, m, msgText, isAdmin = false, isOwner = false, isStoreAdmin = false, senderNormalizedArg = null) {
+    const senderSesi = senderNormalizedArg || senderNumber;
     const textTrim = (msgText || '').trim();
     if (!textTrim) return false;
     const isPrefix = textTrim.startsWith('.') || textTrim.startsWith('/') || textTrim.startsWith('#');
@@ -216,6 +233,8 @@ export function createMediaRouter(ctx) {
     // membuatnya bisa diturunkan otomatis dari registry.
     const knownMediaCmds = [
       'hd', 'remini', 'upscale', 'stiker', 'sticker', 's', 'gif', 'sgif', 'toimg', 'unstick', 'toimage', 'tovideo', 'tovid', 'togif',
+      'stikersuara', 'stickersuara', 'soundsticker', 'stikerbersuara', 'suarastiker', 'stikertandem',
+      'addsound', 'simpansound', 'savesound', 'listsound', 'soundlist', 'delsound', 'hapussound',
       'getpp', 'colongpp', 'curipp', 'pp', 'ambilpp', 'stikerpp', 'stickerpp', 'spp',
       'qc', 'quote', 'brat', 'meme', 'smeme', 'draw', 'aiimg',
       'ssweb', 'ss', 'khodam', 'tts', 'shortlink', 'short', 'cuaca', 'invoice', 'struk',
@@ -592,6 +611,288 @@ export function createMediaRouter(ctx) {
         console.error("[STICKER_ERR]", err.message);
         await sock.sendMessage(jid, { text: `❌ Gagal membuat stiker. Pastikan file media tidak rusak.` });
       }
+      return true;
+    }
+
+    // 5b. Stiker Bersuara / Sound Sticker (.stikersuara, .stickersuara, .soundsticker, .stikertandem)
+    if (['stikersuara', 'stickersuara', 'soundsticker', 'stikerbersuara', 'suarastiker', 'stikertandem'].includes(cleanCmd)) {
+      const direct = unboxPesanMedia(m.message);
+      const { ctxInfo, quoted } = ambilKonteksQuoted(direct);
+
+      const deteksiJenisVisual = (msg) => {
+        if (!msg) return null;
+        if (msg.videoMessage) return 'video';
+        if (msg.imageMessage || msg.documentMessage?.mimetype?.startsWith('image/')) return 'image';
+        if (msg.stickerMessage) return 'sticker';
+        return null;
+      };
+
+      const deteksiSumberAudioMedia = (msg) => {
+        if (!msg) return null;
+        if (msg.audioMessage || msg.documentMessage?.mimetype?.startsWith('audio/')) return 'audio';
+        if (msg.stickerMessage?.audioMessage) return 'sticker_audio';
+        if (msg.videoMessage) return 'video';
+        return null;
+      };
+
+      const buatObjekDownload = (msgObj, apakahDirect) => {
+        if (apakahDirect) return m;
+        return {
+          key: {
+            remoteJid: jid,
+            id: ctxInfo?.stanzaId,
+            participant: ctxInfo?.participant
+          },
+          message: msgObj
+        };
+      };
+
+      const tokenArg = args.slice(1);
+      const flagTandem = cleanCmd === 'stikertandem' || tokenArg.some(t => ['tandem', '--tandem', 'vn', '--vn'].includes(t.toLowerCase()));
+      const modeKirim = flagTandem ? 'tandem' : 'native';
+      const teksInput = tokenArg
+        .filter(t => !['tandem', '--tandem', 'native', '--native', 'vn', '--vn'].includes(t.toLowerCase()))
+        .join(' ')
+        .trim();
+
+      const visualDirect = deteksiJenisVisual(direct);
+      const visualQuoted = deteksiJenisVisual(quoted);
+      const sumberVisual = visualDirect ? { jenis: visualDirect, msg: direct, apakahDirect: true }
+        : (visualQuoted ? { jenis: visualQuoted, msg: quoted, apakahDirect: false } : null);
+
+      if (!sumberVisual) {
+        await sock.sendMessage(jid, {
+          text: "🔊 *CARA PAKAI STIKER BERSUARA* 🎨\n\n" +
+            "1️⃣ *Mode Cepat (Video):* Kirim/balas video bersuara dengan `.stikersuara`\n" +
+            "2️⃣ *Foto + VN/MP3 Custom:* Kirim/balas foto dengan `.stikersuara`, lalu kirim *Voice Note / MP3* Anda!\n" +
+            "3️⃣ *Foto + Link Sound:* Balas foto dengan `.stikersuara https://www.myinstants.com/...` atau link `.mp3`\n" +
+            "4️⃣ *Foto + Koleksi Sound:* Balas foto dengan `.stikersuara @nama` (simpan via `.addsound`)\n" +
+            "5️⃣ *Foto + Suara Teks:* Balas foto dengan `.stikersuara halo semuanya`\n\n" +
+            "💡 _Tips:_ Tambahkan `tandem` (`.stikersuara tandem`) bila HP penerima belum mendukung WhatsApp Sound Sticker native."
+        });
+        return true;
+      }
+
+      try {
+        await react('⏳');
+
+        const visualTarget = buatObjekDownload(
+          sumberVisual.jenis === 'video' ? { videoMessage: sumberVisual.msg.videoMessage }
+            : (sumberVisual.jenis === 'sticker' ? { stickerMessage: sumberVisual.msg.stickerMessage }
+              : (sumberVisual.msg.imageMessage ? { imageMessage: sumberVisual.msg.imageMessage } : sumberVisual.msg)),
+          sumberVisual.apakahDirect
+        );
+        const visualBuffer = await downloadMediaMessage(visualTarget, 'buffer', {});
+
+        let stickerBuffer;
+        let isAnimated = false;
+        let durasiWebpMs = 0;
+        if (sumberVisual.jenis === 'sticker') {
+          stickerBuffer = visualBuffer;
+          const infoStiker = hitungDurasiWebpMs(visualBuffer);
+          durasiWebpMs = infoStiker.durasiMs;
+          isAnimated = Boolean(sumberVisual.msg.stickerMessage?.isAnimated) || infoStiker.isAnimated;
+        } else if (sumberVisual.jenis === 'video') {
+          isAnimated = true;
+          const stickerRes = await buatStikerVideoCepat(visualBuffer, 'Akbar Store', 'Sound Sticker', 5);
+          if (!stickerRes.success || !stickerRes.buffer) {
+            await react('❌');
+            await sock.sendMessage(jid, { text: `❌ Gagal mengonversi video menjadi stiker: ${stickerRes.message || 'format tidak didukung'}` });
+            return true;
+          }
+          stickerBuffer = stickerRes.buffer;
+          durasiWebpMs = stickerRes.durasiMs || 0;
+        } else {
+          isAnimated = false;
+          const stickerRes = await mediaHandler.createSticker(visualBuffer, 'Akbar Store', 'Sound Sticker', false);
+          if (!stickerRes.success || !stickerRes.buffer) {
+            await react('❌');
+            await sock.sendMessage(jid, { text: `❌ Gagal mengonversi media menjadi stiker: ${stickerRes.message || 'format tidak didukung'}` });
+            return true;
+          }
+          stickerBuffer = stickerRes.buffer;
+        }
+
+        // Hitung batas durasi audio selaras dengan visual WebP
+        let maksDetik = isAnimated ? 5 : 10;
+        if (sumberVisual.jenis === 'video' && durasiWebpMs > 0) {
+          maksDetik = Math.min(5, durasiWebpMs / 1000);
+        } else if (sumberVisual.jenis === 'sticker' && isAnimated && deteksiSumberAudioMedia(sumberVisual.apakahDirect ? quoted : direct) === 'video' && durasiWebpMs >= 1000) {
+          maksDetik = Math.min(5, durasiWebpMs / 1000);
+        }
+
+        const audioDiPasangan = sumberVisual.apakahDirect
+          ? deteksiSumberAudioMedia(quoted)
+          : deteksiSumberAudioMedia(direct);
+
+        let adaAudioDariVideoSama = false;
+        if (!teksInput && !audioDiPasangan && sumberVisual.jenis === 'video') {
+          adaAudioDariVideoSama = await mediaPunyaTrekAudio(visualBuffer);
+        }
+
+        const langsungAdaAudio = Boolean(teksInput || audioDiPasangan || adaAudioDariVideoSama);
+
+        if (!langsungAdaAudio) {
+          // Masuk ke Sesi 2 Langkah (kirim foto/stiker/GIF dulu -> tunggu VN/MP3/URL/@sound/TTS selama 90 detik)
+          bukaSesiStikerSuara({
+            jid,
+            senderNormalized: senderSesi,
+            stickerBuffer,
+            isAnimated,
+            durasiWebpMs,
+            modeKirim,
+            dariVideo: sumberVisual.jenis === 'video'
+          });
+          await react('🎙️');
+          await sock.sendMessage(jid, {
+            text: "✅ *Foto / Stiker Siap!* _(Menunggu 90 detik)_\n\n" +
+              "Sekarang tinggal kirim atau rekam langsung:\n" +
+              "• 🎙️ *Voice Note (VN)* / file *MP3 / Audio*\n" +
+              "• 🔗 Link *MyInstants* atau link *.mp3*\n" +
+              "• 🎵 Nama sound tersimpan (*@nama* — cek `.listsound`)\n" +
+              "• 💬 *Teks* (diubah ke suara TTS)\n\n" +
+              "_Ketik `batal` untuk membatalkan._"
+          }, { quoted: m });
+          return true;
+        }
+
+        const hasilAudio = await selesaikanAudioCustom({
+          teksInput,
+          m,
+          direct,
+          quoted,
+          ctxInfo,
+          jid,
+          apakahVisualDariVideo: sumberVisual.jenis === 'video' && !audioDiPasangan,
+          bufferVisualVideo: sumberVisual.jenis === 'video' ? visualBuffer : null,
+          maksDetik
+        });
+
+        if (!hasilAudio) {
+          await react('❌');
+          await sock.sendMessage(jid, { text: '❌ Audio tidak ditemukan. Coba kirim foto dulu dengan `.stikersuara`, lalu balas dengan VN/MP3.' });
+          return true;
+        }
+
+        await kirimStikerBersuara({
+          sock,
+          jid,
+          stickerBuffer,
+          oggBuffer: hasilAudio.oggBuffer,
+          isAnimated,
+          quoted: m,
+          mode: modeKirim
+        });
+
+        await react('🔊');
+      } catch (err) {
+        await react('❌');
+        console.error('[SOUND_STICKER_ERR]', err.message);
+        await sock.sendMessage(jid, {
+          text: `❌ Gagal membuat stiker bersuara: ${err.message}\n\n💡 Coba lagi atau pakai ".stikersuara tandem".`
+        });
+      }
+      return true;
+    }
+
+    // 5c. Koleksi Sound Custom (.addsound, .listsound, .delsound)
+    if (['addsound', 'simpansound', 'savesound'].includes(cleanCmd)) {
+      const namaRaw = args[1];
+      const sisaTeks = args.slice(2).join(' ').trim();
+      const slug = db.normalisasiNamaSound(namaRaw);
+
+      if (!slug) {
+        await sock.sendMessage(jid, {
+          text: "🎵 *CARA SIMPAN SOUND CUSTOM*\n\n" +
+            "1️⃣ Balas VN / MP3 / Video dengan `.addsound nama`\n" +
+            "2️⃣ Atau lewat link: `.addsound nama https://www.myinstants.com/...`\n" +
+            "3️⃣ Atau teks TTS: `.addsound halo_bos Halo bosku selamat datang`\n\n" +
+            "_Pakai ke foto: balas foto dengan `.stikersuara @nama`_"
+        }, { quoted: m });
+        return true;
+      }
+
+      const direct = unboxPesanMedia(m.message);
+      const { ctxInfo, quoted } = ambilKonteksQuoted(direct);
+
+      try {
+        await react('⏳');
+        const hasilAudio = await selesaikanAudioCustom({
+          teksInput: sisaTeks,
+          m,
+          direct,
+          quoted,
+          ctxInfo,
+          jid,
+          maksDetik: 10
+        });
+
+        if (!hasilAudio) {
+          await react('❌');
+          await sock.sendMessage(jid, {
+            text: "⚠️ Harap balas pesan VN/MP3/Video atau sertakan link MyInstants / teks TTS setelah nama sound!\n_Contoh:_ `.addsound kaget https://www.myinstants.com/...`"
+          }, { quoted: m });
+          return true;
+        }
+
+        const infoProbe = await ambilInfoAudioProbe(hasilAudio.oggBuffer);
+        const simpanRes = await db.simpanSoundCustom({
+          nama: slug,
+          ownerJid: senderSesi,
+          oggBuffer: hasilAudio.oggBuffer,
+          durasiDetik: infoProbe.durasiDetik || 0,
+          forceReplace: isOwner || isAdmin
+        });
+
+        if (!simpanRes.success) {
+          await react('❌');
+          await sock.sendMessage(jid, { text: `❌ ${simpanRes.message}` }, { quoted: m });
+          return true;
+        }
+
+        await react('✅');
+        const durasiStr = infoProbe.durasiDetik > 0 ? ` (${infoProbe.durasiDetik.toFixed(1)} dtk)` : '';
+        await sock.sendMessage(jid, {
+          text: `✅ *Sound Custom ${simpanRes.overwritten ? 'Diperbarui' : 'Tersimpan'}!*\n\n🎵 Nama: *@${simpanRes.nama}*${durasiStr}\n📌 Cara pakai: balas foto/stiker dengan \`.stikersuara @${simpanRes.nama}\``
+        }, { quoted: m });
+      } catch (err) {
+        await react('❌');
+        await sock.sendMessage(jid, { text: `❌ Gagal menyimpan sound: ${err.message}` }, { quoted: m });
+      }
+      return true;
+    }
+
+    if (['listsound', 'soundlist'].includes(cleanCmd)) {
+      const daftar = await db.daftarSoundCustom(50);
+      if (!daftar || daftar.length === 0) {
+        await sock.sendMessage(jid, {
+          text: "📂 *KOLEKSI SOUND CUSTOM KOSONG*\n\nSimpan sound pertamamu dengan membalas VN/MP3 lalu ketik `.addsound <nama>`!"
+        }, { quoted: m });
+        return true;
+      }
+      const baris = daftar.map((it, idx) => {
+        const dur = Number(it.durasi_detik) > 0 ? ` (${Number(it.durasi_detik).toFixed(1)}s)` : '';
+        return `${idx + 1}. \`@${it.nama}\`${dur}`;
+      }).join('\n');
+
+      await sock.sendMessage(jid, {
+        text: `🎵 *KOLEKSI SOUND CUSTOM (${daftar.length})*\n\n${baris}\n\n📌 _Cara pakai:_ Balas foto/stiker dengan \`.stikersuara @nama\``
+      }, { quoted: m });
+      return true;
+    }
+
+    if (['delsound', 'hapussound'].includes(cleanCmd)) {
+      const targetNama = args[1];
+      if (!targetNama) {
+        await sock.sendMessage(jid, { text: "⚠️ Gunakan `.delsound <nama>` untuk menghapus sound custom." }, { quoted: m });
+        return true;
+      }
+      const delRes = await db.hapusSoundCustom(targetNama, senderSesi, isOwner || isAdmin);
+      if (!delRes.success) {
+        await sock.sendMessage(jid, { text: `❌ ${delRes.message}` }, { quoted: m });
+        return true;
+      }
+      await sock.sendMessage(jid, { text: `🗑️ Sound custom *@${delRes.nama}* berhasil dihapus.` }, { quoted: m });
       return true;
     }
 

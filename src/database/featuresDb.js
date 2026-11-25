@@ -587,3 +587,110 @@ export async function cancelPersonalReminder(userJid, reminderId) {
   return res.changes > 0;
 }
 
+// --- FUNGSI KOLEKSI SOUND CUSTOM STIKER ---
+
+export function normalisasiNamaSound(rawName) {
+  const clean = String(rawName || '')
+    .trim()
+    .replace(/^@+/, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  if (clean.length < 2 || clean.length > 32) return '';
+  return clean;
+}
+
+export async function simpanSoundCustom({ nama, ownerJid, oggBuffer, durasiDetik = 0, forceReplace = false }) {
+  const slug = normalisasiNamaSound(nama);
+  if (!slug) {
+    return {
+      success: false,
+      reason: 'INVALID_NAME',
+      message: 'Nama sound minimal 2 karakter (hanya huruf, angka, _ atau -).'
+    };
+  }
+  if (!Buffer.isBuffer(oggBuffer) || oggBuffer.length < 64) {
+    return {
+      success: false,
+      reason: 'INVALID_AUDIO',
+      message: 'Data audio tidak valid atau terlalu pendek.'
+    };
+  }
+  if (oggBuffer.length > 450 * 1024) {
+    return {
+      success: false,
+      reason: 'TOO_LARGE',
+      message: 'Ukuran audio setelah dikompres masih terlalu besar (maks 10 detik / 450 KB).'
+    };
+  }
+
+  const durasiAman = Number.isFinite(Number(durasiDetik)) ? Math.max(0, Number(durasiDetik)) : 0;
+  const oggB64 = oggBuffer.toString('base64');
+  const existing = await getQuery("SELECT id, owner_jid FROM sound_library WHERE nama = ?", [slug]);
+
+  if (existing) {
+    if (existing.owner_jid !== ownerJid && !forceReplace) {
+      return {
+        success: false,
+        reason: 'NAME_TAKEN',
+        message: `Nama sound @${slug} sudah dipakai pengguna lain. Gunakan nama lain ya.`
+      };
+    }
+    await runQuery(
+      "UPDATE sound_library SET owner_jid = ?, ogg_base64 = ?, durasi_detik = ?, created_at = CURRENT_TIMESTAMP WHERE id = ?",
+      [ownerJid, oggB64, durasiAman, existing.id]
+    );
+    await addLog('SYSTEM', `Sound custom @${slug} diperbarui oleh ${ownerJid}`);
+    return { success: true, nama: slug, overwritten: true };
+  }
+
+  await runQuery(
+    "INSERT INTO sound_library (nama, owner_jid, ogg_base64, durasi_detik) VALUES (?, ?, ?, ?)",
+    [slug, ownerJid, oggB64, durasiAman]
+  );
+  await addLog('SYSTEM', `Sound custom @${slug} disimpan oleh ${ownerJid}`);
+  return { success: true, nama: slug, overwritten: false };
+}
+
+export async function ambilSoundCustom(rawName) {
+  const slug = normalisasiNamaSound(rawName);
+  if (!slug) return null;
+  const row = await getQuery("SELECT nama, owner_jid, ogg_base64, durasi_detik, created_at FROM sound_library WHERE nama = ?", [slug]);
+  if (!row || !row.ogg_base64) return null;
+  return {
+    nama: row.nama,
+    owner_jid: row.owner_jid,
+    oggBuffer: Buffer.from(row.ogg_base64, 'base64'),
+    durasi_detik: Number(row.durasi_detik) || 0,
+    created_at: row.created_at
+  };
+}
+
+export async function daftarSoundCustom(limit = 50) {
+  const safeLimit = Math.max(1, Math.min(100, Math.floor(Number(limit) || 50)));
+  return await allQuery(
+    "SELECT nama, owner_jid, durasi_detik, created_at FROM sound_library ORDER BY created_at DESC, id DESC LIMIT ?",
+    [safeLimit]
+  );
+}
+
+export async function hapusSoundCustom(rawName, actorJid, allowAny = false) {
+  const slug = normalisasiNamaSound(rawName);
+  if (!slug) {
+    return { success: false, reason: 'INVALID_NAME', message: 'Nama sound tidak valid.' };
+  }
+  const existing = await getQuery("SELECT id, owner_jid FROM sound_library WHERE nama = ?", [slug]);
+  if (!existing) {
+    return { success: false, reason: 'NOT_FOUND', message: `Sound @${slug} tidak ditemukan.` };
+  }
+  if (existing.owner_jid !== actorJid && !allowAny) {
+    return { success: false, reason: 'FORBIDDEN', message: `Kamu hanya bisa menghapus sound yang kamu simpan sendiri.` };
+  }
+  const res = await runQuery("DELETE FROM sound_library WHERE id = ?", [existing.id]);
+  if (res.changes > 0) {
+    await addLog('SYSTEM', `Sound custom @${slug} dihapus oleh ${actorJid}`);
+    return { success: true, nama: slug };
+  }
+  return { success: false, reason: 'DELETE_FAILED', message: 'Gagal menghapus sound.' };
+}
+

@@ -1488,6 +1488,19 @@ You can now enjoy:
   `);
   await runQuery("CREATE INDEX IF NOT EXISTS idx_reminders_status_time ON personal_reminders(status, remind_at)");
 
+  // 60. Tabel Koleksi Sound Custom untuk Stiker Bersuara (.addsound / .listsound)
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS sound_library (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      nama TEXT UNIQUE NOT NULL,
+      owner_jid TEXT NOT NULL,
+      ogg_base64 TEXT NOT NULL,
+      durasi_detik REAL DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_sound_library_nama ON sound_library(nama)");
+
   // Cleanup & Migration untuk mencegah NULL/NaN/Non-Integer points/xp di database
   await runQuery("UPDATE game_profiles SET points = 0 WHERE points IS NULL OR typeof(points) != 'integer' OR points < 0 OR points > 1000000");
   await runQuery("UPDATE game_profiles SET xp = 0 WHERE xp IS NULL OR typeof(xp) != 'integer' OR xp < 0");

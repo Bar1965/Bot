@@ -300,6 +300,9 @@ const categories = {
         title: '🎨 STIKER & GAMBAR',
         items: [
           ['.stiker / .s', 'Foto/video jadi stiker'],
+          ['.stikersuara [teks]', 'Stiker bersuara (VN/URL/@sound/TTS)'],
+          ['.addsound <nama>', 'Simpan sound custom untuk stiker'],
+          ['.listsound / .delsound', 'Lihat / hapus koleksi sound custom'],
           ['.toimg / .tovid', 'Stiker jadi foto / video'],
           ['.qc <teks>', 'Quote sticker chat estetik'],
           ['.brat <teks>', 'Stiker teks gaya Brat'],

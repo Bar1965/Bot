@@ -1,6 +1,6 @@
 import { Sticker, StickerTypes, Exif } from 'wa-sticker-formatter';
 import sharp from 'sharp';
-import { createCanvas, loadImage } from '@napi-rs/canvas';
+import { createCanvas, loadImage, GlobalFonts } from '@napi-rs/canvas';
 import igdl from 'instagram-url-direct';
 import ytdl from '@distube/ytdl-core';
 import fbDownloader from '@renpwn/fb-downloader';
@@ -26,6 +26,38 @@ import { isApiHealthy, reportApiSuccess, reportApiFailure, executeWithSelfHealin
 process.env.FFMPEG_PATH = ffmpegInstaller.path;
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 process.env.YTDL_NO_UPDATE = 'true';
+
+let fontCanvasTerdaftar = false;
+
+/**
+ * Daftarkan font Windows/Linux agar `@napi-rs/canvas` tidak jatuh ke fallback `sans-serif`
+ * yang sempit dan merusak emoji pada stiker Quote (.qc) maupun Brat (.brat).
+ */
+function pastikanFontCanvasSiap() {
+  if (fontCanvasTerdaftar) return;
+  fontCanvasTerdaftar = true;
+  const kandidatFont = [
+    { paths: ['C:\\Windows\\Fonts\\ARIALN.TTF', '/usr/share/fonts/truetype/liberation/LiberationSansNarrow-Regular.ttf'], family: 'Arial Narrow' },
+    { paths: ['C:\\Windows\\Fonts\\ARIALNB.TTF', '/usr/share/fonts/truetype/liberation/LiberationSansNarrow-Bold.ttf'], family: 'Arial Narrow Bold' },
+    { paths: ['C:\\Windows\\Fonts\\seguiemj.ttf', '/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf'], family: 'Segoe UI Emoji' },
+    { paths: ['C:\\Windows\\Fonts\\segoeui.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'], family: 'Segoe UI' }
+  ];
+  for (const item of kandidatFont) {
+    const adaSudah = GlobalFonts.families.some(f => f.family.toLowerCase() === item.family.toLowerCase());
+    if (adaSudah) continue;
+    for (const fontPath of item.paths) {
+      try {
+        if (fs.existsSync(fontPath)) {
+          GlobalFonts.registerFromPath(fontPath, item.family);
+          break;
+        }
+      } catch (_) {}
+    }
+  }
+}
+
+const FONT_STACK_QC = '"Segoe UI", "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", Arial, sans-serif';
+const FONT_STACK_BRAT = '"Arial Narrow", Arial, "Segoe UI Emoji", sans-serif';
 
 /**
  * Ekstraksi shortlink (vt.tiktok.com, vm.tiktok.com, pin.it, youtu.be, fb.watch, dll.)
@@ -2020,7 +2052,10 @@ export async function downloadUniversalMedia(url) {
 /**
  * Konversi Gambar/Video Buffer ke Stiker WhatsApp (Statis / Animasi WebP)
  */
-export async function createSticker(imageOrVideoBuffer, pack = 'Akbar Store Bot', author = 'Sales System', isVideo = false) {
+export async function createSticker(imageOrVideoBuffer, pack = 'Akbar Store Bot', author = 'Sales System', isVideo = false, stickerType = StickerTypes.CROPPED) {
+  const tipeStikerAman = typeof stickerType === 'string' && Object.values(StickerTypes).includes(stickerType)
+    ? stickerType
+    : StickerTypes.CROPPED;
   try {
     if (isVideo) {
       const tmpDir = path.join(process.cwd(), 'tmp');
@@ -2065,8 +2100,8 @@ export async function createSticker(imageOrVideoBuffer, pack = 'Akbar Store Bot'
     const sticker = new Sticker(imageOrVideoBuffer, {
       pack: pack,
       author: author,
-      type: StickerTypes.CROPPED,
-      quality: 70
+      type: tipeStikerAman,
+      quality: 75
     });
 
     const stickerBuffer = await sticker.toBuffer();
@@ -2077,8 +2112,8 @@ export async function createSticker(imageOrVideoBuffer, pack = 'Akbar Store Bot'
       const sticker = new Sticker(imageOrVideoBuffer, {
         pack: pack,
         author: author,
-        type: StickerTypes.CROPPED,
-        quality: 35
+        type: tipeStikerAman,
+        quality: 40
       });
       const stickerBuffer = await sticker.toBuffer();
       return { success: true, buffer: stickerBuffer };
@@ -2164,26 +2199,39 @@ function drawRoundedRect(ctx, x, y, width, height, radius, fillStyle) {
 }
 
 /**
- * Buat Stiker Quote Chat WhatsApp (QC)
+ * Pecah teks menjadi baris sesuai batas lebar piksel, menghormati newline (`\n`)
+ * dan memotong kata yang terlalu panjang agar tidak keluar gelembung chat.
  */
-export async function generateQuoteSticker(name, text, avatarUrl = null) {
-  try {
-    const canvasWidth = 600;
-    const canvasHeight = 600;
-    const canvas = createCanvas(canvasWidth, canvasHeight);
-    const ctx = canvas.getContext('2d');
-
-    ctx.clearRect(0, 0, canvasWidth, canvasHeight);
-
-    ctx.font = '24px sans-serif';
-    const maxTextWidth = 450;
-    
-    const words = (text || '').trim().split(/\s+/);
-    const lines = [];
+function bungkusTeksCanvas(ctx, teks, maxWidth) {
+  const paragraf = String(teks || '').split(/\r?\n/);
+  const lines = [];
+  for (const p of paragraf) {
+    const words = p.trim().split(/\s+/).filter(Boolean);
+    if (words.length === 0) {
+      if (lines.length > 0) lines.push(' ');
+      continue;
+    }
     let currentLine = '';
     for (const word of words) {
+      if (ctx.measureText(word).width > maxWidth) {
+        if (currentLine) {
+          lines.push(currentLine);
+          currentLine = '';
+        }
+        let potong = '';
+        for (const ch of Array.from(word)) {
+          if (ctx.measureText(potong + ch).width > maxWidth && potong) {
+            lines.push(potong);
+            potong = ch;
+          } else {
+            potong += ch;
+          }
+        }
+        currentLine = potong;
+        continue;
+      }
       const testLine = (currentLine + ' ' + word).trim();
-      if (ctx.measureText(testLine).width <= maxTextWidth) {
+      if (ctx.measureText(testLine).width <= maxWidth) {
         currentLine = testLine;
       } else {
         if (currentLine) lines.push(currentLine);
@@ -2191,15 +2239,46 @@ export async function generateQuoteSticker(name, text, avatarUrl = null) {
       }
     }
     if (currentLine) lines.push(currentLine);
-    if (lines.length === 0) lines.push(' ');
+  }
+  return lines.length > 0 ? lines : [' '];
+}
 
-    const lineHeight = 34;
+/**
+ * Buat Stiker Quote Chat WhatsApp (QC) dengan font Segoe UI + Segoe UI Emoji
+ */
+export async function generateQuoteSticker(name, text, avatarUrl = null) {
+  try {
+    pastikanFontCanvasSiap();
+
+    const canvasWidth = 600;
+    const canvasHeight = 600;
+    const canvas = createCanvas(canvasWidth, canvasHeight);
+    const ctx = canvas.getContext('2d');
+
+    ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+
+    const maxTextWidth = 445;
+    let bodyFontSize = 24;
+    let lines = [];
+    for (const ukuran of [24, 21, 18]) {
+      bodyFontSize = ukuran;
+      ctx.font = `400 ${bodyFontSize}px ${FONT_STACK_QC}`;
+      lines = bungkusTeksCanvas(ctx, text, maxTextWidth);
+      if (lines.length <= 12) break;
+    }
+
+    const lineHeight = Math.round(bodyFontSize * 1.42);
+    ctx.font = `400 ${bodyFontSize}px ${FONT_STACK_QC}`;
     const textWidths = lines.map(l => ctx.measureText(l).width);
-    const nameWidth = ctx.measureText(name || 'Pelanggan').width;
-    const bubbleWidth = Math.min(520, Math.max(280, nameWidth + 70, Math.max(...textWidths) + 60));
-    const bubbleHeight = Math.min(520, Math.max(130, 75 + (lines.length * lineHeight)));
 
-    const startX = 65;
+    ctx.font = `700 25px ${FONT_STACK_QC}`;
+    const safeName = (name || 'Pelanggan').trim() || 'Pelanggan';
+    const nameWidth = ctx.measureText(safeName).width;
+
+    const bubbleWidth = Math.min(515, Math.max(260, Math.ceil(nameWidth) + 64, Math.ceil(Math.max(...textWidths)) + 58));
+    const bubbleHeight = Math.min(540, Math.max(124, 78 + (lines.length * lineHeight)));
+
+    const startX = 68;
     const startY = Math.floor((canvasHeight - bubbleHeight) / 2);
 
     ctx.save();
@@ -2210,9 +2289,9 @@ export async function generateQuoteSticker(name, text, avatarUrl = null) {
         if (avRes.status === 200 && avRes.data) {
           const avImg = await loadImage(Buffer.from(avRes.data));
           ctx.beginPath();
-          ctx.arc(startX - 30, startY + 35, 22, 0, Math.PI * 2);
+          ctx.arc(startX - 32, startY + 26, 22, 0, Math.PI * 2);
           ctx.clip();
-          ctx.drawImage(avImg, startX - 52, startY + 13, 44, 44);
+          ctx.drawImage(avImg, startX - 54, startY + 4, 44, 44);
           avatarDrawn = true;
         }
       } catch (_) {}
@@ -2221,15 +2300,15 @@ export async function generateQuoteSticker(name, text, avatarUrl = null) {
     if (!avatarDrawn) {
       ctx.fillStyle = '#00a884';
       ctx.beginPath();
-      ctx.arc(startX - 30, startY + 35, 22, 0, Math.PI * 2);
+      ctx.arc(startX - 32, startY + 26, 22, 0, Math.PI * 2);
       ctx.fill();
 
-      const initial = ((name || 'P').charAt(0)).toUpperCase();
+      const initial = (Array.from(safeName)[0] || 'P').toUpperCase();
       ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 20px sans-serif';
+      ctx.font = `700 21px ${FONT_STACK_QC}`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(initial, startX - 30, startY + 35);
+      ctx.fillText(initial, startX - 32, startY + 26);
     }
     ctx.restore();
 
@@ -2237,27 +2316,31 @@ export async function generateQuoteSticker(name, text, avatarUrl = null) {
 
     ctx.fillStyle = '#202c33';
     ctx.beginPath();
-    ctx.moveTo(startX, startY + 20);
-    ctx.lineTo(startX - 14, startY + 30);
-    ctx.lineTo(startX, startY + 40);
+    ctx.moveTo(startX + 2, startY + 14);
+    ctx.lineTo(startX - 13, startY + 22);
+    ctx.lineTo(startX + 2, startY + 34);
     ctx.closePath();
     ctx.fill();
 
     ctx.fillStyle = '#00a884';
-    ctx.font = 'bold 25px sans-serif';
+    ctx.font = `700 25px ${FONT_STACK_QC}`;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
-    ctx.fillText(name || 'Pelanggan', startX + 28, startY + 22);
+    ctx.fillText(safeName, startX + 26, startY + 20);
 
     ctx.fillStyle = '#e9edef';
-    ctx.font = '23px sans-serif';
+    ctx.font = `400 ${bodyFontSize}px ${FONT_STACK_QC}`;
     lines.forEach((line, index) => {
-      ctx.fillText(line, startX + 28, startY + 65 + (index * lineHeight));
+      ctx.fillText(line, startX + 26, startY + 60 + (index * lineHeight));
     });
 
     const rawPng = await canvas.encode('png');
-    const trimmedBuffer = await sharp(rawPng).trim().toBuffer();
-    return await createSticker(trimmedBuffer, 'Akbar Store Quote', name || 'Pelanggan', false);
+    const trimmedBuffer = await sharp(rawPng)
+      .trim()
+      .resize(512, 512, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+      .png()
+      .toBuffer();
+    return await createSticker(trimmedBuffer, 'Akbar Store Quote', safeName, false, StickerTypes.FULL);
   } catch (err) {
     console.error('[MEDIA_HANDLER] Quote Canvas Error:', err.message);
     return { success: false, message: err.message };
@@ -2337,10 +2420,12 @@ export async function screenshotWeb(url) {
 }
 
 /**
- * Buat Stiker Brat Generator
+ * Buat Stiker Brat Generator (font Arial Narrow terdaftar resmi + efek low-res halus otentik)
  */
 export async function generateBratSticker(text) {
   try {
+    pastikanFontCanvasSiap();
+
     const canvasWidth = 512;
     const canvasHeight = 512;
     const canvas = createCanvas(canvasWidth, canvasHeight);
@@ -2349,51 +2434,56 @@ export async function generateBratSticker(text) {
     ctx.fillStyle = '#FFFFFF';
     ctx.fillRect(0, 0, canvasWidth, canvasHeight);
 
-    const cleanText = (text || 'brat').toLowerCase().trim();
-    
-    let fontSize = 90;
-    if (cleanText.length > 8) fontSize = 65;
-    if (cleanText.length > 20) fontSize = 50;
-    if (cleanText.length > 40) fontSize = 38;
-    if (cleanText.length > 80) fontSize = 28;
+    const cleanText = (text || 'brat').toLowerCase().trim() || 'brat';
 
-    ctx.font = `${fontSize}px "Arial Narrow", "Helvetica Neue", Arial, sans-serif`;
+    // Skala horizontal ~92% meniru proporsi tipis sampul album Brat
+    const skalaX = 0.92;
+    const padX = 36;
+    const maxLineWidth = (canvasWidth - padX * 2) / skalaX;
+    const maxAreaHeight = canvasHeight - 72;
 
-    const words = cleanText.split(/\s+/);
-    const lines = [];
-    let currentLine = '';
-    const maxLineWidth = 440;
+    let fontSize = 96;
+    let lines = [];
+    let lineHeight = 100;
 
-    for (const word of words) {
-      const testLine = (currentLine + ' ' + word).trim();
-      if (ctx.measureText(testLine).width <= maxLineWidth) {
-        currentLine = testLine;
-      } else {
-        if (currentLine) lines.push(currentLine);
-        currentLine = word;
+    for (let size = 104; size >= 24; size -= 4) {
+      ctx.font = `400 ${size}px ${FONT_STACK_BRAT}`;
+      const kandidatBaris = bungkusTeksCanvas(ctx, cleanText, maxLineWidth);
+      const kandidatLH = Math.round(size * 1.12);
+      if (kandidatBaris.length * kandidatLH <= maxAreaHeight) {
+        fontSize = size;
+        lines = kandidatBaris;
+        lineHeight = kandidatLH;
+        break;
       }
+      fontSize = size;
+      lines = kandidatBaris;
+      lineHeight = kandidatLH;
     }
-    if (currentLine) lines.push(currentLine);
-    if (lines.length === 0) lines.push('brat');
 
-    const lineHeight = Math.floor(fontSize * 1.12);
     const totalHeight = lines.length * lineHeight;
-    const startX = 35;
-    const startY = lines.length === 1 ? Math.floor(fontSize * 1.1) : Math.floor((canvasHeight - totalHeight) / 2) + Math.floor(fontSize * 0.75);
+    const startY = Math.max(36, Math.floor((canvasHeight - totalHeight) / 2));
 
+    ctx.save();
+    ctx.scale(skalaX, 1);
     ctx.fillStyle = '#000000';
+    ctx.font = `400 ${fontSize}px ${FONT_STACK_BRAT}`;
     ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
 
+    const drawX = Math.round(padX / skalaX);
     lines.forEach((line, i) => {
-      ctx.fillText(line, startX, startY + (i * lineHeight));
+      ctx.fillText(line, drawX, startY + (i * lineHeight));
     });
+    ctx.restore();
 
     const rawPng = await canvas.encode('png');
 
+    // Efek blur low-res halus otentik Brat tanpa piksel kotak patah
     const finalBuffer = await sharp(rawPng)
-      .resize(150, 150, { kernel: 'nearest' })
-      .blur(1.4)
-      .resize(512, 512, { kernel: 'nearest' })
+      .resize(280, 280, { kernel: 'cubic' })
+      .blur(1.25)
+      .resize(512, 512, { kernel: 'lanczos3' })
       .png()
       .toBuffer();
 

@@ -94,10 +94,10 @@ async function jalankanPemeriksaan() {
       try {
         const content = JSON.parse(fs.readFileSync(fullPath, 'utf8'));
         const sessionCount = Object.keys(content._sessions || {}).length;
-        if (sessionCount > 20) {
+        if (sessionCount > 14) {
           corruptedChainsCount++;
           isCorrupted = true;
-          perhatikan(`Akumulasi sesi usang di ${file}`, `${sessionCount} sub-sesi terfragmentasi (>20)`);
+          perhatikan(`Akumulasi sesi usang di ${file}`, `${sessionCount} sub-sesi terfragmentasi (>14)`);
         }
       } catch (_) {}
 
@@ -125,7 +125,7 @@ async function jalankanPemeriksaan() {
     }
 
     cek('Tidak ada file session kembung (>25KB)', bloatedCount === 0, `${bloatedCount} file kembung ditemukan (Gunakan --fix untuk auto-repair)`);
-    cek('Tidak ada file session dengan fragmentasi berlebih (>6 sesi)', corruptedChainsCount === 0, `${corruptedChainsCount} file berfragmentasi (Gunakan --fix untuk auto-repair)`);
+    cek('Tidak ada file session dengan fragmentasi berlebih (>14 sesi)', corruptedChainsCount === 0, `${corruptedChainsCount} file berfragmentasi (Gunakan --fix untuk auto-repair)`);
   }
 
   // =========================================================================

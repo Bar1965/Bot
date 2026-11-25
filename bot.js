@@ -30,6 +30,7 @@ import { createGroupAdminHandler } from './src/handlers/groupAdminHandler.js';
 import { handlePremiumCommand, getPremiumBenefits } from './premiumHandler.js';
 import { handlePdfCommands, checkPdfMergeSession } from './src/handlers/pdfHandler.js';
 import { checkStoreWizardSession } from './src/handlers/storeWizard.js';
+import { cekSesiStikerSuara, adaSesiStikerSuaraDiChat } from './src/utils/soundSticker.js';
 import { buildCommandMenu } from './commandRegistry.js';
 import { createWelcomeGoodbyeCard, createLevelUpCard } from './cardGenerator.js';
 import { tickPesanGrup } from './src/games/tcg/drop.js';
@@ -1105,7 +1106,8 @@ export function periksaDanSembuhkanCipherFail(peerJid) {
 }
 
 /**
- * Bersihkan file session yang kembung (> 25KB) yang mengindikasikan akumulasi ratchet state rusak (AGENTS.md §5a)
+ * Bersihkan file session yang kembung (> 25KB) atau terfragmentasi (> 14 sub-sesi)
+ * yang mengindikasikan akumulasi ratchet state rusak (AGENTS.md §5a)
  */
 export function bersihkanSesiKembung() {
   try {
@@ -1113,13 +1115,29 @@ export function bersihkanSesiKembung() {
     if (!fs.existsSync(sessionDir)) return 0;
     const files = fs.readdirSync(sessionDir);
     let cleaned = 0;
+    let backupDir = null;
     for (const f of files) {
       if (f.startsWith('session-') && f.endsWith('.json')) {
         const fullPath = path.join(sessionDir, f);
         try {
           const stat = fs.statSync(fullPath);
-          if (stat.size > 25000) {
-            console.warn(`[SESSION_HEALTH] Menemukan file sesi kembung: ${f} (${(stat.size / 1024).toFixed(1)} KB). Menghapus untuk mencegah Bad MAC...`);
+          let alasan = stat.size > 25000 ? `ukuran ${(stat.size / 1024).toFixed(1)} KB (>25KB)` : '';
+          if (!alasan && stat.size > 8000) {
+            try {
+              const isi = JSON.parse(fs.readFileSync(fullPath, 'utf8'));
+              const jmlSesi = Object.keys(isi?._sessions || {}).length;
+              if (jmlSesi > 14) {
+                alasan = `${jmlSesi} sub-sesi terfragmentasi (>14)`;
+              }
+            } catch (_) {}
+          }
+          if (alasan) {
+            if (!backupDir) {
+              backupDir = path.resolve('./backups', `auto_clean_${Date.now()}`);
+              fs.mkdirSync(backupDir, { recursive: true });
+            }
+            console.warn(`[SESSION_HEALTH] Menemukan file sesi bermasalah: ${f} (${alasan}). Mencadangkan & membersihkan untuk mencegah Waiting/Bad MAC...`);
+            fs.copyFileSync(fullPath, path.join(backupDir, f));
             fs.unlinkSync(fullPath);
             cleaned++;
           }
@@ -1888,6 +1906,20 @@ export async function startBot(onSocketReady) {
     const isWizardToko = await checkStoreWizardSession(sock, m, senderNormalized, jid, msgText);
     if (isWizardToko) return true;
 
+    const isSesiStikerSuara = await cekSesiStikerSuara(sock, m, senderNormalized, jid, msgText);
+    if (isSesiStikerSuara) return true;
+
+    // Jika pesan dari akun sendiri (non-prefix) lolos untuk sesi 2 langkah namun bukan miliknya,
+    // jangan diteruskan ke menu pelanggan atau handler chat biasa.
+    const rawTrim = String(msgText || '').trim();
+    const isQuotedAny = Boolean(
+      m?.message?.extendedTextMessage?.contextInfo?.quotedMessage ||
+      m?.message?.imageMessage?.contextInfo?.quotedMessage ||
+      m?.message?.videoMessage?.contextInfo?.quotedMessage
+    );
+    const isQuickDoneAny = isQuotedAny && /^(done|selesai|acc|paid|terima|konfirmasi|konfirm)\b/i.test(rawTrim);
+    if (isFromMe && !isPrefixCmd && !isQuickDoneAny) return true;
+
     const isPlugin = await executePlugin(routerCleanCmd, { sock, jid, senderNumber: senderNormalized, m, msgText, args: routerArgs, cleanCmd: routerCleanCmd, isAdmin, isOwner: isOwnerSender });
     if (isPlugin) return true;
 
@@ -1901,7 +1933,7 @@ export async function startBot(onSocketReady) {
     if (isFun) return true;
 
     const walletJid = (isFromMe && !isGroup && sock.user?.id) ? jidNormalizedUser(sock.user.id) : senderNormalized;
-    const isMedia = await handleMediaCommands(jid, walletJid, m, msgText, isAdmin, isOwnerSender, isStoreAdmin);
+    const isMedia = await handleMediaCommands(jid, walletJid, m, msgText, isAdmin, isOwnerSender, isStoreAdmin, senderNormalized);
     if (isMedia) return true;
 
     const isHandledAdmin = await handleGroupMessage(jid, senderNormalized, m, msgText, isAdmin, isPrefixCmd, { isAdmin, isOwner: isOwnerSender, isStoreAdmin });
@@ -2014,7 +2046,7 @@ export async function startBot(onSocketReady) {
         );
         const isQuickDoneCandidate = isQuotedCandidate && /^(done|selesai|acc|paid|terima|konfirmasi|konfirm)\b/i.test(msgText);
 
-        if (isFromMe && !isPrefixCmd && !isQuickDoneCandidate) continue;
+        if (isFromMe && !isPrefixCmd && !isQuickDoneCandidate && !adaSesiStikerSuaraDiChat(jid)) continue;
 
         // ====================================================================
         // DETEKSI OWNER & ADMIN — Sistem LID-Aware
