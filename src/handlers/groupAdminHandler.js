@@ -149,9 +149,9 @@ export function createGroupAdminHandler(ctx) {
     // pernah ada di daftar ini, jadi gerbang di :56 memulangkannya lebih dulu dan
     // keduanya mati untuk SEMUA ORANG termasuk admin. Kondisi yang menyebut sebuah
     // perintah tidak membuatnya bisa dijangkau.
-    'everyone', 'all', 'semua', 'admins', 'mode', 'setmode', 'botmode', 'antilink', 'setantilink', 'globalantilink', 'welcome', 
+    'everyone', 'all', 'semua', 'admins', 'mode', 'setmode', 'botmode', 'antilink', 'setantilink', 'globalantilink', 'antikasar', 'welcome', 
     'autowelcomeswitch', 'setwelcome', 'setupdategroup', 'testupdate', 'autosholat', 'levelup', 'autolevelup',
-    'globallevelup', 'setlevelup', 'fitur', 'open', 'close', 'del', 'delete', 'totalchat', 'ceksewabot', 'sponsor',
+    'globallevelup', 'setlevelup', 'fitur', 'open', 'close', 'del', 'delete', 'totalchat', 'statsgrup', 'grupstats', 'statgrup', 'ceksewabot', 'sponsor',
     'textwelcome', 'textleave',
     'autodl', 'autodownload', 'listfitur', 'fiturgrup', 'groupfeatures'
   ];
@@ -1004,6 +1004,7 @@ Moderator hanya dapat menggunakan \`.ban\`, \`.unban\`, \`.unwarn\`, dan \`.cekw
       const autoSholatStatus = (g.auto_sholat !== 0) ? "🟢 *AKTIF (ON)*" : "🔴 *NONAKTIF (OFF)*";
       
       const gameStatus = ((g.features_config || {}).game !== false) ? "🟢 *AKTIF (ON)*" : "🔴 *NONAKTIF (OFF)*";
+      const antiKasarStatus = ((g.features_config || {}).antikasar === true) ? "🟢 *AKTIF (ON)*" : "🔴 *NONAKTIF (OFF)*";
 
       let modeStatus = "🟢 *MODE ALL (Semua Fitur)*";
       if (g.bot_mode === 'sales') modeStatus = "🟡 *MODE SALES (Khusus Toko)*";
@@ -1028,19 +1029,23 @@ Berikut adalah daftar fitur bot yang dapat diaktifkan / dimatikan oleh Admin gru
    ├ Status: ${antiLinkStatus}
    └ Ubah: \`.antilink on\` / \`.antilink off\`
 
-4. 👋 *Pesan Sambutan (Welcome Message)*
+4. 🤬 *Filter Anti-Kata Kasar*
+   ├ Status: ${antiKasarStatus}
+   └ Ubah: \`.antikasar on\` / \`.antikasar off\`
+
+5. 👋 *Pesan Sambutan (Welcome Message)*
    ├ Status: ${welcomeStatus}
    └ Ubah: \`.welcome on\` / \`.welcome off\`
 
-5. 🕌 *Pengingat Jadwal Sholat Otomatis*
+6. 🕌 *Pengingat Jadwal Sholat Otomatis*
    ├ Status: ${autoSholatStatus}
    └ Ubah: \`.autosholat on\` / \`.autosholat off\`
 
-6. 🛍️ *Mode Respon Bot*
+7. 🛍️ *Mode Respon Bot*
    ├ Status: ${modeStatus}
    └ Ubah: \`.mode all\` / \`.mode sales\` / \`.mode off\`
 
-7. 🎮 *Game & Hiburan*
+8. 🎮 *Game & Hiburan*
    ├ Status: ${gameStatus}
    └ Ubah: \`.mode game on\` / \`.mode game off\`
 
@@ -1258,6 +1263,41 @@ ${panduanMode}`
       const isEnable = ['on', '1', 'aktif'].includes(param);
       await db.updateGroupSettings(jid, { anti_link: isEnable ? 1 : 0 });
       await sock.sendMessage(jid, { text: `🛡️ Fitur Anti-Link Grup berhasil *${isEnable ? 'DIAKTIFKAN 🟢' : 'DINONAKTIFKAN 🔴'}* di grup ini!\n\n${isEnable ? '_Pesan berisi link dari member akan otomatis dihapus dan diberi peringatan._' : '_Member sekarang bebas mengirim link di grup ini._'}` });
+      return true;
+    }
+
+    // MODERASI GRUP: Filter Anti-Kata Kasar (.antikasar on/off — khusus grup ini)
+    if (cleanCmd === 'antikasar') {
+      if (!isGroup) {
+        await sock.sendMessage(jid, { text: '❌ Perintah `.antikasar` hanya dapat digunakan di dalam grup.' });
+        return true;
+      }
+      const param = args[1]?.toLowerCase();
+      const currentGroup = await db.getGroupSettings(jid);
+      const featuresConfig = currentGroup.features_config || {};
+      const isAktif = featuresConfig.antikasar === true;
+
+      if (!['on', 'off', '1', '0', 'aktif', 'mati', 'matikan', 'status'].includes(param)) {
+        await sock.sendMessage(jid, {
+          text:
+            `🤬 *FILTER ANTI-KATA KASAR GRUP*\n━━━━━━━━━━━━━━━━━━━━\n` +
+            `📊 *Status Grup Ini:* ${isAktif ? 'AKTIF 🟢' : 'NONAKTIF 🔴'}\n\n` +
+            `📌 *Cara Mengubah:*\n` +
+            `• \`.antikasar on\` — Aktifkan filter & peringatan\n` +
+            `• \`.antikasar off\` — Nonaktifkan filter`
+        });
+        return true;
+      }
+      if (param === 'status') {
+        await sock.sendMessage(jid, { text: `🤬 Status Anti-Kata Kasar grup ini: *${isAktif ? 'AKTIF 🟢' : 'NONAKTIF 🔴'}*` });
+        return true;
+      }
+      const enable = ['on', '1', 'aktif'].includes(param);
+      featuresConfig.antikasar = enable;
+      await db.updateGroupSettings(jid, { features_config: featuresConfig });
+      await sock.sendMessage(jid, {
+        text: `🤬 Filter Anti-Kata Kasar berhasil *${enable ? 'DIAKTIFKAN 🟢' : 'DINONAKTIFKAN 🔴'}* untuk grup ini.`
+      });
       return true;
     }
 
@@ -1797,7 +1837,7 @@ ${panduanMode}`
       const action = args[2]?.toLowerCase();
       // 'game' memakai kunci yang sama dengan `.mode game on/off` supaya kedua
       // perintah tidak saling menimpa.
-      const validFeatures = ['ai', 'lens', 'brat', 'totalchat', 'rvo', 'freegames', 'game'];
+      const validFeatures = ['ai', 'lens', 'brat', 'totalchat', 'rvo', 'freegames', 'game', 'antikasar'];
       
       const currentSettings = await db.getGroupSettings(jid);
       const featuresConfig = currentSettings.features_config || {};
@@ -1805,7 +1845,8 @@ ${panduanMode}`
       if (!featureName || !action || !validFeatures.includes(featureName) || !['on', 'off'].includes(action)) {
         let msg = `🛠️ *PENGATURAN FITUR GRUP* 🛠️\n\nGunakan perintah: \`.fitur <nama_fitur> <on/off>\`\n\n*Daftar Fitur:*\n`;
         validFeatures.forEach(f => {
-            const status = featuresConfig[f] !== false ? '✅ (ON)' : '❌ (OFF)';
+            const aktif = f === 'antikasar' ? featuresConfig[f] === true : featuresConfig[f] !== false;
+            const status = aktif ? '✅ (ON)' : '❌ (OFF)';
             msg += `- *${f}* : ${status}\n`;
         });
         msg += `\nContoh: \`.fitur ai off\`\n_(Pengaturan ini HANYA berlaku di grup ini)_`;
@@ -1858,25 +1899,42 @@ ${panduanMode}`
       return true;
     }
 
-    if (isGroup && cleanCmd === 'totalchat') {
+    if (isGroup && ['totalchat', 'statsgrup', 'grupstats', 'statgrup'].includes(cleanCmd)) {
       try {
-        const stats = await db.getTopGroupChatStats(jid, 10);
+        const [stats, ringkasan, gSettings] = await Promise.all([
+          db.getTopGroupChatStats(jid, 10),
+          db.getGroupChatSummary(jid),
+          db.getGroupSettings(jid)
+        ]);
         if (!stats || stats.length === 0) {
           await sock.sendMessage(jid, { text: "📊 Belum ada data statistik chat di grup ini." });
           return true;
         }
 
-        let textMsg = "🏆 *TOP 10 MEMBER PALING AKTIF* 🏆\n\n";
+        let namaGrup = 'Grup Ini';
+        let jumlahAnggota = null;
+        try {
+          const meta = await sock.groupMetadata(jid);
+          if (meta?.subject) namaGrup = meta.subject;
+          if (Array.isArray(meta?.participants)) jumlahAnggota = meta.participants.length;
+        } catch (_) {}
+
+        let textMsg = `📊 *STATISTIK GRUP — ${namaGrup.toUpperCase()}*\n━━━━━━━━━━━━━━━━━━━━\n`;
+        if (jumlahAnggota !== null) textMsg += `👥 *Anggota:* ${jumlahAnggota} orang\n`;
+        textMsg += `💬 *Total Chat Tercatat:* ${ringkasan.totalPesan.toLocaleString('id-ID')} pesan (${ringkasan.totalPengirim} pengirim aktif)\n`;
+        textMsg += `⚙️ *Mode:* ${gSettings?.bot_mode === 'sales' ? 'Khusus Jualan' : (gSettings?.bot_mode === 'off' ? 'Muted' : 'Semua Fitur')} | *Anti-Link:* ${Number(gSettings?.anti_link) === 1 ? 'ON' : 'OFF'} | *Anti-Kasar:* ${gSettings?.features_config?.antikasar === true ? 'ON' : 'OFF'}\n\n`;
+        textMsg += `🏆 *TOP 10 MEMBER PALING AKTIF:*\n`;
         for (let i = 0; i < stats.length; i++) {
           const s = stats[i];
-          const pushName = userPushNamesMap.get(s.participant_jid) || 'Seseorang';
+          const pushName = userPushNamesMap.get(s.participant_jid) || 'Member';
           const noHp = s.participant_jid.split('@')[0];
-          textMsg += `${i + 1}. @${noHp} (${pushName}) - ${s.msg_count} pesan\n`;
+          const persen = ringkasan.totalPesan > 0 ? ((s.msg_count / ringkasan.totalPesan) * 100).toFixed(1) : '0';
+          textMsg += `${i + 1}. @${noHp} (${pushName}) — *${s.msg_count}* pesan (${persen}%)\n`;
         }
-        
-        await sock.sendMessage(jid, { 
-          text: textMsg, 
-          mentions: stats.map(s => s.participant_jid) 
+
+        await sock.sendMessage(jid, {
+          text: textMsg.trim(),
+          mentions: stats.map(s => s.participant_jid)
         });
       } catch (err) {
         await sock.sendMessage(jid, { text: `❌ Gagal mengambil statistik: ${err.message}` });

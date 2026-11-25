@@ -196,11 +196,54 @@ export async function mediaPunyaTrekAudio(buffer) {
 }
 
 /**
+ * Bangun argumen filter FFmpeg untuk mengonversi video menjadi kanvas stiker 512x512:
+ * - 'blur' (default): latar video zoom+blur 512x512 + video utama utuh di tengah (hilangkan ruang kosong)
+ * - 'crop'          : potong tengah penuh 512x512 (aspect ratio increase)
+ * - 'full'          : video utuh dengan padding transparan 512x512
+ */
+export function bangunArgumenFilterStikerVideo({ fps = 10, mode = 'blur', scaleFlags = 'lanczos' } = {}) {
+  const fpsAman = Math.max(5, Math.min(15, Number(fps) || 10));
+  const modeAman = mode === 'crop' || mode === 'full' ? mode : 'blur';
+  const flagsAman = scaleFlags === 'bilinear' ? 'bilinear' : 'lanczos';
+
+  if (modeAman === 'crop') {
+    return [
+      '-vf',
+      `fps=${fpsAman},scale=512:512:flags=${flagsAman}:force_original_aspect_ratio=increase,crop=512:512,setsar=1,format=rgba`
+    ];
+  }
+
+  if (modeAman === 'full') {
+    return [
+      '-vf',
+      `fps=${fpsAman},scale=512:512:flags=${flagsAman}:force_original_aspect_ratio=decrease,setsar=1,format=rgba,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000`
+    ];
+  }
+
+  // Terapkan fps & trim pinggir tipis di awal sebelum split agar frame ekstra & garis border sumber hilang.
+  // Latar blur memakai scale penuh 512x512 agar warna kiri-kanan/atas-bawah selaras dengan video utama,
+  // sementara video utama diberi feather 28px pada sisi yang bertemu blur sehingga tidak muncul garis pemisah.
+  const dy = 'min(Y,H-1-Y)/28';
+  const dx = 'min(X,W-1-X)/28';
+  const alphaExpr =
+    `if(lt(H,508),if(lt(W,508),255*min(1,min(${dx},${dy})),255*min(1,${dy})),if(lt(W,508),255*min(1,${dx}),255))`;
+  const amanCrop = 'crop=iw-min(4\\,trunc(iw/16)):ih-min(4\\,trunc(ih/16))';
+  const filterComplex =
+    `[0:v]fps=${fpsAman},${amanCrop},split=2[bg][fg];` +
+    `[bg]scale=512:512:flags=bilinear,setsar=1,format=yuv420p,boxblur=28:2,eq=brightness=-0.03:saturation=0.92[bg_blur];` +
+    `[fg]scale=512:512:flags=${flagsAman}:force_original_aspect_ratio=decrease,setsar=1,format=yuva444p,` +
+    `geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='${alphaExpr}'[fg_fit];` +
+    `[bg_blur][fg_fit]overlay=(W-w)/2:(H-h)/2,format=rgba[outv]`;
+
+  return ['-filter_complex', filterComplex, '-map', '[outv]'];
+}
+
+/**
  * Mengonversi video menjadi stiker WebP animasi 512x512 dengan cepat (~1 detik),
  * menggunakan frame rate konstan (`fps=10`, `-vsync cfr`) dari detik 0,
  * serta mengukur durasi aktual WebP agar audio dapat disinkronkan persis.
  */
-export async function buatStikerVideoCepat(videoBuffer, pack = 'Akbar Store', author = 'Sound Sticker', maksDetik = 5) {
+export async function buatStikerVideoCepat(videoBuffer, pack = 'Akbar Store', author = 'Sound Sticker', maksDetik = 5, modeVideo = 'blur') {
   if (!Buffer.isBuffer(videoBuffer) || videoBuffer.length === 0) {
     return { success: false, message: 'Buffer video kosong.' };
   }
@@ -209,9 +252,9 @@ export async function buatStikerVideoCepat(videoBuffer, pack = 'Akbar Store', au
   const inPath = buatPathSementara('ss_vid_in', 'mp4');
   const outPath = buatPathSementara('ss_vid_out', 'webp');
 
-  const jalankanEncodeWebp = async (fps, kualitas, compressionLevel) => {
+  const jalankanEncodeWebp = async (fps, kualitas, compressionLevel, mode = modeVideo) => {
     try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath); } catch (_) {}
-    const vf = `scale=512:512:flags=bilinear:force_original_aspect_ratio=decrease,fps=${fps},format=rgba,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000`;
+    const filterArgs = bangunArgumenFilterStikerVideo({ fps, mode, scaleFlags: 'bilinear' });
     const args = [
       '-y',
       '-ss', '0',
@@ -219,7 +262,7 @@ export async function buatStikerVideoCepat(videoBuffer, pack = 'Akbar Store', au
       '-i', inPath,
       '-t', batasDetik,
       '-vcodec', 'libwebp',
-      '-vf', vf,
+      ...filterArgs,
       '-lossless', '0',
       '-compression_level', String(compressionLevel),
       '-q:v', String(kualitas),
@@ -234,7 +277,10 @@ export async function buatStikerVideoCepat(videoBuffer, pack = 'Akbar Store', au
   try {
     fs.writeFileSync(inPath, videoBuffer);
 
-    let resEncode = await jalankanEncodeWebp(10, 35, 2);
+    let resEncode = await jalankanEncodeWebp(10, 35, 2, modeVideo);
+    if ((resEncode.code !== 0 || !fs.existsSync(outPath)) && modeVideo === 'blur') {
+      resEncode = await jalankanEncodeWebp(10, 35, 2, 'full');
+    }
     if (resEncode.code !== 0 || !fs.existsSync(outPath)) {
       const barisAkhir = resEncode.stderr.trim().split(/\r?\n/).slice(-3).join(' | ');
       return { success: false, message: `Konversi stiker video gagal (${barisAkhir || `kode ${resEncode.code}`}).` };

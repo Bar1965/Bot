@@ -96,7 +96,8 @@ export function createMediaRouter(ctx) {
     'yt', 'youtube', 'ytmp3', 'ytmp4', 'fb', 'facebook',
     'pin', 'pinterest', 'tw', 'twitter', 'x', 'play', 'song',
     // pekerjaan berat lain
-    'hd', 'remini', 'upscale', 'ssweb', 'ss', 'draw', 'aiimg',
+    'hd', 'remini', 'upscale', 'ssweb', 'ss', 'draw', 'aiimg', 'aistiker', 'aisticker', 'stikerai',
+    'removebg', 'rbg', 'nobg', 'tourl', 'upload', 'cut', 'potong', 'trim', 'percepat', 'perlambat', 'nightcore',
     'tomp3', 'tovn', 'tovid', 'tovideo', 'togif'
   ];
 
@@ -236,7 +237,9 @@ export function createMediaRouter(ctx) {
       'stikersuara', 'stickersuara', 'soundsticker', 'stikerbersuara', 'suarastiker', 'stikertandem',
       'addsound', 'simpansound', 'savesound', 'listsound', 'soundlist', 'delsound', 'hapussound',
       'getpp', 'colongpp', 'curipp', 'pp', 'ambilpp', 'stikerpp', 'stickerpp', 'spp',
-      'qc', 'quote', 'brat', 'meme', 'smeme', 'draw', 'aiimg',
+      'qc', 'quote', 'brat', 'meme', 'smeme', 'draw', 'aiimg', 'aistiker', 'aisticker', 'stikerai',
+      'removebg', 'rbg', 'nobg', 'efek', 'filter', 'tourl', 'upload', 'lens', 'imagesearch', 'cekresi',
+      'cut', 'potong', 'trim', 'percepat', 'perlambat', 'nightcore',
       'ssweb', 'ss', 'khodam', 'tts', 'shortlink', 'short', 'cuaca', 'qr', 'qrcode', 'qrstiker', 'qrstick', 'calc', 'hitung', 'kalkulator', 'invoice', 'struk',
       'tebakgambar', 'susunkata', 'roulette',
       'ping', 'statusbot', 'speed', 'owner', 'kontakowner',
@@ -308,6 +311,76 @@ export function createMediaRouter(ctx) {
 
       await react('✅');
       return true;
+    };
+
+    /**
+     * Cari node media dari pesan langsung maupun quoted message (sudah unbox ephemeral/viewOnce).
+     * Mengembalikan `{ targetMessage, kategori, mimetype, filename, isVn }` atau `null`.
+     */
+    const temukanNodeMedia = (jenisDiizinkan = ['image', 'video', 'audio', 'sticker', 'document']) => {
+      const { quotedMessage, stanzaId, participant } = ambilKonteksQuoted(m);
+      const kandidat = [
+        { raw: unboxMessage(m.message), isDirect: true },
+        ...(quotedMessage ? [{ raw: unboxMessage(quotedMessage), isDirect: false }] : [])
+      ];
+
+      for (const { raw, isDirect } of kandidat) {
+        if (!raw) continue;
+        let kategori = null;
+        let mimetype = 'application/octet-stream';
+        let filename = 'media.bin';
+        let isVn = false;
+
+        if (jenisDiizinkan.includes('image') && raw.imageMessage) {
+          kategori = 'image';
+          mimetype = raw.imageMessage.mimetype || 'image/jpeg';
+          filename = 'image.jpg';
+        } else if (jenisDiizinkan.includes('video') && raw.videoMessage) {
+          kategori = 'video';
+          mimetype = raw.videoMessage.mimetype || 'video/mp4';
+          filename = 'video.mp4';
+        } else if (jenisDiizinkan.includes('audio') && raw.audioMessage) {
+          kategori = 'audio';
+          mimetype = raw.audioMessage.mimetype || 'audio/ogg; codecs=opus';
+          isVn = Boolean(raw.audioMessage.ptt);
+          filename = isVn ? 'voice.ogg' : 'audio.mp3';
+        } else if (jenisDiizinkan.includes('sticker') && raw.stickerMessage) {
+          kategori = 'sticker';
+          mimetype = raw.stickerMessage.mimetype || 'image/webp';
+          filename = 'sticker.webp';
+        } else if (raw.documentMessage) {
+          const docMime = String(raw.documentMessage.mimetype || 'application/octet-stream');
+          const docKategori = docMime.startsWith('image/') ? 'image'
+            : (docMime.startsWith('video/') ? 'video'
+              : (docMime.startsWith('audio/') ? 'audio' : 'document'));
+          if (jenisDiizinkan.includes(docKategori) || jenisDiizinkan.includes('document')) {
+            kategori = docKategori;
+            mimetype = docMime;
+            filename = raw.documentMessage.fileName || 'dokumen.bin';
+          }
+        }
+
+        if (kategori) {
+          const targetMessage = isDirect ? m : {
+            key: { remoteJid: jid, id: stanzaId, participant },
+            message: raw
+          };
+          return { targetMessage, kategori, mimetype, filename, isVn };
+        }
+      }
+      return null;
+    };
+
+    const unduhMediaPesan = async (jenisDiizinkan = ['image', 'video', 'audio', 'sticker', 'document']) => {
+      const info = temukanNodeMedia(jenisDiizinkan);
+      if (!info) return null;
+      const buffer = await downloadMediaMessage(
+        info.targetMessage,
+        'buffer',
+        {},
+        { logger: logger, reuploadRequest: sock.updateMediaMessage }
+      );
+      return { ...info, buffer };
     };
 
     // 0. HD Remini Image Upscaler
@@ -576,8 +649,13 @@ export function createMediaRouter(ctx) {
         }
 
         const isVideo = !!hasVideo;
+        const argMode = (args[1] || '').toLowerCase();
+        const videoMode = ['full', 'transparan', 'fit'].includes(argMode)
+          ? 'full'
+          : (['crop', 'penuh'].includes(argMode) ? 'crop' : 'blur');
+        const tipeStikerStatic = videoMode === 'full' ? 'full' : undefined;
         const buffer = await downloadMediaMessage(targetMessage, 'buffer', {});
-        const stickerRes = await mediaHandler.createSticker(buffer, 'Akbar Store', 'WhatsApp Bot', isVideo);
+        const stickerRes = await mediaHandler.createSticker(buffer, 'Akbar Store', 'WhatsApp Bot', isVideo, tipeStikerStatic, videoMode);
         
         if (stickerRes.success && stickerRes.buffer) {
           await sock.sendMessage(jid, { sticker: stickerRes.buffer });
@@ -630,8 +708,11 @@ export function createMediaRouter(ctx) {
       const tokenArg = args.slice(1);
       const flagTandem = cleanCmd === 'stikertandem' || tokenArg.some(t => ['tandem', '--tandem', 'vn', '--vn'].includes(t.toLowerCase()));
       const modeKirim = flagTandem ? 'tandem' : 'native';
+      const modeVideoStiker = tokenArg.some(t => ['--full', '--fit', '--transparan'].includes(t.toLowerCase()))
+        ? 'full'
+        : (tokenArg.some(t => ['--crop', '--penuh'].includes(t.toLowerCase())) ? 'crop' : 'blur');
       const teksInput = tokenArg
-        .filter(t => !['tandem', '--tandem', 'native', '--native', 'vn', '--vn'].includes(t.toLowerCase()))
+        .filter(t => !['tandem', '--tandem', 'native', '--native', 'vn', '--vn', '--full', '--fit', '--transparan', '--crop', '--penuh', '--blur'].includes(t.toLowerCase()))
         .join(' ')
         .trim();
 
@@ -674,7 +755,7 @@ export function createMediaRouter(ctx) {
           isAnimated = Boolean(sumberVisual.msg.stickerMessage?.isAnimated) || infoStiker.isAnimated;
         } else if (sumberVisual.jenis === 'video') {
           isAnimated = true;
-          const stickerRes = await buatStikerVideoCepat(visualBuffer, 'Akbar Store', 'Sound Sticker', 5);
+          const stickerRes = await buatStikerVideoCepat(visualBuffer, 'Akbar Store', 'Sound Sticker', 5, modeVideoStiker);
           if (!stickerRes.success || !stickerRes.buffer) {
             await react('❌');
             await sock.sendMessage(jid, { text: `❌ Gagal mengonversi video menjadi stiker: ${stickerRes.message || 'format tidak didukung'}` });
@@ -1572,6 +1653,68 @@ _${khodamRes.desc}_`;
       return true;
     }
 
+    // 19.4. Ubah Kecepatan Audio/Video (.percepat, .perlambat, .nightcore, atau .speed <angka/reply media>)
+    if (['percepat', 'perlambat', 'nightcore', 'speed'].includes(cleanCmd)) {
+      const nodeMedia = temukanNodeMedia(['audio', 'video']);
+      const argFaktor = Number(String(args[1] || '').replace(/x$/i, ''));
+      const adaFaktor = Boolean(args[1]) && Number.isFinite(argFaktor);
+      const isModeMedia = cleanCmd !== 'speed' || Boolean(nodeMedia) || adaFaktor;
+
+      if (isModeMedia) {
+        if (!nodeMedia) {
+          await sock.sendMessage(jid, {
+            text:
+              '⏩ *UBAH KECEPATAN AUDIO / VIDEO*\n\n' +
+              'Balas (reply) video/VN/audio lalu ketik:\n' +
+              '• `.percepat` (1.5x) / `.perlambat` (0.75x)\n' +
+              '• `.speed 1.25` *(rentang 0.5 – 2.0)*\n' +
+              '• `.nightcore` *(khusus musik/audio)*'
+          }, { quoted: m });
+          return true;
+        }
+
+        const isNightcore = cleanCmd === 'nightcore';
+        const faktorDefault = cleanCmd === 'perlambat' ? 0.75 : 1.5;
+        const faktor = adaFaktor ? argFaktor : faktorDefault;
+
+        try {
+          await react('⏳');
+          const media = await unduhMediaPesan(['audio', 'video']);
+          const spdRes = await ent.ubahKecepatanMediaFfmpeg(media.buffer, {
+            isVideo: media.kategori === 'video',
+            isVn: media.isVn,
+            faktor,
+            isNightcore
+          });
+          if (!spdRes.success || !spdRes.buffer) {
+            await react('❌');
+            await sock.sendMessage(jid, { text: `❌ ${spdRes.message || 'Gagal memproses kecepatan media.'}` }, { quoted: m });
+            return true;
+          }
+          if (spdRes.isVideo) {
+            await sock.sendMessage(jid, {
+              video: spdRes.buffer,
+              mimetype: 'video/mp4',
+              caption: `⏩ *Video ${faktor}x berhasil diproses!*`
+            }, { quoted: m });
+          } else {
+            await sock.sendMessage(jid, {
+              audio: spdRes.buffer,
+              mimetype: spdRes.mimetype,
+              ptt: spdRes.isVn,
+              fileName: spdRes.isVn ? undefined : `audio_${isNightcore ? 'nightcore' : `${faktor}x`}.${spdRes.ext}`
+            }, { quoted: m });
+          }
+          await react('✅');
+        } catch (err) {
+          await react('❌');
+          console.error('[SPEED_MEDIA_ERR]', err.message);
+          await sock.sendMessage(jid, { text: '❌ Gagal memproses kecepatan media.' }, { quoted: m });
+        }
+        return true;
+      }
+    }
+
     // 19.5. Cek Status & Kecepatan Respon Bot (.ping, .statusbot, .speed)
     if (['ping', 'statusbot', 'speed'].includes(cleanCmd)) {
       const startTime = Date.now();
@@ -2317,6 +2460,329 @@ Jika lirik belum muncul otomatis, di layar lirik Poweramp ketuk ikon roda gigi �
           text: `🛑 *SESI MENFESS DIAKHIRI*\n\nTeman percakapan anonim Anda telah mengakhiri sesi Menfess (\`${session.id}\`). Terima kasih telah menggunakan fitur Menfess!` 
         });
       } catch (e) {}
+      return true;
+    }
+
+    // 27. AI Stiker Generator (.aistiker, .aisticker, .stikerai)
+    if (['aistiker', 'aisticker', 'stikerai'].includes(cleanCmd)) {
+      const prompt = args.slice(1).join(' ').trim();
+      if (!prompt) {
+        await sock.sendMessage(jid, {
+          text: '⚠️ *Format Salah:* Ketik `.aistiker <deskripsi>`!\n\n_Contoh:_ `.aistiker kucing lucu memakai topi koboi gaya kartun`'
+        }, { quoted: m });
+        return true;
+      }
+      try {
+        await react('⏳');
+        const aiRes = await ent.generateAIImage(prompt);
+        if (!aiRes.success || !aiRes.buffer) {
+          await react('❌');
+          await sock.sendMessage(jid, { text: `❌ ${aiRes.message || 'Gagal membuat gambar AI.'}` }, { quoted: m });
+          return true;
+        }
+        const { StickerTypes } = await import('wa-sticker-formatter');
+        const stikerRes = await mediaHandler.createSticker(
+          aiRes.buffer,
+          botSettings?.storeName || 'AKBAR BOT',
+          'AI Stiker',
+          false,
+          StickerTypes.FULL
+        );
+        if (stikerRes.success && stikerRes.buffer) {
+          await sock.sendMessage(jid, { sticker: stikerRes.buffer }, { quoted: m });
+          await react('✅');
+        } else {
+          await react('❌');
+          await sock.sendMessage(jid, { text: '❌ Gambar dibuat tetapi gagal dikonversi menjadi stiker.' }, { quoted: m });
+        }
+      } catch (err) {
+        await react('❌');
+        console.error('[AI_STIKER_ERR]', err.message);
+        await sock.sendMessage(jid, { text: '❌ Gagal membuat AI stiker.' }, { quoted: m });
+      }
+      return true;
+    }
+
+    // 28. Efek Filter Foto (.efek, .filter)
+    if (['efek', 'filter'].includes(cleanCmd)) {
+      const filterArg = (args[1] || '').toLowerCase();
+      const jadiStiker = args.slice(2).some(a => ['stiker', 'sticker', 's'].includes(a.toLowerCase()));
+      const mediaInfo = temukanNodeMedia(['image', 'sticker']);
+
+      if (!filterArg || !mediaInfo) {
+        const daftarFilter = Object.entries(ent.DAFTAR_EFEK_FOTO)
+          .map(([k, v]) => `• \`${k}\` — ${v.label}`)
+          .join('\n');
+        await sock.sendMessage(jid, {
+          text:
+            '🎨 *EFEK & FILTER FOTO*\n\n' +
+            'Kirim/balas foto (atau stiker) dengan caption `.efek <nama> [stiker]`\n\n' +
+            `*Pilihan Filter:*\n${daftarFilter}\n\n` +
+            '_Contoh:_ `.efek sepia` atau `.efek pixel stiker`'
+        }, { quoted: m });
+        return true;
+      }
+
+      try {
+        await react('⏳');
+        const media = await unduhMediaPesan(['image', 'sticker']);
+        const efekRes = await ent.terapkanEfekFoto(media.buffer, filterArg);
+        if (!efekRes.success || !efekRes.buffer) {
+          await react('❌');
+          await sock.sendMessage(jid, { text: `❌ ${efekRes.message}\nKetik \`.efek\` untuk melihat daftar filter.` }, { quoted: m });
+          return true;
+        }
+        if (jadiStiker) {
+          const { StickerTypes } = await import('wa-sticker-formatter');
+          const stikerRes = await mediaHandler.createSticker(efekRes.buffer, botSettings?.storeName || 'AKBAR BOT', efekRes.label, false, StickerTypes.FULL);
+          if (stikerRes.success && stikerRes.buffer) {
+            await sock.sendMessage(jid, { sticker: stikerRes.buffer }, { quoted: m });
+            await react('✅');
+            return true;
+          }
+        }
+        await sock.sendMessage(jid, {
+          image: efekRes.buffer,
+          caption: `🎨 *Efek:* ${efekRes.label}`
+        }, { quoted: m });
+        await react('✅');
+      } catch (err) {
+        await react('❌');
+        console.error('[EFEK_CMD_ERR]', err.message);
+        await sock.sendMessage(jid, { text: '❌ Gagal menerapkan efek foto.' }, { quoted: m });
+      }
+      return true;
+    }
+
+    // 29. Potong Audio / Video (.cut, .potong, .trim)
+    if (['cut', 'potong', 'trim'].includes(cleanCmd)) {
+      const mulaiDetik = ent.parseWaktuDetik(args[1]);
+      const akhirDetik = ent.parseWaktuDetik(args[2]);
+      const mediaInfo = temukanNodeMedia(['audio', 'video']);
+
+      if (!mediaInfo || Number.isNaN(mulaiDetik) || Number.isNaN(akhirDetik)) {
+        await sock.sendMessage(jid, {
+          text:
+            '✂️ *POTONG AUDIO / VIDEO*\n\n' +
+            'Balas (reply) video, VN, atau audio lalu ketik:\n' +
+            '`.cut <mulai> <akhir>`\n\n' +
+            '*Contoh:*\n' +
+            '• `.cut 0:05 0:20` *(detik 5 sampai 20)*\n' +
+            '• `.cut 10 25` *(detik 10 sampai 25)*\n' +
+            '_Maksimal 60 detik untuk video dan 180 detik untuk audio._'
+        }, { quoted: m });
+        return true;
+      }
+
+      try {
+        await react('⏳');
+        const media = await unduhMediaPesan(['audio', 'video']);
+        const cutRes = await ent.potongMediaFfmpeg(media.buffer, {
+          isVideo: media.kategori === 'video',
+          isVn: media.isVn,
+          mulaiDetik,
+          akhirDetik
+        });
+        if (!cutRes.success || !cutRes.buffer) {
+          await react('❌');
+          await sock.sendMessage(jid, { text: `❌ ${cutRes.message || 'Gagal memotong media.'}` }, { quoted: m });
+          return true;
+        }
+        if (cutRes.isVideo) {
+          await sock.sendMessage(jid, {
+            video: cutRes.buffer,
+            mimetype: 'video/mp4',
+            caption: `✂️ *Video dipotong* (${cutRes.durasi.toFixed(1)} detik)`
+          }, { quoted: m });
+        } else {
+          await sock.sendMessage(jid, {
+            audio: cutRes.buffer,
+            mimetype: cutRes.mimetype,
+            ptt: cutRes.isVn,
+            fileName: cutRes.isVn ? undefined : `cut_${mulaiDetik}-${akhirDetik}.${cutRes.ext}`
+          }, { quoted: m });
+        }
+        await react('✅');
+      } catch (err) {
+        await react('❌');
+        console.error('[CUT_CMD_ERR]', err.message);
+        await sock.sendMessage(jid, { text: '❌ Gagal memotong media.' }, { quoted: m });
+      }
+      return true;
+    }
+
+    // 30. Hapus Background Foto (.removebg, .rbg, .nobg)
+    if (['removebg', 'rbg', 'nobg'].includes(cleanCmd)) {
+      const mediaInfo = temukanNodeMedia(['image', 'sticker']);
+      if (!mediaInfo) {
+        await sock.sendMessage(jid, {
+          text:
+            '✂️ *HAPUS BACKGROUND FOTO*\n\n' +
+            'Kirim atau balas (reply) foto dengan caption `.removebg`\n' +
+            '• `.removebg` → kirim file PNG transparan\n' +
+            '• `.removebg stiker` → langsung jadikan stiker transparan'
+        }, { quoted: m });
+        return true;
+      }
+
+      const jadiStiker = args.slice(1).some(a => ['stiker', 'sticker', 's'].includes(a.toLowerCase()));
+      try {
+        await react('⏳');
+        const media = await unduhMediaPesan(['image', 'sticker']);
+        const remRes = await ent.removeBackground(media.buffer);
+        if (!remRes.success || !remRes.buffer) {
+          await react('❌');
+          await sock.sendMessage(jid, { text: `❌ ${remRes.message || 'Gagal menghapus background.'}` }, { quoted: m });
+          return true;
+        }
+        if (jadiStiker) {
+          const { StickerTypes } = await import('wa-sticker-formatter');
+          const stikerRes = await mediaHandler.createSticker(remRes.buffer, botSettings?.storeName || 'AKBAR BOT', 'RemoveBG', false, StickerTypes.FULL);
+          if (stikerRes.success && stikerRes.buffer) {
+            await sock.sendMessage(jid, { sticker: stikerRes.buffer }, { quoted: m });
+            await react('✅');
+            return true;
+          }
+        }
+        // Kirim sebagai document PNG agar kanal alfa (transparansi) tidak diubah jadi hitam/putih oleh kompresi JPEG WhatsApp
+        await sock.sendMessage(jid, {
+          document: remRes.buffer,
+          mimetype: 'image/png',
+          fileName: `nobg_${Date.now()}.png`,
+          caption: `✅ *Background Berhasil Dihapus*\n🛠️ *Engine:* ${remRes.provider || 'RemoveBG'}\n\n💡 _Ketik \`.removebg stiker\` kalau mau langsung dijadikan stiker transparan._`
+        }, { quoted: m });
+        await react('✅');
+      } catch (err) {
+        await react('❌');
+        console.error('[REMOVEBG_CMD_ERR]', err.message);
+        await sock.sendMessage(jid, { text: '❌ Terjadi kesalahan saat menghapus background foto.' }, { quoted: m });
+      }
+      return true;
+    }
+
+    // 31. Upload Media ke URL Publik (.tourl, .upload)
+    if (['tourl', 'upload'].includes(cleanCmd)) {
+      const mediaInfo = temukanNodeMedia(['image', 'video', 'audio', 'sticker', 'document']);
+      if (!mediaInfo) {
+        await sock.sendMessage(jid, {
+          text: '🔗 *MEDIA TO URL*\n\nKirim atau balas (reply) foto, video, audio, stiker, atau dokumen lalu ketik `.tourl` (maks 25 MB).'
+        }, { quoted: m });
+        return true;
+      }
+
+      try {
+        await react('⏳');
+        const media = await unduhMediaPesan(['image', 'video', 'audio', 'sticker', 'document']);
+        const upRes = await ent.uploadMediaToUrl(media.buffer, media.filename, media.mimetype);
+        if (!upRes.success || !upRes.url) {
+          await react('❌');
+          await sock.sendMessage(jid, { text: `❌ ${upRes.message || 'Gagal mengunggah media ke URL.'}` }, { quoted: m });
+          return true;
+        }
+        await sendInteractiveButtons(sock, jid, {
+          text:
+            `🔗 *MEDIA BERHASIL DIUNGGAH*\n` +
+            `━━━━━━━━━━━━━━━━━━━━\n` +
+            `🌐 *URL:* ${upRes.url}\n` +
+            `☁️ *Server:* ${upRes.host} (${upRes.masaBerlaku})\n` +
+            `📦 *Ukuran:* ${(media.buffer.length / 1024).toFixed(1)} KB`,
+          buttons: [
+            { type: 'copy', text: '📋 Salin URL', copy_code: upRes.url }
+          ]
+        });
+        await react('✅');
+      } catch (err) {
+        await react('❌');
+        console.error('[TOURL_CMD_ERR]', err.message);
+        await sock.sendMessage(jid, { text: '❌ Gagal mengunggah media ke server eksternal.' }, { quoted: m });
+      }
+      return true;
+    }
+
+    // 32. Visual Search / Identifikasi Gambar + Katalog (.lens, .imagesearch)
+    if (['lens', 'imagesearch'].includes(cleanCmd)) {
+      if (isGroup) {
+        const gSet = await db.getGroupSettings(jid);
+        if (gSet?.features_config?.lens === false) return false;
+      }
+
+      const mediaInfo = temukanNodeMedia(['image', 'sticker']);
+      if (!mediaInfo) {
+        await sock.sendMessage(jid, {
+          text: '🔍 *PENCARIAN VISUAL (LENS AI)*\n\nKirim atau balas (reply) foto dengan `.lens` untuk mengenali objek/produk di gambar beserta kecocokannya dengan katalog toko.'
+        }, { quoted: m });
+        return true;
+      }
+
+      const premiumTier = await db.getPremiumTier(senderNumber);
+      const benefits = getPremiumBenefits(premiumTier);
+      const usedCount = await db.getAiUsageToday(senderNumber);
+      if (!isAdmin && !isOwner && usedCount >= benefits.aiDailyLimit) {
+        await sock.sendMessage(jid, {
+          text: `⚠️ *KUOTA AI HARIAN HABIS* (${usedCount}/${benefits.aiDailyLimit})\nKetik \`.premium\` untuk menambah jatah analisis AI harian.`
+        }, { quoted: m });
+        return true;
+      }
+
+      try {
+        await react('⏳');
+        const media = await unduhMediaPesan(['image', 'sticker']);
+        const { askGeminiVision } = await import('../ai/geminiService.js');
+        const produkList = await db.getAllProducts().catch(() => []);
+        const ringkasKatalog = (produkList || [])
+          .filter(p => Number(p.stok) > 0 || p.delivery_type === 'manual')
+          .slice(0, 35)
+          .map(p => `${p.kode}: ${p.nama} (Rp${Number(p.harga || 0).toLocaleString('id-ID')})`)
+          .join('\n');
+
+        const catatanUser = args.slice(1).join(' ').trim();
+        const promptLens =
+          'Identifikasi objek, merek, aplikasi, atau produk yang ada pada gambar ini secara akurat dalam Bahasa Indonesia.\n' +
+          (catatanUser ? `Fokus pertanyaan pengguna: ${catatanUser}\n` : '') +
+          (ringkasKatalog
+            ? `\nJika gambar ini berkaitan dengan salah satu produk di katalog toko berikut, sebutkan kode produknya dan sarankan ketik \`.detail <KODE>\`. Jika TIDAK berkaitan dengan produk katalog, jangan mengarang kecocokan.\n\nKatalog Toko:\n${ringkasKatalog}`
+            : '');
+
+        const hasil = await askGeminiVision({
+          prompt: promptLens,
+          imageBuffer: media.buffer,
+          mimeType: media.mimetype.startsWith('image/') ? media.mimetype : 'image/jpeg'
+        });
+
+        await db.incrementAiUsage(senderNumber);
+        const sisa = Math.max(0, benefits.aiDailyLimit - (usedCount + 1));
+        await sock.sendMessage(jid, {
+          text: `🔍 *HASIL IDENTIFIKASI GAMBAR (LENS AI)*\n━━━━━━━━━━━━━━━━━━━━\n\n${hasil}\n\n━━━━━━━━━━━━━━━━━━━━\n💡 _Sisa kuota AI hari ini: ${sisa}/${benefits.aiDailyLimit}_`
+        }, { quoted: m });
+        await react('✅');
+      } catch (err) {
+        await react('❌');
+        console.error('[LENS_CMD_ERR]', err.message);
+        await sock.sendMessage(jid, { text: '❌ Gagal menganalisis gambar saat ini. Pastikan Gemini AI aktif atau coba lagi sebentar.' }, { quoted: m });
+      }
+      return true;
+    }
+
+    // 33. Cek Resi Pengiriman (.cekresi)
+    if (['cekresi'].includes(cleanCmd)) {
+      const kurir = args[1];
+      const resi = args[2];
+      if (!kurir || !resi) {
+        await sock.sendMessage(jid, {
+          text: '📦 *CEK RESI KURIR*\n\nFormat: `.cekresi <kurir> <nomor_resi>`\n_Contoh:_ `.cekresi jnt JP1234567890`\n_Kurir:_ `jne`, `jnt`, `sicepat`, `anteraja`, `pos`, `tiki`, `ninja`, `idexpress`, `spx`'
+        }, { quoted: m });
+        return true;
+      }
+
+      try {
+        await react('⏳');
+        const cekRes = await ent.cekResiKurir(kurir, resi);
+        await sock.sendMessage(jid, { text: cekRes.text || `❌ ${cekRes.message}` }, { quoted: m });
+        await react(cekRes.success ? '✅' : '❌');
+      } catch (err) {
+        await react('❌');
+        await sock.sendMessage(jid, { text: '❌ Gagal mengecek resi pengiriman.' }, { quoted: m });
+      }
       return true;
     }
 

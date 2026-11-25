@@ -13,9 +13,63 @@
  * BOT_VERSION. Jangan lupa `sorotan` — itu yang dibaca member di grup.
  */
 
-export const BOT_VERSION = 'v3.7';
+export const BOT_VERSION = 'v3.8';
 
 export const RIWAYAT_VERSI = [
+  {
+    versi: 'v3.8',
+    nama: 'Stiker Bersuara, Downloader & Media Pro',
+    tanggal: '25 November 2026',
+    sorotan: [
+      '🔊 *Stiker Bersuara Upgrade.* Kini mendukung foto + suara custom 2-langkah (VN, MP3, link MyInstants/MP3, koleksi `@nama`, atau TTS). Video stiker kini pas sinkron dengan audionya.',
+      '🎵 *Koleksi Sound Pribadi.* Simpan efek suara lewat `.addsound <nama>`, cek dengan `.listsound`, hapus lewat `.delsound`.',
+      '📥 *Downloader Slide Foto + Audio Terpisah.* Slide foto TikTok (`/photo/`) dan Instagram kini otomatis mengirim seluruh foto sekaligus audio latarnya terpisah (pakai `.tt foto`/`.ig foto` bila mau fotonya saja, `.ttmp3`/`.igmp3` untuk audio saja).',
+      '🎨 *Stiker & Media Baru.* `.aistiker`, `.removebg`, `.efek <filter>`, `.qr` / `.qrstiker`, `.cut`, `.percepat` / `.perlambat` / `.nightcore`, serta `.brat` & `.qc` dengan font rapi.',
+      '🤖 *Utilitas AI & Grup.* `.ringkas` (ringkas chat/PDF), `.lens` (identifikasi foto + katalog), `.tourl`, `.calc`, `.statsgrup` & `.antikasar on/off`.'
+    ],
+    ditambah: [
+      'Stiker & media baru: `.aistiker`, `.removebg`, `.efek <filter>`, `.qr`/`.qrstiker`, `.tourl`, `.cut`, `.percepat`/`.perlambat`/`.nightcore`, dan `.calc`.',
+      'Utilitas AI baru: `.ringkas` (ringkas chat/PDF) & `.lens` (identifikasi foto + cek katalog produk).',
+      'Koleksi sound pribadi untuk stiker bersuara: `.addsound <nama>`, `.listsound`, `.delsound`.',
+      'Fitur grup baru: `.antikasar on/off` (per grup, default OFF) & `.statsgrup` / `.totalchat` (ringkasan + top member aktif).'
+    ],
+    diperbaiki: [
+      '`.stikersuara` mendukung foto/video + suara custom 2-langkah (VN, MP3, URL/MyInstants, `@sound`, TTS) dengan durasi audio-video sinkron presisi.',
+      'Downloader TikTok/IG/YT/FB/X/Pin memakai mesin offline/lokal dulu + fallback online, serta slide foto TikTok/IG memisahkan semua foto + audio latar (`.igmp3`/`.igaudio`).',
+      '`.cekresi` kini memakai API BINDERBYTE (jika diisi) atau tautan pelacakan resmi kurir (bukan mock lagi).',
+      'Stabilitas sesi WA: cache retry pesan keluar disimpan ke disk saat shutdown & pembersihan berkala sesi kembung tiap 8 jam.',
+      'Notifikasi BOT ONLINE ke Owner kini selalu menampilkan rincian Ditambah/Diperbaiki/Dikurang + status commit Git agar tidak lupa saat restart.',
+      'Stiker video (`.s`/`.stiker`/`.sgif` & `.stikersuara`) memakai background blur 512x512 otomatis agar video landscape/kecil tidak berongga kosong (tersedia `.s full` / `.s crop`).'
+    ],
+    dikurang: [
+      'Menghapus pesan placeholder `(MOCK)` di `.cekresi`, `.removebg`, `.tourl`, `.lens`, serta blok kode mati `.brat` yang duplikat.',
+      'Membersihkan label `🆕` versi lama (v3.7) di `.menu` agar sorotan menu hanya menandai fitur v3.8.'
+    ],
+    rincian: [
+      {
+        judul: '🔊 *STIKER BERSUARA & SOUND LIBRARY*',
+        poin: [
+          '✅ `.stikersuara` sekarang mendukung kombinasi foto/video + audio dari VN, MP3, link URL/MyInstants, `@sound` tersimpan, atau TTS.',
+          '✅ Durasi audio dan animasi video stiker disinkronkan presisi per milidetik agar tidak lebih panjang sebelah.',
+          '✅ `.addsound <nama>`, `.listsound`, dan `.delsound` tersedia untuk menyimpan klip suara favorit.'
+        ]
+      },
+      {
+        judul: '📥 *DOWNLOADER OFFLINE + ONLINE & SLIDE AUDIO*',
+        poin: [
+          '✅ Seluruh downloader memakai mesin offline/lokal terlebih dahulu dengan fallback otomatis ke backup online.',
+          '✅ Slide foto TikTok & IG otomatis memisahkan foto dan audio latar. Tersedia juga `.igmp3` / `.igaudio`.'
+        ]
+      },
+      {
+        judul: '🎨 *ALAT KREATIF, AI & GRUP*',
+        poin: [
+          '✅ Fitur baru aktif: `.aistiker`, `.removebg`, `.efek`, `.qr` / `.qrstiker`, `.tourl`, `.cut`, `.percepat` / `.perlambat` / `.nightcore`, `.calc`, `.ringkas`, dan `.lens`.',
+          '✅ Fitur grup baru: `.statsgrup` (ringkasan + top member aktif) dan `.antikasar on/off` (per grup).'
+        ]
+      }
+    ]
+  },
   {
     versi: 'v3.7',
     nama: 'Yang Mati Pun Ikut Bicara',
@@ -1436,9 +1490,28 @@ export const RIWAYAT_VERSI = [
 
 export const VERSI_TERBARU = RIWAYAT_VERSI[0];
 
+/** Format terstruktur (Ditambah / Diperbaiki / Dikurang) untuk laporan Owner saat bot online & `.update`. */
+export function formatRingkasanPerubahan(versi = VERSI_TERBARU) {
+  const bagian = [];
+  if (Array.isArray(versi.ditambah) && versi.ditambah.length > 0) {
+    bagian.push(`➕ *DITAMBAH:*\n${versi.ditambah.map(p => `• ${p}`).join('\n')}`);
+  }
+  if (Array.isArray(versi.diperbaiki) && versi.diperbaiki.length > 0) {
+    bagian.push(`🔧 *DIPERBAIKI / UPGRADE:*\n${versi.diperbaiki.map(p => `• ${p}`).join('\n')}`);
+  }
+  if (Array.isArray(versi.dikurang) && versi.dikurang.length > 0) {
+    bagian.push(`➖ *DIKURANG / DIHAPUS:*\n${versi.dikurang.map(p => `• ${p}`).join('\n')}`);
+  }
+  if (bagian.length === 0) {
+    return getSorotanUpdate(versi);
+  }
+  return bagian.join('\n\n');
+}
+
 /** Rincian penuh versi terbaru — dipakai `.update` / `.changelog`. */
 export function getSystemChangelog() {
   const v = VERSI_TERBARU;
+  const ringkasPerubahan = formatRingkasanPerubahan(v);
   const blok = v.rincian.map((bagian, i) =>
     `${i + 1}. ${bagian.judul}\n${bagian.poin.map(p => `   • ${p}`).join('\n')}`
   ).join('\n\n');
@@ -1452,7 +1525,7 @@ export function getSystemChangelog() {
 📌 *Versi Bot:* ${v.versi} (${v.nama})
 📅 *Rilis:* ${v.tanggal}
 
-🔥 *RINGKASAN FITUR BARU & PENYEMPURNAAN:*
+${ringkasPerubahan ? `🧭 *PERUBAHAN SINGKAT (DITAMBAH / DIPERBAIKI / DIKURANG):*\n\n${ringkasPerubahan}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` : ''}🔥 *RINCIAN LENGKAP PER BAGIAN:*
 
 ${blok}
 ${versiLama ? `\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📚 *Versi Sebelumnya:*\n${versiLama}` : ''}

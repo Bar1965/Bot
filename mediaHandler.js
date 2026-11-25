@@ -21,6 +21,7 @@ import NodeID3 from 'node-id3';
 const httpsAgent = new https.Agent({ rejectUnauthorized: false, family: 4 });
 
 import { isApiHealthy, reportApiSuccess, reportApiFailure, executeWithSelfHealing } from './src/utils/circuitBreaker.js';
+import { bangunArgumenFilterStikerVideo } from './src/utils/soundSticker.js';
 
 // Set FFMPEG Path global agar wa-sticker-formatter & ffmpeg menggunakan binary asli
 process.env.FFMPEG_PATH = ffmpegInstaller.path;
@@ -2637,10 +2638,22 @@ export async function kirimHasilUnduhanWA({
   };
 }
 
+function jalankanFfmpegStikerVideo(args, timeoutMs = 45000) {
+  return new Promise((resolve) => {
+    const proc = spawn(ffmpegInstaller.path, args, { timeout: timeoutMs, windowsHide: true });
+    let stderr = '';
+    proc.stderr?.on('data', chunk => {
+      if (stderr.length < 4000) stderr += chunk.toString();
+    });
+    proc.on('close', code => resolve({ ok: code === 0, code: code ?? -1, stderr }));
+    proc.on('error', err => resolve({ ok: false, code: -1, stderr: err.message }));
+  });
+}
+
 /**
  * Konversi Gambar/Video Buffer ke Stiker WhatsApp (Statis / Animasi WebP)
  */
-export async function createSticker(imageOrVideoBuffer, pack = 'Akbar Store Bot', author = 'Sales System', isVideo = false, stickerType = StickerTypes.CROPPED) {
+export async function createSticker(imageOrVideoBuffer, pack = 'Akbar Store Bot', author = 'Sales System', isVideo = false, stickerType = StickerTypes.CROPPED, videoMode = 'blur') {
   const tipeStikerAman = typeof stickerType === 'string' && Object.values(StickerTypes).includes(stickerType)
     ? stickerType
     : StickerTypes.CROPPED;
@@ -2649,40 +2662,59 @@ export async function createSticker(imageOrVideoBuffer, pack = 'Akbar Store Bot'
       const tmpDir = path.join(process.cwd(), 'tmp');
       if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
 
-      const inputPath = path.join(tmpDir, `in_${Date.now()}.mp4`);
-      const outputPath = path.join(tmpDir, `out_${Date.now()}.webp`);
+      const stamp = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      const inputPath = path.join(tmpDir, `in_${stamp}.mp4`);
+      const outputPath = path.join(tmpDir, `out_${stamp}.webp`);
 
-      fs.writeFileSync(inputPath, imageOrVideoBuffer);
-
-      await new Promise((resolve, reject) => {
-        ffmpeg(inputPath)
-          .inputOptions(['-t 4'])
-          .outputOptions([
-            '-vcodec libwebp',
-            '-vf scale=512:512:flags=lanczos:force_original_aspect_ratio=decrease,fps=10,format=rgba,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000',
-            '-lossless 0',
-            '-compression_level 6',
-            '-q:v 35',
-            '-loop 0',
-            '-an',
-            '-vsync 0'
-          ])
-          .toFormat('webp')
-          .on('end', resolve)
-          .on('error', reject)
-          .save(outputPath);
-      });
-
-      const rawWebpBuffer = fs.readFileSync(outputPath);
+      const encodeVideoWebp = async (fps, kualitas, compressionLevel, mode) => {
+        try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch (_) {}
+        const filterArgs = bangunArgumenFilterStikerVideo({ fps, mode, scaleFlags: 'lanczos' });
+        return await jalankanFfmpegStikerVideo([
+          '-y',
+          '-t', '4',
+          '-i', inputPath,
+          '-vcodec', 'libwebp',
+          ...filterArgs,
+          '-lossless', '0',
+          '-compression_level', String(compressionLevel),
+          '-q:v', String(kualitas),
+          '-loop', '0',
+          '-an',
+          '-vsync', 'cfr',
+          outputPath
+        ]);
+      };
 
       try {
-        if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
-        if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
-      } catch (e) {}
+        fs.writeFileSync(inputPath, imageOrVideoBuffer);
 
-      const exif = new Exif({ pack, author });
-      const finalBuffer = await exif.add(rawWebpBuffer);
-      return { success: true, buffer: finalBuffer };
+        let hasil = await encodeVideoWebp(10, 35, 6, videoMode);
+        if ((!hasil.ok || !fs.existsSync(outputPath)) && videoMode === 'blur') {
+          hasil = await encodeVideoWebp(10, 35, 6, 'full');
+        }
+        if (!hasil.ok || !fs.existsSync(outputPath)) {
+          throw new Error(hasil.stderr.trim().split(/\r?\n/).slice(-3).join(' | ') || `ffmpeg exit ${hasil.code}`);
+        }
+
+        let rawWebpBuffer = fs.readFileSync(outputPath);
+        // Pastikan WebP animasi tetap masuk batas ukuran stiker WhatsApp (~920 KB)
+        if (rawWebpBuffer.length > 920 * 1024) {
+          const hasilKecil = await encodeVideoWebp(8, 22, 4, videoMode);
+          if (hasilKecil.ok && fs.existsSync(outputPath)) {
+            const kecilBuf = fs.readFileSync(outputPath);
+            if (kecilBuf.length > 0 && kecilBuf.length < rawWebpBuffer.length) {
+              rawWebpBuffer = kecilBuf;
+            }
+          }
+        }
+
+        const exif = new Exif({ pack, author });
+        const finalBuffer = await exif.add(rawWebpBuffer);
+        return { success: true, buffer: finalBuffer };
+      } finally {
+        try { if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath); } catch (_) {}
+        try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch (_) {}
+      }
     }
 
     const sticker = new Sticker(imageOrVideoBuffer, {

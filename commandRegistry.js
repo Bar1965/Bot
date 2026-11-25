@@ -308,9 +308,13 @@ const categories = {
           ['.brat <teks>', 'Stiker teks gaya Brat'],
           ['.hd / .remini', 'Perjelas foto buram jadi HD'],
           ['.draw <prompt>', 'Gambar AI dari deskripsi teks'],
+          ['.aistiker <prompt>', 'Buat gambar AI langsung jadi stiker 🆕'],
+          ['.removebg [stiker]', 'Hapus background foto (PNG/stiker) 🆕'],
+          ['.efek <filter>', 'Filter foto (sepia, pixel, neon, dll) 🆕'],
           ['.qr / .qrstiker <teks>', 'Buat QR Code (gambar atau stiker)'],
           ['.meme atas | bawah', 'Buat meme dari foto'],
-          ['.getpp / .colongpp', 'Ambil foto profil kualitas HD']
+          ['.getpp / .colongpp', 'Ambil foto profil kualitas HD'],
+          ['.lens [pertanyaan]', 'Kenali foto & cocokkan katalog AI 🆕']
         ]
       },
       {
@@ -318,10 +322,14 @@ const categories = {
         items: [
           ['.tts <teks>', 'Ubah teks jadi voice note'],
           ['.tomp3 / .tovn', 'Ekstrak audio dari video'],
+          ['.cut <mulai> <akhir>', 'Potong segmen audio atau video 🆕'],
+          ['.percepat / .perlambat', 'Atur tempo atau efek .nightcore 🆕'],
+          ['.tourl', 'Unggah media jadi link URL publik 🆕'],
           ['.tr <bahasa> <teks>', 'Terjemahkan teks'],
           ['.cuaca <kota>', 'Prakiraan cuaca kota hari ini'],
           ['.short <link>', 'Perpendek URL panjang jadi singkat'],
           ['.calc / .hitung <rumus>', 'Kalkulator cepat & fungsi sains'],
+          ['.cekresi <kurir> <resi>', 'Lacak resi paket ekspedisi 🆕'],
           ['.sholat <kota>', 'Jadwal sholat wilayahmu'],
           ['.menfess <nomor> | <teks>', 'Kirim pesan anonim']
         ]
@@ -463,14 +471,14 @@ const categories = {
       {
         title: '🏪 KELOLA PRODUK (Owner / Admin)',
         items: [
-          ['.tokobaru', 'Bikin produk lewat tanya-jawab 🆕'],
-          ['.addproduk <kode>|<nama>|...', 'Tambah produk sekali ketik 🆕'],
-          ['.editproduk <kode> <field> <nilai>', 'Ubah satu kolom produk 🆕'],
-          ['.delproduk <kode>', 'Hapus produk (minta konfirmasi) 🆕'],
-          ['.setgambar <kode>', 'Pasang gambar (kirim/balas foto) 🆕'],
+          ['.tokobaru', 'Bikin produk lewat tanya-jawab'],
+          ['.addproduk <kode>|<nama>|...', 'Tambah produk sekali ketik'],
+          ['.editproduk <kode> <field> <nilai>', 'Ubah satu kolom produk'],
+          ['.delproduk <kode>', 'Hapus produk (minta konfirmasi)'],
+          ['.setgambar <kode>', 'Pasang gambar (kirim/balas foto)'],
           ['.listproduk', 'Ringkasan semua produk & stok toko'],
           ['.price <kode> <harga>', 'Ubah harga produk'],
-          ['.lantaiharga [persen]', 'Batas bawah tumpukan diskon 🆕']
+          ['.lantaiharga [persen]', 'Batas bawah tumpukan diskon']
         ]
       },
       {
@@ -479,8 +487,8 @@ const categories = {
           ['.addstock <kode> [akun]', 'Tambah stok digital (multi-baris)'],
           ['.cekstok <kode>', 'Cek rincian akun ready & terjual'],
           ['.delstock <id>', 'Hapus item akun rusak per ID'],
-          ['.stokyatim', 'Akun yang produknya sudah dihapus 🆕'],
-          ['.sinkronstok', 'Betulkan angka stok yang melenceng 🆕'],
+          ['.stokyatim', 'Akun yang produknya sudah dihapus'],
+          ['.sinkronstok', 'Betulkan angka stok yang melenceng'],
           ['.setdelivery <kode> <auto/manual>', 'Ubah mode kirim produk'],
           ['.stock <kode> <qty>', 'Ubah stok — produk MANUAL saja'],
           ['.paid / .done <id>', 'ACC & konfirmasi pesanan (atau reply done)'],
@@ -494,8 +502,8 @@ const categories = {
       {
         title: '📣 PROMO, LAPORAN & CHAT (Owner / Admin)',
         items: [
-          ['.siaran [on/off]', 'Pengumuman restok & turun harga otomatis 🆕'],
-          ['.umumkan [kode]', 'Kirim pengumuman ke grup sekarang 🆕'],
+          ['.siaran [on/off]', 'Pengumuman restok & turun harga otomatis'],
+          ['.umumkan [kode]', 'Kirim pengumuman ke grup sekarang'],
           ['.restock <kode>', 'Siarkan restok ke pelanggan & grup'],
           ['.setupdategroup', 'Jadikan grup ini tujuan pengumuman'],
           ['.flashsale <kode> <harga> [jam]', 'Harga kilat berbatas waktu'],
@@ -517,7 +525,9 @@ const categories = {
           ['.setwajibgrup [on/off]', 'Wajib join grup utama untuk pakai bot'],
           ['.siklus [malam/status]', 'Jadwal tidur malam & kesehatan bot'],
           ['.autodl <on/off>', 'Auto-download TikTok & IG'],
+          ['.antikasar <on/off>', 'Filter & hapus kata kasar di grup 🆕'],
           ['.levelup <on/off>', 'Notifikasi kartu level-up'],
+          ['.statsgrup', 'Statistik chat & top member aktif 🆕'],
           ['.tagall <pesan>', 'Mention seluruh anggota grup'],
           ['.cekwarn [@user]', 'Lihat siapa mendekati ambang kick'],
           ['.unwarn @user [1]', 'Maafkan peringatan moderasi']

@@ -308,17 +308,115 @@ export async function enhanceImageHD(imageBuffer) {
 }
 
 /**
- * 8. Remove Background (.removebg, .nobg)
+ * 8. Remove Background (.removebg, .rbg)
+ * Memakai API remove.bg bila REMOVEBG_API_KEY terkonfigurasi; bila belum, memakai
+ * flood-fill tepi lokal berbasis Sharp untuk background polos/kontras.
  */
 export async function removeBackground(imageBuffer) {
   try {
-    // Sharp transparent background thresholding for high contrast subject
-    const pngBuffer = await sharp(imageBuffer)
+    const apiKey = (process.env.REMOVEBG_API_KEY || '').trim();
+    if (apiKey) {
+      const axios = (await import('axios')).default;
+      const FormData = (await import('form-data')).default;
+      const fd = new FormData();
+      fd.append('image_file', imageBuffer, { filename: 'image.png', contentType: 'image/png' });
+      fd.append('size', 'auto');
+      const res = await axios.post('https://api.remove.bg/v1.0/removebg', fd, {
+        headers: { ...fd.getHeaders(), 'X-Api-Key': apiKey },
+        responseType: 'arraybuffer',
+        timeout: 25000
+      });
+      const out = Buffer.from(res.data);
+      if (out.length > 500) {
+        return { success: true, buffer: out, provider: 'remove.bg Studio AI' };
+      }
+    }
+
+    // Fallback lokal: sampling warna tepi & flood-fill 4-arah dari seluruh pinggir gambar
+    const { data, info } = await sharp(imageBuffer)
+      .rotate()
+      .resize({ width: 1024, height: 1024, fit: 'inside', withoutEnlargement: true })
       .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+
+    const { width, height, channels } = info;
+    const totalPx = width * height;
+    const visited = new Uint8Array(totalPx);
+    const px = new Uint8Array(data);
+
+    // Ambil rata-rata warna dari 4 sudut gambar sebagai patokan background tepi
+    const sampleCoords = [
+      0, width - 1, (height - 1) * width, height * width - 1,
+      Math.floor(width / 2), (height - 1) * width + Math.floor(width / 2)
+    ];
+    let sumR = 0, sumG = 0, sumB = 0;
+    for (const idx of sampleCoords) {
+      const o = idx * channels;
+      sumR += px[o];
+      sumG += px[o + 1];
+      sumB += px[o + 2];
+    }
+    const bgR = sumR / sampleCoords.length;
+    const bgG = sumG / sampleCoords.length;
+    const bgB = sumB / sampleCoords.length;
+
+    const hardTolSq = 40 * 40;
+    const softTolSq = 60 * 60;
+    const queue = new Int32Array(totalPx);
+    let head = 0, tail = 0;
+
+    const enqueue = (idx) => {
+      if (idx < 0 || idx >= totalPx || visited[idx]) return;
+      visited[idx] = 1;
+      queue[tail++] = idx;
+    };
+
+    for (let x = 0; x < width; x++) {
+      enqueue(x);
+      enqueue((height - 1) * width + x);
+    }
+    for (let y = 1; y < height - 1; y++) {
+      enqueue(y * width);
+      enqueue(y * width + (width - 1));
+    }
+
+    let removedCount = 0;
+    while (head < tail) {
+      const idx = queue[head++];
+      const o = idx * channels;
+      const dr = px[o] - bgR;
+      const dg = px[o + 1] - bgG;
+      const db = px[o + 2] - bgB;
+      const distSq = dr * dr + dg * dg + db * db;
+
+      if (distSq <= hardTolSq) {
+        px[o + 3] = 0;
+        removedCount++;
+        const x = idx % width;
+        const y = (idx - x) / width;
+        if (x > 0) enqueue(idx - 1);
+        if (x < width - 1) enqueue(idx + 1);
+        if (y > 0) enqueue(idx - width);
+        if (y < height - 1) enqueue(idx + width);
+      } else if (distSq <= softTolSq) {
+        const ratio = (Math.sqrt(distSq) - 40) / 20;
+        px[o + 3] = Math.round(px[o + 3] * Math.max(0, Math.min(1, ratio)));
+        removedCount++;
+      }
+    }
+
+    const pngBuffer = await sharp(Buffer.from(px), { raw: { width, height, channels } })
       .png()
       .toBuffer();
 
-    return { success: true, buffer: pngBuffer };
+    const pctRemoved = Math.round((removedCount / Math.max(1, totalPx)) * 100);
+    return {
+      success: true,
+      buffer: pngBuffer,
+      provider: `Lokal Sharp (${pctRemoved}% tepi dihapus — paling akurat untuk background polos)`,
+      pctRemoved
+    };
   } catch (err) {
     console.error('[REMOVEBG_ERR]', err.message);
     return { success: false, message: err.message };
@@ -820,5 +918,404 @@ export async function hitungEkspresiMatematika(ekspresiRaw) {
   } catch (err) {
     return { success: false, message: `Ekspresi tidak valid: ${err.message}` };
   }
+}
+
+/**
+ * 14. Upload Media ke URL Publik (.tourl, .upload)
+ * Urutan provider: ImgBB (jika API key tersedia & foto) -> Uguu.se (cepat, 3 jam) -> Tmpfiles.org (direct link, 60 menit) -> Catbox.moe (permanen)
+ */
+export async function uploadMediaToUrl(buffer, filename = 'media.bin', mimetype = 'application/octet-stream') {
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+    return { success: false, message: 'Berkas media kosong.' };
+  }
+  if (buffer.length > 25 * 1024 * 1024) {
+    return { success: false, message: 'Ukuran berkas melebihi batas 25 MB.' };
+  }
+
+  const axios = (await import('axios')).default;
+  const FormData = (await import('form-data')).default;
+
+  const imgbbKey = (process.env.IMGBB_API_KEY || '').trim();
+  if (imgbbKey && String(mimetype).startsWith('image/')) {
+    try {
+      const fd = new FormData();
+      fd.append('key', imgbbKey);
+      fd.append('image', buffer.toString('base64'));
+      const res = await axios.post('https://api.imgbb.com/1/upload', fd, { headers: fd.getHeaders(), timeout: 15000 });
+      const link = res.data?.data?.url;
+      if (link) return { success: true, url: link, host: 'ImgBB', masaBerlaku: 'Permanen' };
+    } catch (_) {}
+  }
+
+  const providers = [
+    {
+      name: 'Uguu.se',
+      masaBerlaku: 'Sementara (~3 jam)',
+      fn: async () => {
+        const fd = new FormData();
+        fd.append('files[]', buffer, { filename, contentType: mimetype });
+        const r = await axios.post('https://uguu.se/upload', fd, {
+          headers: { ...fd.getHeaders(), 'User-Agent': 'curl/8.5.0' },
+          timeout: 12000
+        });
+        return r.data?.files?.[0]?.url || null;
+      }
+    },
+    {
+      name: 'Tmpfiles.org',
+      masaBerlaku: 'Sementara (~60 menit)',
+      fn: async () => {
+        const fd = new FormData();
+        fd.append('file', buffer, { filename, contentType: mimetype });
+        const r = await axios.post('https://tmpfiles.org/api/v1/upload', fd, {
+          headers: { ...fd.getHeaders(), 'User-Agent': 'curl/8.5.0' },
+          timeout: 12000
+        });
+        const rawUrl = r.data?.data?.url;
+        if (!rawUrl) return null;
+        return rawUrl.replace(/^https?:\/\/tmpfiles\.org\//i, 'https://tmpfiles.org/dl/');
+      }
+    },
+    {
+      name: 'Catbox.moe',
+      masaBerlaku: 'Permanen',
+      fn: async () => {
+        const fd = new FormData();
+        fd.append('reqtype', 'fileupload');
+        fd.append('fileToUpload', buffer, { filename, contentType: mimetype });
+        const r = await axios.post('https://catbox.moe/user/api.php', fd, {
+          headers: { ...fd.getHeaders(), 'User-Agent': 'curl/8.5.0' },
+          timeout: 12000
+        });
+        const txt = String(r.data || '').trim();
+        return /^https?:\/\//.test(txt) ? txt : null;
+      }
+    }
+  ];
+
+  for (const p of providers) {
+    try {
+      const link = await p.fn();
+      if (link && /^https?:\/\//i.test(link)) {
+        return { success: true, url: link, host: p.name, masaBerlaku: p.masaBerlaku };
+      }
+    } catch (e) {
+      console.warn(`[TOURL_${p.name}_FAIL]`, e.message);
+    }
+  }
+
+  return { success: false, message: 'Semua server upload sedang sibuk/tidak terjangkau. Coba lagi sebentar.' };
+}
+
+export const DAFTAR_EFEK_FOTO = {
+  grayscale: { alias: ['grayscale', 'abu', 'bw', 'hitamputih'], label: 'Hitam Putih (Grayscale)' },
+  sepia: { alias: ['sepia', 'vintage', 'jadul'], label: 'Vintage Sepia' },
+  blur: { alias: ['blur', 'buram'], label: 'Blur Halus' },
+  invert: { alias: ['invert', 'negatif', 'negative'], label: 'Negatif (Invert)' },
+  pixel: { alias: ['pixel', 'piksel', 'mosaic'], label: 'Pixel Art / Mosaik' },
+  neon: { alias: ['neon', 'saturasi', 'vivid'], label: 'Warna Neon / Tajam' },
+  tajam: { alias: ['tajam', 'sharpen', 'hd2'], label: 'Pertajam Detail' },
+  flip: { alias: ['flip', 'balik'], label: 'Balik Vertikal' },
+  mirror: { alias: ['mirror', 'flop', 'cermin'], label: 'Cermin Horizontal' }
+};
+
+/**
+ * 15. Efek Filter Foto (.efek <filter>)
+ */
+export async function terapkanEfekFoto(imageBuffer, efekRaw) {
+  const input = String(efekRaw || '').toLowerCase().trim();
+  const kunci = Object.keys(DAFTAR_EFEK_FOTO).find(k => DAFTAR_EFEK_FOTO[k].alias.includes(input));
+  if (!kunci) {
+    return { success: false, message: 'Filter tidak dikenali.' };
+  }
+
+  try {
+    let img = sharp(imageBuffer).rotate();
+    const meta = await img.metadata();
+    const origW = Math.min(1600, meta.width || 800);
+    const origH = Math.min(1600, meta.height || 800);
+
+    switch (kunci) {
+      case 'grayscale':
+        img = img.grayscale();
+        break;
+      case 'sepia':
+        img = img.removeAlpha().recomb([
+          [0.393, 0.769, 0.189],
+          [0.349, 0.686, 0.168],
+          [0.272, 0.534, 0.131]
+        ]);
+        break;
+      case 'blur':
+        img = img.blur(8);
+        break;
+      case 'invert':
+        img = img.negate({ alpha: false });
+        break;
+      case 'pixel': {
+        const smallW = Math.max(16, Math.round(origW / 24));
+        const smallH = Math.max(16, Math.round(origH / 24));
+        const tiny = await img.resize(smallW, smallH, { kernel: 'nearest' }).toBuffer();
+        img = sharp(tiny).resize(origW, origH, { kernel: 'nearest' });
+        break;
+      }
+      case 'neon':
+        img = img.modulate({ saturation: 2.3, brightness: 1.08 }).sharpen({ sigma: 2 });
+        break;
+      case 'tajam':
+        img = img.sharpen({ sigma: 2.5, m1: 1.4, m2: 2.8 });
+        break;
+      case 'flip':
+        img = img.flip();
+        break;
+      case 'mirror':
+        img = img.flop();
+        break;
+    }
+
+    const buffer = await img.jpeg({ quality: 92 }).toBuffer();
+    return { success: true, buffer, kunci, label: DAFTAR_EFEK_FOTO[kunci].label };
+  } catch (err) {
+    console.error('[EFEK_FOTO_ERR]', err.message);
+    return { success: false, message: 'Gagal menerapkan efek ke gambar.' };
+  }
+}
+
+/** Konversi format `ss`, `15s`, atau `mm:ss` menjadi angka detik. */
+export function parseWaktuDetik(teks) {
+  const s = String(teks || '').trim().toLowerCase().replace(/s$/, '');
+  if (!s) return NaN;
+  if (/^\d+(?:\.\d+)?$/.test(s)) {
+    const val = Number(s);
+    return Number.isFinite(val) && val >= 0 ? val : NaN;
+  }
+  const parts = s.split(':');
+  if (parts.length === 2 && /^\d+$/.test(parts[0]) && /^\d+(?:\.\d+)?$/.test(parts[1])) {
+    const val = Number(parts[0]) * 60 + Number(parts[1]);
+    return Number.isFinite(val) && val >= 0 ? val : NaN;
+  }
+  if (parts.length === 3 && /^\d+$/.test(parts[0]) && /^\d+$/.test(parts[1]) && /^\d+(?:\.\d+)?$/.test(parts[2])) {
+    const val = Number(parts[0]) * 3600 + Number(parts[1]) * 60 + Number(parts[2]);
+    return Number.isFinite(val) && val >= 0 ? val : NaN;
+  }
+  return NaN;
+}
+
+async function jalankanFfmpegSpawn(args, timeoutMs = 90000) {
+  const { spawn } = await import('child_process');
+  const ffmpegInstaller = (await import('@ffmpeg-installer/ffmpeg')).default;
+  return new Promise((resolve) => {
+    let stderr = '';
+    let proc;
+    try {
+      proc = spawn(ffmpegInstaller.path, args, { timeout: timeoutMs, windowsHide: true });
+    } catch (e) {
+      return resolve({ ok: false, stderr: e.message });
+    }
+    proc.stderr?.on('data', d => {
+      if (stderr.length < 4000) stderr += d.toString();
+    });
+    proc.on('close', code => resolve({ ok: code === 0, stderr }));
+    proc.on('error', err => resolve({ ok: false, stderr: err.message }));
+  });
+}
+
+/**
+ * 16. Potong Audio / Video (.cut <mulai> <akhir>)
+ */
+export async function potongMediaFfmpeg(buffer, { isVideo = false, isVn = false, mulaiDetik = 0, akhirDetik = 0 } = {}) {
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+    return { success: false, message: 'Media sumber tidak valid.' };
+  }
+  const durasi = akhirDetik - mulaiDetik;
+  if (!Number.isFinite(durasi) || durasi <= 0) {
+    return { success: false, message: 'Waktu akhir harus lebih besar daripada waktu mulai.' };
+  }
+  const batasMaks = isVideo ? 60 : 180;
+  if (durasi > batasMaks) {
+    return { success: false, message: `Durasi potongan maksimal ${batasMaks} detik untuk ${isVideo ? 'video' : 'audio'}.` };
+  }
+
+  const tmpDir = path.join(process.cwd(), 'tmp');
+  if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+  const stamp = `cut_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+  const inExt = isVideo ? 'mp4' : (isVn ? 'ogg' : 'mp3');
+  const outExt = isVideo ? 'mp4' : (isVn ? 'ogg' : 'mp3');
+  const inPath = path.join(tmpDir, `${stamp}_in.${inExt}`);
+  const outPath = path.join(tmpDir, `${stamp}_out.${outExt}`);
+
+  try {
+    fs.writeFileSync(inPath, buffer);
+    const args = isVideo
+      ? ['-y', '-ss', String(mulaiDetik), '-to', String(akhirDetik), '-i', inPath, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2', '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', outPath]
+      : (isVn
+        ? ['-y', '-ss', String(mulaiDetik), '-to', String(akhirDetik), '-i', inPath, '-vn', '-c:a', 'libopus', '-b:a', '48k', '-ac', '1', outPath]
+        : ['-y', '-ss', String(mulaiDetik), '-to', String(akhirDetik), '-i', inPath, '-vn', '-c:a', 'libmp3lame', '-b:a', '160k', outPath]);
+
+    const res = await jalankanFfmpegSpawn(args);
+    if (!res.ok || !fs.existsSync(outPath) || fs.statSync(outPath).size < 512) {
+      return { success: false, message: 'Gagal memotong media (pastikan waktu berada di dalam durasi media).' };
+    }
+    const outBuf = fs.readFileSync(outPath);
+    return {
+      success: true,
+      buffer: outBuf,
+      isVideo,
+      isVn,
+      durasi,
+      mimetype: isVideo ? 'video/mp4' : (isVn ? 'audio/ogg; codecs=opus' : 'audio/mpeg'),
+      ext: outExt
+    };
+  } catch (err) {
+    return { success: false, message: err.message };
+  } finally {
+    try { if (fs.existsSync(inPath)) fs.unlinkSync(inPath); } catch {}
+    try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath); } catch {}
+  }
+}
+
+/**
+ * 17. Ubah Kecepatan Audio / Video (.speed <0.5-2.0>, .percepat, .perlambat, .nightcore)
+ */
+export async function ubahKecepatanMediaFfmpeg(buffer, { isVideo = false, isVn = false, faktor = 1.5, isNightcore = false } = {}) {
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+    return { success: false, message: 'Media sumber tidak valid.' };
+  }
+  const f = Number(faktor);
+  if (!Number.isFinite(f) || f < 0.5 || f > 2.0) {
+    return { success: false, message: 'Faktor kecepatan harus antara `0.5` sampai `2.0` (contoh: `1.5` atau `0.75`).' };
+  }
+
+  const tmpDir = path.join(process.cwd(), 'tmp');
+  if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+  const stamp = `spd_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+  const inExt = isVideo ? 'mp4' : (isVn ? 'ogg' : 'mp3');
+  const outExt = isVideo ? 'mp4' : (isVn ? 'ogg' : 'mp3');
+  const inPath = path.join(tmpDir, `${stamp}_in.${inExt}`);
+  const outPath = path.join(tmpDir, `${stamp}_out.${outExt}`);
+
+  try {
+    fs.writeFileSync(inPath, buffer);
+    let args;
+    if (isVideo) {
+      const ptsFactor = (1 / f).toFixed(4);
+      args = [
+        '-y', '-i', inPath,
+        '-vf', `setpts=${ptsFactor}*(PTS-STARTPTS),scale=trunc(iw/2)*2:trunc(ih/2)*2`,
+        '-af', `atempo=${f}`,
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26',
+        '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', outPath
+      ];
+    } else {
+      const af = isNightcore ? 'asetrate=44100*1.22,aresample=44100,atempo=1.03' : `atempo=${f}`;
+      args = isVn
+        ? ['-y', '-i', inPath, '-vn', '-af', af, '-c:a', 'libopus', '-b:a', '48k', '-ac', '1', outPath]
+        : ['-y', '-i', inPath, '-vn', '-af', af, '-c:a', 'libmp3lame', '-b:a', '160k', outPath];
+    }
+
+    let res = await jalankanFfmpegSpawn(args);
+    // Jika video tidak punya audio track, ulangi tanpa filter `-af`
+    if (!res.ok && isVideo && /matches no streams|Stream specifier/i.test(res.stderr || '')) {
+      const ptsFactor = (1 / f).toFixed(4);
+      args = [
+        '-y', '-i', inPath,
+        '-vf', `setpts=${ptsFactor}*(PTS-STARTPTS),scale=trunc(iw/2)*2:trunc(ih/2)*2`,
+        '-an', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-movflags', '+faststart', outPath
+      ];
+      res = await jalankanFfmpegSpawn(args);
+    }
+
+    if (!res.ok || !fs.existsSync(outPath) || fs.statSync(outPath).size < 512) {
+      return { success: false, message: 'Gagal memproses kecepatan media.' };
+    }
+    const outBuf = fs.readFileSync(outPath);
+    return {
+      success: true,
+      buffer: outBuf,
+      isVideo,
+      isVn,
+      mimetype: isVideo ? 'video/mp4' : (isVn ? 'audio/ogg; codecs=opus' : 'audio/mpeg'),
+      ext: outExt
+    };
+  } catch (err) {
+    return { success: false, message: err.message };
+  } finally {
+    try { if (fs.existsSync(inPath)) fs.unlinkSync(inPath); } catch {}
+    try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath); } catch {}
+  }
+}
+
+const PORTAL_RESI_KURIR = {
+  jne: { nama: 'JNE', url: 'https://www.jne.co.id/tracking-package' },
+  jnt: { nama: 'J&T Express', url: 'https://jet.co.id/track' },
+  'j&t': { nama: 'J&T Express', url: 'https://jet.co.id/track' },
+  sicepat: { nama: 'SiCepat', url: 'https://www.sicepat.com/checkAwb' },
+  anteraja: { nama: 'AnterAja', url: 'https://anteraja.id/tracking' },
+  pos: { nama: 'Pos Indonesia', url: 'https://www.posindonesia.co.id/id/tracking' },
+  tiki: { nama: 'TIKI', url: 'https://www.tiki.id/id/tracking' },
+  ninja: { nama: 'Ninja Xpress', url: 'https://www.ninjaxpress.co/id-id/tracking' },
+  idexpress: { nama: 'ID Express', url: 'https://idexpress.com/lacak-paket/' },
+  spx: { nama: 'Shopee Express (SPX)', url: 'https://spx.co.id/' }
+};
+
+/**
+ * 18. Cek Resi Kurir (.cekresi <kurir> <resi>) — Asli via BinderByte jika API key tersedia
+ */
+export async function cekResiKurir(kurirRaw, resiRaw) {
+  const kurir = String(kurirRaw || '').trim().toLowerCase();
+  const resi = String(resiRaw || '').trim();
+  if (!kurir || !resi) {
+    return { success: false, message: 'Harap sertakan kode kurir dan nomor resi.' };
+  }
+
+  const binderKey = (process.env.BINDERBYTE_API_KEY || '').trim();
+  if (binderKey) {
+    try {
+      const axios = (await import('axios')).default;
+      const kodeApi = kurir === 'j&t' ? 'jnt' : kurir;
+      const r = await axios.get('https://api.binderbyte.com/v1/track', {
+        params: { api_key: binderKey, courier: kodeApi, awb: resi },
+        timeout: 12000
+      });
+      if (r.data?.status === 200 && r.data?.data?.summary) {
+        const s = r.data.data.summary;
+        const d = r.data.data.detail || {};
+        const riwayat = (r.data.data.history || []).slice(0, 5)
+          .map(h => `• _${h.date}_ — ${h.desc}`)
+          .join('\n');
+        return {
+          success: true,
+          live: true,
+          text:
+            `📦 *LACAK RESI (${(s.courier || kurir).toUpperCase()})*\n` +
+            `━━━━━━━━━━━━━━━━━━━━\n` +
+            `🧾 *Resi:* \`${s.awb || resi}\`\n` +
+            `📌 *Status:* *${s.status || '-'}*\n` +
+            `📅 *Tanggal:* ${s.date || '-'}\n` +
+            (d.shipper ? `📤 *Pengirim:* ${d.shipper}\n` : '') +
+            (d.receiver ? `📥 *Penerima:* ${d.receiver}\n` : '') +
+            (riwayat ? `\n📜 *Riwayat Terbaru:*\n${riwayat}` : '')
+        };
+      }
+      return { success: false, message: r.data?.message || `Resi *${resi}* tidak ditemukan pada kurir ${kurir.toUpperCase()}.` };
+    } catch (e) {
+      return { success: false, message: `Gagal mengecek resi dari server ekspedisi: ${e.message}` };
+    }
+  }
+
+  const portal = PORTAL_RESI_KURIR[kurir];
+  const daftarKurir = 'jne, jnt, sicepat, anteraja, pos, tiki, ninja, idexpress, spx';
+  return {
+    success: true,
+    live: false,
+    text:
+      `📦 *CEK RESI ${(portal?.nama || kurir.toUpperCase())}*\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `🧾 *Resi:* \`${resi}\`\n\n` +
+      (portal
+        ? `🔗 *Lacak langsung di web resmi ${portal.nama}:*\n${portal.url}\n\n`
+        : `ℹ️ Kurir yang dikenal: \`${daftarKurir}\`\n\n`) +
+      `_Pelacakan otomatis di chat memerlukan API key kurir (\`BINDERBYTE_API_KEY\`) di server bot._`
+  };
 }
 

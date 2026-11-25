@@ -671,6 +671,35 @@ async function handleAntiSpamAndAntiLink(m, jid, senderNormalized, isGroup, msgT
     }
   }
 
+  // 1b. Anti-Kata Kasar / Toxic (Default OFF — aktif per grup lewat `.antikasar on`)
+  if (groupSettings?.features_config?.antikasar === true && msgText && !isAdmin) {
+    const POLA_KATA_KASAR = /\b(anjing|anjg|ajg|bangsat|bgst|kontol|kntl|memek|mmk|jembut|ngentot|ngentod|bajingan|keparat|pelacur|perek|tolol|goblok|idiot|asu)\b/i;
+    if (POLA_KATA_KASAR.test(msgText)) {
+      const warnings = await db.addCustomerWarning(senderNormalized, 'Mengirim kata kasar / tidak sopan di grup.');
+      try {
+        await sock.sendMessage(jid, { delete: m.key });
+      } catch (_) {}
+
+      if (warnings >= kickAfter) {
+        await sock.sendMessage(jid, {
+          text: `🚨 @${senderNormalized.split('@')[0]} telah di-KICK dari grup karena mencapai ${warnings}x peringatan (Anti-Kata Kasar).`,
+          mentions: [senderNormalized]
+        });
+        try {
+          await sock.groupParticipantsUpdate(jid, [senderNormalized], 'remove');
+        } catch (e) {
+          console.error(`[ANTI_KASAR] Gagal kick ${senderNormalized}:`, e.message);
+        }
+      } else {
+        await sock.sendMessage(jid, {
+          text: `⚠️ *PERINGATAN ANTI-TOXIC (${warnings}/${kickAfter})*\n@${senderNormalized.split('@')[0]}, jaga ucapan di grup ini ya!`,
+          mentions: [senderNormalized]
+        });
+      }
+      return true;
+    }
+  }
+
   // 2. Anti-Spam Rate Limiter (Admin tetap dapat peringatan, tapi tidak di-kick)
   if (antiSpamOn) {
     const now = Date.now();
@@ -1015,7 +1044,47 @@ const MAX_CACHE_SIZE = 1000;
 // proto untuk mengenkripsi ulang.
 const pesanKeluarCache = new Map();
 const MAKS_PESAN_KELUAR = 500;
+const MAKS_CACHE_DISK = 300;
+const PATH_CACHE_PESAN_KELUAR = path.resolve('./session/.msg_retry_cache.json');
 let getMessageMeleset = 0;
+
+function muatCachePesanKeluarDisk() {
+  try {
+    if (!fs.existsSync(PATH_CACHE_PESAN_KELUAR)) return;
+    const raw = JSON.parse(fs.readFileSync(PATH_CACHE_PESAN_KELUAR, 'utf8'));
+    if (!Array.isArray(raw)) return;
+    for (const entry of raw.slice(-MAKS_CACHE_PESAN_KELUAR)) {
+      if (!entry?.id || !entry?.b64) continue;
+      try {
+        const msg = proto.Message.decode(Buffer.from(entry.b64, 'base64'));
+        pesanKeluarCache.set(entry.id, msg);
+      } catch (_) {}
+    }
+    if (pesanKeluarCache.size > 0) {
+      console.log(`[MSG_RETRY_CACHE] Memuat ${pesanKeluarCache.size} pesan terakhir dari disk.`);
+    }
+  } catch (_) {}
+}
+muatCachePesanKeluarDisk();
+
+export function simpanCachePesanKeluarDisk() {
+  try {
+    const sessionDir = path.dirname(PATH_CACHE_PESAN_KELUAR);
+    if (!fs.existsSync(sessionDir)) return 0;
+    const entries = Array.from(pesanKeluarCache.entries()).slice(-MAKS_CACHE_DISK);
+    const payload = [];
+    for (const [id, msg] of entries) {
+      try {
+        const bytes = proto.Message.encode(msg).finish();
+        payload.push({ id, b64: Buffer.from(bytes).toString('base64') });
+      } catch (_) {}
+    }
+    fs.writeFileSync(PATH_CACHE_PESAN_KELUAR, JSON.stringify(payload));
+    return payload.length;
+  } catch (_) {
+    return 0;
+  }
+}
 
 function simpanPesanKeluar(result) {
   const id = result?.key?.id;
@@ -1178,6 +1247,10 @@ export async function tutupBotDenganRapi(alasan = 'SIGNAL') {
     clearTimeout(nightSleepState.timerId);
     nightSleepState.timerId = null;
   }
+  try {
+    const tersimpan = simpanCachePesanKeluarDisk();
+    if (tersimpan > 0) console.log(`[SHUTDOWN] Menyimpan ${tersimpan} cache retry pesan keluar.`);
+  } catch (_) {}
   try {
     if (typeof simpanKredensial === 'function') {
       await simpanKredensial();

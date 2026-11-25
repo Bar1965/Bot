@@ -14,11 +14,15 @@
  *    Menyiarkan "bot online" ke semua grup tiap restart itu spam.
  */
 
+import { execFileSync } from 'child_process';
+import { fileURLToPath } from 'url';
 import * as db from '../../database.js';
 import { config } from '../../config.js';
-import { BOT_VERSION, VERSI_TERBARU, getSorotanUpdate } from './changelog.js';
+import { BOT_VERSION, VERSI_TERBARU, formatRingkasanPerubahan, getSorotanUpdate } from './changelog.js';
 
+const ROOT_REPO = fileURLToPath(new URL('../../', import.meta.url));
 const KUNCI_VERSI = 'lastAnnouncedVersion';
+const KUNCI_COMMIT = 'lastAnnouncedCommit';
 const KUNCI_AKTIF = 'updateAnnounceEnabled';
 const JEDA_SIAR_MS = 1500;      // jeda antar grup supaya tidak kena rate limit
 const TUNDA_MULAI_MS = 8000;    // beri waktu koneksi stabil dulu
@@ -31,24 +35,85 @@ function waktuSekarang() {
   });
 }
 
-function kartuOwner({ versiBaru, jumlahGrup, disiarkan, versiLama }) {
+function bacaInfoGit() {
+  const opsi = { cwd: ROOT_REPO, encoding: 'utf8', timeout: 2000, windowsHide: true };
+  try {
+    const hash = execFileSync('git', ['rev-parse', '--short', 'HEAD'], opsi).trim();
+    const subjek = execFileSync('git', ['log', '-1', '--pretty=%s'], opsi).trim();
+    const statusMentah = execFileSync('git', ['status', '--short'], opsi).trim();
+    const daftarFile = statusMentah
+      ? statusMentah.split(/\r?\n/).map(baris => baris.trim()).filter(Boolean)
+      : [];
+    return {
+      tersedia: Boolean(hash),
+      hash,
+      subjek,
+      jumlahDiubahLokal: daftarFile.length,
+      contohFileLokal: daftarFile.slice(0, 6),
+      adaPerubahanLokal: daftarFile.length > 0
+    };
+  } catch {
+    return {
+      tersedia: false,
+      hash: '',
+      subjek: '',
+      jumlahDiubahLokal: 0,
+      contohFileLokal: [],
+      adaPerubahanLokal: false
+    };
+  }
+}
+
+export function kartuOwner({
+  versiBaru = false,
+  jumlahGrup = 0,
+  disiarkan = 0,
+  versiLama = '',
+  commitBerubah = false,
+  commitLama = '',
+  infoGit = null
+} = {}) {
   const v = VERSI_TERBARU;
+  const gitAktif = infoGit && infoGit.tersedia;
+  const adaDelta = Boolean(versiBaru || commitBerubah || (infoGit && infoGit.adaPerubahanLokal));
+
+  let headerStatus;
+  if (versiBaru) {
+    headerStatus = `🆕 *VERSI BARU TERPASANG!* _(sebelumnya ${versiLama || 'belum tercatat'})_`;
+  } else if (adaDelta) {
+    const alasan = commitBerubah
+      ? `commit baru ${infoGit.hash}${commitLama ? ` dari ${commitLama}` : ''}`
+      : `${infoGit.jumlahDiubahLokal} file diubah di lokal pada ${v.versi}`;
+    headerStatus = `🆕 *ADA PERUBAHAN KODE / UPDATE!* _(${alasan})_`;
+  } else {
+    headerStatus = `🔁 *BOT RESTART — RINGKASAN PERUBAHAN ${v.versi}* _(pengingat agar tidak lupa)_`;
+  }
+
+  const infoCommitBaris = gitAktif
+    ? `\n🔖 *Commit:* ${infoGit.hash}${infoGit.subjek ? ` — ${infoGit.subjek}` : ''}`
+    : '';
+  const infoLokalBlok = infoGit && infoGit.adaPerubahanLokal
+    ? `\n📂 *File lokal berubah (${infoGit.jumlahDiubahLokal}):* ${infoGit.contohFileLokal.join(', ')}${infoGit.jumlahDiubahLokal > infoGit.contohFileLokal.length ? ', …' : ''}`
+    : '';
+
+  const ringkasanPerubahan = formatRingkasanPerubahan(v);
+
   return `🟢 *BOT ONLINE — SIAP MELAYANI* 🤖
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🕒 *Waktu Nyala:* ${waktuSekarang()}
 📌 *Versi:* ${v.versi} — ${v.nama}
-📅 *Rilis:* ${v.tanggal}
+📅 *Rilis:* ${v.tanggal}${infoCommitBaris}${infoLokalBlok}
 👥 *Grup Terhubung:* ${jumlahGrup}
 
-${versiBaru
-    ? `🆕 *VERSI BARU TERPASANG!* _(sebelumnya ${versiLama || 'belum tercatat'})_\n\n📋 *Yang berubah di rilis ini:*\n${getSorotanUpdate()}`
-    : `✅ *Tidak ada perubahan versi* — ini penyalaan ulang biasa di ${v.versi}.`}
+${headerStatus}
+
+${ringkasanPerubahan}
 
 ${versiBaru
     ? (disiarkan > 0
       ? `📢 Pengumuman sudah disiarkan ke *${disiarkan} grup*.`
       : `🔕 Pengumuman ke grup *tidak dikirim* _(dimatikan lewat \`.update off\`, atau tidak ada grup yang memenuhi syarat)_.`)
-    : `🔕 Pengumuman ke grup dilewati — versinya sama seperti pengumuman terakhir.`}
+    : `🔕 Pengumuman ke grup dilewati — versi grup masih ${v.versi} _(pakai \`.update broadcast\` jika ingin kirim ulang ke grup)_.`}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 💡 \`.update\` rincian lengkap • \`.update broadcast\` siarkan ulang ke grup
@@ -142,8 +207,11 @@ export async function umumkanBotOnline(sock) {
 
 async function jalankanPengumuman(sock) {
   const versiLama = await db.getSetting(KUNCI_VERSI);
+  const commitLama = await db.getSetting(KUNCI_COMMIT);
   const aktif = String(await db.getSetting(KUNCI_AKTIF) ?? 'on').toLowerCase() !== 'off';
   const versiBaru = versiLama !== BOT_VERSION;
+  const infoGit = bacaInfoGit();
+  const commitBerubah = Boolean(infoGit.tersedia && infoGit.hash && commitLama !== infoGit.hash);
 
   const { tujuan, totalGrup } = await grupTujuan(sock);
 
@@ -152,8 +220,15 @@ async function jalankanPengumuman(sock) {
     disiarkan = await siarkanKeGrup(sock, tujuan);
   }
 
+  const updateSettingsPayload = {};
   if (versiBaru) {
-    await db.updateSettings({ [KUNCI_VERSI]: BOT_VERSION });
+    updateSettingsPayload[KUNCI_VERSI] = BOT_VERSION;
+  }
+  if (commitBerubah) {
+    updateSettingsPayload[KUNCI_COMMIT] = infoGit.hash;
+  }
+  if (Object.keys(updateSettingsPayload).length > 0) {
+    await db.updateSettings(updateSettingsPayload);
   }
 
   // Nomor owner bisa diubah lewat Dashboard, jadi baca dari settings dulu dan
@@ -167,14 +242,22 @@ async function jalankanPengumuman(sock) {
   if (ownerJid) {
     try {
       await sock.sendMessage(ownerJid, {
-        text: kartuOwner({ versiBaru, jumlahGrup: totalGrup, disiarkan, versiLama })
+        text: kartuOwner({
+          versiBaru,
+          jumlahGrup: totalGrup,
+          disiarkan,
+          versiLama,
+          commitBerubah,
+          commitLama,
+          infoGit
+        })
       });
     } catch (err) {
       console.warn('[STARTUP ANNOUNCE] Gagal kirim laporan ke owner:', err.message);
     }
   }
 
-  console.log(`[STARTUP ANNOUNCE] Versi ${BOT_VERSION}${versiBaru ? ' (BARU)' : ''} — disiarkan ke ${disiarkan}/${tujuan.length} grup dari ${totalGrup} grup terhubung.`);
+  console.log(`[STARTUP ANNOUNCE] Versi ${BOT_VERSION}${versiBaru ? ' (BARU)' : ''}${commitBerubah ? ` [commit ${infoGit.hash}]` : ''} — disiarkan ke ${disiarkan}/${tujuan.length} grup dari ${totalGrup} grup terhubung.`);
 }
 
 /** Siaran manual lewat `.update broadcast` (owner). */

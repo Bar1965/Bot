@@ -1948,6 +1948,19 @@ export async function getTopGroupChatStats(groupJid, limit = 10) {
   return await allQuery("SELECT participant_jid, msg_count FROM group_chat_stats WHERE group_jid = ? ORDER BY msg_count DESC LIMIT ?", [groupJid, limit]);
 }
 
+/** Ringkasan total pesan & jumlah pengirim tercatat di sebuah grup. */
+export async function getGroupChatSummary(groupJid) {
+  if (!groupJid) return { totalPengirim: 0, totalPesan: 0 };
+  const row = await getQuery(
+    "SELECT COUNT(*) AS total_pengirim, COALESCE(SUM(msg_count), 0) AS total_pesan FROM group_chat_stats WHERE group_jid = ?",
+    [groupJid]
+  );
+  return {
+    totalPengirim: Number(row?.total_pengirim) || 0,
+    totalPesan: Number(row?.total_pesan) || 0
+  };
+}
+
 
 
 // --- STATISTIK GAME UNDERCOVER ---

@@ -683,6 +683,12 @@ export function startScheduler(sock) {
       db.bersihkanPemakaianMediaLama(7)
         .then(n => { if (n > 0) console.log(`[CLEANUP] ${n} catatan kuota unduhan lama dihapus.`); })
         .catch(() => {});
+      import('./bot.js')
+        .then(m => {
+          m.bersihkanSesiKembung?.();
+          m.simpanCachePesanKeluarDisk?.();
+        })
+        .catch(() => {});
     } catch (e) {
       console.error('[SCHEDULER] Cleanup error:', e.message);
     }
